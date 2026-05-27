@@ -1,2 +1,20 @@
 vars.sh
 tests
+__pycache__
+.mypy_cache
+
+# Python packaging
+*.egg-info/
+dist/
+build/
+*.egg
+.eggs/
+.pip/
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# Offline Arch Wiki mirror (downloaded reference, not source)
+arch-wiki/

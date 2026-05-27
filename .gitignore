@@ -18,3 +18,9 @@ ENV/
 
 # Offline Arch Wiki mirror (downloaded reference, not source)
 arch-wiki/
+
+# Bind-mounted old install-scripts repo (recreate with resources/bind-mount.sh)
+resources/archlinux-script-installer/
+
+# graphify generated graph (regenerate with /graphify; holds machine-specific paths)
+graphify-out/

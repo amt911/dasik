@@ -45,3 +45,10 @@ def test_restore_unknown_raises(tmp_target):
     store.new({"a": 1}, {"generation": 1})
     with pytest.raises(FileNotFoundError):
         store.restore(99)
+
+
+def test_list_is_numerically_ordered_past_ten(tmp_target):
+    store = GenerationStore(tmp_target)
+    for i in range(1, 12):  # creates generations 1..11
+        store.new({"gen": i}, {"generation": i})
+    assert [g.number for g in store.list()] == list(range(1, 12))

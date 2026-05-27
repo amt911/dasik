@@ -24,3 +24,8 @@ resources/archlinux-script-installer/
 
 # graphify generated graph (regenerate with /graphify; holds machine-specific paths)
 graphify-out/
+
+# Test artifacts
+.coverage
+.pytest_cache/
+htmlcov/

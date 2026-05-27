@@ -58,10 +58,10 @@ class GenerationStore:
         current = None
         if self.current_link.is_symlink():
             current = self.current_link.readlink().name
+        dirs = [p for p in self.base_dir.iterdir() if p.is_dir() and p.name.isdigit()]
         gens: list[GenInfo] = []
-        for p in sorted(self.base_dir.iterdir(), key=lambda x: x.name):
-            if p.is_dir() and p.name.isdigit():
-                gens.append(GenInfo(number=int(p.name), is_current=(p.name == current)))
+        for p in sorted(dirs, key=lambda p: int(p.name)):
+            gens.append(GenInfo(number=int(p.name), is_current=(p.name == current)))
         return gens
 
     def restore(self, number: int) -> tuple[dict[str, Any], dict[str, Any]]:

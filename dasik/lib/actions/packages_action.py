@@ -20,6 +20,7 @@ from __future__ import annotations
 from typing import Any, List
 from .abstract_action import AbstractAction
 from ..command_worker.command_worker import Command
+import os
 import subprocess
 
 
@@ -254,8 +255,9 @@ class PackagesAction(AbstractAction):
         - ``Op.INSTALL`` and item in ``self.aur_pkgs``    → ``_apply_aur_install``.
         - ``Op.REMOVE`` → ``pacman -Rns`` (handles both pacman + AUR pkgs).
 
-        INSTALLs run before REMOVEs (additive first; keeps the system in a
-        working state if the destructive step fails midway).
+        Installs (pacman, then AUR) run before removals — additive steps
+        first keep the system in a working state if a destructive step
+        fails midway.
         """
         from ..state.change import Op
 
@@ -279,8 +281,10 @@ class PackagesAction(AbstractAction):
                 elif change.item in aur_set:
                     aur_installs.append(change.item)
                 else:
-                    # Defensive: unknown item — treat as pacman install.
-                    pacman_installs.append(change.item)
+                    raise ValueError(
+                        f"apply() received INSTALL for unknown package "
+                        f"{change.item!r}: not in pacman_pkgs or aur_pkgs"
+                    )
             elif change.op is Op.REMOVE:
                 removes.append(change.item)
 
@@ -310,7 +314,6 @@ class PackagesAction(AbstractAction):
           3. For each pkg: clone + makepkg -sri as the build user.
           4. Remove the temp build user + sudoers fragment.
         """
-        import os
         target = self.context.target
 
         # 1. Prerequisites

@@ -1,8 +1,9 @@
 from abc import ABC, abstractmethod
-from typing import Any, Dict, TYPE_CHECKING
+from typing import Any, Dict, List, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .action_context import ActionContext
+    from ..state.change import Change
 
 class AbstractAction(ABC):
     """Base class for all system configuration actions.
@@ -94,3 +95,63 @@ class AbstractAction(ABC):
     def KEY_NAME(self) -> str:
         """Deprecated: Use name property instead."""
         return self.name
+
+    # ------------------------------------------------------------------
+    # v3 interface (spec §3.5) — concrete defaults so legacy actions that
+    # only override is_needed/execute keep working unchanged. v3 actions
+    # opt in by overriding ``plan``; ``is_v3()`` discriminates the two so
+    # the future Reconciler (Plan 3) can pick the right code path.
+    # ------------------------------------------------------------------
+
+    def actual(self) -> Any:
+        """Read system reality (A) for this action's domain.
+
+        v3 actions override this to query the system (e.g. ``pacman -Qqe``)
+        via ``Command.execute(target=self.context.target)``. The default
+        returns an empty set so legacy actions can still be introspected
+        without error.
+        """
+        return set()
+
+    def plan(self, managed: Any) -> "List[Change]":
+        """Compute the list of Changes needed to converge to the config.
+
+        v3 actions override this with set-math over (D=config, M=managed,
+        A=self.actual()) — typically via
+        ``dasik.lib.state.set_math.compute_changes``. The default returns
+        an empty list, which makes ``is_v3()`` return False.
+        """
+        return []
+
+    def apply(self, plan: "List[Change]") -> None:
+        """Execute the Changes produced by ``plan``.
+
+        v3 actions override this; the default is a no-op so legacy actions
+        keep using their own ``execute()`` path.
+        """
+        return None
+
+    def import_state(self) -> Dict[str, Any]:
+        """Return the config fragment that mirrors A (for ``sync``).
+
+        v3 actions override this to capture drift back into the config
+        (e.g. ``{"packages": [...explicitly installed packages...]}``).
+        The default returns an empty dict.
+        """
+        return {}
+
+    def managed_keys(self) -> Dict[str, Any]:
+        """Return what this action contributes to the manifest after apply.
+
+        v3 actions override this; the default returns an empty dict.
+        """
+        return {}
+
+    @classmethod
+    def is_v3(cls) -> bool:
+        """True if this subclass overrides ``plan`` — i.e. uses the v3 API.
+
+        Used by the Reconciler (Plan 3) to decide between the v3
+        ``plan``/``apply`` path and the legacy ``is_needed``/``execute`` path.
+        """
+        return cls.plan is not AbstractAction.plan

@@ -3,10 +3,13 @@
 Verbs (slice 1 of declarative-convergence):
   * ``plan <config> [--target / | /mnt]`` — show the diff between config and
     system reality. **Read-only; safe to run on any host.**
+  * ``apply <config> [--target / | /mnt] [--yes]`` — converge the system to
+    the config (DESTRUCTIVE). Prompts before destructive changes unless
+    ``--yes`` is passed.
   * (no verb) ``dasik <config>`` — DEPRECATED. Falls back to the legacy
     install path (``ActionsHandler``). Will be removed once ``apply`` lands.
 
-``apply`` / ``sync`` / ``generations`` / ``rollback`` land in Plan 4.
+``sync`` / ``generations`` / ``rollback`` land in a future plan.
 """
 from __future__ import annotations
 
@@ -20,6 +23,8 @@ from dasik.lib.actions.actions_handler import ActionsHandler
 from dasik.lib.actions.actions_handler_v2 import setup_actions
 from dasik.lib.actions.action_registry import get_default_registry
 from dasik.lib.reconciler.reconciler import Reconciler
+from dasik.lib.state.generation_store import GenerationStore
+from dasik.lib.state.state_store import StateStore
 from dasik.lib.target.target import Target
 
 
@@ -61,10 +66,26 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Root commands run against (/ for the live host, /mnt for an "
              "install target). Default: /mnt.",
     )
+    apply_p = sub.add_parser(
+        "apply",
+        help="Converge the system to the config (DESTRUCTIVE)",
+    )
+    apply_p.add_argument("config", help="Path to the JSON configuration file")
+    apply_p.add_argument(
+        "--target",
+        default="/mnt",
+        help="Root commands run against (/ for the live host, /mnt for an "
+             "install target). Default: /mnt.",
+    )
+    apply_p.add_argument(
+        "--yes", "-y",
+        action="store_true",
+        help="Skip the destructive-change confirmation prompt.",
+    )
     return parser
 
 
-_KNOWN_VERBS = {"plan"}
+_KNOWN_VERBS = {"plan", "apply"}
 
 
 def _is_legacy_invocation(raw: list[str]) -> Optional[str]:
@@ -99,6 +120,45 @@ def _cmd_plan(config_path: Path, target_root: str) -> int:
     return 0
 
 
+def _cmd_apply(config_path: Path, target_root: str, assume_yes: bool) -> int:
+    """Run the destructive convergence flow."""
+    try:
+        config = json.loads(config_path.read_text())
+    except Exception as e:
+        print(f"Error loading config: {e}", file=sys.stderr)
+        return 1
+
+    setup_actions()
+    registry = get_default_registry()
+    target = Target(root=target_root)
+    state_store = StateStore(target)
+    gen_store = GenerationStore(target)
+
+    manifest_dict = state_store.load().to_dict()
+
+    reconciler = Reconciler(
+        config=config,
+        target=target,
+        manifest=manifest_dict,
+        action_metas=registry.get_all_actions(),
+        state_store=state_store,
+        generation_store=gen_store,
+    )
+    plan, results = reconciler.build_plan()
+    print(plan.render())
+
+    if plan.is_empty():
+        return 0
+
+    new_manifest = reconciler.apply(plan, results, assume_yes=assume_yes)
+    if new_manifest is None:
+        print("Aborted: no changes applied.", file=sys.stderr)
+        return 1
+
+    print(f"Applied: now at generation {new_manifest.generation}.")
+    return 0
+
+
 def _cmd_legacy(config_path_str: str) -> int:
     """Deprecated no-verb form. Delegates to the legacy install handler."""
     print(
@@ -130,6 +190,12 @@ def main(argv: Optional[list[str]] = None) -> int:
             if path is None:
                 return 1
             return _cmd_plan(path, args.target)
+
+        if args.verb == "apply":
+            path = _validate_config_file(args.config)
+            if path is None:
+                return 1
+            return _cmd_apply(path, args.target, args.yes)
 
         parser.print_help(file=sys.stderr)
         return 2

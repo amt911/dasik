@@ -14,8 +14,11 @@ class ActionContext:
     v3 additions (spec §3.1, §3.5):
     - ``target``: the root commands run against (``/`` for day-2, ``/mnt`` for
       install). Read by v3 actions and forwarded to ``Command.execute(target=…)``.
-    - ``manifest``: the active state manifest (the M set per domain). Read by
-      v3 actions inside ``plan()`` so they can compute REMOVE = M \\ D.
+    - ``manifest``: the active state manifest as a plain ``dict`` (pass
+      ``StateStore.load().to_dict()`` — **not** the ``Manifest`` dataclass
+      directly, so v3 actions can index it with
+      ``ctx.manifest["managed"][domain]``). Read by v3 actions inside
+      ``plan()`` so they can compute REMOVE = M \\ D.
 
     Both default to ``None`` so legacy actions and existing call-sites that do
     ``ActionContext()`` keep working unchanged.

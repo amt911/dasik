@@ -1,17 +1,39 @@
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ..target.target import Target
+
 
 class ActionContext:
     """Shared context between actions during installation.
-    
+
     This allows actions to share state and communicate with each other.
     For example, disk partitioning action can store partition mappings
     that will be used by the base installation action.
+
+    v3 additions (spec §3.1, §3.5):
+    - ``target``: the root commands run against (``/`` for day-2, ``/mnt`` for
+      install). Read by v3 actions and forwarded to ``Command.execute(target=…)``.
+    - ``manifest``: the active state manifest as a plain ``dict`` (pass
+      ``StateStore.load().to_dict()`` — **not** the ``Manifest`` dataclass
+      directly, so v3 actions can index it with
+      ``ctx.manifest["managed"][domain]``). Read by v3 actions inside
+      ``plan()`` so they can compute REMOVE = M \\ D.
+
+    Both default to ``None`` so legacy actions and existing call-sites that do
+    ``ActionContext()`` keep working unchanged.
     """
-    
-    def __init__(self):
+
+    def __init__(
+        self,
+        target: Optional["Target"] = None,
+        manifest: Optional[Dict[str, Any]] = None,
+    ):
         """Initialize empty context."""
         self._data: Dict[str, Any] = {}
         self.partition_map: Dict[str, str] = {}
+        self.target = target
+        self.manifest = manifest
     
     def set(self, key: str, value: Any) -> None:
         """Store a value in the context.

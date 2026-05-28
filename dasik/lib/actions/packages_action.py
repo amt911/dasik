@@ -191,3 +191,45 @@ class PackagesAction(AbstractAction):
 
     def verify(self) -> bool:
         return not self._missing(self.pacman_pkgs + self.aur_pkgs)
+
+    # ------------------------------------------------------------------ #
+    #  v3 interface (read-only; apply() lands in Plan 4 with AUR support) #
+    # ------------------------------------------------------------------ #
+
+    _PACMAN_DOMAIN = "packages"
+
+    def actual(self) -> set[str]:
+        """Set of explicitly-installed packages on the target.
+
+        Runs ``pacman -Qqe`` via ``Command.execute`` against
+        ``self.context.target``. Returns an empty set if the context or
+        target is missing (legacy call-sites).
+        """
+        target = getattr(self.context, "target", None) if self.context else None
+        if target is None:
+            return set()
+        result = Command.execute("pacman", ["-Qqe"], target=target)
+        stdout = getattr(result, "stdout", b"") or b""
+        if isinstance(stdout, bytes):
+            stdout = stdout.decode("utf-8", errors="replace")
+        return {line.strip() for line in stdout.splitlines() if line.strip()}
+
+    def plan(self, managed):
+        """Compute INSTALL/REMOVE for pacman packages (AUR deferred to Plan 4)."""
+        from ..state.set_math import compute_changes
+        desired = list(self.pacman_pkgs)
+        changes, _drift = compute_changes(
+            self._PACMAN_DOMAIN,
+            desired=desired,
+            managed=managed,
+            actual=self.actual(),
+        )
+        return changes
+
+    def managed_keys(self) -> dict:
+        """The pacman set this action would own after apply (AUR excluded)."""
+        return {self._PACMAN_DOMAIN: list(self.pacman_pkgs)}
+
+    def import_state(self) -> dict:
+        """Config fragment derived from system reality (for sync, Plan 4)."""
+        return {self._PACMAN_DOMAIN: sorted(self.actual())}

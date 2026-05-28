@@ -1,3 +1,4 @@
+import pytest
 from dataclasses import dataclass
 
 from dasik.lib.actions.abstract_action import AbstractAction
@@ -49,6 +50,18 @@ def _registry_entry(cls, config_key, is_optional=True):
         "required_fields": [],
         "depends_on": [],
     }
+
+
+@pytest.fixture(autouse=True)
+def _reset_pkgs_state():
+    """Reset shared class-level state on _PkgsV3 between tests."""
+    _PkgsV3.actual_set = set()
+    if hasattr(_PkgsV3, "last_drift"):
+        del _PkgsV3.last_drift
+    yield
+    _PkgsV3.actual_set = set()
+    if hasattr(_PkgsV3, "last_drift"):
+        del _PkgsV3.last_drift
 
 
 def test_build_plan_returns_empty_when_no_actions():

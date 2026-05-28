@@ -39,9 +39,10 @@ def compute_changes(
             systemd, DELETE for files, etc.
 
     Returns:
-        (changes, drift) — changes sorted by op then item for deterministic
-        output; drift sorted alphabetically. Changes carry ``reason="no longer
-        declared"`` for removals so plan rendering explains the destructive op.
+        (changes, drift) — the install-block first (sorted by item), then the
+        remove-block (sorted by item); drift sorted alphabetically. Changes carry
+        ``reason="no longer declared"`` for removals so plan rendering explains
+        the destructive op.
     """
     D, M, A = set(desired), set(managed), set(actual)
 

@@ -114,3 +114,19 @@ def test_accepts_any_iterable_not_just_lists():
     )
     assert changes == []
     assert drift == ["vim"]
+
+
+def test_remove_fires_even_when_item_already_absent():
+    """M\\D generates REMOVE regardless of A — action layer absorbs the no-op.
+
+    Documents that an externally-removed managed item (e.g. user ran ``pacman -R``
+    after dasik installed it) still produces a REMOVE Change. The action's
+    ``apply()`` is responsible for tolerating a no-op removal.
+    """
+    changes, drift = compute_changes(
+        "packages", desired=[], managed=["vim"], actual=[]
+    )
+    assert len(changes) == 1
+    assert changes[0].op == Op.REMOVE
+    assert changes[0].item == "vim"
+    assert drift == []

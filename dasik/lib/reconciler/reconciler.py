@@ -98,27 +98,40 @@ class Reconciler:
 
     @staticmethod
     def _domain_for(action: AbstractAction) -> Optional[str]:
-        """Pick the first domain key from ``managed_keys()``; ``None`` if empty."""
-        try:
-            keys = action.managed_keys()
-        except Exception:
-            return None
+        """Pick the single domain key from ``managed_keys()``.
+
+        Returns ``None`` if the action declares no managed domain. Raises
+        ``ValueError`` if more than one domain is declared — multi-domain
+        actions are not supported until Plan 4.
+        """
+        keys = action.managed_keys()
         if not isinstance(keys, dict) or not keys:
             return None
+        if len(keys) > 1:
+            raise ValueError(
+                f"{type(action).__name__}.managed_keys() returned "
+                f"{len(keys)} domains; multi-domain actions are not "
+                "supported until Plan 4."
+            )
         return next(iter(keys))
 
-    @classmethod
+    @staticmethod
     def _managed_for(
-        cls, action: AbstractAction, managed_all: dict[str, Any]
+        action: AbstractAction, managed_all: dict[str, Any]
     ) -> list[Any]:
-        domain = cls._domain_for(action)
+        domain = Reconciler._domain_for(action)
         if domain is None:
             return []
         return list(managed_all.get(domain, []))
 
-    @classmethod
-    def _any_managed_for(cls, action_cls, managed_all: dict[str, Any]) -> bool:
-        """Probe (via a no-config instance) whether the class owns any manifest keys."""
+    @staticmethod
+    def _any_managed_for(action_cls: type, managed_all: dict[str, Any]) -> bool:
+        """Probe (via a no-config instance) whether the class owns any manifest keys.
+
+        Broad ``except`` is intentional: the probe object has no real config or
+        context, so ``managed_keys()`` may raise. We treat any error as
+        "can't determine ownership → skip safely."
+        """
         try:
             probe = action_cls.__new__(action_cls)
             probe.config = None
@@ -130,8 +143,8 @@ class Reconciler:
             return False
         return any(managed_all.get(k) for k in keys)
 
-    @classmethod
-    def _empty_config_for(cls, action_cls) -> Any:
+    @staticmethod
+    def _empty_config_for(action_cls: type) -> Any:
         """When config slice is missing but managed has entries, hand the
         action an empty config of the right shape (list/dict) so its plan()
         can run. Defaults to ``[]`` — packages/users/systemd all accept a list.

@@ -118,8 +118,23 @@ class AbstractAction(ABC):
 
         v3 actions override this with set-math over (D=config, M=managed,
         A=self.actual()) — typically via
-        ``dasik.lib.state.set_math.compute_changes``. The default returns
-        an empty list, which makes ``is_v3()`` return False.
+        ``dasik.lib.state.set_math.compute_changes``.
+
+        Canonical v3 implementation::
+
+            def plan(self, managed):
+                changes, _drift = compute_changes(
+                    "packages",
+                    desired=self.config.get("packages", []),
+                    managed=managed,
+                    actual=self.actual(),
+                )
+                return changes
+
+        The Reconciler (Plan 3) extracts the per-domain managed list from the
+        manifest and passes it in: ``ctx.manifest["managed"].get(domain, [])``.
+
+        The default returns an empty list, which makes ``is_v3()`` return False.
         """
         return []
 

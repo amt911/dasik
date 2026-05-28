@@ -193,15 +193,12 @@ class Reconciler:
         for result in results:
             result.action.apply(result.changes)
 
-        if self._state_store is None and self._generation_store is None:
-            return None
-
         new_manifest = self._build_new_manifest(results)
 
-        if self._state_store is not None:
-            self._state_store.save(new_manifest)
         if self._generation_store is not None:
             self._generation_store.new(self._config, new_manifest.to_dict())
+        if self._state_store is not None:
+            self._state_store.save(new_manifest)
 
         return new_manifest
 
@@ -210,12 +207,13 @@ class Reconciler:
     ) -> Manifest:
         managed: dict[str, Any] = {}
         for result in results:
-            try:
-                keys = result.action.managed_keys()
-            except Exception:
-                keys = {}
-            if isinstance(keys, dict):
-                managed.update(keys)
+            keys = result.action.managed_keys()
+            if not isinstance(keys, dict):
+                raise TypeError(
+                    f"{result.action.__class__.__name__}.managed_keys() "
+                    f"must return a dict, got {type(keys).__name__}"
+                )
+            managed.update(keys)
 
         prev_generation = 0
         if isinstance(self._manifest, dict):

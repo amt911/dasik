@@ -52,26 +52,37 @@ def test_apply_noop_when_plan_is_empty():
 
 
 def test_apply_runs_each_action_apply_in_order():
+    """Both actions' apply() called with their own change slice, in order."""
     store = MagicMock()
     gen = MagicMock()
     r = _make_reconciler(store=store, gen_store=gen)
 
-    a1 = _RecordingV3(config=["git"], context=None)
-    a2 = _RecordingV3(config=["htop"], context=None)
-    plan = Plan()
+    call_log: list = []
+
+    class _Logging(AbstractAction):
+        @property
+        def name(self) -> str: return "log"
+        def is_needed(self) -> bool: return False
+        def execute(self) -> None: pass
+        def plan(self, managed): return []
+        def apply(self, changes):
+            call_log.append((self, list(changes)))
+        def managed_keys(self):
+            return {"packages": list(self.config) if isinstance(self.config, list) else []}
+
+    a1 = _Logging(config=["git"], context=None)
+    a2 = _Logging(config=["htop"], context=None)
     c1 = Change("packages", Op.INSTALL, "git")
     c2 = Change("packages", Op.INSTALL, "htop")
+    plan = Plan()
     plan.add(c1)
     plan.add(c2)
     results = [
         ActionPlanResult(action=a1, changes=[c1]),
         ActionPlanResult(action=a2, changes=[c2]),
     ]
-    _RecordingV3.last_applied = []
     r.apply(plan, results, assume_yes=True)
-    # Both actions' apply() called with their slice
-    # (because they share the class attr, last_applied reflects last call)
-    assert _RecordingV3.last_applied == [c2]
+    assert call_log == [(a1, [c1]), (a2, [c2])]
 
 
 def test_apply_destructive_plan_prompts_user_and_aborts_on_no():
@@ -192,4 +203,7 @@ def test_apply_without_stores_runs_actions_but_skips_persistence():
     _RecordingV3.last_applied = []
     new_manifest = r.apply(plan, results, assume_yes=True)
     assert _RecordingV3.last_applied == [c]
-    assert new_manifest is None
+    # Even without stores, the Manifest is returned so the caller can see
+    # what was built. Persistence is what's skipped, not the return value.
+    assert new_manifest is not None
+    assert new_manifest.generation == 1

@@ -38,8 +38,8 @@ def _patches():
 
 def test_apply_verb_invokes_reconciler_build_and_apply(tmp_path, capsys):
     cfg = _write_config(tmp_path, {"packages": ["git"]})
-    p_recon, _, p_reg, p_store, p_gen = _patches()
-    with p_recon as Recon, p_reg as Reg, p_store as Store, p_gen as Gen:
+    p_recon, p_setup, p_reg, p_store, p_gen = _patches()
+    with p_recon as Recon, p_setup, p_reg as Reg, p_store as Store, p_gen as Gen:
         Reg.return_value.get_all_actions.return_value = []
         recon_inst = Recon.return_value
         recon_inst.build_plan.return_value = _nonempty_plan_pair()
@@ -62,8 +62,8 @@ def test_apply_verb_invokes_reconciler_build_and_apply(tmp_path, capsys):
 
 def test_apply_verb_empty_plan_no_apply_no_generation_printed(tmp_path, capsys):
     cfg = _write_config(tmp_path, {"packages": []})
-    p_recon, _, p_reg, p_store, p_gen = _patches()
-    with p_recon as Recon, p_reg as Reg, p_store as Store, p_gen as Gen:
+    p_recon, p_setup, p_reg, p_store, p_gen = _patches()
+    with p_recon as Recon, p_setup, p_reg as Reg, p_store as Store, p_gen as Gen:
         Reg.return_value.get_all_actions.return_value = []
         recon_inst = Recon.return_value
         recon_inst.build_plan.return_value = _empty_plan_pair()
@@ -75,13 +75,15 @@ def test_apply_verb_empty_plan_no_apply_no_generation_printed(tmp_path, capsys):
     assert rc == 0
     out = capsys.readouterr().out
     assert "No changes" in out
-    # apply() may or may not be called for an empty plan — we don't care.
+    # apply() is NOT called for an empty plan — _cmd_apply short-circuits
+    # at plan.is_empty(). The mocked recon_inst.apply.return_value=None
+    # above only documents intent; it is never read.
 
 
 def test_apply_verb_passes_target_root_to_stores(tmp_path):
     cfg = _write_config(tmp_path, {"packages": []})
-    p_recon, _, p_reg, p_store, p_gen = _patches()
-    with p_recon as Recon, p_reg as Reg, p_store as Store, p_gen as Gen:
+    p_recon, p_setup, p_reg, p_store, p_gen = _patches()
+    with p_recon as Recon, p_setup, p_reg as Reg, p_store as Store, p_gen as Gen:
         Reg.return_value.get_all_actions.return_value = []
         recon_inst = Recon.return_value
         recon_inst.build_plan.return_value = _empty_plan_pair()
@@ -96,8 +98,8 @@ def test_apply_verb_passes_target_root_to_stores(tmp_path):
 
 def test_apply_verb_default_target_is_mnt(tmp_path):
     cfg = _write_config(tmp_path, {"packages": []})
-    p_recon, _, p_reg, p_store, p_gen = _patches()
-    with p_recon as Recon, p_reg as Reg, p_store as Store, p_gen as Gen:
+    p_recon, p_setup, p_reg, p_store, p_gen = _patches()
+    with p_recon as Recon, p_setup, p_reg as Reg, p_store as Store, p_gen as Gen:
         Reg.return_value.get_all_actions.return_value = []
         recon_inst = Recon.return_value
         recon_inst.build_plan.return_value = _empty_plan_pair()
@@ -109,8 +111,8 @@ def test_apply_verb_default_target_is_mnt(tmp_path):
 
 def test_apply_verb_without_yes_defaults_assume_yes_false(tmp_path):
     cfg = _write_config(tmp_path, {"packages": ["git"]})
-    p_recon, _, p_reg, p_store, p_gen = _patches()
-    with p_recon as Recon, p_reg as Reg, p_store as Store, p_gen as Gen:
+    p_recon, p_setup, p_reg, p_store, p_gen = _patches()
+    with p_recon as Recon, p_setup, p_reg as Reg, p_store as Store, p_gen as Gen:
         Reg.return_value.get_all_actions.return_value = []
         recon_inst = Recon.return_value
         recon_inst.build_plan.return_value = _nonempty_plan_pair()
@@ -123,9 +125,9 @@ def test_apply_verb_without_yes_defaults_assume_yes_false(tmp_path):
 
 def test_apply_verb_user_aborts_returns_nonzero(tmp_path, capsys):
     """When Reconciler.apply returns None on a non-empty plan, treat as cancel."""
-    cfg = _write_config(tmp_path, {"packages": []})
-    p_recon, _, p_reg, p_store, p_gen = _patches()
-    with p_recon as Recon, p_reg as Reg, p_store as Store, p_gen as Gen:
+    cfg = _write_config(tmp_path, {"packages": ["git"]})
+    p_recon, p_setup, p_reg, p_store, p_gen = _patches()
+    with p_recon as Recon, p_setup, p_reg as Reg, p_store as Store, p_gen as Gen:
         Reg.return_value.get_all_actions.return_value = []
         recon_inst = Recon.return_value
         recon_inst.build_plan.return_value = _nonempty_plan_pair()

@@ -215,9 +215,15 @@ class PackagesAction(AbstractAction):
         return {line.strip() for line in stdout.splitlines() if line.strip()}
 
     def plan(self, managed):
-        """Compute INSTALL/REMOVE for pacman packages (AUR deferred to Plan 4)."""
+        """Compute INSTALL/REMOVE for both pacman and AUR packages.
+
+        Both kinds land in the pacman DB once installed, so ``pacman -Qqe``
+        (which ``actual()`` parses) sees them together. The action carries
+        the original split via ``self.pacman_pkgs`` / ``self.aur_pkgs`` so
+        ``apply()`` can route INSTALLs to the right tool.
+        """
         from ..state.set_math import compute_changes
-        desired = list(self.pacman_pkgs)
+        desired = list(self.pacman_pkgs) + list(self.aur_pkgs)
         changes, _drift = compute_changes(
             self._PACMAN_DOMAIN,
             desired=desired,
@@ -227,9 +233,145 @@ class PackagesAction(AbstractAction):
         return changes
 
     def managed_keys(self) -> dict:
-        """The pacman set this action would own after apply (AUR excluded)."""
-        return {self._PACMAN_DOMAIN: list(self.pacman_pkgs)}
+        """The full set of packages this action owns after apply
+        (pacman + AUR, both under the ``packages`` domain).
+        """
+        return {self._PACMAN_DOMAIN: list(self.pacman_pkgs) + list(self.aur_pkgs)}
 
     def import_state(self) -> dict:
         """Config fragment derived from system reality (for sync, Plan 4)."""
         return {self._PACMAN_DOMAIN: sorted(self.actual())}
+
+    # ------------------------------------------------------------------ #
+    #  v3 apply() — destructive (Plan 4)                                 #
+    # ------------------------------------------------------------------ #
+
+    def apply(self, changes) -> None:
+        """Execute a list of ``Change`` objects against the target.
+
+        Routing rules:
+        - ``Op.INSTALL`` and item in ``self.pacman_pkgs`` → ``pacman -S``.
+        - ``Op.INSTALL`` and item in ``self.aur_pkgs``    → ``_apply_aur_install``.
+        - ``Op.REMOVE`` → ``pacman -Rns`` (handles both pacman + AUR pkgs).
+
+        INSTALLs run before REMOVEs (additive first; keeps the system in a
+        working state if the destructive step fails midway).
+        """
+        from ..state.change import Op
+
+        target = getattr(self.context, "target", None) if self.context else None
+        if target is None:
+            return
+
+        if not changes:
+            return
+
+        pacman_installs: list[str] = []
+        aur_installs: list[str] = []
+        removes: list[str] = []
+        aur_set = set(self.aur_pkgs)
+        pacman_set = set(self.pacman_pkgs)
+
+        for change in changes:
+            if change.op is Op.INSTALL:
+                if change.item in pacman_set:
+                    pacman_installs.append(change.item)
+                elif change.item in aur_set:
+                    aur_installs.append(change.item)
+                else:
+                    # Defensive: unknown item — treat as pacman install.
+                    pacman_installs.append(change.item)
+            elif change.op is Op.REMOVE:
+                removes.append(change.item)
+
+        if pacman_installs:
+            Command.execute(
+                "pacman",
+                ["--noconfirm", "--needed", "-S", *pacman_installs],
+                target=target,
+            )
+
+        if aur_installs:
+            self._apply_aur_install(aur_installs)
+
+        if removes:
+            Command.execute(
+                "pacman",
+                ["--noconfirm", "-Rns", *removes],
+                target=target,
+            )
+
+    def _apply_aur_install(self, pkgs: list[str]) -> None:
+        """Install AUR packages via the makepkg dance (target-aware).
+
+        Steps:
+          1. Ensure base-devel + git installed on the target.
+          2. Ensure the temp build user exists (passwordless sudo via sudoers.d).
+          3. For each pkg: clone + makepkg -sri as the build user.
+          4. Remove the temp build user + sudoers fragment.
+        """
+        import os
+        target = self.context.target
+
+        # 1. Prerequisites
+        Command.execute(
+            "pacman",
+            ["--noconfirm", "--needed", "-S", "base-devel", "git"],
+            target=target,
+        )
+
+        # 2. Build user
+        id_check = subprocess.run(
+            self._target_argv(target, ["id", self._AUR_USER]),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        if id_check.returncode != 0:
+            Command.execute(
+                "useradd",
+                ["-m", "-r", "-s", "/bin/bash", self._AUR_USER],
+                target=target,
+            )
+
+        sudoers_path = target.path(f"/etc/sudoers.d/{self._AUR_USER}")
+        with open(sudoers_path, "w") as f:
+            f.write(f"{self._AUR_USER} ALL=(ALL) NOPASSWD: ALL\n")
+
+        # 3. Build each
+        for pkg in pkgs:
+            build_dir = f"/home/{self._AUR_USER}/{pkg}"
+            subprocess.run(
+                self._target_argv(target, ["rm", "-rf", build_dir]),
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            subprocess.run(
+                self._target_argv(target, [
+                    "su", "-", self._AUR_USER, "-c",
+                    f"git clone https://aur.archlinux.org/{pkg}.git {build_dir}",
+                ]),
+                check=True,
+            )
+            subprocess.run(
+                self._target_argv(target, [
+                    "su", "-", self._AUR_USER, "-c",
+                    f"cd {build_dir} && makepkg -sri --noconfirm",
+                ]),
+                check=True,
+            )
+
+        # 4. Cleanup
+        subprocess.run(
+            self._target_argv(target, ["userdel", "-r", self._AUR_USER]),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        if os.path.exists(sudoers_path):
+            os.remove(sudoers_path)
+
+    @staticmethod
+    def _target_argv(target, cmd: list[str]) -> list[str]:
+        """Prefix ``arch-chroot <root>`` when target is a chroot, else passthrough."""
+        if target.is_chroot:
+            return ["arch-chroot", target.root, *cmd]
+        return list(cmd)

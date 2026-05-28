@@ -94,3 +94,29 @@ def test_abstract_action_cannot_be_instantiated_directly():
     """name/is_needed/execute remain abstract — sanity check."""
     with pytest.raises(TypeError):
         AbstractAction(config={})  # type: ignore[abstract]
+
+
+def test_action_overriding_only_apply_is_not_v3():
+    """Overriding apply without plan does NOT flip the discriminator.
+
+    The v3 opt-in is solely on ``plan`` identity. A subclass that overrides
+    only ``apply`` is still treated as legacy by the Reconciler — apply is
+    never reached without a non-empty plan first.
+    """
+    class _ApplyOnly(_LegacyAction):
+        def apply(self, plan):
+            pass
+
+    assert _ApplyOnly.is_v3() is False
+
+
+def test_v3_subclass_inheriting_plan_is_still_v3():
+    """A concrete v3 subclass that does not re-override plan is still v3.
+
+    Identity comparison works through MRO — ``_V3Child.plan is _V3Action.plan``
+    which ``is not AbstractAction.plan``, so ``is_v3()`` returns True.
+    """
+    class _V3Child(_V3Action):
+        pass  # inherits plan from _V3Action
+
+    assert _V3Child.is_v3() is True

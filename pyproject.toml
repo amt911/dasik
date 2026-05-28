@@ -29,3 +29,14 @@ dasik = "dasik.__main__:main"
 where = ["."]
 include = ["dasik*"]
 exclude = ["tests*"]
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-cov"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--import-mode=importlib"
+
+[tool.coverage.run]
+source = ["dasik"]
+branch = true

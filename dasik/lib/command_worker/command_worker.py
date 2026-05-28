@@ -1,5 +1,6 @@
 
 from ..exceptions.exceptions import CommandNotFoundException
+from ..target.target import Target
 from shutil import which
 import subprocess
 
@@ -15,10 +16,22 @@ class Command:
         return path
 
     @staticmethod
-    def execute(cmd: str, args: list[str], run_as_chroot: bool = False):
-        """Run *cmd* with *args*, optionally inside ``arch-chroot /mnt``."""
+    def execute(cmd: str, args: list[str], run_as_chroot: bool = False,
+                target: "Target | None" = None):
+        """Run *cmd* with *args*, optionally inside ``arch-chroot <root>``.
+
+        Chroot root resolution:
+        - if *target* is given it decides: ``target.is_chroot`` -> arch-chroot
+          ``target.root``; otherwise (root="/") run directly on the host.
+        - else if *run_as_chroot* is True, fall back to the legacy "/mnt"
+          (preserves existing install-time callers that pass run_as_chroot=True).
+        """
         chroot_cmd: list[str] = []
-        if run_as_chroot:
+        if target is not None:
+            if target.is_chroot:
+                chroot_path = Command._locate_binary("arch-chroot")
+                chroot_cmd = [chroot_path, target.root]
+        elif run_as_chroot:
             chroot_path = Command._locate_binary("arch-chroot")
             chroot_cmd = [chroot_path, "/mnt"]
 
@@ -27,4 +40,3 @@ class Command:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
-        

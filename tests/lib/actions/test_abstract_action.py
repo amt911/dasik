@@ -40,7 +40,7 @@ class _V3Action(AbstractAction):
     def apply(self, plan):
         self._applied = list(plan)
 
-    def import_state(self):
+    def import_state(self, managed=None):
         return {"packages": ["git"]}
 
     def managed_keys(self):

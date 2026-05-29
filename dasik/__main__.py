@@ -9,10 +9,12 @@ Verbs (slice 1 of declarative-convergence):
   * ``sync <config> [--target /]`` — capture system reality back into the
     config file (non-destructive to the system). Defaults to ``--target /``
     for day-2 host management.
+  * ``generations [--target /]`` — list recorded generations, marking the
+    current one. **Read-only.**
   * (no verb) ``dasik <config>`` — DEPRECATED. Falls back to the legacy
     install path (``ActionsHandler``). Will be removed once ``apply`` lands.
 
-``generations`` / ``rollback`` land in a future plan.
+``rollback`` lands in a future plan.
 """
 from __future__ import annotations
 
@@ -97,6 +99,16 @@ def _build_parser() -> argparse.ArgumentParser:
         default="/",
         help="Root to read reality from (/ for the live host, /mnt for an "
              "install target). Default: /.",
+    )
+
+    gens_p = sub.add_parser(
+        "generations",
+        help="List recorded generations",
+    )
+    gens_p.add_argument(
+        "--target",
+        default="/",
+        help="Root whose generations to list. Default: /.",
     )
 
     return parser
@@ -214,6 +226,18 @@ def _cmd_sync(config_path: Path, target_root: str) -> int:
     return 0
 
 
+def _cmd_generations(target_root: str) -> int:
+    """List recorded generations, marking the current one."""
+    gens = GenerationStore(Target(root=target_root)).list()
+    if not gens:
+        print("No generations recorded.")
+        return 0
+    for g in gens:
+        marker = " (current)" if g.is_current else ""
+        print(f"Generation {g.number}{marker}")
+    return 0
+
+
 def _cmd_legacy(config_path_str: str) -> int:
     """Deprecated no-verb form. Delegates to the legacy install handler."""
     print(
@@ -257,6 +281,9 @@ def main(argv: Optional[list[str]] = None) -> int:
             if path is None:
                 return 1
             return _cmd_sync(path, args.target)
+
+        if args.verb == "generations":
+            return _cmd_generations(args.target)
 
         parser.print_help(file=sys.stderr)
         return 2

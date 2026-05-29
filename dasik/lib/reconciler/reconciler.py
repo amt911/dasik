@@ -15,12 +15,16 @@ resolving Target, and loading the manifest dict from StateStore.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass, field
-from typing import Any, Iterable, Optional
+from datetime import datetime, timezone
+from typing import Any, Callable, Iterable, Optional
 
 from ..actions.abstract_action import AbstractAction
 from ..actions.action_context import ActionContext
 from ..state.change import Change, Plan
+from ..state.state_store import Manifest
 from ..target.target import Target
 
 
@@ -51,11 +55,15 @@ class Reconciler:
         target: Target,
         manifest: Optional[dict[str, Any]],
         action_metas: Iterable[dict[str, Any]],
+        state_store: Optional[Any] = None,
+        generation_store: Optional[Any] = None,
     ):
         self._config = config
         self._target = target
         self._manifest = manifest
         self._metas = list(action_metas)
+        self._state_store = state_store
+        self._generation_store = generation_store
 
     def build_plan(self) -> tuple[Plan, list[ActionPlanResult]]:
         managed_all = (self._manifest or {}).get("managed", {})
@@ -150,3 +158,74 @@ class Reconciler:
         can run. Defaults to ``[]`` — packages/users/systemd all accept a list.
         """
         return []
+
+    def apply(
+        self,
+        plan: Plan,
+        results: list[ActionPlanResult],
+        *,
+        assume_yes: bool = False,
+        input_fn: Callable[[str], str] = input,
+    ) -> Optional[Manifest]:
+        """Execute a built plan: gate destructive ops, run each action's
+        apply(), then persist the new manifest + generation.
+
+        Args:
+            plan: aggregate Plan from build_plan().
+            results: per-action breakdown from build_plan().
+            assume_yes: if True, skip the destructive-change prompt.
+            input_fn: stdin reader (injectable for tests).
+
+        Returns:
+            The new ``Manifest`` if anything was applied, else ``None``.
+        """
+        if plan.is_empty():
+            return None
+
+        destructive = plan.destructive()
+        if destructive and not assume_yes:
+            answer = input_fn(
+                f"Apply {len(destructive)} destructive change(s)? [y/N] "
+            ).strip().lower()
+            if answer not in ("y", "yes"):
+                return None
+
+        for result in results:
+            result.action.apply(result.changes)
+
+        new_manifest = self._build_new_manifest(results)
+
+        if self._generation_store is not None:
+            self._generation_store.new(self._config, new_manifest.to_dict())
+        if self._state_store is not None:
+            self._state_store.save(new_manifest)
+
+        return new_manifest
+
+    def _build_new_manifest(
+        self, results: list[ActionPlanResult]
+    ) -> Manifest:
+        managed: dict[str, Any] = {}
+        for result in results:
+            keys = result.action.managed_keys()
+            if not isinstance(keys, dict):
+                raise TypeError(
+                    f"{result.action.__class__.__name__}.managed_keys() "
+                    f"must return a dict, got {type(keys).__name__}"
+                )
+            managed.update(keys)
+
+        prev_generation = 0
+        if isinstance(self._manifest, dict):
+            prev_generation = int(self._manifest.get("generation", 0))
+
+        config_hash = hashlib.sha256(
+            json.dumps(self._config, sort_keys=True).encode("utf-8")
+        ).hexdigest()
+
+        return Manifest(
+            generation=prev_generation + 1,
+            applied_at=datetime.now(timezone.utc).isoformat(),
+            config_hash=config_hash,
+            managed=managed,
+        )

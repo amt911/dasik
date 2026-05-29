@@ -7,14 +7,13 @@ Verbs (slice 1 of declarative-convergence):
     the config (DESTRUCTIVE). Prompts before destructive changes unless
     ``--yes`` is passed.
   * ``sync <config> [--target /]`` — capture system reality back into the
-    config file (non-destructive to the system). Defaults to ``--target /``
-    for day-2 host management.
+    config file (non-destructive to the system; rewrites the config).
   * ``generations [--target /]`` — list recorded generations, marking the
     current one. **Read-only.**
+  * ``rollback [N] [--target /] [--yes]`` — restore generation N's config and
+    re-apply it (DESTRUCTIVE; defaults N to the generation before current).
   * (no verb) ``dasik <config>`` — DEPRECATED. Falls back to the legacy
     install path (``ActionsHandler``). Will be removed once ``apply`` lands.
-
-``rollback`` lands in a future plan.
 """
 from __future__ import annotations
 
@@ -109,6 +108,30 @@ def _build_parser() -> argparse.ArgumentParser:
         "--target",
         default="/",
         help="Root whose generations to list. Default: /.",
+    )
+
+    rollback_p = sub.add_parser(
+        "rollback",
+        help="Restore a generation's config and re-apply it (DESTRUCTIVE)",
+    )
+    rollback_p.add_argument(
+        "generation",
+        nargs="?",
+        type=int,
+        default=None,
+        help="Generation number to roll back to. Default: the generation "
+             "before the current one.",
+    )
+    rollback_p.add_argument(
+        "--target",
+        default="/",
+        help="Root to converge (day-2 host management). Default: / "
+             "(unlike apply, which defaults to /mnt).",
+    )
+    rollback_p.add_argument(
+        "--yes", "-y",
+        action="store_true",
+        help="Skip the destructive-change confirmation prompt.",
     )
 
     return parser
@@ -238,6 +261,73 @@ def _cmd_generations(target_root: str) -> int:
     return 0
 
 
+def _previous_generation(gen_store: GenerationStore) -> Optional[int]:
+    """The generation immediately before the current one, or None."""
+    gens = gen_store.list()
+    if not gens:
+        return None
+    current = next((g.number for g in gens if g.is_current), None)
+    if current is None:
+        return None
+    earlier = [g.number for g in gens if g.number < current]
+    return max(earlier) if earlier else None
+
+
+def _cmd_rollback(target_root: str, number: Optional[int], assume_yes: bool) -> int:
+    """Restore a generation's config and re-apply it (spec §4 rollback)."""
+    target = Target(root=target_root)
+    state_store = StateStore(target)
+    gen_store = GenerationStore(target)
+
+    if number is None:
+        number = _previous_generation(gen_store)
+        if number is None:
+            print("Error: no earlier generation to roll back to.", file=sys.stderr)
+            return 1
+
+    # restore() also repoints the `current` symlink at `number` here, before
+    # the apply below runs. If the user aborts the apply, `current` points at
+    # `number` while the system is unchanged — benign for slice 1 (the next
+    # successful apply re-points it). Separating read-from-repoint is a future
+    # GenerationStore API change. The restored *config* is the desired state;
+    # the *current* manifest (loaded below) stays the owned set M.
+    try:
+        restored_config, _restored_manifest = gen_store.restore(number)
+    except FileNotFoundError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+    setup_actions()
+    registry = get_default_registry()
+    manifest_dict = state_store.load().to_dict()
+
+    reconciler = Reconciler(
+        config=restored_config,
+        target=target,
+        manifest=manifest_dict,
+        action_metas=registry.get_all_actions(),
+        state_store=state_store,
+        generation_store=gen_store,
+    )
+    plan, results = reconciler.build_plan()
+    print(plan.render())
+
+    if plan.is_empty():
+        print(f"System already matches generation {number}.")
+        return 0
+
+    new_manifest = reconciler.apply(plan, results, assume_yes=assume_yes)
+    if new_manifest is None:
+        print("Aborted: no changes applied.", file=sys.stderr)
+        return 1
+
+    print(
+        f"Rolled back to generation {number} "
+        f"(recorded as generation {new_manifest.generation})."
+    )
+    return 0
+
+
 def _cmd_legacy(config_path_str: str) -> int:
     """Deprecated no-verb form. Delegates to the legacy install handler."""
     print(
@@ -284,6 +374,9 @@ def main(argv: Optional[list[str]] = None) -> int:
 
         if args.verb == "generations":
             return _cmd_generations(args.target)
+
+        if args.verb == "rollback":
+            return _cmd_rollback(args.target, args.generation, args.yes)
 
         parser.print_help(file=sys.stderr)
         return 2

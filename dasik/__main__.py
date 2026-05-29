@@ -238,6 +238,11 @@ def _cmd_sync(config_path: Path, target_root: str) -> int:
     if new_manifest is None:
         print("Nothing to sync (no convergence-aware actions registered).")
         return 0
+
+    # A freshly-bootstrapped domain that captured nothing (empty) is not a
+    # meaningful change: drop newly-added empty keys so sync doesn't rewrite
+    # the file just to add e.g. "packages": [] on a config that omitted it.
+    new_config = {k: v for k, v in new_config.items() if k in config or v}
     if new_config == config:
         print("Config already matches system reality - nothing to sync.")
         return 0

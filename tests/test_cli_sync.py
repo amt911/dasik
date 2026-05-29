@@ -100,3 +100,25 @@ def test_sync_missing_config_exits_nonzero(tmp_path, capsys):
     rc = cli.main(["sync", str(missing)])
     assert rc != 0
     assert "does not exist" in capsys.readouterr().err
+
+
+def test_sync_bootstrap_empty_domain_is_noop(tmp_path, capsys):
+    """A config that omits a domain + nothing captured (empty) is no change:
+    sync must not rewrite the file just to add an empty 'packages': []."""
+    cfg = _write_config(tmp_path, {"metadata": {"name": "fresh"}})
+    p_recon, _, p_reg, p_store = _patches()
+    with p_recon as Recon, p_reg as Reg, p_store as Store:
+        Reg.return_value.get_all_actions.return_value = []
+        recon = Recon.return_value
+        recon.sync.return_value = (
+            {"metadata": {"name": "fresh"}, "packages": []},
+            MagicMock(),
+        )
+        Store.return_value.load.return_value.to_dict.return_value = {"managed": {}}
+
+        rc = cli.main(["sync", str(cfg)])
+
+    assert rc == 0
+    assert not (tmp_path / "config.json.bak").exists()
+    assert json.loads(cfg.read_text()) == {"metadata": {"name": "fresh"}}  # untouched
+    assert "already matches" in capsys.readouterr().out.lower()

@@ -1,7 +1,5 @@
 from unittest.mock import patch, MagicMock
 
-import pytest
-
 from dasik import __main__ as cli
 from dasik.lib.state.change import Plan, Change, Op
 from dasik.lib.state.generation_store import GenInfo

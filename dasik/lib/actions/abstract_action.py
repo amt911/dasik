@@ -146,12 +146,14 @@ class AbstractAction(ABC):
         """
         return None
 
-    def import_state(self) -> Dict[str, Any]:
-        """Return the config fragment that mirrors A (for ``sync``).
+    def import_state(self, managed: Any = None) -> Dict[str, Any]:
+        """Return the config fragment that reconciles A back into the config
+        (for ``sync``, spec §2).
 
-        v3 actions override this to capture drift back into the config
-        (e.g. ``{"packages": [...explicitly installed packages...]}``).
-        The default returns an empty dict.
+        v3 actions override this to capture drift (``A \\ D \\ M``) and drop
+        owned-but-vanished entries (``M \\ A``); ``managed`` is the per-domain
+        managed set (``M``) from the manifest, or ``None`` (≡ ``M = ∅``) for
+        bootstrap / legacy zero-arg call sites. The default returns an empty dict.
         """
         return {}
 

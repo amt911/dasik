@@ -6,10 +6,13 @@ Verbs (slice 1 of declarative-convergence):
   * ``apply <config> [--target / | /mnt] [--yes]`` — converge the system to
     the config (DESTRUCTIVE). Prompts before destructive changes unless
     ``--yes`` is passed.
+  * ``sync <config> [--target /]`` — capture system reality back into the
+    config file (non-destructive to the system). Defaults to ``--target /``
+    for day-2 host management.
   * (no verb) ``dasik <config>`` — DEPRECATED. Falls back to the legacy
     install path (``ActionsHandler``). Will be removed once ``apply`` lands.
 
-``sync`` / ``generations`` / ``rollback`` land in a future plan.
+``generations`` / ``rollback`` land in a future plan.
 """
 from __future__ import annotations
 
@@ -23,6 +26,7 @@ from dasik.lib.actions.actions_handler import ActionsHandler
 from dasik.lib.actions.actions_handler_v2 import setup_actions
 from dasik.lib.actions.action_registry import get_default_registry
 from dasik.lib.reconciler.reconciler import Reconciler
+from dasik.lib.state.config_writer import ConfigWriter
 from dasik.lib.state.generation_store import GenerationStore
 from dasik.lib.state.state_store import StateStore
 from dasik.lib.target.target import Target
@@ -82,10 +86,23 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Skip the destructive-change confirmation prompt.",
     )
+
+    sync_p = sub.add_parser(
+        "sync",
+        help="Capture system reality back into the config file (non-destructive)",
+    )
+    sync_p.add_argument("config", help="Path to the JSON configuration file")
+    sync_p.add_argument(
+        "--target",
+        default="/",
+        help="Root to read reality from (/ for the live host, /mnt for an "
+             "install target). Default: /.",
+    )
+
     return parser
 
 
-_KNOWN_VERBS = {"plan", "apply"}
+_KNOWN_VERBS = {"plan", "apply", "sync", "generations", "rollback"}
 
 
 def _is_legacy_invocation(raw: list[str]) -> Optional[str]:
@@ -159,6 +176,44 @@ def _cmd_apply(config_path: Path, target_root: str, assume_yes: bool) -> int:
     return 0
 
 
+def _cmd_sync(config_path: Path, target_root: str) -> int:
+    """Capture system reality back into the config file (spec §4 sync flow)."""
+    try:
+        raw_text = config_path.read_text()
+        config = json.loads(raw_text)
+    except Exception as e:
+        print(f"Error loading config: {e}", file=sys.stderr)
+        return 1
+
+    setup_actions()
+    registry = get_default_registry()
+    target = Target(root=target_root)
+    state_store = StateStore(target)
+    manifest_dict = state_store.load().to_dict()
+
+    reconciler = Reconciler(
+        config=config,
+        target=target,
+        manifest=manifest_dict,
+        action_metas=registry.get_all_actions(),
+        state_store=state_store,
+    )
+    new_config, new_manifest = reconciler.sync()
+
+    if new_manifest is None:
+        print("Nothing to sync (no convergence-aware actions registered).")
+        return 0
+    if new_config == config:
+        print("Config already matches system reality - nothing to sync.")
+        return 0
+
+    backup = config_path.with_suffix(config_path.suffix + ".bak")
+    backup.write_text(raw_text)
+    ConfigWriter.write(new_config, config_path)
+    print(f"Synced system reality into {config_path} (backup: {backup}).")
+    return 0
+
+
 def _cmd_legacy(config_path_str: str) -> int:
     """Deprecated no-verb form. Delegates to the legacy install handler."""
     print(
@@ -196,6 +251,12 @@ def main(argv: Optional[list[str]] = None) -> int:
             if path is None:
                 return 1
             return _cmd_apply(path, args.target, args.yes)
+
+        if args.verb == "sync":
+            path = _validate_config_file(args.config)
+            if path is None:
+                return 1
+            return _cmd_sync(path, args.target)
 
         parser.print_help(file=sys.stderr)
         return 2

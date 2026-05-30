@@ -48,13 +48,6 @@ omit = [
     # execute() partitions disks / formats filesystems / runs sgdisk — purely
     # destructive shell-outs that must never run in a test (CLAUDE.md §Tests).
     "dasik/lib/actions/disk_partition_action.py",
-    # Legacy actions that predate the AbstractAction contract: they never
-    # implement the abstract name/is_needed/execute, so they cannot even be
-    # instantiated and are dead in the v2 path. Pending a v3 port (see
-    # docs/superpowers/follow-ups.md) before they are testable.
-    "dasik/lib/actions/base_install_action.py",
-    "dasik/lib/actions/locale_action.py",
-    "dasik/lib/actions/network_action.py",
 ]
 
 [tool.coverage.report]

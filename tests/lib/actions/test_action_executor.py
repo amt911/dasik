@@ -94,6 +94,23 @@ def test_exception_during_run_marks_failed():
     assert ex.results[0].status == "failed"
 
 
+def test_root_config_key_passes_full_config():
+    """__root__ actions receive the whole config (issue #67 fix makes this
+    branch reachable: validation no longer skips __root__)."""
+    captured = {}
+
+    class RootAction(_FakeAction):
+        def __init__(self, config, context=None):
+            super().__init__(config, context)
+            captured["config"] = config
+
+    _make(RootAction)
+    cfg = {"enable_microcode": True, "other": 1}
+    ex = ActionExecutor(cfg, _registry(RootAction, config_key="__root__"))
+    ex.execute_all()
+    assert captured["config"] == cfg
+
+
 def test_get_partition_delegates_to_context():
     ex = ActionExecutor({}, _registry(_FakeAction))
     ex.context.set_partition("root", "/dev/sda2")

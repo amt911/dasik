@@ -38,6 +38,14 @@ class ActionRegistry:
             'depends_on': depends_on or []
         })
     
+    def clear(self) -> None:
+        """Remove all registered actions.
+
+        Lets ``setup_actions()`` be called repeatedly in one process without
+        double-registering (issue #64).
+        """
+        self._actions.clear()
+
     def get_all_actions(self) -> List[Dict[str, Any]]:
         """Get all registered actions.
         

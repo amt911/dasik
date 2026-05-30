@@ -239,9 +239,34 @@ class PackagesAction(AbstractAction):
         """
         return {self._PACMAN_DOMAIN: list(self.pacman_pkgs) + list(self.aur_pkgs)}
 
-    def import_state(self) -> dict:
-        """Config fragment derived from system reality (for sync, Plan 4)."""
-        return {self._PACMAN_DOMAIN: sorted(self.actual())}
+    def import_state(self, managed: "list[str] | None" = None) -> dict:
+        """Reconcile system reality back into the config fragment (sync, spec §2).
+
+        Set semantics, order- and ``aur-``-prefix-preserving:
+            keep    declared tokens whose stripped name did NOT vanish
+            drop    owned-but-vanished  (M \\ A)  → declared token removed
+            append  captured drift      (A \\ D \\ M) as plain (un-prefixed) names
+
+        ``managed`` (M) is the per-domain managed set from the manifest, or
+        ``None`` (≡ M = ∅) for bootstrap. Declared-but-absent entries that are
+        NOT owned are mere intent and are kept (sync never drops intent).
+
+        Note: ``pacman -Qqe`` cannot distinguish AUR packages, so drift is
+        always captured as a plain name (the ``aur-`` prefix is only preserved
+        on entries that were already declared with it).
+        """
+        managed_set = set(managed or [])
+        actual = self.actual()
+        original: List[str] = list(self.config) if isinstance(self.config, list) else []
+
+        def _strip(token: str) -> str:
+            return token[len(AUR_PREFIX):] if token.startswith(AUR_PREFIX) else token
+
+        declared_stripped = {_strip(t) for t in original}
+        vanished = managed_set - actual                       # M \ A
+        kept = [t for t in original if _strip(t) not in vanished]
+        drift = sorted(actual - declared_stripped - managed_set)  # A \ D \ M
+        return {self._PACMAN_DOMAIN: kept + drift}
 
     # ------------------------------------------------------------------ #
     #  v3 apply() — destructive (Plan 4)                                 #

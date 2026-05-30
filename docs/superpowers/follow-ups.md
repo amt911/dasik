@@ -23,19 +23,18 @@ up in future iterations (slice 2+).
   `kvm`, `hw_accel`, `wireguard`, `firewall`, `ms_fonts`, `pacman`, `timezone`, `users`,
   `drop_files`, `mkinitcpio`, `kernel_cmdline`) plus `ActionExecutor`, bringing it to
   ~80%. `fail_under = 80` is now enforced in `[tool.coverage.report]`. Justified omits in
-  `[tool.coverage.run]`: the legacy `actions_handler.py`, the destructive
-  `disk_partition_action.py` (per CLAUDE.md §Tests), and the abstract-incomplete legacy
-  actions below.
+  `[tool.coverage.run]`: the legacy `actions_handler.py` and the destructive
+  `disk_partition_action.py` (per CLAUDE.md §Tests). Coverage is now ~82%.
 
 ## Surfaced while raising coverage (#65) — latent, untracked
 
-- **Abstract-incomplete legacy actions** — [#66](https://github.com/amt911/dasik/issues/66).
-  `LocaleAction`, `NetworkAction`,
-  `BaseInstallAction` never implement `AbstractAction`'s abstract `name`/`is_needed`/
-  `execute`, so they raise `TypeError` on instantiation — they are dead in the v2 path
-  (registered in `setup_actions()` but `ActionExecutor` would crash if it reached them).
-  Port them to the `is_needed`/`execute` contract (or v3) before relying on `locales`/
-  `network`/base-install in the executor. Omitted from coverage until then.
+- **Abstract-incomplete legacy actions** — [#66](https://github.com/amt911/dasik/issues/66) —
+  **resolved**. `LocaleAction`, `NetworkAction`, `BaseInstallAction` were ported to the
+  `(config, context)` + `name`/`is_needed`/`execute`/`verify` contract. Destructive
+  `execute()` bodies are marked `# pragma: no cover`; the decision logic is tested
+  (100%/90%/96%). They are no longer omitted from coverage. `NetworkAction` was
+  re-registered with `config_key='__root__'` since it needs the root-level `hostname`
+  as well as the `network` section.
 - **`__root__` config-key validation quirk** — [#67](https://github.com/amt911/dasik/issues/67).
   `ActionRegistry.validate_config` checks
   `config_key not in config` literally, so the `'__root__'` sentinel always reports the

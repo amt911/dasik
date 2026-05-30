@@ -86,10 +86,11 @@ def setup_actions() -> None:
     )
     register_action(
         action_class=NetworkAction,
-        config_key='network',
+        # __root__: needs both the 'network' section and the root-level
+        # 'hostname' (issue #66 port reads both from the root config).
+        config_key='__root__',
         is_optional=True,
-        required_fields=['type', 'add_default_hosts'],
-        depends_on=['hostname'],
+        required_fields=['network', 'hostname'],
     )
     register_action(
         action_class=PacmanAction,

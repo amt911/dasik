@@ -29,13 +29,15 @@ up in future iterations (slice 2+).
 
 ## Surfaced while raising coverage (#65) — latent, untracked
 
-- **Abstract-incomplete legacy actions.** `LocaleAction`, `NetworkAction`,
+- **Abstract-incomplete legacy actions** — [#66](https://github.com/amt911/dasik/issues/66).
+  `LocaleAction`, `NetworkAction`,
   `BaseInstallAction` never implement `AbstractAction`'s abstract `name`/`is_needed`/
   `execute`, so they raise `TypeError` on instantiation — they are dead in the v2 path
   (registered in `setup_actions()` but `ActionExecutor` would crash if it reached them).
   Port them to the `is_needed`/`execute` contract (or v3) before relying on `locales`/
   `network`/base-install in the executor. Omitted from coverage until then.
-- **`__root__` config-key validation quirk.** `ActionRegistry.validate_config` checks
+- **`__root__` config-key validation quirk** — [#67](https://github.com/amt911/dasik/issues/67).
+  `ActionRegistry.validate_config` checks
   `config_key not in config` literally, so the `'__root__'` sentinel always reports the
   section as missing — optional `__root__` actions are always skipped and required ones
   always "fail" validation, before `_execute_action`'s `'__root__'` special-case runs.

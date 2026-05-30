@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable, Iterable, Optional
@@ -184,6 +185,8 @@ class Reconciler:
             return None
 
         destructive = plan.destructive()
+        if destructive and self._target.root == "/":
+            self._warn_live_host(len(destructive))
         if destructive and not assume_yes:
             answer = input_fn(
                 f"Apply {len(destructive)} destructive change(s)? [y/N] "
@@ -202,6 +205,24 @@ class Reconciler:
             self._state_store.save(new_manifest)
 
         return new_manifest
+
+    @staticmethod
+    def _warn_live_host(count: int) -> None:
+        """Print a prominent heads-up that destructive changes target the
+        running host (``--target /``), not an install target at ``/mnt``
+        (spec §5, issue #63). Goes to stderr so it stands apart from the plan
+        render and the confirmation prompt, and is shown even under
+        ``--yes`` — ``rollback`` defaults to ``--target /``.
+        """
+        print(
+            "\n"
+            "!!! ============================================================\n"
+            f"!!! WARNING: {count} destructive change(s) will be applied to the\n"
+            "!!! RUNNING host (--target /), not an install target at /mnt.\n"
+            "!!! This mutates the live system you are currently using.\n"
+            "!!! ============================================================",
+            file=sys.stderr,
+        )
 
     def sync(self) -> "tuple[dict[str, Any], Optional[Manifest]]":
         """Capture system reality back into the config (spec §2 / §4 sync flow).

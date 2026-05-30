@@ -6,12 +6,11 @@ up in future iterations (slice 2+).
 
 ## From Plan 5 — sync + generations + rollback (final review, PR #62)
 
-- **Live-host warning (spec §5)** — [#63](https://github.com/amt911/dasik/issues/63).
-  `--target /` + destructive changes should print a prominent "you are mutating the
-  running host" warning. Not implemented for `apply` (Plan 4) or `rollback` (Plan 5).
-  The destructive confirmation gate (`y/N` unless `--yes`) **is** present, so the safety
-  floor holds — this is the extra heads-up. More relevant now that `rollback` defaults
-  to `--target /`.
+- **Live-host warning (spec §5)** — [#63](https://github.com/amt911/dasik/issues/63) —
+  **resolved**. `Reconciler.apply` now prints a prominent stderr warning when
+  `target.root == "/"` and the plan has destructive changes, before the confirmation
+  prompt. Single choke point covers both `apply` and `rollback`. Shown even under `--yes`
+  (rollback defaults to `--target /`). The `y/N` gate is unchanged.
 - **`setup_actions()` double-register** — [#64](https://github.com/amt911/dasik/issues/64).
   Appends to a process-global registry without clearing; a second call in one process
   would double-register every action. Not triggered today (one verb/process; tests patch

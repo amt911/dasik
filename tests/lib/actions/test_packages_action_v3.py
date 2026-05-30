@@ -271,3 +271,59 @@ def test_apply_aur_install_helper_runs_makepkg_dance():
     m_open.assert_called_once()
     sudoers_arg = m_open.call_args.args[0]
     assert "sudoers.d/_aurbuilder" in str(sudoers_arg)
+
+
+# ---------------------------------------------------------------------- #
+#  Plan 5: import_state(managed) — sync reconciliation                   #
+# ---------------------------------------------------------------------- #
+
+
+def test_import_state_captures_drift_with_managed():
+    """A \\ D \\ M is appended; declared+owned survive."""
+    fake = _fake_command_run(stdout=b"git\nhtop\n")  # A = {git, htop}
+    with patch("dasik.lib.actions.packages_action.Command.execute", fake):
+        a = PackagesAction(config=["git"], context=_ctx("/"))
+        frag = a.import_state(managed=["git"])  # M = {git}; htop is drift
+    assert frag == {"packages": ["git", "htop"]}
+
+
+def test_import_state_drops_owned_but_vanished():
+    """M \\ A (owned, removed by hand) is dropped from the config."""
+    fake = _fake_command_run(stdout=b"git\n")  # A = {git}; vim gone
+    with patch("dasik.lib.actions.packages_action.Command.execute", fake):
+        a = PackagesAction(config=["git", "vim"], context=_ctx("/"))
+        frag = a.import_state(managed=["git", "vim"])
+    assert frag == {"packages": ["git"]}
+
+
+def test_import_state_preserves_aur_prefix_on_survivors_and_appends_drift():
+    fake = _fake_command_run(stdout=b"git\nyay\nhtop\n")  # A = {git, yay, htop}
+    with patch("dasik.lib.actions.packages_action.Command.execute", fake):
+        a = PackagesAction(config=["git", "aur-yay"], context=_ctx("/"))
+        frag = a.import_state(managed=["git", "yay"])  # htop is drift
+    assert frag == {"packages": ["git", "aur-yay", "htop"]}
+
+
+def test_import_state_drops_aur_entry_when_underlying_pkg_vanished():
+    fake = _fake_command_run(stdout=b"git\n")  # A = {git}; yay gone
+    with patch("dasik.lib.actions.packages_action.Command.execute", fake):
+        a = PackagesAction(config=["git", "aur-yay"], context=_ctx("/"))
+        frag = a.import_state(managed=["git", "yay"])
+    assert frag == {"packages": ["git"]}
+
+
+def test_import_state_keeps_declared_intent_not_owned_not_present():
+    """D \\ A that is NOT owned (mere intent) is kept; sync never drops intent."""
+    fake = _fake_command_run(stdout=b"git\n")  # A = {git}; 'future' not installed
+    with patch("dasik.lib.actions.packages_action.Command.execute", fake):
+        a = PackagesAction(config=["git", "future"], context=_ctx("/"))
+        frag = a.import_state(managed=[])  # M = {} → nothing vanished
+    assert frag == {"packages": ["git", "future"]}
+
+
+def test_import_state_zero_arg_still_bootstraps_full_actual():
+    """Back-compat: no managed arg ≡ M = {} → capture all of A (bootstrap)."""
+    fake = _fake_command_run(stdout=b"git\nhtop\n")
+    with patch("dasik.lib.actions.packages_action.Command.execute", fake):
+        a = PackagesAction(config=[], context=_ctx("/"))
+        assert a.import_state() == {"packages": ["git", "htop"]}

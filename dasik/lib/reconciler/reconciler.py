@@ -24,6 +24,7 @@ from typing import Any, Callable, Iterable, Optional
 from ..actions.abstract_action import AbstractAction
 from ..actions.action_context import ActionContext
 from ..state.change import Change, Plan
+from ..state.config_writer import ConfigWriter
 from ..state.state_store import Manifest
 from ..target.target import Target
 
@@ -201,6 +202,83 @@ class Reconciler:
             self._state_store.save(new_manifest)
 
         return new_manifest
+
+    def sync(self) -> "tuple[dict[str, Any], Optional[Manifest]]":
+        """Capture system reality back into the config (spec §2 / §4 sync flow).
+
+        Walks the v3 actions and, for each, asks ``import_state(managed)`` for
+        the reconciled config fragment (∪ drift, \\ vanished-owned) and records
+        ``managed ← actual()`` for the new manifest. Unlike ``build_plan``, an
+        absent config slice is NOT skipped — bootstrap captures undeclared
+        reality. Merges fragments into a new config via ``ConfigWriter.merge``
+        and persists the new manifest via the injected ``StateStore``.
+
+        sync records NO generation (only ``apply`` does) and performs NO system
+        mutation — the config-file write is the caller's job.
+
+        Returns ``(new_config, new_manifest)``; ``new_manifest`` is ``None``
+        only when there are no v3 actions to sync.
+        """
+        managed_all = (self._manifest or {}).get("managed", {})
+        ctx = ActionContext(target=self._target, manifest=self._manifest)
+
+        fragments: dict[str, Any] = {}
+        new_managed: dict[str, Any] = {}
+        saw_v3 = False
+
+        for meta in self._metas:
+            cls = meta["class"]
+            if not cls.is_v3():
+                continue
+            saw_v3 = True
+
+            config_key = meta["config_key"]
+            if config_key == "__root__":
+                action_config = self._config
+            else:
+                action_config = self._config.get(config_key)
+            if action_config is None:
+                # Bootstrap: capture reality even for an undeclared domain.
+                action_config = self._empty_config_for(cls)
+
+            action = cls(action_config, ctx)
+            managed_for_action = self._managed_for(action, managed_all)
+
+            fragment = action.import_state(managed_for_action)
+            if isinstance(fragment, dict):
+                fragments.update(fragment)
+
+            domain = self._domain_for(action)
+            if domain is not None:
+                # import_state() also reads actual() internally; this second
+                # call is intentional — managed tracks raw A (M <- A), not the
+                # fragment's derived/ordered list.
+                new_managed[domain] = sorted(action.actual())
+
+        if not saw_v3:
+            return self._config, None
+
+        new_config = ConfigWriter.merge(self._config, fragments)
+
+        prev_generation = 0
+        if isinstance(self._manifest, dict):
+            prev_generation = int(self._manifest.get("generation", 0))
+
+        config_hash = hashlib.sha256(
+            json.dumps(new_config, sort_keys=True).encode("utf-8")
+        ).hexdigest()
+
+        new_manifest = Manifest(
+            generation=prev_generation,   # sync does NOT record a generation
+            applied_at=datetime.now(timezone.utc).isoformat(),
+            config_hash=config_hash,
+            managed=new_managed,
+        )
+
+        if self._state_store is not None:
+            self._state_store.save(new_manifest)
+
+        return new_config, new_manifest
 
     def _build_new_manifest(
         self, results: list[ActionPlanResult]

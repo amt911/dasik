@@ -22,7 +22,7 @@ Usage:
 """
 
 from ..json_parser.json_parser import JsonParser
-from .action_registry import register_action
+from .action_registry import register_action, get_default_registry
 from .action_executor import ActionExecutor
 
 
@@ -33,6 +33,9 @@ def setup_actions() -> None:
     them sequentially; each action decides via ``is_needed()`` whether
     it actually runs.
     """
+    # Clear first so repeated calls in one process don't double-register (#64).
+    get_default_registry().clear()
+
     # --- imports (lazy so missing files don't crash import) ---------------
     from .disk_partition_action import DiskPartitionAction
     from .base_install_action import BaseInstallAction

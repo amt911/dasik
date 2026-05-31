@@ -157,6 +157,35 @@ class UsersAction(AbstractAction):
     def managed_keys(self) -> dict:
         return {self._USERS_DOMAIN: self._declared_non_root()}
 
+    def _capture(self, username: str) -> dict:
+        return {
+            "username": username,
+            "hashed_password": self._hash(username),
+            "shell": self._shell(username),
+            "groups": sorted(self._groups(username)),
+        }
+
+    def import_state(self, managed=None) -> dict:
+        managed_set = set(managed or [])
+        actual = self.actual()
+        vanished = managed_set - actual                       # M \ A
+
+        result = []
+        declared_names = set()
+        for u in self.users:
+            name = u["username"]
+            declared_names.add(name)
+            if name in vanished:
+                continue                                       # owned + gone → drop
+            if name in actual and name != "root":
+                result.append(self._capture(name))             # refresh from reality
+            else:
+                result.append(u)                               # intent / root kept as-is
+
+        drift = sorted(actual - declared_names - managed_set)  # A \ D \ M
+        result.extend(self._capture(name) for name in drift)
+        return {self._USERS_DOMAIN: result}
+
     def apply(self, changes) -> None:
         target = self._target()
         if target is None:

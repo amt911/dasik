@@ -280,3 +280,50 @@ def test_apply_noop_without_target():
     with patch("dasik.lib.actions.users_action.Command.execute") as run:
         a.apply([Change("users", Op.CREATE, "x")])
     run.assert_not_called()
+
+
+# ---------------------------------------------------------------------- #
+#  Task 5: import_state() (sync)                                          #
+# ---------------------------------------------------------------------- #
+
+
+def test_import_state_captures_drift_user_with_attrs():
+    a = _v3(
+        [{"username": "alice", "hashed_password": "$6$a$h",
+          "shell": "/bin/bash", "groups": []}],
+        actual=["alice", "carol"],
+        shells={"alice": "/bin/bash", "carol": "/bin/bash"},
+        groups={"alice": [], "carol": ["wheel"]},
+        hashes={"alice": "$6$a$h", "carol": "$6$c$h"},
+    )
+    frag = a.import_state(managed=["alice"])
+    users = {u["username"]: u for u in frag["users"]}
+    assert "carol" in users
+    assert users["carol"]["hashed_password"] == "$6$c$h"
+    assert users["carol"]["groups"] == ["wheel"]
+
+
+def test_import_state_drops_owned_but_vanished():
+    a = _v3(
+        [{"username": "alice", "hashed_password": "$6$a$h"},
+         {"username": "gone", "hashed_password": "$6$g$h"}],
+        actual=["alice"],
+        shells={"alice": "/bin/bash"}, groups={"alice": []},
+        hashes={"alice": "$6$a$h"},
+    )
+    frag = a.import_state(managed=["alice", "gone"])
+    names = [u["username"] for u in frag["users"]]
+    assert names == ["alice"]
+
+
+def test_import_state_keeps_declared_intent_not_present():
+    a = _v3(
+        [{"username": "alice", "hashed_password": "$6$a$h"},
+         {"username": "future", "hashed_password": "$6$f$h"}],
+        actual=["alice"],
+        shells={"alice": "/bin/bash"}, groups={"alice": []},
+        hashes={"alice": "$6$a$h"},
+    )
+    frag = a.import_state(managed=[])
+    names = [u["username"] for u in frag["users"]]
+    assert "future" in names

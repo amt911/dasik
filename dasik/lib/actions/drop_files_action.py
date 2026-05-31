@@ -89,6 +89,28 @@ class DropFilesAction(AbstractAction):
             return True
         return _sha256(self._read(canonical)) != _sha256(desired)
 
+    # -- v3 contract --------------------------------------------------- #
+
+    def plan(self, managed):
+        from ..state.set_math import compute_changes
+        desired = self._desired()
+        actual = self.actual()
+        changes, _drift = compute_changes(
+            _FILES_DOMAIN,
+            desired=list(desired.keys()),
+            managed=managed,
+            actual=actual,
+            op_install=Op.CREATE,
+            op_remove=Op.DELETE,
+        )
+        for p in sorted(set(desired) & actual):
+            if self._read(p) != desired[p]:
+                changes.append(Change(_FILES_DOMAIN, Op.MODIFY, p, reason="content drift"))
+        return changes
+
+    def managed_keys(self) -> dict:
+        return {_FILES_DOMAIN: sorted(self._desired().keys())}
+
     # -- legacy is_needed / execute / verify (old executor path) ------- #
 
     def is_needed(self) -> bool:

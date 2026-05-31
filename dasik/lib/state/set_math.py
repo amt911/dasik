@@ -16,6 +16,7 @@ def compute_changes(
     actual: Iterable[str],
     op_install: Op = Op.INSTALL,
     op_remove: Op = Op.REMOVE,
+    forced: Iterable[str] = (),
 ) -> tuple[list[Change], list[str]]:
     """Compute the (changes, drift) tuple for one domain.
 
@@ -37,6 +38,9 @@ def compute_changes(
             systemd, CREATE for files, etc.
         op_remove: Change op for M \\ D. Defaults to REMOVE; pass DISABLE for
             systemd, DELETE for files, etc.
+        forced: F — ensure-removed set regardless of M; emits op_remove for
+            F ∩ A (reason "explicitly disabled"), deduped against M \\ D, and
+            excludes F from drift. Precondition: D ∩ F = ∅.
 
     Returns:
         (changes, drift) — the install-block first (sorted by item), then the
@@ -44,13 +48,20 @@ def compute_changes(
         ``reason="no longer declared"`` for removals so plan rendering explains
         the destructive op.
     """
-    D, M, A = set(desired), set(managed), set(actual)
+    D, M, A, F = set(desired), set(managed), set(actual), set(forced)
 
     changes: list[Change] = []
     for item in sorted(D - A):
         changes.append(Change(domain, op_install, item))
-    for item in sorted(M - D):
+
+    owned_removals = M - D
+    for item in sorted(owned_removals):
         changes.append(Change(domain, op_remove, item, reason="no longer declared"))
 
-    drift = sorted(A - D - M)
+    # Forced removals: declared-off items actually present, minus the ones
+    # already emitted as owned removals (dedupe).
+    for item in sorted((F & A) - owned_removals):
+        changes.append(Change(domain, op_remove, item, reason="explicitly disabled"))
+
+    drift = sorted(A - D - M - F)
     return changes, drift

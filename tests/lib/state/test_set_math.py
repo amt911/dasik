@@ -130,3 +130,62 @@ def test_remove_fires_even_when_item_already_absent():
     assert changes[0].op == Op.REMOVE
     assert changes[0].item == "vim"
     assert drift == []
+
+
+def test_forced_disables_non_owned_present_unit():
+    changes, drift = compute_changes(
+        "systemd",
+        desired=[], managed=[], actual=["bluetooth.service"],
+        op_install=Op.ENABLE, op_remove=Op.DISABLE,
+        forced=["bluetooth.service"],
+    )
+    assert [(c.op, c.item, c.reason) for c in changes] == [
+        (Op.DISABLE, "bluetooth.service", "explicitly disabled")
+    ]
+    assert drift == []
+
+
+def test_forced_absent_unit_is_noop():
+    changes, drift = compute_changes(
+        "systemd",
+        desired=[], managed=[], actual=[],
+        op_install=Op.ENABLE, op_remove=Op.DISABLE,
+        forced=["bluetooth.service"],
+    )
+    assert changes == []
+    assert drift == []
+
+
+def test_forced_dedupes_with_owned_removal():
+    changes, _ = compute_changes(
+        "systemd",
+        desired=[], managed=["x.service"], actual=["x.service"],
+        op_install=Op.ENABLE, op_remove=Op.DISABLE,
+        forced=["x.service"],
+    )
+    disables = [c for c in changes if c.op is Op.DISABLE]
+    assert len(disables) == 1
+    assert disables[0].item == "x.service"
+    assert disables[0].reason == "no longer declared"
+
+
+def test_forced_excluded_from_drift():
+    changes, drift = compute_changes(
+        "systemd",
+        desired=[], managed=[], actual=["a.service", "b.service"],
+        op_install=Op.ENABLE, op_remove=Op.DISABLE,
+        forced=["a.service"],
+    )
+    assert [c.item for c in changes] == ["a.service"]
+    assert drift == ["b.service"]
+
+
+def test_no_forced_is_backward_compatible():
+    changes, drift = compute_changes(
+        "packages",
+        desired=["git", "htop"], managed=["vim"], actual=["vim", "extra"],
+    )
+    assert [(c.op, c.item) for c in changes] == [
+        (Op.INSTALL, "git"), (Op.INSTALL, "htop"), (Op.REMOVE, "vim"),
+    ]
+    assert drift == ["extra"]

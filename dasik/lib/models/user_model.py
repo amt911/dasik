@@ -1,11 +1,21 @@
 """Models for user configuration."""
-from typing import List, Optional
-from pydantic import BaseModel, Field
+from typing import List
+from pydantic import BaseModel, Field, field_validator
 
 
 class UserModel(BaseModel):
-    """A system user to create."""
+    """A system user to create. Password is stored already hashed."""
     username: str = Field(..., description="Login name")
-    password: str = Field(..., description="Password (plain text, will be hashed at creation)")
+    hashed_password: str = Field(..., description="Crypt hash ($6$salt$hash), e.g. openssl passwd -6")
     shell: str = Field(default="/bin/bash", description="Login shell path")
-    groups: List[str] = Field(default_factory=list, description="Additional groups")
+    groups: List[str] = Field(default_factory=list, description="Supplementary groups")
+
+    @field_validator("hashed_password")
+    @classmethod
+    def _must_be_hash(cls, v: str) -> str:
+        if not v.startswith("$"):
+            raise ValueError(
+                "hashed_password must be a crypt hash (e.g. $6$...); "
+                "plaintext passwords are not accepted"
+            )
+        return v

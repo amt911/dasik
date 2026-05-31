@@ -210,3 +210,73 @@ def test_managed_keys_excludes_root():
         {"username": "root", "hashed_password": "$6$r$h"},
     ])
     assert a.managed_keys() == {"users": ["alice"]}
+
+
+# ---------------------------------------------------------------------- #
+#  Task 4: apply()                                                        #
+# ---------------------------------------------------------------------- #
+
+
+def test_apply_creates_user_with_shell_groups_and_hash():
+    a = UsersAction(
+        [{"username": "alice", "hashed_password": "$6$a$h",
+          "shell": "/usr/bin/zsh", "groups": ["wheel", "audio"]}],
+        _ctx("/"),
+    )
+    with patch("dasik.lib.actions.users_action.Command.execute") as run:
+        a.apply([Change("users", Op.CREATE, "alice")])
+    cmds = [(c.args[0], c.args[1]) for c in run.call_args_list]
+    assert ("useradd", ["-m", "-s", "/usr/bin/zsh", "-G", "wheel,audio", "alice"]) in cmds
+    assert ("usermod", ["-p", "$6$a$h", "alice"]) in cmds
+
+
+def test_apply_modify_sets_shell_groups_hash():
+    a = UsersAction(
+        [{"username": "alice", "hashed_password": "$6$a$h",
+          "shell": "/bin/bash", "groups": ["wheel"]}],
+        _ctx("/"),
+    )
+    with patch("dasik.lib.actions.users_action.Command.execute") as run:
+        a.apply([Change("users", Op.MODIFY, "alice")])
+    cmds = [(c.args[0], c.args[1]) for c in run.call_args_list]
+    assert ("usermod", ["-s", "/bin/bash", "alice"]) in cmds
+    assert ("usermod", ["-G", "wheel", "alice"]) in cmds
+    assert ("usermod", ["-p", "$6$a$h", "alice"]) in cmds
+
+
+def test_apply_modify_root_only_sets_password():
+    a = UsersAction([{"username": "root", "hashed_password": "$6$r$h"}], _ctx("/"))
+    with patch("dasik.lib.actions.users_action.Command.execute") as run:
+        a.apply([Change("users", Op.MODIFY, "root")])
+    cmds = [(c.args[0], c.args[1]) for c in run.call_args_list]
+    assert cmds == [("usermod", ["-p", "$6$r$h", "root"])]
+
+
+def test_apply_delete_keeps_home_by_default():
+    a = UsersAction([], _ctx("/"))
+    with patch("dasik.lib.actions.users_action.Command.execute") as run:
+        a.apply([Change("users", Op.DELETE, "old")])
+    assert run.call_args_list[0].args[:2] == ("userdel", ["old"])
+
+
+def test_apply_delete_removes_home_when_flag_set():
+    a = UsersAction({"users": [], "remove_home_on_delete": True}, _ctx("/"))
+    with patch("dasik.lib.actions.users_action.Command.execute") as run:
+        a.apply([Change("users", Op.DELETE, "old")])
+    assert run.call_args_list[0].args[:2] == ("userdel", ["-r", "old"])
+
+
+def test_apply_create_before_delete():
+    a = UsersAction([{"username": "new", "hashed_password": "$6$n$h"}], _ctx("/"))
+    changes = [Change("users", Op.DELETE, "old"), Change("users", Op.CREATE, "new")]
+    with patch("dasik.lib.actions.users_action.Command.execute") as run:
+        a.apply(changes)
+    ops = [c.args[0] for c in run.call_args_list]
+    assert ops.index("useradd") < ops.index("userdel")
+
+
+def test_apply_noop_without_target():
+    a = UsersAction([{"username": "x", "hashed_password": "$6$x$h"}], None)
+    with patch("dasik.lib.actions.users_action.Command.execute") as run:
+        a.apply([Change("users", Op.CREATE, "x")])
+    run.assert_not_called()

@@ -157,6 +157,35 @@ class UsersAction(AbstractAction):
     def managed_keys(self) -> dict:
         return {self._USERS_DOMAIN: self._declared_non_root()}
 
+    def apply(self, changes) -> None:
+        target = self._target()
+        if target is None:
+            return
+        creates = [c.item for c in changes if c.op is Op.CREATE]
+        modifies = [c.item for c in changes if c.op is Op.MODIFY]
+        deletes = [c.item for c in changes if c.op is Op.DELETE]
+
+        for name in creates:
+            u = self._by_name[name]
+            argv = ["-m", "-s", u.get("shell", "/bin/bash")]
+            groups = u.get("groups", [])
+            if groups:
+                argv += ["-G", ",".join(groups)]
+            argv.append(name)
+            Command.execute("useradd", argv, target=target)
+            Command.execute("usermod", ["-p", u["hashed_password"], name], target=target)
+
+        for name in modifies:
+            u = self._by_name[name]
+            if name != "root":
+                Command.execute("usermod", ["-s", u.get("shell", "/bin/bash"), name], target=target)
+                Command.execute("usermod", ["-G", ",".join(u.get("groups", [])), name], target=target)
+            Command.execute("usermod", ["-p", u["hashed_password"], name], target=target)
+
+        for name in deletes:
+            argv = ["-r", name] if self.remove_home_on_delete else [name]
+            Command.execute("userdel", argv, target=target)
+
     # ------------------------------------------------------------------ #
     #  legacy is_needed / execute / verify (old ActionExecutor path)
     # ------------------------------------------------------------------ #

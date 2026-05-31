@@ -40,3 +40,169 @@ def test_empty_config_is_noop():
     assert a.is_needed() is False
     assert a.name == "Systemd Units"
     assert a.is_optional is True
+
+
+# ---------------------------------------------------------------------- #
+#  v3 contract (Plan 6)                                                   #
+# ---------------------------------------------------------------------- #
+from dasik.lib.actions.action_context import ActionContext
+from dasik.lib.target.target import Target
+from dasik.lib.state.change import Change, Op
+
+
+def _ctx(root="/"):
+    return ActionContext(target=Target(root=root))
+
+
+def test_constructor_exposes_d_on_and_d_off():
+    a = SystemdAction(
+        {"enable_units": ["sshd.service"], "enable_sockets": ["cups.socket"],
+         "disable_units": ["bluetooth.service"]}
+    )
+    assert a._d_on() == ["sshd.service", "cups.socket"]
+    assert a._d_off() == ["bluetooth.service"]
+
+
+def test_actual_parses_enabled_unit_files():
+    out = b"sshd.service enabled\ncups.socket enabled\nfstrim.timer enabled\n"
+    fake = MagicMock(return_value=MagicMock(stdout=out, returncode=0))
+    with patch("dasik.lib.actions.systemd_action.Command.execute", fake):
+        a = SystemdAction({}, _ctx("/"))
+        assert a.actual() == {"sshd.service", "cups.socket", "fstrim.timer"}
+    call = fake.call_args
+    assert call.args[0] == "systemctl"
+    assert call.args[1] == ["list-unit-files", "--state=enabled", "--no-legend"]
+    assert call.kwargs["target"].root == "/"
+
+
+def test_actual_empty_when_no_target():
+    a = SystemdAction({}, None)
+    assert a.actual() == set()
+
+
+def test_is_v3_true():
+    assert SystemdAction.is_v3() is True
+
+
+def _action(cfg, actual):
+    a = SystemdAction(cfg, _ctx("/"))
+    a.actual = lambda: set(actual)   # stub system reality
+    return a
+
+
+def test_plan_enables_missing_declared_units():
+    a = _action({"enable_units": ["sshd.service"]}, actual=[])
+    changes = a.plan(managed=[])
+    assert [(c.op, c.item) for c in changes] == [(Op.ENABLE, "sshd.service")]
+
+
+def test_plan_disables_owned_no_longer_declared():
+    a = _action({"enable_units": []}, actual=["old.service"])
+    changes = a.plan(managed=["old.service"])
+    assert [(c.op, c.item) for c in changes] == [(Op.DISABLE, "old.service")]
+
+
+def test_plan_disables_forced_non_owned():
+    a = _action({"disable_units": ["bluetooth.service"]}, actual=["bluetooth.service"])
+    changes = a.plan(managed=[])
+    assert [(c.op, c.item, c.reason) for c in changes] == [
+        (Op.DISABLE, "bluetooth.service", "explicitly disabled")
+    ]
+
+
+def test_plan_empty_when_converged():
+    a = _action({"enable_units": ["sshd.service"]}, actual=["sshd.service"])
+    assert a.plan(managed=["sshd.service"]) == []
+
+
+def test_managed_keys_is_d_on():
+    a = SystemdAction(
+        {"enable_units": ["sshd.service"], "enable_sockets": ["cups.socket"]}
+    )
+    assert a.managed_keys() == {"systemd": ["sshd.service", "cups.socket"]}
+
+
+def test_apply_enables_and_disables_routed():
+    a = SystemdAction({}, _ctx("/"))
+    changes = [
+        Change("systemd", Op.ENABLE, "sshd.service"),
+        Change("systemd", Op.DISABLE, "bluetooth.service"),
+    ]
+    with patch("dasik.lib.actions.systemd_action.Command.execute") as run:
+        a.apply(changes)
+    calls = [(c.args[0], c.args[1]) for c in run.call_args_list]
+    assert calls[0] == ("systemctl", ["enable", "sshd.service"])
+    assert calls[1] == ("systemctl", ["disable", "bluetooth.service"])
+    assert run.call_args_list[0].kwargs["target"].root == "/"
+
+
+def test_apply_noop_on_empty():
+    a = SystemdAction({}, _ctx("/"))
+    with patch("dasik.lib.actions.systemd_action.Command.execute") as run:
+        a.apply([])
+    run.assert_not_called()
+
+
+def test_apply_noop_without_target():
+    a = SystemdAction({}, None)
+    with patch("dasik.lib.actions.systemd_action.Command.execute") as run:
+        a.apply([Change("systemd", Op.ENABLE, "sshd.service")])
+    run.assert_not_called()
+
+
+def test_import_state_captures_drift_routed_by_suffix():
+    a = _action(
+        {"enable_units": ["sshd.service"], "enable_sockets": []},
+        actual=["sshd.service", "docker.service", "cups.socket"],
+    )
+    frag = a.import_state(managed=[])
+    sd = frag["systemd"]
+    assert sd["enable_units"] == ["sshd.service", "docker.service"]
+    assert sd["enable_sockets"] == ["cups.socket"]
+    assert sd["disable_units"] == []
+
+
+def test_import_state_drops_owned_but_vanished():
+    a = _action({"enable_units": ["sshd.service", "old.service"]},
+                actual=["sshd.service"])
+    frag = a.import_state(managed=["sshd.service", "old.service"])
+    assert frag["systemd"]["enable_units"] == ["sshd.service"]
+
+
+def test_import_state_keeps_declared_intent_not_present():
+    a = _action({"enable_units": ["sshd.service", "future.service"]},
+                actual=["sshd.service"])
+    frag = a.import_state(managed=[])
+    assert frag["systemd"]["enable_units"] == ["sshd.service", "future.service"]
+
+
+def test_import_state_preserves_disable_units_and_excludes_them_from_drift():
+    a = _action({"disable_units": ["bluetooth.service"]},
+                actual=["bluetooth.service", "docker.service"])
+    frag = a.import_state(managed=[])
+    sd = frag["systemd"]
+    assert sd["disable_units"] == ["bluetooth.service"]
+    assert sd["enable_units"] == ["docker.service"]
+
+
+def test_legacy_is_needed_true_when_unit_to_disable_is_enabled():
+    a = SystemdAction({"disable_units": ["bluetooth.service"]})
+    with patch("dasik.lib.actions.systemd_action.subprocess.run",
+               _enabled_map({"bluetooth.service"})):
+        assert a.is_needed() is True
+
+
+def test_legacy_not_needed_when_disable_target_already_off():
+    a = SystemdAction({"enable_units": ["sshd.service"],
+                       "disable_units": ["bluetooth.service"]})
+    with patch("dasik.lib.actions.systemd_action.subprocess.run",
+               _enabled_map({"sshd.service"})):
+        assert a.is_needed() is False
+        assert a.verify() is True
+
+
+def test_legacy_to_disable_lists_only_enabled_targets():
+    a = SystemdAction({"disable_units": ["a.service", "b.service"]})
+    with patch("dasik.lib.actions.systemd_action.subprocess.run",
+               _enabled_map({"a.service"})):
+        assert a._to_disable() == ["a.service"]

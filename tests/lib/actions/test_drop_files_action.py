@@ -92,3 +92,48 @@ def test_name_and_optional():
     a = DropFilesAction(_cfg())
     assert a.name == "Drop Config Files"
     assert a.is_optional is True
+
+
+# ---------------------------------------------------------------------- #
+#  Task 3: plan() + managed_keys()                                        #
+# ---------------------------------------------------------------------- #
+
+
+def _v3(cfg, actual, ondisk=None):
+    a = DropFilesAction(cfg, _ctx("/"))
+    a.actual = lambda: set(actual)
+    a._read = lambda p: (ondisk or {}).get(p, "")
+    return a
+
+
+def test_plan_creates_missing_file():
+    a = _v3(_cfg(udev=[{"name": "a.rules", "content": "R"}]), actual=[])
+    changes = a.plan(managed=[])
+    assert [(c.op, c.item) for c in changes] == [(Op.CREATE, "/etc/udev/rules.d/a.rules")]
+
+
+def test_plan_deletes_orphan_owned():
+    a = _v3(_cfg(), actual=[])
+    changes = a.plan(managed=["/etc/modprobe.d/old.conf"])
+    assert [(c.op, c.item) for c in changes] == [(Op.DELETE, "/etc/modprobe.d/old.conf")]
+
+
+def test_plan_modifies_on_content_drift():
+    p = "/etc/udev/rules.d/a.rules"
+    a = _v3(_cfg(udev=[{"name": "a.rules", "content": "NEW"}]),
+            actual=[p], ondisk={p: "OLD"})
+    changes = a.plan(managed=[p])
+    assert [(c.op, c.item) for c in changes] == [(Op.MODIFY, p)]
+
+
+def test_plan_empty_when_converged():
+    p = "/etc/udev/rules.d/a.rules"
+    a = _v3(_cfg(udev=[{"name": "a.rules", "content": "R"}]),
+            actual=[p], ondisk={p: "R"})
+    assert a.plan(managed=[p]) == []
+
+
+def test_managed_keys_lists_canonical_paths():
+    a = DropFilesAction(_cfg(
+        udev=[{"name": "a.rules", "content": "R"}], env=["X=1"]), _ctx("/"))
+    assert a.managed_keys() == {"files": ["/etc/environment", "/etc/udev/rules.d/a.rules"]}

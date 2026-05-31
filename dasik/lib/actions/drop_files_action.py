@@ -111,6 +111,26 @@ class DropFilesAction(AbstractAction):
     def managed_keys(self) -> dict:
         return {_FILES_DOMAIN: sorted(self._desired().keys())}
 
+    def import_state(self, managed=None) -> dict:
+        actual = self.actual()
+        result: Dict[str, Any] = {}
+        for key, directory in _SECTIONS:
+            entries = []
+            for entry in self._sections.get(key, []):
+                name, content = self._entry_fields(entry)
+                canonical = f"{directory}/{name}"
+                if canonical in actual:
+                    content = self._read(canonical)     # refresh manual edits
+                entries.append({"name": name, "content": content})
+            result[key] = entries
+
+        if _ENV_PATH in actual:
+            text = self._read(_ENV_PATH)
+            result["etc_environment"] = [ln for ln in text.split("\n") if ln != ""]
+        else:
+            result["etc_environment"] = list(self.etc_env_lines)
+        return result
+
     def apply(self, changes) -> None:
         if self._target() is None:
             return

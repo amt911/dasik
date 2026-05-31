@@ -204,3 +204,29 @@ def test_apply_noop_without_target():
         a.apply([Change("files", Op.CREATE, "/etc/udev/rules.d/a.rules")])
     m.assert_not_called()
     rm.assert_not_called()
+
+
+# ---------------------------------------------------------------------- #
+#  Task 5: import_state() (sync)                                          #
+# ---------------------------------------------------------------------- #
+
+
+def test_import_state_refreshes_content_from_disk():
+    p = "/etc/udev/rules.d/a.rules"
+    a = _v3(_cfg(udev=[{"name": "a.rules", "content": "OLD"}]),
+            actual=[p], ondisk={p: "EDITED-ON-DISK"})
+    frag = a.import_state(managed=[p])
+    assert frag["udev_rules"] == [{"name": "a.rules", "content": "EDITED-ON-DISK"}]
+
+
+def test_import_state_keeps_declared_content_when_absent():
+    a = _v3(_cfg(profile=[{"name": "x.sh", "content": "export A=1"}]), actual=[])
+    frag = a.import_state(managed=[])
+    assert frag["profile_d"] == [{"name": "x.sh", "content": "export A=1"}]
+
+
+def test_import_state_splits_environment_back_to_lines():
+    p = "/etc/environment"
+    a = _v3(_cfg(env=["A=1", "B=2"]), actual=[p], ondisk={p: "A=1\nB=2\nC=3\n"})
+    frag = a.import_state(managed=[p])
+    assert frag["etc_environment"] == ["A=1", "B=2", "C=3"]

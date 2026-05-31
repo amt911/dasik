@@ -62,7 +62,8 @@
       "cups.service",
       "fstrim.timer"
     ],
-    "enable_sockets": ["cups.socket"]
+    "enable_sockets": ["cups.socket"],
+    "disable_units": ["systemd-networkd.service"]
   },
 
   "kernel_cmdline": [

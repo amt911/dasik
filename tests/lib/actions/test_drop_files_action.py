@@ -137,3 +137,70 @@ def test_managed_keys_lists_canonical_paths():
     a = DropFilesAction(_cfg(
         udev=[{"name": "a.rules", "content": "R"}], env=["X=1"]), _ctx("/"))
     assert a.managed_keys() == {"files": ["/etc/environment", "/etc/udev/rules.d/a.rules"]}
+
+
+# ---------------------------------------------------------------------- #
+#  Task 4: apply()                                                        #
+# ---------------------------------------------------------------------- #
+
+
+def test_apply_writes_created_and_modified_files():
+    a = DropFilesAction(_cfg(
+        udev=[{"name": "a.rules", "content": "R"}],
+        modprobe=[{"name": "b.conf", "content": "B"}]), _ctx("/"))
+    m = mock_open()
+    changes = [
+        Change("files", Op.CREATE, "/etc/udev/rules.d/a.rules"),
+        Change("files", Op.MODIFY, "/etc/modprobe.d/b.conf"),
+    ]
+    with patch("dasik.lib.actions.drop_files_action.os.makedirs") as mkdirs, \
+         patch("builtins.open", m):
+        a.apply(changes)
+    written = {c.args[0] for c in m.call_args_list}
+    assert "/etc/udev/rules.d/a.rules" in written
+    assert "/etc/modprobe.d/b.conf" in written
+    assert mkdirs.call_count == 2
+    bodies = "".join(c.args[0] for c in m().write.call_args_list)
+    assert "R" in bodies and "B" in bodies
+
+
+def test_apply_removes_orphan_files():
+    a = DropFilesAction(_cfg(), _ctx("/"))
+    with patch("dasik.lib.actions.drop_files_action.os.path.exists", return_value=True), \
+         patch("dasik.lib.actions.drop_files_action.os.remove") as rm:
+        a.apply([Change("files", Op.DELETE, "/etc/modprobe.d/old.conf")])
+    rm.assert_called_once_with("/etc/modprobe.d/old.conf")
+
+
+def test_apply_delete_skips_missing_file():
+    a = DropFilesAction(_cfg(), _ctx("/"))
+    with patch("dasik.lib.actions.drop_files_action.os.path.exists", return_value=False), \
+         patch("dasik.lib.actions.drop_files_action.os.remove") as rm:
+        a.apply([Change("files", Op.DELETE, "/etc/modprobe.d/old.conf")])
+    rm.assert_not_called()
+
+
+def test_apply_create_before_delete():
+    a = DropFilesAction(_cfg(udev=[{"name": "a.rules", "content": "R"}]), _ctx("/"))
+    changes = [
+        Change("files", Op.DELETE, "/etc/modprobe.d/old.conf"),
+        Change("files", Op.CREATE, "/etc/udev/rules.d/a.rules"),
+    ]
+    order = []
+    with patch("dasik.lib.actions.drop_files_action.os.makedirs",
+               side_effect=lambda *a_, **k: order.append("write")), \
+         patch("builtins.open", mock_open()), \
+         patch("dasik.lib.actions.drop_files_action.os.path.exists", return_value=True), \
+         patch("dasik.lib.actions.drop_files_action.os.remove",
+               side_effect=lambda p: order.append("del")):
+        a.apply(changes)
+    assert order == ["write", "del"]
+
+
+def test_apply_noop_without_target():
+    a = DropFilesAction(_cfg(udev=[{"name": "a.rules", "content": "R"}]), None)
+    with patch("builtins.open", mock_open()) as m, \
+         patch("dasik.lib.actions.drop_files_action.os.remove") as rm:
+        a.apply([Change("files", Op.CREATE, "/etc/udev/rules.d/a.rules")])
+    m.assert_not_called()
+    rm.assert_not_called()

@@ -94,6 +94,25 @@ class SystemdAction(AbstractAction):
         for unit in disables:
             Command.execute("systemctl", ["disable", unit], target=target)
 
+    def import_state(self, managed=None) -> dict:
+        managed_set = set(managed or [])
+        actual = self.actual()
+        d_off = set(self._d_off())
+
+        vanished = managed_set - actual                       # M \ A
+        kept_units = [u for u in self.units if u not in vanished]
+        kept_sockets = [s for s in self.sockets if s not in vanished]
+
+        drift = sorted(actual - set(self._d_on()) - managed_set - d_off)
+        socket_drift = [d for d in drift if d.endswith(".socket")]
+        unit_drift = [d for d in drift if not d.endswith(".socket")]
+
+        return {self._SYSTEMD_DOMAIN: {
+            "enable_units": kept_units + unit_drift,
+            "enable_sockets": kept_sockets + socket_drift,
+            "disable_units": list(self.disable_units),
+        }}
+
     # idempotency -----------------------------------------------------------
 
     def is_needed(self) -> bool:

@@ -99,7 +99,9 @@ def setup_actions() -> None:
     )
     register_action(
         action_class=UsersAction,
-        config_key='users',
+        # __root__: needs the root-level remove_home_on_delete flag alongside
+        # the users list (issue: per-user delete flag is unreadable at delete).
+        config_key='__root__',
         is_optional=True,
     )
 

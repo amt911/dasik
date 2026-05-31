@@ -126,3 +126,87 @@ def test_legacy_root_only_checks_hash():
     with _open_tree():
         assert a.is_needed() is False
         assert a.verify() is True
+
+
+# ---------------------------------------------------------------------- #
+#  Task 3: plan() + managed_keys()                                        #
+# ---------------------------------------------------------------------- #
+
+
+def _v3(cfg, actual, shells=None, groups=None, hashes=None):
+    a = UsersAction(cfg, _ctx("/"))
+    a.actual = lambda: set(actual)
+    a._shell = lambda u: (shells or {}).get(u, "/bin/bash")
+    a._groups = lambda u: set((groups or {}).get(u, []))
+    a._hash = lambda u: (hashes or {}).get(u, "")
+    return a
+
+
+def test_plan_creates_missing_user():
+    a = _v3([{"username": "alice", "hashed_password": "$6$a$h"}], actual=[])
+    changes = a.plan(managed=[])
+    assert [(c.op, c.item) for c in changes] == [(Op.CREATE, "alice")]
+
+
+def test_plan_deletes_owned_no_longer_declared():
+    a = _v3([], actual=["old"])
+    changes = a.plan(managed=["old"])
+    assert [(c.op, c.item) for c in changes] == [(Op.DELETE, "old")]
+
+
+def test_plan_modifies_on_shell_drift():
+    a = _v3(
+        [{"username": "alice", "hashed_password": "$6$a$h", "shell": "/bin/bash"}],
+        actual=["alice"], shells={"alice": "/usr/bin/zsh"},
+        groups={"alice": []}, hashes={"alice": "$6$a$h"},
+    )
+    changes = a.plan(managed=["alice"])
+    assert [(c.op, c.item) for c in changes] == [(Op.MODIFY, "alice")]
+    assert "shell" in changes[0].reason
+
+
+def test_plan_modifies_on_groups_drift():
+    a = _v3(
+        [{"username": "alice", "hashed_password": "$6$a$h", "groups": ["wheel"]}],
+        actual=["alice"], shells={"alice": "/bin/bash"},
+        groups={"alice": []}, hashes={"alice": "$6$a$h"},
+    )
+    changes = a.plan(managed=["alice"])
+    assert changes[0].op is Op.MODIFY and "groups" in changes[0].reason
+
+
+def test_plan_modifies_on_password_drift():
+    a = _v3(
+        [{"username": "alice", "hashed_password": "$6$NEW$h"}],
+        actual=["alice"], shells={"alice": "/bin/bash"},
+        groups={"alice": []}, hashes={"alice": "$6$OLD$h"},
+    )
+    changes = a.plan(managed=["alice"])
+    assert changes[0].op is Op.MODIFY and "password" in changes[0].reason
+
+
+def test_plan_root_password_modify_only():
+    a = _v3(
+        [{"username": "root", "hashed_password": "$6$NEW$h"}],
+        actual=[], hashes={"root": "$6$OLD$h"},
+    )
+    changes = a.plan(managed=[])
+    assert [(c.op, c.item) for c in changes] == [(Op.MODIFY, "root")]
+
+
+def test_plan_empty_when_converged():
+    a = _v3(
+        [{"username": "alice", "hashed_password": "$6$a$h",
+          "shell": "/bin/bash", "groups": ["wheel"]}],
+        actual=["alice"], shells={"alice": "/bin/bash"},
+        groups={"alice": ["wheel"]}, hashes={"alice": "$6$a$h"},
+    )
+    assert a.plan(managed=["alice"]) == []
+
+
+def test_managed_keys_excludes_root():
+    a = UsersAction([
+        {"username": "alice", "hashed_password": "$6$a$h"},
+        {"username": "root", "hashed_password": "$6$r$h"},
+    ])
+    assert a.managed_keys() == {"users": ["alice"]}

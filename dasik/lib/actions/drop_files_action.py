@@ -111,6 +111,24 @@ class DropFilesAction(AbstractAction):
     def managed_keys(self) -> dict:
         return {_FILES_DOMAIN: sorted(self._desired().keys())}
 
+    def apply(self, changes) -> None:
+        if self._target() is None:
+            return
+        desired = self._desired()
+        writes = [c.item for c in changes if c.op in (Op.CREATE, Op.MODIFY)]
+        deletes = [c.item for c in changes if c.op is Op.DELETE]
+
+        for canonical in writes:                    # additive first
+            path = self._abs(canonical)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w") as f:
+                f.write(desired.get(canonical, ""))
+
+        for canonical in deletes:
+            path = self._abs(canonical)
+            if os.path.exists(path):
+                os.remove(path)
+
     # -- legacy is_needed / execute / verify (old executor path) ------- #
 
     def is_needed(self) -> bool:

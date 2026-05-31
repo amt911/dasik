@@ -38,6 +38,14 @@ class ActionRegistry:
             'depends_on': depends_on or []
         })
     
+    def clear(self) -> None:
+        """Remove all registered actions.
+
+        Lets ``setup_actions()`` be called repeatedly in one process without
+        double-registering (issue #64).
+        """
+        self._actions.clear()
+
     def get_all_actions(self) -> List[Dict[str, Any]]:
         """Get all registered actions.
         
@@ -57,17 +65,22 @@ class ActionRegistry:
             Tuple of (is_valid, error_message)
         """
         config_key = action_meta['config_key']
-        
+
+        # The '__root__' sentinel means the action reads root-level fields, so
+        # the "section" is the whole config dict — it always exists and required
+        # fields are checked against the root directly (issue #67).
+        is_root = config_key == '__root__'
+
         # Check if config section exists
-        if config_key not in config:
+        if not is_root and config_key not in config:
             if action_meta['is_optional']:
                 return False, f"Optional section '{config_key}' not found in config"
             else:
                 return False, f"Required section '{config_key}' not found in config"
-        
+
         # Check required fields within the section
         if action_meta['required_fields']:
-            section_config = config[config_key]
+            section_config = config if is_root else config[config_key]
             if isinstance(section_config, dict):
                 missing = [f for f in action_meta['required_fields'] if f not in section_config]
                 if missing:

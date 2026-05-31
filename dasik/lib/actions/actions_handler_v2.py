@@ -22,7 +22,7 @@ Usage:
 """
 
 from ..json_parser.json_parser import JsonParser
-from .action_registry import register_action
+from .action_registry import register_action, get_default_registry
 from .action_executor import ActionExecutor
 
 
@@ -33,6 +33,9 @@ def setup_actions() -> None:
     them sequentially; each action decides via ``is_needed()`` whether
     it actually runs.
     """
+    # Clear first so repeated calls in one process don't double-register (#64).
+    get_default_registry().clear()
+
     # --- imports (lazy so missing files don't crash import) ---------------
     from .disk_partition_action import DiskPartitionAction
     from .base_install_action import BaseInstallAction
@@ -83,10 +86,11 @@ def setup_actions() -> None:
     )
     register_action(
         action_class=NetworkAction,
-        config_key='network',
+        # __root__: needs both the 'network' section and the root-level
+        # 'hostname' (issue #66 port reads both from the root config).
+        config_key='__root__',
         is_optional=True,
-        required_fields=['type', 'add_default_hosts'],
-        depends_on=['hostname'],
+        required_fields=['network', 'hostname'],
     )
     register_action(
         action_class=PacmanAction,

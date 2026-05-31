@@ -120,3 +120,31 @@ def test_managed_keys_is_d_on():
         {"enable_units": ["sshd.service"], "enable_sockets": ["cups.socket"]}
     )
     assert a.managed_keys() == {"systemd": ["sshd.service", "cups.socket"]}
+
+
+def test_apply_enables_and_disables_routed():
+    a = SystemdAction({}, _ctx("/"))
+    changes = [
+        Change("systemd", Op.ENABLE, "sshd.service"),
+        Change("systemd", Op.DISABLE, "bluetooth.service"),
+    ]
+    with patch("dasik.lib.actions.systemd_action.Command.execute") as run:
+        a.apply(changes)
+    calls = [(c.args[0], c.args[1]) for c in run.call_args_list]
+    assert calls[0] == ("systemctl", ["enable", "sshd.service"])
+    assert calls[1] == ("systemctl", ["disable", "bluetooth.service"])
+    assert run.call_args_list[0].kwargs["target"].root == "/"
+
+
+def test_apply_noop_on_empty():
+    a = SystemdAction({}, _ctx("/"))
+    with patch("dasik.lib.actions.systemd_action.Command.execute") as run:
+        a.apply([])
+    run.assert_not_called()
+
+
+def test_apply_noop_without_target():
+    a = SystemdAction({}, None)
+    with patch("dasik.lib.actions.systemd_action.Command.execute") as run:
+        a.apply([Change("systemd", Op.ENABLE, "sshd.service")])
+    run.assert_not_called()

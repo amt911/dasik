@@ -83,6 +83,17 @@ class SystemdAction(AbstractAction):
     def managed_keys(self) -> dict:
         return {self._SYSTEMD_DOMAIN: self._d_on()}
 
+    def apply(self, changes) -> None:
+        target = getattr(self.context, "target", None) if self.context else None
+        if target is None:
+            return
+        enables = [c.item for c in changes if c.op is Op.ENABLE]
+        disables = [c.item for c in changes if c.op is Op.DISABLE]
+        for unit in enables:                       # additive first
+            Command.execute("systemctl", ["enable", unit], target=target)
+        for unit in disables:
+            Command.execute("systemctl", ["disable", unit], target=target)
+
     # idempotency -----------------------------------------------------------
 
     def is_needed(self) -> bool:

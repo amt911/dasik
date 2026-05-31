@@ -183,3 +183,26 @@ def test_import_state_preserves_disable_units_and_excludes_them_from_drift():
     sd = frag["systemd"]
     assert sd["disable_units"] == ["bluetooth.service"]
     assert sd["enable_units"] == ["docker.service"]
+
+
+def test_legacy_is_needed_true_when_unit_to_disable_is_enabled():
+    a = SystemdAction({"disable_units": ["bluetooth.service"]})
+    with patch("dasik.lib.actions.systemd_action.subprocess.run",
+               _enabled_map({"bluetooth.service"})):
+        assert a.is_needed() is True
+
+
+def test_legacy_not_needed_when_disable_target_already_off():
+    a = SystemdAction({"enable_units": ["sshd.service"],
+                       "disable_units": ["bluetooth.service"]})
+    with patch("dasik.lib.actions.systemd_action.subprocess.run",
+               _enabled_map({"sshd.service"})):
+        assert a.is_needed() is False
+        assert a.verify() is True
+
+
+def test_legacy_to_disable_lists_only_enabled_targets():
+    a = SystemdAction({"disable_units": ["a.service", "b.service"]})
+    with patch("dasik.lib.actions.systemd_action.subprocess.run",
+               _enabled_map({"a.service"})):
+        assert a._to_disable() == ["a.service"]

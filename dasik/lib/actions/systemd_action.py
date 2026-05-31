@@ -115,8 +115,11 @@ class SystemdAction(AbstractAction):
 
     # idempotency -----------------------------------------------------------
 
+    def _to_disable(self) -> List[str]:
+        return [u for u in self.disable_units if self._is_enabled(u)]
+
     def is_needed(self) -> bool:
-        return bool(self._pending())
+        return bool(self._pending()) or bool(self._to_disable())
 
     def execute(self) -> None:
         for unit in self._pending():
@@ -125,6 +128,12 @@ class SystemdAction(AbstractAction):
                 ["arch-chroot", "/mnt", "systemctl", "enable", unit],
                 check=True,
             )
+        for unit in self._to_disable():
+            print(f"  Disabling {unit} …")
+            subprocess.run(
+                ["arch-chroot", "/mnt", "systemctl", "disable", unit],
+                check=True,
+            )
 
     def verify(self) -> bool:
-        return not self._pending()
+        return not self._pending() and not self._to_disable()

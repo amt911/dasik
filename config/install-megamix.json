@@ -5,10 +5,12 @@
   },
 
   "users": [
-    { "username": "alice", "password": "P@ssw0rd123!", "shell": "/bin/zsh", "groups": ["wheel", "libvirt", "docker"] },
-    { "username": "bob", "password": "S3cret!bob", "shell": "/bin/bash", "groups": ["wheel", "audio"] },
-    { "username": "service", "password": "changeme", "shell": "/sbin/nologin", "groups": [] }
+    { "username": "alice", "hashed_password": "$6$uKZMr4pT7dysjTW.$45fYDwbwrkeSPx238aFpIF0DM5YBp7Km3xS2rnhHb5jZbbgqTL7Qgjs9NFa3r82fPhJacdlsZgkW5.E3Zv6o..", "shell": "/bin/zsh", "groups": ["wheel", "libvirt", "docker"] },
+    { "username": "bob", "hashed_password": "$6$9rgMO6aI5Qt5YNzf$WWrX445i1JQVW1X7RAyYBY3jvoW614HvKaJf9ZwCPYTUFs6Nw/blCOhu/nVIMd3P5YAJPaChHrvXld1.47sz61", "shell": "/bin/bash", "groups": ["wheel", "audio"] },
+    { "username": "service", "hashed_password": "$6$9BMWIZxUEv60YPwV$obww6Gg3YrCZYk1PSVTcASinae0r/10XpSpPHD1mBffQ92r6fOrgXzNFT9dbr/liwJFKtmBTAHgBrFWxYEVsz.", "shell": "/sbin/nologin", "groups": [] }
   ],
+
+  "remove_home_on_delete": false,
 
   "drivers": ["nvidia", "nvidia_old", "intel", "amd"],
 

@@ -40,3 +40,16 @@ addopts = "--import-mode=importlib"
 [tool.coverage.run]
 source = ["dasik"]
 branch = true
+omit = [
+    # Legacy monolithic handler — deprecated, not wired into the v2/v3 path
+    # (entry-point still imports it, but it is slated for removal; superseded
+    # by actions_handler_v2 + ActionExecutor, which are covered).
+    "dasik/lib/actions/actions_handler.py",
+    # execute() partitions disks / formats filesystems / runs sgdisk — purely
+    # destructive shell-outs that must never run in a test (CLAUDE.md §Tests).
+    "dasik/lib/actions/disk_partition_action.py",
+]
+
+[tool.coverage.report]
+fail_under = 80
+show_missing = true

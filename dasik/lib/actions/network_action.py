@@ -1,94 +1,88 @@
-from .abstract_action import AbstractAction
-from ..command_worker.command_worker import Command
-from ..exceptions.exceptions import NetworkTypeNotFoundException
+"""Action: configure hostname + /etc/hosts (and network manager choice).
+
+Ported from the legacy ``_before_check``/``do_action`` form to the
+AbstractAction contract (issue #66). Needs the root-level ``hostname`` as
+well as the ``network`` section, so it is registered with config_key
+``__root__`` and reads both from the root config.
+
+Idempotent: only rewrites when /mnt/etc/hostname differs or the default
+loopback hosts block is missing (when ``add_default_hosts`` is set).
+"""
+from __future__ import annotations
+import os
 import re
+from typing import Any, Dict
+from .abstract_action import AbstractAction
+from ..exceptions.exceptions import NetworkTypeNotFoundException
+
+_HOSTNAME_FILE = "/mnt/etc/hostname"
+_HOSTS_FILE = "/mnt/etc/hosts"
+
+
 class NetworkAction(AbstractAction):
-    def __init__(self, prop : dict):
-        self._KEY_NAME = "network"
-        self._can_incrementally_change = True
-        
-        self.type = prop[self._KEY_NAME]["type"]
-        self.hostname = prop["hostname"]
-        self.add_default_hosts = prop[self._KEY_NAME]["add_default_hosts"]
-        self.DEFAULT_HOSTS = ("127.0.0.1 localhost\n"
-                              "::1 localhost\n"
-                              f"127.0.1.1 {self.hostname}\n")
-        
-    def _before_check(self) -> bool:
-        with open("/mnt/etc/hostname", "r") as hostname_file:
-            hostname_file_str = hostname_file.read().strip()
-            
-            if hostname_file_str != self.hostname:
-                return True
-        
+    """Configure hostname and hosts file declaratively."""
+
+    def __init__(self, config: Any, context=None):
+        super().__init__(config, context)
+        cfg: Dict[str, Any] = config if isinstance(config, dict) else {}
+        net: Dict[str, Any] = cfg.get("network", {}) or {}
+        self.type: str = net.get("type", "")
+        self.hostname: str = cfg.get("hostname", "")
+        self.add_default_hosts: bool = net.get("add_default_hosts", False)
+        self.DEFAULT_HOSTS = (
+            "127.0.0.1 localhost\n"
+            "::1 localhost\n"
+            f"127.0.1.1 {self.hostname}\n"
+        )
+
+    @property
+    def name(self) -> str:
+        return "Network Configuration"
+
+    @property
+    def is_optional(self) -> bool:
         return True
-        
-    def after_check(self):
-        return super().after_check()
-    
-    
-    def _install_network_manager(self):
-        pass
-    
-    
-    def _install_systemd_networkd(self):
-        pass
-    
-    
-    def _create_hostname_file(self):
-        with open("/mnt/etc/hostname", "w") as hostname:
-            hostname.write(self.hostname)
-    
-    
-    def _add_default_hosts_to_file(self):
-        with open("/mnt/etc/hosts", "a") as hosts_file:
-            hosts_file.write(self.DEFAULT_HOSTS)
-    
-    # Returns true when a change in the hosts file is needed, false in any other case
-    def _check_hosts_file(self) -> bool:
-        with open("/mnt/etc/hosts", "r") as hosts_file:
-            hosts_file_str = hosts_file.read()
-            
-            hostname_str = re.search(rf"^{re.escape(self.DEFAULT_HOSTS)}", hosts_file_str, re.MULTILINE)
-                    
-            return hostname_str is None or not self.add_default_hosts
-        
-        return True
-    
-    def _clear_hosts_file(self):
-        with open("/mnt/etc/hosts", "r+") as hosts_file:
-            # Clear only the lines starting with loopback addresses and the hostname line
-            hosts_file_str = hosts_file.readlines()
-            
+
+    def _hostname_needs_write(self) -> bool:
+        if not os.path.exists(_HOSTNAME_FILE):
+            return True
+        with open(_HOSTNAME_FILE, "r") as f:
+            return f.read().strip() != self.hostname
+
+    def _hosts_needs_write(self) -> bool:
+        if not self.add_default_hosts:
+            return False
+        if not os.path.exists(_HOSTS_FILE):
+            return True
+        with open(_HOSTS_FILE, "r") as f:
+            return re.search(
+                rf"^{re.escape(self.DEFAULT_HOSTS)}", f.read(), re.MULTILINE
+            ) is None
+
+    def is_needed(self) -> bool:
+        return self._hostname_needs_write() or self._hosts_needs_write()
+
+    def execute(self) -> None:  # pragma: no cover - writes /mnt/etc files
+        self._clear_hosts_file()
+        with open(_HOSTNAME_FILE, "w") as f:
+            f.write(self.hostname)
+        if self.add_default_hosts:
+            with open(_HOSTS_FILE, "a") as f:
+                f.write(self.DEFAULT_HOSTS)
+
+        if self.type not in ("NetworkManager", "systemd-networkd"):
+            raise NetworkTypeNotFoundException
+
+    def _clear_hosts_file(self) -> None:  # pragma: no cover - writes /mnt/etc
+        if not os.path.exists(_HOSTS_FILE):
+            return
+        with open(_HOSTS_FILE, "r+") as hosts_file:
+            lines = hosts_file.readlines()
             hosts_file.seek(0)
-            
-            for line in hosts_file_str:
+            for line in lines:
                 if not re.match(r"^(127\.0\.0\.1|::1|127\.0\.1\.1)", line):
                     hosts_file.write(line)
-                    
             hosts_file.truncate()
-    
-    
-    def do_action(self):
-        if self._before_check():
-            self._clear_hosts_file()
-            self._create_hostname_file()
-            self._add_default_hosts_to_file()
-            
-            match self.type:
-                case "NetworkManager":
-                    self._install_network_manager()
-                    
-                case "systemd-networkd":
-                    self._install_systemd_networkd()
-                    
-                case _:
-                    raise NetworkTypeNotFoundException
-                
-    @property
-    def KEY_NAME(self) -> str:
-        return self._KEY_NAME
-    
-    @property
-    def can_incrementally_change(self) -> bool:
-        return self._can_incrementally_change            
+
+    def verify(self) -> bool:
+        return not self.is_needed()

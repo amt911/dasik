@@ -10,6 +10,7 @@ Registered with config_key="__root__" so it can read the root-level
 from typing import Any, Dict, List
 from .abstract_action import AbstractAction
 from ..command_worker.command_worker import Command
+from ..state.change import Change, Op
 
 
 class UsersAction(AbstractAction):
@@ -114,6 +115,47 @@ class UsersAction(AbstractAction):
         except (FileNotFoundError, IndexError):
             pass
         return ""
+
+    # ------------------------------------------------------------------ #
+    #  v3 contract
+    # ------------------------------------------------------------------ #
+
+    def _declared_non_root(self) -> List[str]:
+        return [u["username"] for u in self.users if u["username"] != "root"]
+
+    def _modify_reason(self, username: str) -> str:
+        u = self._by_name[username]
+        changed = []
+        if u.get("shell", "/bin/bash") != self._shell(username):
+            changed.append("shell")
+        if set(u.get("groups", [])) != self._groups(username):
+            changed.append("groups")
+        if u["hashed_password"] != self._hash(username):
+            changed.append("password")
+        return ",".join(changed)
+
+    def plan(self, managed):
+        from ..state.set_math import compute_changes
+        actual = self.actual()
+        changes, _drift = compute_changes(
+            self._USERS_DOMAIN,
+            desired=self._declared_non_root(),
+            managed=managed,
+            actual=actual,
+            op_install=Op.CREATE,
+            op_remove=Op.DELETE,
+        )
+        for name in sorted(set(self._declared_non_root()) & actual):
+            reason = self._modify_reason(name)
+            if reason:
+                changes.append(Change(self._USERS_DOMAIN, Op.MODIFY, name, reason=reason))
+        if "root" in self._by_name:
+            if self._by_name["root"]["hashed_password"] != self._hash("root"):
+                changes.append(Change(self._USERS_DOMAIN, Op.MODIFY, "root", reason="password"))
+        return changes
+
+    def managed_keys(self) -> dict:
+        return {self._USERS_DOMAIN: self._declared_non_root()}
 
     # ------------------------------------------------------------------ #
     #  legacy is_needed / execute / verify (old ActionExecutor path)

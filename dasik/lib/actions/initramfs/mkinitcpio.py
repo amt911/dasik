@@ -77,13 +77,17 @@ class MkinitcpioBackend(InitramfsBackend):
                 lines = f.readlines()
         except FileNotFoundError:
             lines = []
+        found = False
         with open(path, "w") as f:
             for line in lines:
                 if re.match(r"^HOOKS=", line):
                     f.write(f"# {line}")
                     f.write(f"HOOKS=({hooks_str})\n")
+                    found = True
                 else:
                     f.write(line)
+            if not found:                      # no existing HOOKS line → add one
+                f.write(f"HOOKS=({hooks_str})\n")
         if self.target is not None:
             Command.execute("mkinitcpio", ["-P"], target=self.target)
         else:

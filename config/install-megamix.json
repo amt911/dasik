@@ -77,6 +77,8 @@
 
   "enable_trim": true,
 
+  "initramfs": "mkinitcpio",
+
   "pacman": {
     "options": { "Parallel": true, "Color": true, "VerbosePkgLists": false },
     "multilib": true

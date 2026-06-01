@@ -169,6 +169,11 @@ class KernelCmdlineAction(AbstractAction):
     def managed_keys(self) -> dict:
         return {self._DOMAIN: self._desired_tokens()}
 
+    def import_state(self, managed=None) -> dict:
+        # Round-trip the declared explicit params only. Never emit the resolved
+        # LUKS UUID — keeping the config portable across machines.
+        return {self._DOMAIN: list(self.explicit_params)}
+
     def _new_tokens(self, changes) -> List[str]:
         installs = [c.item for c in changes if c.op is Op.INSTALL]
         removes = {c.item for c in changes if c.op is Op.REMOVE}

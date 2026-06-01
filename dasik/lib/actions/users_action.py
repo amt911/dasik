@@ -58,8 +58,13 @@ class UsersAction(AbstractAction):
         t = self._target()
         return t.path("/etc/shadow") if t is not None else "/mnt/etc/shadow"
 
+    # Regular login users are 1000 <= uid < NOBODY; `nobody` (65534) and other
+    # high pseudo-accounts are not real users.
+    _UID_MIN = 1000
+    _NOBODY_UID = 65534
+
     def actual(self) -> set:
-        """Usernames with uid >= 1000 on the target (excludes system accounts/root)."""
+        """Regular login usernames on the target (1000 <= uid < 65534)."""
         if self._target() is None:
             return set()
         names: set = set()
@@ -67,8 +72,10 @@ class UsersAction(AbstractAction):
             with open(self._passwd_path(), "r") as f:
                 for line in f:
                     parts = line.split(":")
-                    if len(parts) >= 3 and parts[2].isdigit() and int(parts[2]) >= 1000:
-                        names.add(parts[0])
+                    if len(parts) >= 3 and parts[2].isdigit():
+                        uid = int(parts[2])
+                        if self._UID_MIN <= uid < self._NOBODY_UID:
+                            names.add(parts[0])
         except FileNotFoundError:
             pass
         return names
@@ -112,7 +119,7 @@ class UsersAction(AbstractAction):
                 for line in f:
                     if line.startswith(f"{username}:"):
                         return line.split(":")[1]
-        except (FileNotFoundError, IndexError):
+        except (FileNotFoundError, IndexError, PermissionError):
             pass
         return ""
 
@@ -183,7 +190,13 @@ class UsersAction(AbstractAction):
                 result.append(u)                               # intent / root kept as-is
 
         drift = sorted(actual - declared_names - managed_set)  # A \ D \ M
-        result.extend(self._capture(name) for name in drift)
+        for name in drift:
+            captured = self._capture(name)
+            # A user we cannot read a hash for (e.g. /etc/shadow unreadable)
+            # cannot be represented portably — skip rather than emit an invalid
+            # entry with an empty hashed_password.
+            if captured["hashed_password"]:
+                result.append(captured)
         return {self._USERS_DOMAIN: result}
 
     def apply(self, changes) -> None:

@@ -327,3 +327,32 @@ def test_import_state_keeps_declared_intent_not_present():
     frag = a.import_state(managed=[])
     names = [u["username"] for u in frag["users"]]
     assert "future" in names
+
+
+# ---------------------------------------------------------------------- #
+#  sync robustness: exclude nobody + tolerate unreadable /etc/shadow      #
+# ---------------------------------------------------------------------- #
+
+
+def test_actual_excludes_nobody_uid_65534():
+    passwd = (
+        "root:x:0:0::/root:/bin/bash\n"
+        "alice:x:1000:1000::/home/alice:/bin/bash\n"
+        "nobody:x:65534:65534:Nobody:/:/usr/bin/nologin\n"
+    )
+    a = UsersAction([], _ctx("/"))
+    with _open_tree(passwd=passwd):
+        assert a.actual() == {"alice"}   # nobody (65534) excluded
+
+
+def test_hash_tolerates_permission_error():
+    a = UsersAction([], _ctx("/"))
+    with patch("builtins.open", side_effect=PermissionError("/etc/shadow")):
+        assert a._hash("alice") == ""
+
+
+def test_import_state_skips_drift_user_without_readable_hash():
+    a = _v3([], actual=["carol"], shells={"carol": "/bin/bash"},
+            groups={"carol": []}, hashes={"carol": ""})  # hash unreadable -> ""
+    frag = a.import_state(managed=[])
+    assert [u["username"] for u in frag["users"]] == []   # not captured

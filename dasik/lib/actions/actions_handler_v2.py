@@ -47,7 +47,7 @@ def setup_actions() -> None:
     from .packages_action import PackagesAction
     from .systemd_action import SystemdAction
     from .drop_files_action import DropFilesAction
-    from .mkinitcpio_action import MkinitcpioAction
+    from .initramfs_action import InitramfsAction
     from .kernel_cmdline_action import KernelCmdlineAction
     from .trim_action import TrimAction
     from .bluetooth_action import BluetoothAction
@@ -166,7 +166,7 @@ def setup_actions() -> None:
 
     # === Phase 5: boot (must come last) ===================================
     register_action(
-        action_class=MkinitcpioAction,
+        action_class=InitramfsAction,
         config_key='__root__',
         is_optional=True,
     )

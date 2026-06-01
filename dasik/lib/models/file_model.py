@@ -13,3 +13,16 @@ class FileEntry(BaseModel):
         if not v or "/" in v:
             raise ValueError("name must be a non-empty filename without '/'")
         return v
+
+
+class EtcFile(BaseModel):
+    """An arbitrary managed file by absolute path."""
+    path: str = Field(..., description="Absolute target path")
+    content: str = Field(..., description="Verbatim file content")
+
+    @field_validator("path")
+    @classmethod
+    def _abs_no_traversal(cls, v: str) -> str:
+        if not v.startswith("/") or ".." in v.split("/"):
+            raise ValueError("path must be absolute and contain no '..' segment")
+        return v

@@ -6,7 +6,7 @@ from .timezone_model import TimezoneModel
 from .network_model import NetworkModel
 from .disk_model import DisksConfiguration
 from .user_model import UserModel
-from .file_model import FileEntry
+from .file_model import FileEntry, EtcFile
 from .pacman_model import PacmanModel
 from .systemd_model import SystemdModel
 from .bluetooth_model import BluetoothModel
@@ -44,6 +44,7 @@ class JsonModel(BaseModel):
     modprobe_conf: List[FileEntry] = Field(default_factory=list)
     profile_d: List[FileEntry] = Field(default_factory=list)
     etc_environment: List[str] = Field(default_factory=list)
+    files: List[EtcFile] = Field(default_factory=list)
     kernel_cmdline: List[str] = Field(default_factory=list)
 
     # Toggles

@@ -69,8 +69,6 @@
   },
 
   "kernel_cmdline": [
-    "rd.luks.name=UUID=ROOTUUID=cryptroot root=/dev/mapper/cryptroot rw",
-    "rootflags=compress-force=zstd,subvol=@",
     "sysrq_always_enabled=1",
     "intel_iommu=on"
   ],

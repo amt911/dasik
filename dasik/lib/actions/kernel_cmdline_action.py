@@ -12,46 +12,76 @@ import re
 import subprocess
 from typing import Any, Dict, List, Optional
 from .abstract_action import AbstractAction
+from ..command_worker.command_worker import Command
+from ..state.change import Op
 
 
 class KernelCmdlineAction(AbstractAction):
     """Set kernel command line parameters declaratively."""
 
+    _DOMAIN = "kernel_cmdline"
+
     def __init__(self, config: Any, context=None):
         super().__init__(config, context)
         cfg: Dict[str, Any] = config if isinstance(config, dict) else {}
-
+        self._cfg = cfg
         self.bootloader: str = cfg.get("bootloader", "grub")
         self.explicit_params: List[str] = cfg.get("kernel_cmdline", [])
 
-        # Auto-derive from disk config
-        self._auto_params = self._derive_from_disks(cfg)
-        self.desired_params = self._merge(self._auto_params, self.explicit_params)
+    def _target(self):
+        return getattr(self.context, "target", None) if self.context else None
+
+    @property
+    def desired_params(self) -> List[str]:
+        return self._merge(self._derive_from_disks(), self.explicit_params)
 
     # ------------------------------------------------------------------ #
-    #  auto-derivation from disk config (same logic as old bash)
+    #  portable LUKS UUID resolution (via the open mapping; host-level)
     # ------------------------------------------------------------------ #
 
-    @staticmethod
-    def _derive_from_disks(cfg: Dict[str, Any]) -> List[str]:
+    def _luks_backing_device(self, luks_name: str) -> Optional[str]:
+        result = Command.execute("cryptsetup", ["status", luks_name])
+        if getattr(result, "returncode", 1) != 0:
+            return None
+        stdout = getattr(result, "stdout", b"") or b""
+        if isinstance(stdout, bytes):
+            stdout = stdout.decode("utf-8", errors="replace")
+        for line in stdout.splitlines():
+            if "device:" in line:
+                return line.split("device:")[1].strip()
+        return None
+
+    def _resolve_luks_uuid(self, luks_name: str) -> Optional[str]:
+        dev = self._luks_backing_device(luks_name)
+        if not dev:
+            return None
+        result = Command.execute("blkid", ["-s", "UUID", "-o", "value", dev])
+        stdout = getattr(result, "stdout", b"") or b""
+        if isinstance(stdout, bytes):
+            stdout = stdout.decode("utf-8", errors="replace")
+        return stdout.strip() or None
+
+    # ------------------------------------------------------------------ #
+    #  auto-derivation from disk config (UUID resolved → portable)
+    # ------------------------------------------------------------------ #
+
+    def _derive_from_disks(self) -> List[str]:
         params: List[str] = []
-        disks = cfg.get("disks", {})
+        disks = self._cfg.get("disks", {})
         if not isinstance(disks, dict):
             return params
 
         for disk in disks.get("disks", []):
             for part in disk.get("partitions", []):
-                mp = part.get("mountpoint")
-                if mp != "/":
+                if part.get("mountpoint") != "/":
                     continue
-                # Encryption
                 if part.get("encrypt"):
                     dm_name = part.get("luks_name", "cryptroot")
-                    # UUID will be resolved at runtime; for now use placeholder
-                    params.append(f"rd.luks.name=<ROOT_UUID>={dm_name}")
+                    uuid = self._resolve_luks_uuid(dm_name)
+                    if uuid:
+                        params.append(f"rd.luks.name={uuid}={dm_name}")
                     params.append(f"root=/dev/mapper/{dm_name} rw")
 
-                # btrfs rootflags
                 fs = part.get("filesystem", "")
                 if fs == "btrfs":
                     subvols = part.get("btrfs_subvolumes", [])
@@ -84,13 +114,104 @@ class KernelCmdlineAction(AbstractAction):
     # ------------------------------------------------------------------ #
 
     def _grub_file(self) -> str:
-        return "/mnt/etc/default/grub"
+        t = self._target()
+        return t.path("/etc/default/grub") if t is not None else "/mnt/etc/default/grub"
 
     def _sdboot_entries(self) -> List[str]:
-        entries_dir = "/mnt/boot/loader/entries"
+        t = self._target()
+        entries_dir = t.path("/boot/loader/entries") if t is not None else "/mnt/boot/loader/entries"
         if os.path.isdir(entries_dir):
             return [os.path.join(entries_dir, f) for f in os.listdir(entries_dir) if f.endswith(".conf")]
         return []
+
+    # ------------------------------------------------------------------ #
+    #  v3 contract (token set)
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _tokens(entries: List[str]) -> List[str]:
+        out: List[str] = []
+        for entry in entries:
+            out.extend(entry.split())
+        return out
+
+    def _desired_tokens(self) -> List[str]:
+        merged = self._merge(self._derive_from_disks(), self.explicit_params)
+        seen: set = set()
+        deduped: List[str] = []
+        for tok in self._tokens(merged):
+            if tok not in seen:
+                seen.add(tok)
+                deduped.append(tok)
+        return deduped
+
+    def _current_cmdline(self) -> str:
+        if self.bootloader == "grub":
+            return self._current_params_grub()
+        entries = self._sdboot_entries()
+        return self._current_params_sdboot(entries[0]) if entries else ""
+
+    def actual(self) -> set:
+        if self._target() is None:
+            return set()
+        return set(self._current_cmdline().split())
+
+    def plan(self, managed):
+        from ..state.set_math import compute_changes
+        changes, _drift = compute_changes(
+            self._DOMAIN,
+            desired=self._desired_tokens(),
+            managed=managed,
+            actual=self.actual(),
+        )
+        return changes
+
+    def managed_keys(self) -> dict:
+        return {self._DOMAIN: self._desired_tokens()}
+
+    def import_state(self, managed=None) -> dict:
+        # Round-trip the declared explicit params only. Never emit the resolved
+        # LUKS UUID — keeping the config portable across machines.
+        return {self._DOMAIN: list(self.explicit_params)}
+
+    def _new_tokens(self, changes) -> List[str]:
+        installs = [c.item for c in changes if c.op is Op.INSTALL]
+        removes = {c.item for c in changes if c.op is Op.REMOVE}
+        current = [t for t in self._current_cmdline().split() if t not in removes]
+        for tok in installs:
+            if tok not in current:
+                current.append(tok)
+        return current
+
+    def apply(self, changes) -> None:
+        if self._target() is None or not changes:
+            return
+        line = " ".join(self._new_tokens(changes))
+        if self.bootloader == "grub":
+            self._write_grub(line)
+            Command.execute("grub-mkconfig", ["-o", "/boot/grub/grub.cfg"], target=self._target())
+        else:
+            for entry in self._sdboot_entries():
+                self._write_sdboot(entry, line)
+
+    def _write_grub(self, line: str) -> None:
+        path = self._grub_file()
+        with open(path, "r") as f:
+            text = f.read()
+        text = re.sub(r'^GRUB_CMDLINE_LINUX="(.*)"',
+                      f'GRUB_CMDLINE_LINUX="{line}"', text, flags=re.MULTILINE)
+        with open(path, "w") as f:
+            f.write(text)
+
+    def _write_sdboot(self, entry_file: str, line: str) -> None:
+        with open(entry_file, "r") as f:
+            lines = f.readlines()
+        with open(entry_file, "w") as f:
+            for ln in lines:
+                if ln.startswith("options "):
+                    f.write(f"options {line}\n")
+                else:
+                    f.write(ln)
 
     def _current_params_grub(self) -> str:
         path = self._grub_file()

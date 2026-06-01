@@ -213,3 +213,16 @@ def test_apply_empty_changes_noop():
     with patch("dasik.lib.actions.kernel_cmdline_action.Command.execute") as run:
         a.apply([])
     run.assert_not_called()
+
+
+def test_import_state_returns_explicit_only():
+    a = KernelCmdlineAction(
+        {"kernel_cmdline": ["quiet", "loglevel=3"], **_enc_cfg()}, _ctx("/"))
+    frag = a.import_state(managed=[])
+    assert frag == {"kernel_cmdline": ["quiet", "loglevel=3"]}
+
+
+def test_import_state_has_no_uuid_token():
+    a = KernelCmdlineAction({"kernel_cmdline": ["quiet"], **_enc_cfg()}, _ctx("/"))
+    frag = a.import_state(managed=[])
+    assert not any("rd.luks.name" in t for t in frag["kernel_cmdline"])

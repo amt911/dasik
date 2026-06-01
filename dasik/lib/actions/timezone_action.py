@@ -14,8 +14,11 @@ class TimezoneAction(ScalarV3Action):
 
     def __init__(self, config: Dict[str, Any], context=None):
         super().__init__(config, context)
-        self.region: str = config["region"]
-        self.city: str = config["city"]
+        cfg: Dict[str, Any] = config if isinstance(config, dict) else {}
+        # Optional so sync can bootstrap from an empty config (no `timezone`
+        # slice): actual()/import_state() read the system, not these.
+        self.region: Optional[str] = cfg.get("region")
+        self.city: Optional[str] = cfg.get("city")
 
     @property
     def name(self) -> str:

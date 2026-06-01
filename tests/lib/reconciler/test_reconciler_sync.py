@@ -28,6 +28,41 @@ class _SyncStub(AbstractAction):
         return {type(self)._domain: []}
 
 
+class _DictSyncStub(AbstractAction):
+    """v3 stub whose config is dict-shaped (like TimezoneAction): its
+    __init__ indexes the config, so a list-shaped empty bootstrap config
+    raises ``TypeError: list indices must be integers``.
+    """
+
+    _actual: set = {"Europe/Madrid"}
+    _fragment: dict = {"timezone": {"region": "Europe", "city": "Madrid"}}
+    _domain: str = "timezone"
+
+    def __init__(self, config, context=None):
+        super().__init__(config, context)
+        # Mirrors TimezoneAction: requires a dict-shaped config.
+        self.region = config.get("region")
+
+    @classmethod
+    def empty_config(cls):          # dict-shaped domain
+        return {}
+
+    @property
+    def name(self) -> str: return "dict-sync-stub"
+    def is_needed(self) -> bool: return False
+    def execute(self) -> None: pass
+    def plan(self, managed): return []          # marks the class as v3
+
+    def actual(self):
+        return set(type(self)._actual)
+
+    def import_state(self, managed=None):
+        return dict(type(self)._fragment)
+
+    def managed_keys(self):
+        return {type(self)._domain: []}
+
+
 def _meta(cls, config_key="packages"):
     return {
         "class": cls,
@@ -110,6 +145,17 @@ def test_sync_bootstrap_captures_actual_when_config_section_absent():
     assert new_config["packages"] == ["git", "htop"]
     assert new_config["metadata"] == {"name": "fresh"}  # passthrough
     assert manifest.managed == {"packages": ["git", "htop"]}
+
+
+def test_sync_bootstrap_dict_shaped_action_when_config_section_absent():
+    """A dict-shaped v3 action (e.g. TimezoneAction) with no config slice
+    must bootstrap from an empty *dict*, not an empty list. Regression for
+    `sync {}` raising 'list indices must be integers or slices, not str'.
+    """
+    r = _make(config={}, metas=[_meta(_DictSyncStub, config_key="timezone")])
+    new_config, manifest = r.sync()
+    assert new_config["timezone"] == {"region": "Europe", "city": "Madrid"}
+    assert manifest.managed == {"timezone": ["Europe/Madrid"]}
 
 
 def test_sync_sets_config_hash_of_new_config():

@@ -165,6 +165,19 @@ class AbstractAction(ABC):
         return {}
 
     @classmethod
+    def empty_config(cls) -> Any:
+        """The empty config of this action's shape, for sync/plan bootstrap.
+
+        When a config slice is absent but the action still has to run (sync
+        captures undeclared reality; plan cleans up owned-but-undeclared
+        entries), the Reconciler hands the action this value. The default is
+        ``[]`` — list-shaped domains (packages, users, …). Dict-shaped domains
+        (the scalar v3 actions) override this to ``{}`` so ``__init__`` doesn't
+        index a list (``TypeError: list indices must be integers``).
+        """
+        return []
+
+    @classmethod
     def is_v3(cls) -> bool:
         """True if this subclass overrides ``plan`` — i.e. uses the v3 API.
 

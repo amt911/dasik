@@ -168,3 +168,34 @@ def test_sync_sets_config_hash_of_new_config():
         json.dumps(new_config, sort_keys=True).encode("utf-8")
     ).hexdigest()
     assert manifest.config_hash == expected
+
+
+class _RaisingStub(AbstractAction):
+    """v3 stub whose import_state() raises (e.g. PermissionError on /etc/shadow)."""
+    _domain = "users"
+
+    @property
+    def name(self) -> str: return "raising"
+    def is_needed(self) -> bool: return False
+    def execute(self) -> None: pass
+    def plan(self, managed): return []
+    def actual(self):
+        raise PermissionError("/etc/shadow")
+    def import_state(self, managed=None):
+        raise PermissionError("/etc/shadow")
+    def managed_keys(self):
+        return {self._domain: []}
+
+
+def test_sync_isolates_a_raising_action():
+    """One action raising must NOT abort the whole sync (issue: users/shadow)."""
+    _SyncStub._actual = {"git", "htop"}
+    _SyncStub._fragment = {"packages": ["git", "htop"]}
+    r = _make(
+        config={"packages": ["git"]},
+        metas=[_meta(_RaisingStub, config_key="__root__"), _meta(_SyncStub)],
+    )
+    new_config, manifest = r.sync()           # must not raise
+    assert new_config["packages"] == ["git", "htop"]   # later action still captured
+    assert manifest is not None
+    assert "users" not in manifest.managed     # the raising domain is skipped

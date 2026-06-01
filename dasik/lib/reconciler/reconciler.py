@@ -266,16 +266,25 @@ class Reconciler:
             action = cls(action_config, ctx)
             managed_for_action = self._managed_for(action, managed_all)
 
-            fragment = action.import_state(managed_for_action)
-            if isinstance(fragment, dict):
-                fragments.update(fragment)
+            # Per-action isolation: one domain failing to read reality (e.g. an
+            # unreadable /etc/shadow, a missing tool) must NOT abort the whole
+            # sync. Skip the offending action with a warning and keep going.
+            try:
+                fragment = action.import_state(managed_for_action)
+                if isinstance(fragment, dict):
+                    fragments.update(fragment)
 
-            domain = self._domain_for(action)
-            if domain is not None:
-                # import_state() also reads actual() internally; this second
-                # call is intentional — managed tracks raw A (M <- A), not the
-                # fragment's derived/ordered list.
-                new_managed[domain] = sorted(action.actual())
+                domain = self._domain_for(action)
+                if domain is not None:
+                    # import_state() also reads actual() internally; this second
+                    # call is intentional — managed tracks raw A (M <- A), not the
+                    # fragment's derived/ordered list.
+                    new_managed[domain] = sorted(action.actual())
+            except Exception as e:  # noqa: BLE001 - isolate per-action failures
+                print(
+                    f"  Warning: skipping {type(action).__name__} during sync: {e}",
+                    file=sys.stderr,
+                )
 
         if not saw_v3:
             return self._config, None

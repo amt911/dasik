@@ -95,15 +95,15 @@ class SystemdAction(AbstractAction):
             Command.execute("systemctl", ["disable", unit], target=target)
 
     def import_state(self, managed=None) -> dict:
-        managed_set = set(managed or [])
+        # Capture reality: keep all declared units (intent) + every enabled unit
+        # not declared. Independent of M (sync reflects reality).
         actual = self.actual()
         d_off = set(self._d_off())
 
-        vanished = managed_set - actual                       # M \ A
-        kept_units = [u for u in self.units if u not in vanished]
-        kept_sockets = [s for s in self.sockets if s not in vanished]
+        kept_units = list(self.units)
+        kept_sockets = list(self.sockets)
 
-        drift = sorted(actual - set(self._d_on()) - managed_set - d_off)
+        drift = sorted(actual - set(self._d_on()) - d_off)
         socket_drift = [d for d in drift if d.endswith(".socket")]
         unit_drift = [d for d in drift if not d.endswith(".socket")]
 

@@ -230,3 +230,53 @@ def test_import_state_splits_environment_back_to_lines():
     a = _v3(_cfg(env=["A=1", "B=2"]), actual=[p], ondisk={p: "A=1\nB=2\nC=3\n"})
     frag = a.import_state(managed=[p])
     assert frag["etc_environment"] == ["A=1", "B=2", "C=3"]
+
+
+# ---------------------------------------------------------------------- #
+#  Arbitrary /etc paths (files section) — Plan 13                         #
+# ---------------------------------------------------------------------- #
+
+
+def _cfg_files(entries):
+    c = _cfg()
+    c["files"] = entries
+    return c
+
+
+def test_desired_includes_arbitrary_paths():
+    a = DropFilesAction(_cfg_files(
+        [{"path": "/etc/ssh/sshd_config.d/99-dasik.conf", "content": "X11Forwarding no"}]),
+        _ctx("/"))
+    assert a._desired()["/etc/ssh/sshd_config.d/99-dasik.conf"] == "X11Forwarding no"
+
+
+def test_plan_creates_arbitrary_path():
+    a = _v3(_cfg_files([{"path": "/etc/samba/smb.conf", "content": "[global]"}]), actual=[])
+    changes = a.plan(managed=[])
+    assert [(c.op, c.item) for c in changes] == [(Op.CREATE, "/etc/samba/smb.conf")]
+
+
+def test_plan_modify_on_arbitrary_path_drift():
+    p = "/etc/ssh/sshd_config.d/99-dasik.conf"
+    a = _v3(_cfg_files([{"path": p, "content": "NEW"}]), actual=[p], ondisk={p: "OLD"})
+    changes = a.plan(managed=[p])
+    assert [(c.op, c.item) for c in changes] == [(Op.MODIFY, p)]
+
+
+def test_managed_keys_includes_arbitrary_path():
+    a = DropFilesAction(_cfg_files([{"path": "/etc/samba/smb.conf", "content": "x"}]), _ctx("/"))
+    assert "/etc/samba/smb.conf" in a.managed_keys()["files"]
+
+
+def test_import_state_rebuilds_files_section_from_disk():
+    p = "/etc/samba/smb.conf"
+    a = _v3(_cfg_files([{"path": p, "content": "OLD"}]), actual=[p], ondisk={p: "EDITED"})
+    frag = a.import_state(managed=[p])
+    assert frag["files"] == [{"path": p, "content": "EDITED"}]
+
+
+def test_import_state_keeps_declared_files_content_when_absent():
+    p = "/etc/samba/smb.conf"
+    a = _v3(_cfg_files([{"path": p, "content": "DECLARED"}]), actual=[])
+    frag = a.import_state(managed=[])
+    assert frag["files"] == [{"path": p, "content": "DECLARED"}]

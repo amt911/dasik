@@ -53,7 +53,7 @@ dasik config.json -v        # verbose
 dasik config.json --dry-run # NOTE: parsed but NOT implemented yet (see __main__.py TODO)
 ```
 
-There is **no test runner configured** and no `tests/` directory, despite what `INTEGRATION-COMPLETE.md` and `docs/HOW-TO-TEST.md` claim (`tests/test_disk_integration.py` does not exist). Treat those docs as aspirational. See [Tests and quality](#tests-and-quality).
+A pytest suite **does** exist now (`tests/` mirrors `dasik/lib/`, configured in `pyproject.toml`; ~430 tests, all passing — run `pytest`). Note that `INTEGRATION-COMPLETE.md` and `docs/HOW-TO-TEST.md` still describe a `tests/test_disk_integration.py` that does **not** exist — treat those two docs as aspirational. See [Tests and quality](#tests-and-quality).
 
 ## How it works
 
@@ -106,9 +106,9 @@ Use `Command.execute(cmd, args, run_as_chroot=False)` (`dasik/lib/command_worker
 
 ## Tests and quality
 
-No suite exists today — these rules govern tests as they get written.
+A pytest suite exists (~430 tests under `tests/`, mirroring `dasik/lib/`). These rules govern both existing tests and new ones.
 
-- **pytest** + **pytest-cov** for unit tests. Config: `pyproject.toml` (`[tool.pytest.ini_options]`).
+- **pytest** for unit tests, **pytest-cov** for coverage (a `dev` extra in `pyproject.toml` — `pip install -e .[dev]`; not always installed, so `--cov` may be unavailable until you do). Config: `pyproject.toml` (`[tool.pytest.ini_options]` + `[tool.coverage.*]`).
 - **pytest monkeypatch / unittest.mock** to stub system access (`Command.execute`, `pathlib.Path`, `subprocess`). Never touch a real disk in a test.
 - File convention: `test_*.py` under a top-level `tests/` directory mirroring `dasik/lib/` layout.
 - **Coverage gate: 80%** (statements/branches). Don't lower the gate — exclude untestable modules in config with a written justification instead.
@@ -123,10 +123,11 @@ pytest -k is_needed          # filter by name
 
 | Folder | What | Status |
 | --- | --- | --- |
-| `dasik/lib/models/` | pydantic models — accept valid configs, reject invalid. Deterministic, no mocks | Pending |
-| `dasik/lib/json_parser/` | `JsonParser` against fixture JSON files; assert parsed dict + bad-file handling | Pending |
-| `dasik/lib/actions/` | `is_needed()` / `verify()` decision logic — monkeypatch `/mnt` paths & `Command.execute`, assert the boolean. **Highest value: these guarantee idempotency** | Pending |
-| `dasik/lib/command_worker/` | `Command` — binary lookup, chroot prefix, `CommandNotFoundException`. Mock `subprocess.run` / `shutil.which` | Pending |
+| `dasik/lib/models/` | pydantic models — accept valid configs, reject invalid. Deterministic, no mocks | ✅ Covered |
+| `dasik/lib/json_parser/` | `JsonParser` against fixture JSON files; assert parsed dict + bad-file handling | ⚠️ Pending (no tests yet) |
+| `dasik/lib/actions/` | `is_needed()` / `verify()` decision logic — monkeypatch `/mnt` paths & `Command.execute`, assert the boolean. **Highest value: these guarantee idempotency** | ✅ Covered (largest area) |
+| `dasik/lib/command_worker/` | `Command` — binary lookup, chroot prefix, `CommandNotFoundException`. Mock `subprocess.run` / `shutil.which` | ✅ Covered |
+| `dasik/lib/reconciler/`, `dasik/lib/state/`, `dasik/lib/target/` | v3 `plan`/`apply`/`sync`, set-math, manifests/generations, config writer | ✅ Covered |
 
 ### TDD — required for new logic
 

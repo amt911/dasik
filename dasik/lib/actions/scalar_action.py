@@ -16,6 +16,11 @@ class ScalarV3Action(AbstractAction):
 
     _DOMAIN: str = ""
 
+    @classmethod
+    def empty_config(cls):
+        """Scalar domains are dict-shaped; bootstrap from an empty dict."""
+        return {}
+
     # --- subclass hooks ------------------------------------------------ #
 
     def _desired_value(self) -> Optional[str]:

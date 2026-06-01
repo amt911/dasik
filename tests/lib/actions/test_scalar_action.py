@@ -86,3 +86,8 @@ def test_import_state_uses_actual_then_desired():
 
 def test_is_v3_true():
     assert _FakeScalar("x", "x").is_v3() is True
+
+
+def test_empty_config_is_empty_dict():
+    """Scalar domains are dict-shaped, so their bootstrap empty config is {}."""
+    assert _FakeScalar.empty_config() == {}

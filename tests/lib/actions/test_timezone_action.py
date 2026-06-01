@@ -147,3 +147,24 @@ def test_import_fragment_splits_region_city():
     a = TimezoneAction(_cfg())
     assert a._import_fragment("Asia/Tokyo") == {
         "timezone": {"region": "Asia", "city": "Tokyo"}}
+
+
+def test_empty_config_is_empty_dict():
+    assert TimezoneAction.empty_config() == {}
+
+
+def test_constructs_from_empty_bootstrap_config():
+    """sync hands an empty dict when no `timezone` slice exists; __init__
+    must not require region/city to be present."""
+    a = TimezoneAction(TimezoneAction.empty_config(), _ctx("/"))
+    assert a.region is None
+    assert a.city is None
+
+
+def test_import_state_captures_actual_from_empty_config():
+    """Bootstrap sync: empty config + real symlink → captured fragment."""
+    a = TimezoneAction(TimezoneAction.empty_config(), _ctx("/"))
+    with patch("dasik.lib.actions.timezone_action.Path",
+               return_value=_link(target="/usr/share/zoneinfo/Asia/Tokyo")):
+        assert a.import_state() == {
+            "timezone": {"region": "Asia", "city": "Tokyo"}}

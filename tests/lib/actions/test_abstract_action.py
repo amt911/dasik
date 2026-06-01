@@ -18,6 +18,11 @@ class _LegacyAction(AbstractAction):
         pass
 
 
+def test_empty_config_defaults_to_empty_list():
+    """The bootstrap empty config for a generic/list-shaped action is []."""
+    assert _LegacyAction.empty_config() == []
+
+
 class _V3Action(AbstractAction):
     """A v3 action: overrides plan/apply/actual/import_state/managed_keys."""
 

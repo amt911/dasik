@@ -154,12 +154,13 @@ class Reconciler:
         return any(managed_all.get(k) for k in keys)
 
     @staticmethod
-    def _empty_config_for(action_cls: type) -> Any:
-        """When config slice is missing but managed has entries, hand the
-        action an empty config of the right shape (list/dict) so its plan()
-        can run. Defaults to ``[]`` — packages/users/systemd all accept a list.
+    def _empty_config_for(action_cls: type[AbstractAction]) -> Any:
+        """When a config slice is missing but the action must still run, hand
+        it an empty config of the right shape. The action declares its shape
+        via ``empty_config()`` — ``[]`` for list domains (packages/users/…),
+        ``{}`` for the dict-shaped scalar v3 actions (timezone/…).
         """
-        return []
+        return action_cls.empty_config()
 
     def apply(
         self,

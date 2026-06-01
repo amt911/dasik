@@ -1,26 +1,23 @@
 """Action: configure system locales (locale.gen, locale.conf, vconsole.conf).
 
-Ported from the legacy ``_before_check``/``do_action`` form to the
-AbstractAction contract (issue #66). Registered with config_key='locales',
-so it receives the locales sub-dict directly.
-
-Idempotent: only rewrites when the uncommented locales, LANG, or KEYMAP
-differ from the desired configuration.
+Composite v3 domain "locales": the desired state is the (selected_locales,
+LANG, KEYMAP) record; one MODIFY when any field drifts. Target-aware.
 """
 from __future__ import annotations
 import re
-from pathlib import Path
-from typing import Any, Dict, List
-from .abstract_action import AbstractAction
+from typing import Any, Dict, List, Optional
+from .composite_action import CompositeV3Action
 from ..command_worker.command_worker import Command
 
-_LOCALE_GEN = "/mnt/etc/locale.gen"
-_LOCALE_CONF = "/mnt/etc/locale.conf"
-_VCONSOLE_CONF = "/mnt/etc/vconsole.conf"
+_LOCALE_GEN = "/etc/locale.gen"
+_LOCALE_CONF = "/etc/locale.conf"
+_VCONSOLE_CONF = "/etc/vconsole.conf"
 
 
-class LocaleAction(AbstractAction):
-    """Configure locales declaratively."""
+class LocaleAction(CompositeV3Action):
+    """Configure locales declaratively (composite v3 domain)."""
+
+    _DOMAIN = "locales"
 
     def __init__(self, config: Any, context=None):
         super().__init__(config, context)
@@ -37,54 +34,70 @@ class LocaleAction(AbstractAction):
     def is_optional(self) -> bool:
         return True
 
-    def is_needed(self) -> bool:
-        with open(_LOCALE_GEN, "r") as locale_gen:
-            locale_gen_str = locale_gen.read()
+    # --- target-aware paths ------------------------------------------- #
 
-        uncommented = re.findall(r"^[a-z]+_\S+ \S+", locale_gen_str, re.MULTILINE)
-        if len(uncommented) != len(self._selected_locales):
-            return True
+    def _target(self):
+        return getattr(self.context, "target", None) if self.context else None
 
+    def _p(self, canonical: str) -> str:
+        t = self._target()
+        return t.path(canonical) if t is not None else "/mnt" + canonical
+
+    # --- composite state ---------------------------------------------- #
+
+    def _desired_state(self) -> dict:
+        return {
+            "selected_locales": sorted(self._selected_locales),
+            "desired_locale": self._desired_locale,
+            "desired_tty_layout": self._desired_tty_layout,
+        }
+
+    def _read(self, canonical: str) -> Optional[str]:
+        try:
+            with open(self._p(canonical), "r") as f:
+                return f.read()
+        except FileNotFoundError:
+            return None
+
+    def _actual_state(self) -> Optional[dict]:
+        gen = self._read(_LOCALE_GEN)
+        conf = self._read(_LOCALE_CONF)
+        vconsole = self._read(_VCONSOLE_CONF)
+        if gen is None or conf is None or vconsole is None:
+            return None
+        uncommented = re.findall(r"^[a-z]+_\S+ \S+", gen, re.MULTILINE)
+        lang = ""
+        for line in conf.splitlines():
+            if line.startswith("LANG="):
+                lang = line.split("=", 1)[1].strip()
+        keymap = ""
+        for line in vconsole.splitlines():
+            if line.startswith("KEYMAP="):
+                keymap = line.split("=", 1)[1].strip()
+        return {
+            "selected_locales": sorted(uncommented),
+            "desired_locale": lang,
+            "desired_tty_layout": keymap,
+        }
+
+    def _import_fragment(self, value) -> dict:
+        return {self._DOMAIN: self._actual_state() or self._desired_state()}
+
+    def _set_value(self) -> None:  # pragma: no cover - writes /etc + runs locale-gen
+        gen_path = self._p(_LOCALE_GEN)
+        with open(gen_path, "r") as f:
+            text = f.read()
+        text = re.sub(r"(^[a-z]+)", r"#\1", text, 0, re.MULTILINE)  # comment all
         for loc in self._selected_locales:
-            if re.search(rf"^{re.escape(loc)}", locale_gen_str, re.MULTILINE) is None:
-                return True
-
-        if not Path(_LOCALE_CONF).exists():
-            return True
-        with open(_LOCALE_CONF, "r") as f:
-            if re.search(re.escape(self._desired_locale), f.read()) is None:
-                return True
-
-        if not Path(_VCONSOLE_CONF).exists():
-            return True
-        with open(_VCONSOLE_CONF, "r") as f:
-            if re.search(re.escape(self._desired_tty_layout), f.read()) is None:
-                return True
-
-        return False
-
-    def execute(self) -> None:  # pragma: no cover - writes /mnt + runs locale-gen
-        self._comment_all_entries()
-        with open(_LOCALE_GEN, "r+") as locale_gen:
-            text = locale_gen.read()
-            locale_gen.seek(0)
-            for loc in self._selected_locales:
-                text = text.replace(f"#{loc}", f"{loc}")
-            locale_gen.write(text)
-
-        with open(_LOCALE_CONF, "w") as f:
+            text = text.replace(f"#{loc}", f"{loc}")
+        with open(gen_path, "w") as f:
+            f.write(text)
+        with open(self._p(_LOCALE_CONF), "w") as f:
             f.write(f"LANG={self._desired_locale}")
-        with open(_VCONSOLE_CONF, "w") as f:
+        with open(self._p(_VCONSOLE_CONF), "w") as f:
             f.write(f"KEYMAP={self._desired_tty_layout}")
-
-        print(Command.execute("locale-gen", [], True).stdout.decode())
-
-    def _comment_all_entries(self) -> None:  # pragma: no cover - writes /mnt
-        with open(_LOCALE_GEN, "r+") as locale_gen:
-            text = locale_gen.read()
-            locale_gen.seek(0)
-            text = re.sub(r"(^[a-z]+)", r"#\1", text, 0, re.MULTILINE)
-            locale_gen.write(text)
-
-    def verify(self) -> bool:
-        return not self.is_needed()
+        t = self._target()
+        if t is not None:
+            Command.execute("locale-gen", [], target=t)
+        else:
+            Command.execute("locale-gen", [], True)

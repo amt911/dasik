@@ -35,6 +35,7 @@ class DropFilesAction(AbstractAction):
         cfg: Dict[str, Any] = config if isinstance(config, dict) else {}
         self._sections = {key: cfg.get(key, []) for key, _ in _SECTIONS}
         self.etc_env_lines: List[str] = cfg.get("etc_environment", [])
+        self._etc_files: List[Any] = cfg.get("files", [])
 
     @property
     def name(self) -> str:
@@ -60,6 +61,13 @@ class DropFilesAction(AbstractAction):
             return entry["name"], entry["content"]
         return entry.name, entry.content
 
+    @staticmethod
+    def _path_fields(entry: Any) -> tuple:
+        """Accept a dict or an EtcFile-like object (arbitrary /etc path)."""
+        if isinstance(entry, dict):
+            return entry["path"], entry["content"]
+        return entry.path, entry.content
+
     def _desired(self) -> Dict[str, str]:
         """Canonical absolute path -> verbatim content."""
         desired: Dict[str, str] = {}
@@ -69,6 +77,9 @@ class DropFilesAction(AbstractAction):
                 desired[f"{directory}/{name}"] = content
         if self.etc_env_lines:
             desired[_ENV_PATH] = "\n".join(self.etc_env_lines) + "\n"
+        for entry in self._etc_files:
+            path, content = self._path_fields(entry)
+            desired[path] = content
         return desired
 
     def _read(self, canonical: str) -> str:
@@ -129,6 +140,14 @@ class DropFilesAction(AbstractAction):
             result["etc_environment"] = [ln for ln in text.split("\n") if ln != ""]
         else:
             result["etc_environment"] = list(self.etc_env_lines)
+
+        files_out = []
+        for entry in self._etc_files:
+            path, content = self._path_fields(entry)
+            if path in actual:
+                content = self._read(path)
+            files_out.append({"path": path, "content": content})
+        result["files"] = files_out
         return result
 
     def apply(self, changes) -> None:

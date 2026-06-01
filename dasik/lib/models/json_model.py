@@ -49,6 +49,7 @@ class JsonModel(BaseModel):
     # Toggles
     enable_trim: bool = False
     remove_home_on_delete: bool = False
+    initramfs: str = "mkinitcpio"
 
     # Sub-models
     pacman: Optional[PacmanModel] = None

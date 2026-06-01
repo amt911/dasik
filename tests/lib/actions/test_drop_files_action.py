@@ -1,82 +1,232 @@
 from unittest.mock import mock_open, patch
 
 from dasik.lib.actions.drop_files_action import DropFilesAction, _sha256
+from dasik.lib.actions.action_context import ActionContext
+from dasik.lib.target.target import Target
+from dasik.lib.state.change import Change, Op
+
+
+def _ctx(root="/"):
+    return ActionContext(target=Target(root=root))
+
+
+def _cfg(udev=None, modprobe=None, profile=None, env=None):
+    return {
+        "udev_rules": udev or [],
+        "modprobe_conf": modprobe or [],
+        "profile_d": profile or [],
+        "etc_environment": env or [],
+    }
 
 
 def test_sha256_deterministic():
     assert _sha256("x") == _sha256("x")
 
 
-def test_plan_maps_each_section_to_files():
-    a = DropFilesAction({
-        "udev_rules": ["RULE1", "RULE2"],
-        "modprobe_conf": ["options x"],
-        "profile_d": ["export A=1"],
-        "etc_environment": ["EDITOR=vim", "PAGER=less"],
-    })
-    plan = dict(a._plan())
-    assert "/mnt/etc/udev/rules.d/99-dasik-01.rules" in plan
-    assert "/mnt/etc/udev/rules.d/99-dasik-02.rules" in plan
-    assert plan["/mnt/etc/modprobe.d/dasik-01.conf"] == "options x\n"
-    assert plan["/mnt/etc/profile.d/dasik-01.sh"] == "export A=1\n"
-    # etc/environment joins all lines into one file
-    assert plan["/mnt/etc/environment"] == "EDITOR=vim\nPAGER=less\n"
+def test_desired_maps_sections_to_canonical_paths():
+    a = DropFilesAction(_cfg(
+        udev=[{"name": "99-x.rules", "content": "RULE"}],
+        modprobe=[{"name": "x.conf", "content": "options x"}],
+        profile=[{"name": "x.sh", "content": "export A=1"}],
+        env=["EDITOR=vim", "PAGER=less"],
+    ), _ctx("/"))
+    d = a._desired()
+    assert d["/etc/udev/rules.d/99-x.rules"] == "RULE"
+    assert d["/etc/modprobe.d/x.conf"] == "options x"
+    assert d["/etc/profile.d/x.sh"] == "export A=1"
+    assert d["/etc/environment"] == "EDITOR=vim\nPAGER=less\n"
 
 
-def test_empty_config_has_empty_plan():
-    a = DropFilesAction({})
-    assert a._plan() == []
-    assert a.is_needed() is False
+def test_desired_omits_environment_when_no_lines():
+    a = DropFilesAction(_cfg(udev=[{"name": "a.rules", "content": "R"}]), _ctx("/"))
+    assert "/etc/environment" not in a._desired()
 
 
-def test_needs_write_true_when_file_absent():
-    a = DropFilesAction({})
-    with patch("dasik.lib.actions.drop_files_action.os.path.exists", return_value=False):
-        assert a._needs_write("/mnt/x", "content") is True
+def test_abs_resolves_through_target():
+    a = DropFilesAction(_cfg(), _ctx("/mnt"))
+    assert a._abs("/etc/environment") == "/mnt/etc/environment"
+    b = DropFilesAction(_cfg(), _ctx("/"))
+    assert b._abs("/etc/environment") == "/etc/environment"
 
 
-def test_needs_write_false_when_content_matches():
-    a = DropFilesAction({})
-    with patch("dasik.lib.actions.drop_files_action.os.path.exists", return_value=True), \
-         patch("builtins.open", mock_open(read_data="content")):
-        assert a._needs_write("/mnt/x", "content") is False
+def test_actual_returns_declared_paths_that_exist():
+    a = DropFilesAction(_cfg(
+        udev=[{"name": "a.rules", "content": "R"}, {"name": "b.rules", "content": "R2"}],
+    ), _ctx("/"))
+    exists = {"/etc/udev/rules.d/a.rules"}
+    with patch("dasik.lib.actions.drop_files_action.os.path.exists",
+               side_effect=lambda p: p in exists):
+        assert a.actual() == {"/etc/udev/rules.d/a.rules"}
 
 
-def test_needs_write_true_when_content_differs():
-    a = DropFilesAction({})
-    with patch("dasik.lib.actions.drop_files_action.os.path.exists", return_value=True), \
-         patch("builtins.open", mock_open(read_data="old")):
-        assert a._needs_write("/mnt/x", "new") is True
+def test_actual_empty_without_target():
+    a = DropFilesAction(_cfg(udev=[{"name": "a.rules", "content": "R"}]), None)
+    assert a.actual() == set()
 
 
-def test_is_needed_and_verify_track_plan():
-    a = DropFilesAction({"udev_rules": ["R"]})
+# --- legacy is_needed / execute / verify (migrated to {name,content}) --- #
+
+
+def test_legacy_needed_when_file_absent():
+    a = DropFilesAction(_cfg(udev=[{"name": "a.rules", "content": "R"}]), _ctx("/"))
     with patch("dasik.lib.actions.drop_files_action.os.path.exists", return_value=False):
         assert a.is_needed() is True
-        assert a.verify() is False
+
+
+def test_legacy_not_needed_when_content_matches():
+    a = DropFilesAction(_cfg(udev=[{"name": "a.rules", "content": "R"}]), _ctx("/"))
     with patch("dasik.lib.actions.drop_files_action.os.path.exists", return_value=True), \
-         patch("builtins.open", mock_open(read_data="R\n")):
+         patch("builtins.open", mock_open(read_data="R")):
         assert a.is_needed() is False
         assert a.verify() is True
 
 
-def test_execute_writes_only_files_that_need_writing():
-    a = DropFilesAction({"udev_rules": ["R"], "modprobe_conf": ["M"]})
-    m = mock_open()
-    # udev file already correct, modprobe file missing → only modprobe written
-    def needs(path, content):
-        return "modprobe" in path
-    with patch.object(DropFilesAction, "_needs_write", side_effect=needs), \
-         patch("dasik.lib.actions.drop_files_action.os.makedirs") as mkdirs, \
-         patch("builtins.open", m):
-        a.execute()
-    written_paths = [c.args[0] for c in m.call_args_list]
-    assert any("modprobe" in p for p in written_paths)
-    assert not any("udev" in p for p in written_paths)
-    mkdirs.assert_called_once()
+def test_legacy_needed_when_content_differs():
+    a = DropFilesAction(_cfg(udev=[{"name": "a.rules", "content": "NEW"}]), _ctx("/"))
+    with patch("dasik.lib.actions.drop_files_action.os.path.exists", return_value=True), \
+         patch("builtins.open", mock_open(read_data="OLD")):
+        assert a.is_needed() is True
 
 
 def test_name_and_optional():
-    a = DropFilesAction({})
+    a = DropFilesAction(_cfg())
     assert a.name == "Drop Config Files"
     assert a.is_optional is True
+
+
+# ---------------------------------------------------------------------- #
+#  Task 3: plan() + managed_keys()                                        #
+# ---------------------------------------------------------------------- #
+
+
+def _v3(cfg, actual, ondisk=None):
+    a = DropFilesAction(cfg, _ctx("/"))
+    a.actual = lambda: set(actual)
+    a._read = lambda p: (ondisk or {}).get(p, "")
+    return a
+
+
+def test_plan_creates_missing_file():
+    a = _v3(_cfg(udev=[{"name": "a.rules", "content": "R"}]), actual=[])
+    changes = a.plan(managed=[])
+    assert [(c.op, c.item) for c in changes] == [(Op.CREATE, "/etc/udev/rules.d/a.rules")]
+
+
+def test_plan_deletes_orphan_owned():
+    a = _v3(_cfg(), actual=[])
+    changes = a.plan(managed=["/etc/modprobe.d/old.conf"])
+    assert [(c.op, c.item) for c in changes] == [(Op.DELETE, "/etc/modprobe.d/old.conf")]
+
+
+def test_plan_modifies_on_content_drift():
+    p = "/etc/udev/rules.d/a.rules"
+    a = _v3(_cfg(udev=[{"name": "a.rules", "content": "NEW"}]),
+            actual=[p], ondisk={p: "OLD"})
+    changes = a.plan(managed=[p])
+    assert [(c.op, c.item) for c in changes] == [(Op.MODIFY, p)]
+
+
+def test_plan_empty_when_converged():
+    p = "/etc/udev/rules.d/a.rules"
+    a = _v3(_cfg(udev=[{"name": "a.rules", "content": "R"}]),
+            actual=[p], ondisk={p: "R"})
+    assert a.plan(managed=[p]) == []
+
+
+def test_managed_keys_lists_canonical_paths():
+    a = DropFilesAction(_cfg(
+        udev=[{"name": "a.rules", "content": "R"}], env=["X=1"]), _ctx("/"))
+    assert a.managed_keys() == {"files": ["/etc/environment", "/etc/udev/rules.d/a.rules"]}
+
+
+# ---------------------------------------------------------------------- #
+#  Task 4: apply()                                                        #
+# ---------------------------------------------------------------------- #
+
+
+def test_apply_writes_created_and_modified_files():
+    a = DropFilesAction(_cfg(
+        udev=[{"name": "a.rules", "content": "R"}],
+        modprobe=[{"name": "b.conf", "content": "B"}]), _ctx("/"))
+    m = mock_open()
+    changes = [
+        Change("files", Op.CREATE, "/etc/udev/rules.d/a.rules"),
+        Change("files", Op.MODIFY, "/etc/modprobe.d/b.conf"),
+    ]
+    with patch("dasik.lib.actions.drop_files_action.os.makedirs") as mkdirs, \
+         patch("builtins.open", m):
+        a.apply(changes)
+    written = {c.args[0] for c in m.call_args_list}
+    assert "/etc/udev/rules.d/a.rules" in written
+    assert "/etc/modprobe.d/b.conf" in written
+    assert mkdirs.call_count == 2
+    bodies = "".join(c.args[0] for c in m().write.call_args_list)
+    assert "R" in bodies and "B" in bodies
+
+
+def test_apply_removes_orphan_files():
+    a = DropFilesAction(_cfg(), _ctx("/"))
+    with patch("dasik.lib.actions.drop_files_action.os.path.exists", return_value=True), \
+         patch("dasik.lib.actions.drop_files_action.os.remove") as rm:
+        a.apply([Change("files", Op.DELETE, "/etc/modprobe.d/old.conf")])
+    rm.assert_called_once_with("/etc/modprobe.d/old.conf")
+
+
+def test_apply_delete_skips_missing_file():
+    a = DropFilesAction(_cfg(), _ctx("/"))
+    with patch("dasik.lib.actions.drop_files_action.os.path.exists", return_value=False), \
+         patch("dasik.lib.actions.drop_files_action.os.remove") as rm:
+        a.apply([Change("files", Op.DELETE, "/etc/modprobe.d/old.conf")])
+    rm.assert_not_called()
+
+
+def test_apply_create_before_delete():
+    a = DropFilesAction(_cfg(udev=[{"name": "a.rules", "content": "R"}]), _ctx("/"))
+    changes = [
+        Change("files", Op.DELETE, "/etc/modprobe.d/old.conf"),
+        Change("files", Op.CREATE, "/etc/udev/rules.d/a.rules"),
+    ]
+    order = []
+    with patch("dasik.lib.actions.drop_files_action.os.makedirs",
+               side_effect=lambda *a_, **k: order.append("write")), \
+         patch("builtins.open", mock_open()), \
+         patch("dasik.lib.actions.drop_files_action.os.path.exists", return_value=True), \
+         patch("dasik.lib.actions.drop_files_action.os.remove",
+               side_effect=lambda p: order.append("del")):
+        a.apply(changes)
+    assert order == ["write", "del"]
+
+
+def test_apply_noop_without_target():
+    a = DropFilesAction(_cfg(udev=[{"name": "a.rules", "content": "R"}]), None)
+    with patch("builtins.open", mock_open()) as m, \
+         patch("dasik.lib.actions.drop_files_action.os.remove") as rm:
+        a.apply([Change("files", Op.CREATE, "/etc/udev/rules.d/a.rules")])
+    m.assert_not_called()
+    rm.assert_not_called()
+
+
+# ---------------------------------------------------------------------- #
+#  Task 5: import_state() (sync)                                          #
+# ---------------------------------------------------------------------- #
+
+
+def test_import_state_refreshes_content_from_disk():
+    p = "/etc/udev/rules.d/a.rules"
+    a = _v3(_cfg(udev=[{"name": "a.rules", "content": "OLD"}]),
+            actual=[p], ondisk={p: "EDITED-ON-DISK"})
+    frag = a.import_state(managed=[p])
+    assert frag["udev_rules"] == [{"name": "a.rules", "content": "EDITED-ON-DISK"}]
+
+
+def test_import_state_keeps_declared_content_when_absent():
+    a = _v3(_cfg(profile=[{"name": "x.sh", "content": "export A=1"}]), actual=[])
+    frag = a.import_state(managed=[])
+    assert frag["profile_d"] == [{"name": "x.sh", "content": "export A=1"}]
+
+
+def test_import_state_splits_environment_back_to_lines():
+    p = "/etc/environment"
+    a = _v3(_cfg(env=["A=1", "B=2"]), actual=[p], ondisk={p: "A=1\nB=2\nC=3\n"})
+    frag = a.import_state(managed=[p])
+    assert frag["etc_environment"] == ["A=1", "B=2", "C=3"]

@@ -35,18 +35,18 @@
   ],
 
   "udev_rules": [
-    "# TP-Link UB400 adapter rule\nACTION==\"add\", SUBSYSTEM==\"usb\", ATTR{idVendor}==\"0bda\", ATTR{idProduct}==\"c821\", MODE=\"0666\"",
-    "# KROM Kreator example rule\nACTION==\"add\", SUBSYSTEM==\"usb\", ATTR{idVendor}==\"5566\", ATTR{idProduct}==\"0008\", MODE=\"0666\""
+    { "name": "99-ub400.rules", "content": "# TP-Link UB400 adapter rule\nACTION==\"add\", SUBSYSTEM==\"usb\", ATTR{idVendor}==\"0bda\", ATTR{idProduct}==\"c821\", MODE=\"0666\"" },
+    { "name": "99-krom.rules", "content": "# KROM Kreator example rule\nACTION==\"add\", SUBSYSTEM==\"usb\", ATTR{idVendor}==\"5566\", ATTR{idProduct}==\"0008\", MODE=\"0666\"" }
   ],
 
   "modprobe_conf": [
-    "# nvidia recommended options\noptions nvidia_drm modeset=1\noptions nvidia_drm fbdev=1",
-    "# virtio modules tuning\noptions virtio_pci disable_legacy=1"
+    { "name": "nvidia.conf", "content": "# nvidia recommended options\noptions nvidia_drm modeset=1\noptions nvidia_drm fbdev=1" },
+    { "name": "virtio.conf", "content": "# virtio modules tuning\noptions virtio_pci disable_legacy=1" }
   ],
 
   "profile_d": [
-    "# laptop_hw_acc.sh example\nexport LIBVA_DRIVER_NAME=nvidia\nexport MOZ_DISABLE_RDD_SANDBOX=1\n",
-    "# environment for snapping apps\nexport GTK_THEME=Adwaita:dark\n"
+    { "name": "hw-accel.sh", "content": "# laptop_hw_acc.sh example\nexport LIBVA_DRIVER_NAME=nvidia\nexport MOZ_DISABLE_RDD_SANDBOX=1\n" },
+    { "name": "snap-theme.sh", "content": "# environment for snapping apps\nexport GTK_THEME=Adwaita:dark\n" }
   ],
 
   "etc_environment": [

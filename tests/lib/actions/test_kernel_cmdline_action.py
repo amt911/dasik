@@ -1,15 +1,63 @@
-from unittest.mock import mock_open, patch
+from unittest.mock import MagicMock, mock_open, patch
 
 from dasik.lib.actions.kernel_cmdline_action import KernelCmdlineAction
 
 
-def test_derive_encryption_params():
-    cfg = {"disks": {"disks": [{"partitions": [
+def _enc_cfg():
+    return {"disks": {"disks": [{"partitions": [
         {"mountpoint": "/", "encrypt": True, "luks_name": "croot", "filesystem": "ext4"}]}]}}
-    a = KernelCmdlineAction(cfg)
-    joined = " ".join(a._auto_params)
-    assert "rd.luks.name=<ROOT_UUID>=croot" in joined
-    assert "root=/dev/mapper/croot rw" in joined
+
+
+def _fake_exec(mapping):
+    """mapping: (cmd, args[0]) -> stdout bytes. Matches on first arg."""
+    def run(cmd, args, *a, **k):
+        key = (cmd, args[0] if args else "")
+        return MagicMock(stdout=mapping.get(key, b""), returncode=0)
+    return run
+
+
+def test_luks_backing_device_parses_status():
+    a = KernelCmdlineAction(_enc_cfg())
+    status = b"/dev/mapper/croot is active.\n  type:    LUKS2\n  device:  /dev/sda2\n"
+    with patch("dasik.lib.actions.kernel_cmdline_action.Command.execute",
+               _fake_exec({("cryptsetup", "status"): status})):
+        assert a._luks_backing_device("croot") == "/dev/sda2"
+
+
+def test_luks_backing_device_none_on_failure():
+    a = KernelCmdlineAction(_enc_cfg())
+    fail = MagicMock(return_value=MagicMock(stdout=b"", returncode=4))
+    with patch("dasik.lib.actions.kernel_cmdline_action.Command.execute", fail):
+        assert a._luks_backing_device("croot") is None
+
+
+def test_resolve_luks_uuid_via_blkid():
+    a = KernelCmdlineAction(_enc_cfg())
+    status = b"  device:  /dev/sda2\n"
+    with patch("dasik.lib.actions.kernel_cmdline_action.Command.execute",
+               _fake_exec({("cryptsetup", "status"): status,
+                           ("blkid", "-s"): b"DEAD-BEEF\n"})):
+        assert a._resolve_luks_uuid("croot") == "DEAD-BEEF"
+
+
+def test_derive_encryption_resolves_real_uuid():
+    a = KernelCmdlineAction(_enc_cfg())
+    status = b"  device:  /dev/sda2\n"
+    with patch("dasik.lib.actions.kernel_cmdline_action.Command.execute",
+               _fake_exec({("cryptsetup", "status"): status,
+                           ("blkid", "-s"): b"U1\n"})):
+        derived = a._derive_from_disks()
+    assert "rd.luks.name=U1=croot" in derived
+    assert "root=/dev/mapper/croot rw" in derived
+
+
+def test_derive_omits_luks_param_when_unresolved():
+    a = KernelCmdlineAction(_enc_cfg())
+    fail = MagicMock(return_value=MagicMock(stdout=b"", returncode=4))
+    with patch("dasik.lib.actions.kernel_cmdline_action.Command.execute", fail):
+        derived = a._derive_from_disks()
+    assert not any(d.startswith("rd.luks.name=") for d in derived)
+    assert "root=/dev/mapper/croot rw" in derived
 
 
 def test_derive_btrfs_rootflags():
@@ -18,7 +66,7 @@ def test_derive_btrfs_rootflags():
         "btrfs_subvolumes": [{"mountpoint": "/", "name": "@", "mount_options": ["noatime"]}],
     }]}]}}
     a = KernelCmdlineAction(cfg)
-    joined = " ".join(a._auto_params)
+    joined = " ".join(a._derive_from_disks())
     assert "rootflags=noatime,subvol=@" in joined
 
 
@@ -26,7 +74,7 @@ def test_btrfs_rootflags_default_subvol_and_options():
     cfg = {"disks": {"disks": [{"partitions": [{
         "mountpoint": "/", "filesystem": "btrfs", "btrfs_subvolumes": []}]}]}}
     a = KernelCmdlineAction(cfg)
-    assert any("subvol=@" in p and "compress-force=zstd" in p for p in a._auto_params)
+    assert any("subvol=@" in p and "compress-force=zstd" in p for p in a._derive_from_disks())
 
 
 def test_merge_explicit_wins_on_key_conflict():

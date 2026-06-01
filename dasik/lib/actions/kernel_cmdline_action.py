@@ -12,46 +12,75 @@ import re
 import subprocess
 from typing import Any, Dict, List, Optional
 from .abstract_action import AbstractAction
+from ..command_worker.command_worker import Command
 
 
 class KernelCmdlineAction(AbstractAction):
     """Set kernel command line parameters declaratively."""
 
+    _DOMAIN = "kernel_cmdline"
+
     def __init__(self, config: Any, context=None):
         super().__init__(config, context)
         cfg: Dict[str, Any] = config if isinstance(config, dict) else {}
-
+        self._cfg = cfg
         self.bootloader: str = cfg.get("bootloader", "grub")
         self.explicit_params: List[str] = cfg.get("kernel_cmdline", [])
 
-        # Auto-derive from disk config
-        self._auto_params = self._derive_from_disks(cfg)
-        self.desired_params = self._merge(self._auto_params, self.explicit_params)
+    def _target(self):
+        return getattr(self.context, "target", None) if self.context else None
+
+    @property
+    def desired_params(self) -> List[str]:
+        return self._merge(self._derive_from_disks(), self.explicit_params)
 
     # ------------------------------------------------------------------ #
-    #  auto-derivation from disk config (same logic as old bash)
+    #  portable LUKS UUID resolution (via the open mapping; host-level)
     # ------------------------------------------------------------------ #
 
-    @staticmethod
-    def _derive_from_disks(cfg: Dict[str, Any]) -> List[str]:
+    def _luks_backing_device(self, luks_name: str) -> Optional[str]:
+        result = Command.execute("cryptsetup", ["status", luks_name])
+        if getattr(result, "returncode", 1) != 0:
+            return None
+        stdout = getattr(result, "stdout", b"") or b""
+        if isinstance(stdout, bytes):
+            stdout = stdout.decode("utf-8", errors="replace")
+        for line in stdout.splitlines():
+            if "device:" in line:
+                return line.split("device:")[1].strip()
+        return None
+
+    def _resolve_luks_uuid(self, luks_name: str) -> Optional[str]:
+        dev = self._luks_backing_device(luks_name)
+        if not dev:
+            return None
+        result = Command.execute("blkid", ["-s", "UUID", "-o", "value", dev])
+        stdout = getattr(result, "stdout", b"") or b""
+        if isinstance(stdout, bytes):
+            stdout = stdout.decode("utf-8", errors="replace")
+        return stdout.strip() or None
+
+    # ------------------------------------------------------------------ #
+    #  auto-derivation from disk config (UUID resolved → portable)
+    # ------------------------------------------------------------------ #
+
+    def _derive_from_disks(self) -> List[str]:
         params: List[str] = []
-        disks = cfg.get("disks", {})
+        disks = self._cfg.get("disks", {})
         if not isinstance(disks, dict):
             return params
 
         for disk in disks.get("disks", []):
             for part in disk.get("partitions", []):
-                mp = part.get("mountpoint")
-                if mp != "/":
+                if part.get("mountpoint") != "/":
                     continue
-                # Encryption
                 if part.get("encrypt"):
                     dm_name = part.get("luks_name", "cryptroot")
-                    # UUID will be resolved at runtime; for now use placeholder
-                    params.append(f"rd.luks.name=<ROOT_UUID>={dm_name}")
+                    uuid = self._resolve_luks_uuid(dm_name)
+                    if uuid:
+                        params.append(f"rd.luks.name={uuid}={dm_name}")
                     params.append(f"root=/dev/mapper/{dm_name} rw")
 
-                # btrfs rootflags
                 fs = part.get("filesystem", "")
                 if fs == "btrfs":
                     subvols = part.get("btrfs_subvolumes", [])

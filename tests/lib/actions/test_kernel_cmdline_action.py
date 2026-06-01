@@ -182,3 +182,34 @@ def test_plan_empty_when_converged():
 def test_managed_keys_lists_desired_tokens():
     a = KernelCmdlineAction({"kernel_cmdline": ["quiet"]}, _ctx("/"))
     assert a.managed_keys() == {"kernel_cmdline": ["quiet"]}
+
+
+def test_apply_grub_rewrites_line_and_regens():
+    a = KernelCmdlineAction({"bootloader": "grub"}, _ctx("/"))
+    a._current_cmdline = lambda: "quiet old"
+    grub_text = 'GRUB_CMDLINE_LINUX="quiet old"\n'
+    changes = [Change("kernel_cmdline", Op.INSTALL, "new=1"),
+               Change("kernel_cmdline", Op.REMOVE, "old")]
+    with patch("builtins.open", mock_open(read_data=grub_text)) as m, \
+         patch("dasik.lib.actions.kernel_cmdline_action.Command.execute") as run:
+        a.apply(changes)
+    body = "".join(c.args[0] for c in m().write.call_args_list)
+    assert 'GRUB_CMDLINE_LINUX="quiet new=1"' in body
+    assert (run.call_args.args[0], run.call_args.args[1]) == (
+        "grub-mkconfig", ["-o", "/boot/grub/grub.cfg"])
+
+
+def test_apply_noop_without_target():
+    a = KernelCmdlineAction({"bootloader": "grub"}, None)
+    with patch("dasik.lib.actions.kernel_cmdline_action.Command.execute") as run, \
+         patch("builtins.open") as op:
+        a.apply([Change("kernel_cmdline", Op.INSTALL, "x")])
+    run.assert_not_called()
+    op.assert_not_called()
+
+
+def test_apply_empty_changes_noop():
+    a = KernelCmdlineAction({"bootloader": "grub"}, _ctx("/"))
+    with patch("dasik.lib.actions.kernel_cmdline_action.Command.execute") as run:
+        a.apply([])
+    run.assert_not_called()

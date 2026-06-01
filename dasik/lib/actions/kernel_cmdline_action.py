@@ -13,6 +13,7 @@ import subprocess
 from typing import Any, Dict, List, Optional
 from .abstract_action import AbstractAction
 from ..command_worker.command_worker import Command
+from ..state.change import Op
 
 
 class KernelCmdlineAction(AbstractAction):
@@ -167,6 +168,45 @@ class KernelCmdlineAction(AbstractAction):
 
     def managed_keys(self) -> dict:
         return {self._DOMAIN: self._desired_tokens()}
+
+    def _new_tokens(self, changes) -> List[str]:
+        installs = [c.item for c in changes if c.op is Op.INSTALL]
+        removes = {c.item for c in changes if c.op is Op.REMOVE}
+        current = [t for t in self._current_cmdline().split() if t not in removes]
+        for tok in installs:
+            if tok not in current:
+                current.append(tok)
+        return current
+
+    def apply(self, changes) -> None:
+        if self._target() is None or not changes:
+            return
+        line = " ".join(self._new_tokens(changes))
+        if self.bootloader == "grub":
+            self._write_grub(line)
+            Command.execute("grub-mkconfig", ["-o", "/boot/grub/grub.cfg"], target=self._target())
+        else:
+            for entry in self._sdboot_entries():
+                self._write_sdboot(entry, line)
+
+    def _write_grub(self, line: str) -> None:
+        path = self._grub_file()
+        with open(path, "r") as f:
+            text = f.read()
+        text = re.sub(r'^GRUB_CMDLINE_LINUX="(.*)"',
+                      f'GRUB_CMDLINE_LINUX="{line}"', text, flags=re.MULTILINE)
+        with open(path, "w") as f:
+            f.write(text)
+
+    def _write_sdboot(self, entry_file: str, line: str) -> None:
+        with open(entry_file, "r") as f:
+            lines = f.readlines()
+        with open(entry_file, "w") as f:
+            for ln in lines:
+                if ln.startswith("options "):
+                    f.write(f"options {line}\n")
+                else:
+                    f.write(ln)
 
     def _current_params_grub(self) -> str:
         path = self._grub_file()

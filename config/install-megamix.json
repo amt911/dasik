@@ -56,6 +56,10 @@
     "GTK_THEME=Adwaita:dark"
   ],
 
+  "files": [
+    { "path": "/etc/ssh/sshd_config.d/99-dasik.conf", "content": "PasswordAuthentication no\n" }
+  ],
+
   "systemd": {
     "enable_units": [
       "NetworkManager.service",

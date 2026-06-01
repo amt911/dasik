@@ -113,13 +113,60 @@ class KernelCmdlineAction(AbstractAction):
     # ------------------------------------------------------------------ #
 
     def _grub_file(self) -> str:
-        return "/mnt/etc/default/grub"
+        t = self._target()
+        return t.path("/etc/default/grub") if t is not None else "/mnt/etc/default/grub"
 
     def _sdboot_entries(self) -> List[str]:
-        entries_dir = "/mnt/boot/loader/entries"
+        t = self._target()
+        entries_dir = t.path("/boot/loader/entries") if t is not None else "/mnt/boot/loader/entries"
         if os.path.isdir(entries_dir):
             return [os.path.join(entries_dir, f) for f in os.listdir(entries_dir) if f.endswith(".conf")]
         return []
+
+    # ------------------------------------------------------------------ #
+    #  v3 contract (token set)
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _tokens(entries: List[str]) -> List[str]:
+        out: List[str] = []
+        for entry in entries:
+            out.extend(entry.split())
+        return out
+
+    def _desired_tokens(self) -> List[str]:
+        merged = self._merge(self._derive_from_disks(), self.explicit_params)
+        seen: set = set()
+        deduped: List[str] = []
+        for tok in self._tokens(merged):
+            if tok not in seen:
+                seen.add(tok)
+                deduped.append(tok)
+        return deduped
+
+    def _current_cmdline(self) -> str:
+        if self.bootloader == "grub":
+            return self._current_params_grub()
+        entries = self._sdboot_entries()
+        return self._current_params_sdboot(entries[0]) if entries else ""
+
+    def actual(self) -> set:
+        if self._target() is None:
+            return set()
+        return set(self._current_cmdline().split())
+
+    def plan(self, managed):
+        from ..state.set_math import compute_changes
+        changes, _drift = compute_changes(
+            self._DOMAIN,
+            desired=self._desired_tokens(),
+            managed=managed,
+            actual=self.actual(),
+        )
+        return changes
+
+    def managed_keys(self) -> dict:
+        return {self._DOMAIN: self._desired_tokens()}
 
     def _current_params_grub(self) -> str:
         path = self._grub_file()

@@ -132,3 +132,53 @@ def test_name_and_optional():
     a = KernelCmdlineAction({})
     assert a.name == "Kernel Command Line"
     assert a.is_optional is True
+
+
+# ---------------------------------------------------------------------- #
+#  v3 contract (Plan 11)                                                  #
+# ---------------------------------------------------------------------- #
+from dasik.lib.actions.action_context import ActionContext
+from dasik.lib.target.target import Target
+from dasik.lib.state.change import Change, Op
+
+
+def _ctx(root="/"):
+    return ActionContext(target=Target(root=root))
+
+
+def _grub_action(cfg, current_cmdline):
+    a = KernelCmdlineAction(cfg, _ctx("/"))
+    a.actual = lambda: set(current_cmdline.split())
+    return a
+
+
+def test_desired_tokens_flattens_and_merges():
+    a = KernelCmdlineAction({"kernel_cmdline": ["quiet", "loglevel=3"]}, _ctx("/"))
+    toks = a._desired_tokens()
+    assert "quiet" in toks and "loglevel=3" in toks
+
+
+def test_is_v3_true():
+    assert KernelCmdlineAction.is_v3() is True
+
+
+def test_plan_installs_missing_explicit():
+    a = _grub_action({"kernel_cmdline": ["mitigations=off"]}, "quiet")
+    changes = a.plan(managed=[])
+    assert [(c.op, c.item) for c in changes] == [(Op.INSTALL, "mitigations=off")]
+
+
+def test_plan_removes_owned_not_declared():
+    a = _grub_action({"kernel_cmdline": []}, "quiet oldparam")
+    changes = a.plan(managed=["oldparam"])
+    assert [(c.op, c.item) for c in changes] == [(Op.REMOVE, "oldparam")]
+
+
+def test_plan_empty_when_converged():
+    a = _grub_action({"kernel_cmdline": ["quiet"]}, "quiet other")
+    assert a.plan(managed=["quiet"]) == []
+
+
+def test_managed_keys_lists_desired_tokens():
+    a = KernelCmdlineAction({"kernel_cmdline": ["quiet"]}, _ctx("/"))
+    assert a.managed_keys() == {"kernel_cmdline": ["quiet"]}

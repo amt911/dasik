@@ -303,7 +303,9 @@ def test_import_state_captures_drift_user_with_attrs():
     assert users["carol"]["groups"] == ["wheel"]
 
 
-def test_import_state_drops_owned_but_vanished():
+def test_import_state_keeps_declared_intent_even_if_absent():
+    """A declared user not currently present is kept as intent (sync never drops
+    a declaration just because the account is absent right now)."""
     a = _v3(
         [{"username": "alice", "hashed_password": "$6$a$h"},
          {"username": "gone", "hashed_password": "$6$g$h"}],
@@ -313,7 +315,7 @@ def test_import_state_drops_owned_but_vanished():
     )
     frag = a.import_state(managed=["alice", "gone"])
     names = [u["username"] for u in frag["users"]]
-    assert names == ["alice"]
+    assert names == ["alice", "gone"]
 
 
 def test_import_state_keeps_declared_intent_not_present():
@@ -356,3 +358,14 @@ def test_import_state_skips_drift_user_without_readable_hash():
             groups={"carol": []}, hashes={"carol": ""})  # hash unreadable -> ""
     frag = a.import_state(managed=[])
     assert [u["username"] for u in frag["users"]] == []   # not captured
+
+
+def test_import_state_captures_owned_present_undeclared_user():
+    a = _v3([{"username": "alice", "hashed_password": "$6$a$h"}],
+            actual=["alice", "carol"],
+            shells={"alice": "/bin/bash", "carol": "/bin/bash"},
+            groups={"alice": [], "carol": ["wheel"]},
+            hashes={"alice": "$6$a$h", "carol": "$6$c$h"})
+    frag = a.import_state(managed=["carol"])   # carol owned, not declared
+    names = [u["username"] for u in frag["users"]]
+    assert "carol" in names and "alice" in names

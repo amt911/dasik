@@ -10,29 +10,118 @@ from dasik.lib.models.disk_model import (
     BtrfsSubvolume
 )
 from dasik.lib.command_worker.command_worker import Command
+from dasik.lib.state.change import Change, Op
 
 
 class DiskPartitionAction(AbstractAction):
-    """Action to handle disk partitioning in a declarative way."""
+    """Action to handle disk partitioning declaratively (v3 domain "disks")."""
+
+    _DOMAIN = "disks"
 
     @property
     def KEY_NAME(self) -> str:
         """Return the key name for this action."""
         return "disks"
 
-    def __init__(self, disks_config: DisksConfiguration):
+    def __init__(self, config=None, context=None):
         """Initialize the disk partition action.
-        
-        Args:
-            disks_config: Disk configuration from JSON
+
+        Accepts the raw config dict (``{"disks": [...]}``), a
+        ``DisksConfiguration`` model, or ``None`` (no disks → no-op).
         """
-        self.disks_config = disks_config
+        super().__init__(config, context)
+        self.disks: List[DiskLayout] = self._parse(config)
         self.partition_map: Dict[str, str] = {}  # Maps partition label to device path
+
+    @staticmethod
+    def _parse(config) -> "List[DiskLayout]":
+        if config is None:
+            return []
+        if isinstance(config, DisksConfiguration):
+            return list(config.disks)
+        if isinstance(config, dict):
+            raw = config.get("disks")
+            if not raw:
+                return []
+            return [DiskLayout.model_validate(d) for d in raw]
+        return []
+
+    @property
+    def name(self) -> str:
+        return "Disk Partitioning"
+
+    @property
+    def is_optional(self) -> bool:
+        return True
+
+    @classmethod
+    def empty_config(cls):
+        return {}
 
     @property
     def can_incrementally_change(self) -> bool:
         """Disk partitioning cannot be done incrementally."""
         return False
+
+    # --- v3 contract -------------------------------------------------- #
+
+    def _device_labels(self, device: str) -> set:
+        """Partition labels currently present on *device* (empty if none)."""
+        try:
+            result = Command.execute("lsblk", ["-no", "LABEL", device])
+            out = result.stdout
+            if isinstance(out, bytes):
+                out = out.decode("utf-8", "replace")
+            return {line.strip() for line in out.splitlines() if line.strip()}
+        except Exception:
+            return set()
+
+    def _disk_converged(self, disk: DiskLayout) -> bool:
+        want = {p.label for p in disk.partitions}
+        return bool(want) and want.issubset(self._device_labels(disk.device))
+
+    def actual(self) -> set:
+        return {d.device for d in self.disks if self._disk_converged(d)}
+
+    def managed_keys(self) -> dict:
+        return {self._DOMAIN: sorted(self.actual())}
+
+    def plan(self, managed) -> list:
+        changes = []
+        for disk in self.disks:
+            if self._disk_converged(disk):
+                continue
+            if disk.wipe_disk or not self._has_partition_table(disk.device):
+                changes.append(Change(
+                    self._DOMAIN, Op.INSTALL, disk.device,
+                    reason="wipe_disk" if disk.wipe_disk else "empty disk",
+                ))
+            else:
+                print(
+                    f"  Warning: {disk.device} is populated and does not match the "
+                    f"declared layout; set wipe_disk:true to repartition. Skipping."
+                )
+        return changes
+
+    def apply(self, changes) -> None:
+        if not changes:
+            return
+        targets = {c.item for c in changes}
+        for disk in self.disks:
+            if disk.device in targets:
+                self._process_disk(disk)
+
+    def import_state(self, managed=None) -> dict:
+        # Disks are user-declared; sync does not rewrite the section.
+        return {}
+
+    # --- legacy executor bridge --------------------------------------- #
+
+    def is_needed(self) -> bool:
+        return bool(self.plan(managed=[]))
+
+    def execute(self) -> None:
+        self.apply(self.plan(managed=[]))
 
     def _before_check(self) -> bool:
         """Check if disk partitioning needs to be done.
@@ -40,7 +129,7 @@ class DiskPartitionAction(AbstractAction):
         Returns:
             True if disks are configured
         """
-        return len(self.disks_config.disks) > 0
+        return len(self.disks) > 0
 
     def after_check(self) -> None:
         """Post-action checks."""
@@ -63,11 +152,11 @@ class DiskPartitionAction(AbstractAction):
     def run(self) -> None:
         """Execute the disk partitioning process."""
         print("Starting disk partitioning process...")
-        
-        for disk in self.disks_config.disks:
+
+        for disk in self.disks:
             print(f"\nProcessing disk: {disk.device}")
             self._process_disk(disk)
-        
+
         print("\nDisk partitioning completed successfully!")
 
     def _process_disk(self, disk: DiskLayout) -> None:

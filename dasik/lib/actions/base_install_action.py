@@ -1,10 +1,8 @@
-"""Action: pacstrap the base system into /mnt.
+"""Action: pacstrap the base system into the target (v3 domain "base").
 
-Ported from the legacy ``do_action`` form to the AbstractAction contract
-(name/is_needed/execute/verify) so the v2 ActionExecutor can drive it
-(issue #66). Reads root-level config (registered with config_key='__root__').
-
-Idempotent: skips when the base system is already pacstrapped into /mnt.
+Idempotent: a no-op once the base system is pacstrapped (marker:
+``<target>/usr/bin/pacman``). Install-only. Target-aware. The destructive
+pacstrap/genfstab lives in ``_install()`` (mocked in tests).
 """
 from __future__ import annotations
 import os
@@ -12,20 +10,22 @@ from typing import Any, Dict, List
 from colorama import Fore, Style, init
 from .abstract_action import AbstractAction
 from ..command_worker.command_worker import Command
+from ..state.change import Change, Op
+
+_MARKER = "/usr/bin/pacman"
+_DOMAIN = "base"
 
 
 class BaseInstallAction(AbstractAction):
     """Install the Arch base system (base, linux, firmware, microcode)."""
 
-    # Marker that pacstrap has populated the target.
-    _INSTALLED_MARKER = "/mnt/usr/bin/pacman"
+    _DOMAIN = _DOMAIN
 
     def __init__(self, config: Any, context=None):
         super().__init__(config, context)
         cfg: Dict[str, Any] = config if isinstance(config, dict) else {}
         self.enable_microcode: bool = cfg.get("enable_microcode", False)
         self.packages: List[str] = ["base", "linux", "linux-firmware"]
-
         init(autoreset=True)
         if self.enable_microcode:
             self.packages += [self._detect_microcode()]
@@ -33,6 +33,23 @@ class BaseInstallAction(AbstractAction):
     @property
     def name(self) -> str:
         return "Base Installation"
+
+    @property
+    def is_optional(self) -> bool:
+        return False
+
+    # --- target-aware paths ------------------------------------------- #
+
+    def _target(self):
+        return getattr(self.context, "target", None) if self.context else None
+
+    def _target_root(self) -> str:
+        t = self._target()
+        return t.root if t is not None else "/mnt"
+
+    def _p(self, canonical: str) -> str:
+        t = self._target()
+        return t.path(canonical) if t is not None else "/mnt" + canonical
 
     @staticmethod
     def _detect_microcode() -> str:
@@ -45,16 +62,46 @@ class BaseInstallAction(AbstractAction):
         print(Fore.RED + "Unknown CPU Vendor. Exiting..." + Style.RESET_ALL)
         raise SystemExit(1)
 
-    def is_needed(self) -> bool:
-        # If pacman exists inside the target, the base system is in place.
-        return not os.path.exists(self._INSTALLED_MARKER)
+    def _installed(self) -> bool:
+        return os.path.exists(self._p(_MARKER))
 
-    def execute(self) -> None:  # pragma: no cover - destructive: pacstrap/genfstab
-        Command.execute("pacman", ["--noconfirm", "-Sy", "archlinux-keyring"])
-        Command.execute("pacstrap", ["-K", "/mnt"] + self.packages)
-        fstab_content_str = Command.execute("genfstab", ["-U", "/mnt"]).stdout.decode()
-        with open("/mnt/etc/fstab", "a") as fstab:
-            fstab.write(fstab_content_str)
+    # --- v3 contract -------------------------------------------------- #
+
+    def actual(self) -> set:
+        return {"base"} if self._installed() else set()
+
+    def managed_keys(self) -> dict:
+        return {self._DOMAIN: sorted(self.actual())}
+
+    def plan(self, managed) -> list:
+        if not self._installed():
+            return [Change(self._DOMAIN, Op.INSTALL, "base", reason="pacstrap")]
+        return []
+
+    def apply(self, changes) -> None:
+        if changes:
+            self._install()
+
+    def import_state(self, managed=None) -> dict:
+        return {}
+
+    # --- legacy executor bridge --------------------------------------- #
+
+    def is_needed(self) -> bool:
+        return not self._installed()
+
+    def execute(self) -> None:
+        self._install()
 
     def verify(self) -> bool:
-        return os.path.exists(self._INSTALLED_MARKER)
+        return self._installed()
+
+    # --- the destructive bit (mocked in tests) ------------------------ #
+
+    def _install(self) -> None:  # pragma: no cover - destructive: pacstrap/genfstab
+        root = self._target_root()
+        Command.execute("pacman", ["--noconfirm", "-Sy", "archlinux-keyring"])
+        Command.execute("pacstrap", ["-K", root] + self.packages)
+        fstab = Command.execute("genfstab", ["-U", root]).stdout.decode()
+        with open(self._p("/etc/fstab"), "a") as f:
+            f.write(fstab)

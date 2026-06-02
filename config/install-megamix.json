@@ -31,7 +31,8 @@
     "aur-onlyoffice-bin",
     "aur-mangohud",
     "aur-rpcs3-git",
-    "aur-openrgb"
+    "aur-openrgb",
+    { "name": "imagemagick", "reason": "dep" }
   ],
 
   "udev_rules": [

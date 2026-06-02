@@ -32,14 +32,21 @@ class PackagesAction(AbstractAction):
 
     def __init__(self, config: Any, context=None):
         super().__init__(config, context)
-        raw: List[str] = config if isinstance(config, list) else []
+        raw: List[Any] = config if isinstance(config, list) else []
+        self._original = raw
         self.pacman_pkgs: List[str] = []
         self.aur_pkgs: List[str] = []
-        for pkg in raw:
-            if pkg.startswith(AUR_PREFIX):
-                self.aur_pkgs.append(pkg[len(AUR_PREFIX):])
+        self._reason: dict[str, str] = {}   # pacman name -> "explicit"|"dep"
+        for entry in raw:
+            if isinstance(entry, dict):
+                name, reason = entry["name"], entry.get("reason", "explicit")
             else:
-                self.pacman_pkgs.append(pkg)
+                name, reason = entry, "explicit"
+            if name.startswith(AUR_PREFIX):
+                self.aur_pkgs.append(name[len(AUR_PREFIX):])   # AUR: reason-exempt
+            else:
+                self.pacman_pkgs.append(name)
+                self._reason[name] = reason
 
     @property
     def name(self) -> str:
@@ -215,6 +222,21 @@ class PackagesAction(AbstractAction):
             stdout = stdout.decode("utf-8", errors="replace")
         return {line.strip() for line in stdout.splitlines() if line.strip()}
 
+    def _installed_all(self) -> set[str]:
+        """All installed packages (any reason): pacman -Qq."""
+        target = getattr(self.context, "target", None) if self.context else None
+        if target is None:
+            return set()
+        result = Command.execute("pacman", ["-Qq"], target=target)
+        stdout = getattr(result, "stdout", b"") or b""
+        if isinstance(stdout, bytes):
+            stdout = stdout.decode("utf-8", errors="replace")
+        return {line.strip() for line in stdout.splitlines() if line.strip()}
+
+    def _reason_of(self, pkg: str) -> str:
+        """Install reason of an installed package: explicit if in -Qqe else dep."""
+        return "explicit" if pkg in self.actual() else "dep"
+
     def plan(self, managed):
         """Compute INSTALL/REMOVE for both pacman and AUR packages.
 
@@ -223,14 +245,25 @@ class PackagesAction(AbstractAction):
         the original split via ``self.pacman_pkgs`` / ``self.aur_pkgs`` so
         ``apply()`` can route INSTALLs to the right tool.
         """
-        from ..state.set_math import compute_changes
+        from ..state.change import Change, Op
+
         desired = list(self.pacman_pkgs) + list(self.aur_pkgs)
-        changes, _drift = compute_changes(
-            self._PACMAN_DOMAIN,
-            desired=desired,
-            managed=managed,
-            actual=self.actual(),
-        )
+        installed = self._installed_all()
+        explicit = self.actual()
+
+        changes: list = []
+        for name in sorted(n for n in desired if n not in installed):
+            changes.append(Change(self._PACMAN_DOMAIN, Op.INSTALL, name))
+        # reason MODIFY: pacman packages only, installed, reason drifted (AUR exempt)
+        for name in sorted(self.pacman_pkgs):
+            if name in installed:
+                current = "explicit" if name in explicit else "dep"
+                if current != self._reason.get(name, "explicit"):
+                    changes.append(Change(self._PACMAN_DOMAIN, Op.MODIFY, name,
+                                          reason="install reason"))
+        for name in sorted(set(managed) - set(desired)):
+            changes.append(Change(self._PACMAN_DOMAIN, Op.REMOVE, name,
+                                  reason="no longer declared"))
         return changes
 
     def managed_keys(self) -> dict:
@@ -240,25 +273,35 @@ class PackagesAction(AbstractAction):
         return {self._PACMAN_DOMAIN: list(self.pacman_pkgs) + list(self.aur_pkgs)}
 
     def import_state(self, managed: "list[str] | None" = None) -> dict:
-        """Capture reality into the config fragment (sync).
+        """Capture reality into the config fragment (sync), annotating install reason.
 
-        Keeps every declared token (intent, ``aur-`` prefix preserved — even if
-        not currently installed) and appends everything present that is not
-        declared. Independent of the manifest M: ``sync`` reflects reality.
-
-        Note: ``pacman -Qqe`` cannot distinguish AUR packages, so captured
-        (undeclared) packages are plain names; the ``aur-`` prefix is only
-        preserved on entries that were already declared with it.
+        Declared entries are kept (intent). A pacman package that is installed is
+        emitted as ``{name, reason}`` when it is a dependency, else a plain string.
+        AUR entries are kept verbatim (``aur-…``). Undeclared explicit packages
+        (``pacman -Qqe`` \\ declared) are appended as plain strings. Transitive
+        dependencies are never captured. Independent of the manifest M.
         """
-        actual = self.actual()
-        original: List[str] = list(self.config) if isinstance(self.config, list) else []
+        explicit = self.actual()
+        installed = self._installed_all()
 
-        def _strip(token: str) -> str:
-            return token[len(AUR_PREFIX):] if token.startswith(AUR_PREFIX) else token
+        def _strip(name: str) -> str:
+            return name[len(AUR_PREFIX):] if name.startswith(AUR_PREFIX) else name
 
-        declared_stripped = {_strip(t) for t in original}
-        extra = sorted(actual - declared_stripped)   # present, not declared
-        return {self._PACMAN_DOMAIN: original + extra}
+        result: list = []
+        declared_stripped: set = set()
+        for entry in self._original:
+            name = entry["name"] if isinstance(entry, dict) else entry
+            declared_stripped.add(_strip(name))
+            if name.startswith(AUR_PREFIX):
+                result.append(name)                       # AUR verbatim
+            elif name in installed and name not in explicit:
+                result.append({"name": name, "reason": "dep"})
+            else:
+                result.append(name)                       # explicit / intent (not installed)
+
+        extra = sorted(explicit - declared_stripped)      # new explicit packages
+        result.extend(extra)
+        return {self._PACMAN_DOMAIN: result}
 
     # ------------------------------------------------------------------ #
     #  v3 apply() — destructive (Plan 4)                                 #
@@ -288,6 +331,7 @@ class PackagesAction(AbstractAction):
         pacman_installs: list[str] = []
         aur_installs: list[str] = []
         removes: list[str] = []
+        modifies: list[str] = []
         aur_set = set(self.aur_pkgs)
         pacman_set = set(self.pacman_pkgs)
 
@@ -302,6 +346,8 @@ class PackagesAction(AbstractAction):
                         f"apply() received INSTALL for unknown package "
                         f"{change.item!r}: not in pacman_pkgs or aur_pkgs"
                     )
+            elif change.op is Op.MODIFY:
+                modifies.append(change.item)
             elif change.op is Op.REMOVE:
                 removes.append(change.item)
 
@@ -314,6 +360,17 @@ class PackagesAction(AbstractAction):
 
         if aur_installs:
             self._apply_aur_install(aur_installs)
+
+        # Enforce install reason (pacman only). -S marks explicit by default, so a
+        # fresh explicit install needs no -D; a dep install does. A MODIFY sets
+        # whichever reason the config declares.
+        to_dep = [p for p in pacman_installs if self._reason.get(p, "explicit") == "dep"]
+        to_dep += [p for p in modifies if self._reason.get(p, "explicit") == "dep"]
+        to_explicit = [p for p in modifies if self._reason.get(p, "explicit") == "explicit"]
+        if to_dep:
+            Command.execute("pacman", ["-D", "--asdeps", *to_dep], target=target)
+        if to_explicit:
+            Command.execute("pacman", ["-D", "--asexplicit", *to_explicit], target=target)
 
         if removes:
             Command.execute(

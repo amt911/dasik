@@ -66,6 +66,10 @@ def test_apply_writes_state_and_generation(tmp_path):
 
 def test_apply_is_idempotent_second_run_no_generation_2(tmp_path):
     p = _write(tmp_path, {"packages": ["git"]})
+    # mark the fake target as already-bootstrapped so the always-on __root__
+    # bootloader domain (default grub) is converged and doesn't perpetually plan.
+    (tmp_path / "boot" / "grub").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "boot" / "grub" / "grub.cfg").write_text("")
     table = {("pacman", "-Qqe"): b"git\n",      # git already installed (explicit)
              ("pacman", "-Qq"): b"git\n"}       # ...and present (any-reason check)
     _invoke(["apply", str(p), "--target", str(tmp_path), "--yes"], table=table)

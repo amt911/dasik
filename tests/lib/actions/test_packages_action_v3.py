@@ -338,3 +338,39 @@ def test_import_state_captures_owned_present_undeclared():
         a = PackagesAction(config=["git"], context=_ctx("/"))
         frag = a.import_state(managed=["htop"])   # htop owned, not declared
     assert frag == {"packages": ["git", "htop", "vim"]}
+
+
+# ---------------------------------------------------------------------- #
+#  Install reason (explicit/dep) — pacman only                           #
+# ---------------------------------------------------------------------- #
+
+
+def _reason_fake(explicit=b"", installed=b""):
+    """Command.execute fake: -Qqe -> explicit set, -Qq -> all installed."""
+    def run(cmd, args, *a, **k):
+        flag = args[0] if args else ""
+        out = explicit if flag == "-Qqe" else installed if flag == "-Qq" else b""
+        return MagicMock(stdout=out, stderr=b"", returncode=0)
+    return run
+
+
+def test_parses_reason_for_pacman_objects():
+    a = PackagesAction(config=["git", {"name": "foo", "reason": "dep"}], context=_ctx("/"))
+    assert a.pacman_pkgs == ["git", "foo"]
+    assert a._reason["git"] == "explicit"
+    assert a._reason["foo"] == "dep"
+
+
+def test_aur_object_ignores_reason():
+    a = PackagesAction(config=[{"name": "aur-yay", "reason": "dep"}], context=_ctx("/"))
+    assert a.aur_pkgs == ["yay"]
+    assert "yay" not in a._reason     # AUR reason-exempt
+
+
+def test_installed_all_and_reason_of():
+    with patch("dasik.lib.actions.packages_action.Command.execute",
+               _reason_fake(explicit=b"git\n", installed=b"git\ndep1\n")):
+        a = PackagesAction(config=[], context=_ctx("/"))
+        assert a._installed_all() == {"git", "dep1"}
+        assert a._reason_of("git") == "explicit"
+        assert a._reason_of("dep1") == "dep"   # installed but not in -Qqe

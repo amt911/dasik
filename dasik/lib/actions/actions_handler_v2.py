@@ -50,11 +50,7 @@ def setup_actions() -> None:
     from .initramfs_action import InitramfsAction
     from .kernel_cmdline_action import KernelCmdlineAction
     from .bootloader_action import BootloaderAction
-    from .trim_action import TrimAction
-    from .bluetooth_action import BluetoothAction
     from .hw_accel_action import HardwareAccelAction
-    from .kvm_action import KvmAction
-    from .cups_action import CupsAction
     from .ms_fonts_action import MicrosoftFontsAction
     from .firewall_action import FirewallAction
     from .wireguard_action import WireguardAction
@@ -125,28 +121,8 @@ def setup_actions() -> None:
         is_optional=True,
     )
     register_action(
-        action_class=TrimAction,
-        config_key='__root__',
-        is_optional=True,
-    )
-    register_action(
-        action_class=BluetoothAction,
-        config_key='bluetooth',
-        is_optional=True,
-    )
-    register_action(
         action_class=HardwareAccelAction,
         config_key='hardware_acceleration',
-        is_optional=True,
-    )
-    register_action(
-        action_class=KvmAction,
-        config_key='kvm',
-        is_optional=True,
-    )
-    register_action(
-        action_class=CupsAction,
-        config_key='cups',
         is_optional=True,
     )
     register_action(

@@ -118,17 +118,20 @@ def test_rollback_restores_previous_generation(tmp_path):
 def test_apply_expands_bluetooth_toggle_into_packages(tmp_path):
     # bluetooth toggle must expand so the packages domain installs bluez
     p = _write(tmp_path, {"packages": ["git"], "bluetooth": {"enable": True}})
-    captured = {}
+    # Accumulate across every `pacman -S`: the always-on bootloader domain also
+    # runs one (`-S grub efibootmgr`), so capturing only the last call would
+    # clobber the packages-domain install we're asserting on.
+    captured = {"installed": []}
 
     def run(cmd, args=None, *a, **k):
         if cmd == "pacman" and args and args[0] == "-Qqe":
             return MagicMock(stdout=b"", stderr=b"", returncode=0)
         if cmd == "pacman" and args and "-S" in args:
-            captured["installed"] = args
+            captured["installed"].extend(args)
         return MagicMock(stdout=b"", stderr=b"", returncode=0)
 
     with patch("dasik.lib.command_worker.command_worker.Command.execute", side_effect=run), \
          patch("subprocess.run", side_effect=_fake_exec({("pacman", "-Qqe"): b""})):
         code = main(["apply", str(p), "--target", str(tmp_path), "--yes"])
     assert code == 0
-    assert "bluez" in captured.get("installed", [])
+    assert "bluez" in captured["installed"]

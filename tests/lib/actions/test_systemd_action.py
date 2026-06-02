@@ -162,11 +162,13 @@ def test_import_state_captures_drift_routed_by_suffix():
     assert sd["disable_units"] == []
 
 
-def test_import_state_drops_owned_but_vanished():
+def test_import_state_keeps_declared_intent_even_if_not_enabled():
+    """A declared unit not currently enabled is kept as intent (sync never drops
+    a declaration just because it is not enabled right now)."""
     a = _action({"enable_units": ["sshd.service", "old.service"]},
                 actual=["sshd.service"])
     frag = a.import_state(managed=["sshd.service", "old.service"])
-    assert frag["systemd"]["enable_units"] == ["sshd.service"]
+    assert frag["systemd"]["enable_units"] == ["sshd.service", "old.service"]
 
 
 def test_import_state_keeps_declared_intent_not_present():
@@ -206,3 +208,11 @@ def test_legacy_to_disable_lists_only_enabled_targets():
     with patch("dasik.lib.actions.systemd_action.subprocess.run",
                _enabled_map({"a.service"})):
         assert a._to_disable() == ["a.service"]
+
+
+def test_import_state_captures_owned_present_undeclared_unit():
+    a = _action({"enable_units": ["sshd.service"]},
+                actual=["sshd.service", "docker.service"])
+    frag = a.import_state(managed=["docker.service"])   # docker owned, not declared
+    assert "docker.service" in frag["systemd"]["enable_units"]
+    assert "sshd.service" in frag["systemd"]["enable_units"]

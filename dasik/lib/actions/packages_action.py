@@ -321,6 +321,7 @@ class PackagesAction(AbstractAction):
         pacman_installs: list[str] = []
         aur_installs: list[str] = []
         removes: list[str] = []
+        modifies: list[str] = []
         aur_set = set(self.aur_pkgs)
         pacman_set = set(self.pacman_pkgs)
 
@@ -335,6 +336,8 @@ class PackagesAction(AbstractAction):
                         f"apply() received INSTALL for unknown package "
                         f"{change.item!r}: not in pacman_pkgs or aur_pkgs"
                     )
+            elif change.op is Op.MODIFY:
+                modifies.append(change.item)
             elif change.op is Op.REMOVE:
                 removes.append(change.item)
 
@@ -347,6 +350,17 @@ class PackagesAction(AbstractAction):
 
         if aur_installs:
             self._apply_aur_install(aur_installs)
+
+        # Enforce install reason (pacman only). -S marks explicit by default, so a
+        # fresh explicit install needs no -D; a dep install does. A MODIFY sets
+        # whichever reason the config declares.
+        to_dep = [p for p in pacman_installs if self._reason.get(p, "explicit") == "dep"]
+        to_dep += [p for p in modifies if self._reason.get(p, "explicit") == "dep"]
+        to_explicit = [p for p in modifies if self._reason.get(p, "explicit") == "explicit"]
+        if to_dep:
+            Command.execute("pacman", ["-D", "--asdeps", *to_dep], target=target)
+        if to_explicit:
+            Command.execute("pacman", ["-D", "--asexplicit", *to_explicit], target=target)
 
         if removes:
             Command.execute(

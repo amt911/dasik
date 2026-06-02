@@ -406,3 +406,37 @@ def test_plan_no_modify_for_aur():
         a = PackagesAction(config=["git", "aur-yay"], context=_ctx("/"))
         changes = a.plan(managed=["git", "yay"])
     assert changes == []   # yay installed (any reason), AUR never MODIFY
+
+
+def test_apply_marks_installed_dep_as_asdeps():
+    a = PackagesAction(config=[{"name": "foo", "reason": "dep"}], context=_ctx("/"))
+    with patch("dasik.lib.actions.packages_action.Command.execute") as run:
+        a.apply([Change("packages", Op.INSTALL, "foo")])
+    calls = [(c.args[0], c.args[1]) for c in run.call_args_list]
+    assert any(c[0] == "pacman" and "-S" in c[1] and "foo" in c[1] for c in calls)
+    assert any(c[0] == "pacman" and "-D" in c[1] and "--asdeps" in c[1] and "foo" in c[1]
+               for c in calls)
+
+
+def test_apply_modify_sets_reason_dep():
+    a = PackagesAction(config=[{"name": "foo", "reason": "dep"}], context=_ctx("/"))
+    with patch("dasik.lib.actions.packages_action.Command.execute") as run:
+        a.apply([Change("packages", Op.MODIFY, "foo")])
+    calls = [(c.args[0], c.args[1]) for c in run.call_args_list]
+    assert ("pacman", ["-D", "--asdeps", "foo"]) in calls
+
+
+def test_apply_modify_to_explicit():
+    a = PackagesAction(config=["foo"], context=_ctx("/"))   # explicit
+    with patch("dasik.lib.actions.packages_action.Command.execute") as run:
+        a.apply([Change("packages", Op.MODIFY, "foo")])
+    calls = [(c.args[0], c.args[1]) for c in run.call_args_list]
+    assert ("pacman", ["-D", "--asexplicit", "foo"]) in calls
+
+
+def test_apply_explicit_install_no_asdeps():
+    a = PackagesAction(config=["git"], context=_ctx("/"))
+    with patch("dasik.lib.actions.packages_action.Command.execute") as run:
+        a.apply([Change("packages", Op.INSTALL, "git")])
+    calls = [(c.args[0], c.args[1]) for c in run.call_args_list]
+    assert not any("-D" in c[1] for c in calls)   # explicit needs no -D

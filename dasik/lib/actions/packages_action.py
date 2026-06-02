@@ -245,14 +245,25 @@ class PackagesAction(AbstractAction):
         the original split via ``self.pacman_pkgs`` / ``self.aur_pkgs`` so
         ``apply()`` can route INSTALLs to the right tool.
         """
-        from ..state.set_math import compute_changes
+        from ..state.change import Change, Op
+
         desired = list(self.pacman_pkgs) + list(self.aur_pkgs)
-        changes, _drift = compute_changes(
-            self._PACMAN_DOMAIN,
-            desired=desired,
-            managed=managed,
-            actual=self.actual(),
-        )
+        installed = self._installed_all()
+        explicit = self.actual()
+
+        changes: list = []
+        for name in sorted(n for n in desired if n not in installed):
+            changes.append(Change(self._PACMAN_DOMAIN, Op.INSTALL, name))
+        # reason MODIFY: pacman packages only, installed, reason drifted (AUR exempt)
+        for name in sorted(self.pacman_pkgs):
+            if name in installed:
+                current = "explicit" if name in explicit else "dep"
+                if current != self._reason.get(name, "explicit"):
+                    changes.append(Change(self._PACMAN_DOMAIN, Op.MODIFY, name,
+                                          reason="install reason"))
+        for name in sorted(set(managed) - set(desired)):
+            changes.append(Change(self._PACMAN_DOMAIN, Op.REMOVE, name,
+                                  reason="no longer declared"))
         return changes
 
     def managed_keys(self) -> dict:

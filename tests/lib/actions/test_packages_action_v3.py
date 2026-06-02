@@ -374,3 +374,35 @@ def test_installed_all_and_reason_of():
         assert a._installed_all() == {"git", "dep1"}
         assert a._reason_of("git") == "explicit"
         assert a._reason_of("dep1") == "dep"   # installed but not in -Qqe
+
+
+def test_plan_no_install_when_declared_dep_already_installed_as_dep():
+    with patch("dasik.lib.actions.packages_action.Command.execute",
+               _reason_fake(explicit=b"git\n", installed=b"git\nfoo\n")):
+        a = PackagesAction(config=["git", {"name": "foo", "reason": "dep"}], context=_ctx("/"))
+        changes = a.plan(managed=["git", "foo"])
+    assert changes == []
+
+
+def test_plan_modify_when_reason_drifts():
+    with patch("dasik.lib.actions.packages_action.Command.execute",
+               _reason_fake(explicit=b"git\nfoo\n", installed=b"git\nfoo\n")):
+        a = PackagesAction(config=["git", {"name": "foo", "reason": "dep"}], context=_ctx("/"))
+        changes = a.plan(managed=["git", "foo"])
+    assert [(c.op, c.item) for c in changes] == [(Op.MODIFY, "foo")]
+
+
+def test_plan_install_for_declared_dep_not_installed():
+    with patch("dasik.lib.actions.packages_action.Command.execute",
+               _reason_fake(explicit=b"git\n", installed=b"git\n")):
+        a = PackagesAction(config=["git", {"name": "foo", "reason": "dep"}], context=_ctx("/"))
+        changes = a.plan(managed=[])
+    assert [(c.op, c.item) for c in changes] == [(Op.INSTALL, "foo")]
+
+
+def test_plan_no_modify_for_aur():
+    with patch("dasik.lib.actions.packages_action.Command.execute",
+               _reason_fake(explicit=b"git\n", installed=b"git\nyay\n")):
+        a = PackagesAction(config=["git", "aur-yay"], context=_ctx("/"))
+        changes = a.plan(managed=["git", "yay"])
+    assert changes == []   # yay installed (any reason), AUR never MODIFY

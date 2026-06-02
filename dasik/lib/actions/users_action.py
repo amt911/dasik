@@ -173,23 +173,21 @@ class UsersAction(AbstractAction):
         }
 
     def import_state(self, managed=None) -> dict:
-        managed_set = set(managed or [])
+        # Capture reality: keep all declared users (intent; refresh attrs for
+        # present ones) + every real user not declared. Independent of M.
         actual = self.actual()
-        vanished = managed_set - actual                       # M \ A
 
         result = []
         declared_names = set()
         for u in self.users:
             name = u["username"]
             declared_names.add(name)
-            if name in vanished:
-                continue                                       # owned + gone → drop
             if name in actual and name != "root":
                 result.append(self._capture(name))             # refresh from reality
             else:
                 result.append(u)                               # intent / root kept as-is
 
-        drift = sorted(actual - declared_names - managed_set)  # A \ D \ M
+        drift = sorted(actual - declared_names)                # present, not declared (no M)
         for name in drift:
             captured = self._capture(name)
             # A user we cannot read a hash for (e.g. /etc/shadow unreadable)

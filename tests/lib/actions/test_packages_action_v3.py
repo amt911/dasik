@@ -287,13 +287,14 @@ def test_import_state_captures_drift_with_managed():
     assert frag == {"packages": ["git", "htop"]}
 
 
-def test_import_state_drops_owned_but_vanished():
-    """M \\ A (owned, removed by hand) is dropped from the config."""
-    fake = _fake_command_run(stdout=b"git\n")  # A = {git}; vim gone
+def test_import_state_keeps_declared_intent_even_if_uninstalled():
+    """A declared package not currently installed is kept as intent (sync never
+    drops a declaration just because it is absent right now)."""
+    fake = _fake_command_run(stdout=b"git\n")  # A = {git}; vim not installed
     with patch("dasik.lib.actions.packages_action.Command.execute", fake):
         a = PackagesAction(config=["git", "vim"], context=_ctx("/"))
         frag = a.import_state(managed=["git", "vim"])
-    assert frag == {"packages": ["git"]}
+    assert frag == {"packages": ["git", "vim"]}
 
 
 def test_import_state_preserves_aur_prefix_on_survivors_and_appends_drift():
@@ -304,12 +305,13 @@ def test_import_state_preserves_aur_prefix_on_survivors_and_appends_drift():
     assert frag == {"packages": ["git", "aur-yay", "htop"]}
 
 
-def test_import_state_drops_aur_entry_when_underlying_pkg_vanished():
-    fake = _fake_command_run(stdout=b"git\n")  # A = {git}; yay gone
+def test_import_state_keeps_declared_aur_entry_even_if_uninstalled():
+    """A declared aur- package not currently installed is kept as intent."""
+    fake = _fake_command_run(stdout=b"git\n")  # A = {git}; yay not installed
     with patch("dasik.lib.actions.packages_action.Command.execute", fake):
         a = PackagesAction(config=["git", "aur-yay"], context=_ctx("/"))
         frag = a.import_state(managed=["git", "yay"])
-    assert frag == {"packages": ["git"]}
+    assert frag == {"packages": ["git", "aur-yay"]}
 
 
 def test_import_state_keeps_declared_intent_not_owned_not_present():
@@ -327,3 +329,12 @@ def test_import_state_zero_arg_still_bootstraps_full_actual():
     with patch("dasik.lib.actions.packages_action.Command.execute", fake):
         a = PackagesAction(config=[], context=_ctx("/"))
         assert a.import_state() == {"packages": ["git", "htop"]}
+
+
+def test_import_state_captures_owned_present_undeclared():
+    """Present + owned (M) but NOT declared (D) must still be captured (reality)."""
+    fake = _fake_command_run(stdout=b"git\nhtop\nvim\n")  # A = git,htop,vim
+    with patch("dasik.lib.actions.packages_action.Command.execute", fake):
+        a = PackagesAction(config=["git"], context=_ctx("/"))
+        frag = a.import_state(managed=["htop"])   # htop owned, not declared
+    assert frag == {"packages": ["git", "htop", "vim"]}

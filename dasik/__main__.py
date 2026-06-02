@@ -31,6 +31,7 @@ from dasik.lib.state.config_writer import ConfigWriter
 from dasik.lib.state.generation_store import GenerationStore
 from dasik.lib.state.state_store import StateStore
 from dasik.lib.target.target import Target
+from dasik.lib.expand import expand_config, subtract_contributions
 
 
 def _validate_config_file(config_path: str) -> Optional[Path]:
@@ -158,6 +159,7 @@ def _cmd_plan(config_path: Path, target_root: str) -> int:
         print(f"Error loading config: {e}", file=sys.stderr)
         return 1
 
+    config = expand_config(config)
     setup_actions()
     registry = get_default_registry()
 
@@ -180,6 +182,7 @@ def _cmd_apply(config_path: Path, target_root: str, assume_yes: bool) -> int:
         print(f"Error loading config: {e}", file=sys.stderr)
         return 1
 
+    config = expand_config(config)
     setup_actions()
     registry = get_default_registry()
     target = Target(root=target_root)
@@ -234,6 +237,7 @@ def _cmd_sync(config_path: Path, target_root: str) -> int:
         state_store=state_store,
     )
     new_config, new_manifest = reconciler.sync()
+    new_config = subtract_contributions(new_config, config)
 
     if new_manifest is None:
         print("Nothing to sync (no convergence-aware actions registered).")
@@ -302,6 +306,7 @@ def _cmd_rollback(target_root: str, number: Optional[int], assume_yes: bool) -> 
         print(f"Error: {e}", file=sys.stderr)
         return 1
 
+    restored_config = expand_config(restored_config)
     setup_actions()
     registry = get_default_registry()
     manifest_dict = state_store.load().to_dict()

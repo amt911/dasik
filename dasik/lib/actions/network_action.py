@@ -1,26 +1,29 @@
-"""Action: configure hostname + /etc/hosts (and network manager choice).
+"""Action: configure hostname + /etc/hosts (composite v3 domain "network").
 
-Ported from the legacy ``_before_check``/``do_action`` form to the
-AbstractAction contract (issue #66). Needs the root-level ``hostname`` as
-well as the ``network`` section, so it is registered with config_key
-``__root__`` and reads both from the root config.
+Registered under ``__root__``: reads root-level ``hostname`` plus the
+``network`` section. The comparison record is (hostname, default_hosts
+presence); ``network.type`` is validated on apply but excluded from the record
+(no on-disk file) and passed through verbatim on import. Target-aware.
 
-Idempotent: only rewrites when /mnt/etc/hostname differs or the default
-loopback hosts block is missing (when ``add_default_hosts`` is set).
+Nothing-declared guard: with no ``hostname`` the action is a no-op (empty plan,
+import_state {}, _set_value returns without validating type) so minimal /
+package-only configs do not write an empty hostname or raise on an absent type.
 """
 from __future__ import annotations
 import os
 import re
-from typing import Any, Dict
-from .abstract_action import AbstractAction
+from typing import Any, Dict, Optional
+from .composite_action import CompositeV3Action
 from ..exceptions.exceptions import NetworkTypeNotFoundException
 
-_HOSTNAME_FILE = "/mnt/etc/hostname"
-_HOSTS_FILE = "/mnt/etc/hosts"
+_HOSTNAME = "/etc/hostname"
+_HOSTS = "/etc/hosts"
 
 
-class NetworkAction(AbstractAction):
-    """Configure hostname and hosts file declaratively."""
+class NetworkAction(CompositeV3Action):
+    """Configure hostname and hosts file declaratively (composite v3 domain)."""
+
+    _DOMAIN = "network"
 
     def __init__(self, config: Any, context=None):
         super().__init__(config, context)
@@ -29,11 +32,6 @@ class NetworkAction(AbstractAction):
         self.type: str = net.get("type", "")
         self.hostname: str = cfg.get("hostname", "")
         self.add_default_hosts: bool = net.get("add_default_hosts", False)
-        self.DEFAULT_HOSTS = (
-            "127.0.0.1 localhost\n"
-            "::1 localhost\n"
-            f"127.0.1.1 {self.hostname}\n"
-        )
 
     @property
     def name(self) -> str:
@@ -43,46 +41,84 @@ class NetworkAction(AbstractAction):
     def is_optional(self) -> bool:
         return True
 
-    def _hostname_needs_write(self) -> bool:
-        if not os.path.exists(_HOSTNAME_FILE):
-            return True
-        with open(_HOSTNAME_FILE, "r") as f:
-            return f.read().strip() != self.hostname
+    def _declared(self) -> bool:
+        return bool(self.hostname)
 
-    def _hosts_needs_write(self) -> bool:
-        if not self.add_default_hosts:
-            return False
-        if not os.path.exists(_HOSTS_FILE):
-            return True
-        with open(_HOSTS_FILE, "r") as f:
-            return re.search(
-                rf"^{re.escape(self.DEFAULT_HOSTS)}", f.read(), re.MULTILINE
-            ) is None
+    # --- target-aware paths ------------------------------------------- #
 
-    def is_needed(self) -> bool:
-        return self._hostname_needs_write() or self._hosts_needs_write()
+    def _target(self):
+        return getattr(self.context, "target", None) if self.context else None
 
-    def execute(self) -> None:  # pragma: no cover - writes /mnt/etc files
-        self._clear_hosts_file()
-        with open(_HOSTNAME_FILE, "w") as f:
-            f.write(self.hostname)
-        if self.add_default_hosts:
-            with open(_HOSTS_FILE, "a") as f:
-                f.write(self.DEFAULT_HOSTS)
+    def _p(self, canonical: str) -> str:
+        t = self._target()
+        return t.path(canonical) if t is not None else "/mnt" + canonical
 
+    def _default_block(self) -> str:
+        return (
+            "127.0.0.1 localhost\n"
+            "::1 localhost\n"
+            f"127.0.1.1 {self.hostname}\n"
+        )
+
+    def _read(self, canonical: str) -> Optional[str]:
+        try:
+            with open(self._p(canonical), "r") as f:
+                return f.read()
+        except FileNotFoundError:
+            return None
+
+    # --- composite state ---------------------------------------------- #
+
+    def _desired_state(self) -> dict:
+        return {"hostname": self.hostname, "default_hosts": bool(self.add_default_hosts)}
+
+    def _actual_state(self) -> Optional[dict]:
+        hn = self._read(_HOSTNAME)
+        if hn is None:
+            return None
+        hosts = self._read(_HOSTS) or ""
+        present = re.search(re.escape(self._default_block()), hosts) is not None
+        return {"hostname": hn.strip(), "default_hosts": present}
+
+    # --- guards over the base contract -------------------------------- #
+
+    def plan(self, managed):
+        if not self._declared():
+            return []
+        return super().plan(managed)
+
+    def import_state(self, managed=None) -> dict:
+        if not self._declared():
+            return {}
+        st = self._actual_state() or self._desired_state()
+        return {
+            "hostname": st["hostname"],
+            "network": {"type": self.type, "add_default_hosts": st["default_hosts"]},
+        }
+
+    def _import_fragment(self, value) -> dict:  # pragma: no cover - import_state overridden
+        return self.import_state()
+
+    def _set_value(self) -> None:
+        if not self._declared():
+            return
         if self.type not in ("NetworkManager", "systemd-networkd"):
             raise NetworkTypeNotFoundException
+        self._clear_loopback()
+        with open(self._p(_HOSTNAME), "w") as f:
+            f.write(self.hostname)
+        if self.add_default_hosts:
+            with open(self._p(_HOSTS), "a") as f:
+                f.write(self._default_block())
 
-    def _clear_hosts_file(self) -> None:  # pragma: no cover - writes /mnt/etc
-        if not os.path.exists(_HOSTS_FILE):
+    def _clear_loopback(self) -> None:
+        path = self._p(_HOSTS)
+        if not os.path.exists(path):
             return
-        with open(_HOSTS_FILE, "r+") as hosts_file:
-            lines = hosts_file.readlines()
-            hosts_file.seek(0)
+        with open(path, "r+") as hf:
+            lines = hf.readlines()
+            hf.seek(0)
             for line in lines:
                 if not re.match(r"^(127\.0\.0\.1|::1|127\.0\.1\.1)", line):
-                    hosts_file.write(line)
-            hosts_file.truncate()
-
-    def verify(self) -> bool:
-        return not self.is_needed()
+                    hf.write(line)
+            hf.truncate()

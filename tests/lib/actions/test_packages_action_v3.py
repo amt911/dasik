@@ -440,3 +440,27 @@ def test_apply_explicit_install_no_asdeps():
         a.apply([Change("packages", Op.INSTALL, "git")])
     calls = [(c.args[0], c.args[1]) for c in run.call_args_list]
     assert not any("-D" in c[1] for c in calls)   # explicit needs no -D
+
+
+def test_import_state_declared_dep_kept_as_object():
+    with patch("dasik.lib.actions.packages_action.Command.execute",
+               _reason_fake(explicit=b"git\n", installed=b"git\nfoo\n")):
+        a = PackagesAction(config=["git", {"name": "foo", "reason": "dep"}], context=_ctx("/"))
+        frag = a.import_state(managed=["git", "foo"])
+    assert frag == {"packages": ["git", {"name": "foo", "reason": "dep"}]}
+
+
+def test_import_state_explicit_drift_is_plain_string():
+    with patch("dasik.lib.actions.packages_action.Command.execute",
+               _reason_fake(explicit=b"git\nhtop\n", installed=b"git\nhtop\n")):
+        a = PackagesAction(config=["git"], context=_ctx("/"))
+        frag = a.import_state(managed=[])
+    assert frag == {"packages": ["git", "htop"]}
+
+
+def test_import_state_keeps_aur_verbatim():
+    with patch("dasik.lib.actions.packages_action.Command.execute",
+               _reason_fake(explicit=b"git\n", installed=b"git\nyay\n")):
+        a = PackagesAction(config=["git", "aur-yay"], context=_ctx("/"))
+        frag = a.import_state(managed=["git", "yay"])
+    assert frag == {"packages": ["git", "aur-yay"]}

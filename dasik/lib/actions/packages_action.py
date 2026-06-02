@@ -273,25 +273,35 @@ class PackagesAction(AbstractAction):
         return {self._PACMAN_DOMAIN: list(self.pacman_pkgs) + list(self.aur_pkgs)}
 
     def import_state(self, managed: "list[str] | None" = None) -> dict:
-        """Capture reality into the config fragment (sync).
+        """Capture reality into the config fragment (sync), annotating install reason.
 
-        Keeps every declared token (intent, ``aur-`` prefix preserved — even if
-        not currently installed) and appends everything present that is not
-        declared. Independent of the manifest M: ``sync`` reflects reality.
-
-        Note: ``pacman -Qqe`` cannot distinguish AUR packages, so captured
-        (undeclared) packages are plain names; the ``aur-`` prefix is only
-        preserved on entries that were already declared with it.
+        Declared entries are kept (intent). A pacman package that is installed is
+        emitted as ``{name, reason}`` when it is a dependency, else a plain string.
+        AUR entries are kept verbatim (``aur-…``). Undeclared explicit packages
+        (``pacman -Qqe`` \\ declared) are appended as plain strings. Transitive
+        dependencies are never captured. Independent of the manifest M.
         """
-        actual = self.actual()
-        original: List[str] = list(self.config) if isinstance(self.config, list) else []
+        explicit = self.actual()
+        installed = self._installed_all()
 
-        def _strip(token: str) -> str:
-            return token[len(AUR_PREFIX):] if token.startswith(AUR_PREFIX) else token
+        def _strip(name: str) -> str:
+            return name[len(AUR_PREFIX):] if name.startswith(AUR_PREFIX) else name
 
-        declared_stripped = {_strip(t) for t in original}
-        extra = sorted(actual - declared_stripped)   # present, not declared
-        return {self._PACMAN_DOMAIN: original + extra}
+        result: list = []
+        declared_stripped: set = set()
+        for entry in self._original:
+            name = entry["name"] if isinstance(entry, dict) else entry
+            declared_stripped.add(_strip(name))
+            if name.startswith(AUR_PREFIX):
+                result.append(name)                       # AUR verbatim
+            elif name in installed and name not in explicit:
+                result.append({"name": name, "reason": "dep"})
+            else:
+                result.append(name)                       # explicit / intent (not installed)
+
+        extra = sorted(explicit - declared_stripped)      # new explicit packages
+        result.extend(extra)
+        return {self._PACMAN_DOMAIN: result}
 
     # ------------------------------------------------------------------ #
     #  v3 apply() — destructive (Plan 4)                                 #

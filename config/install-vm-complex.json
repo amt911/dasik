@@ -1,0 +1,110 @@
+{
+  "metadata": {
+    "profile": "vm-complex-working",
+    "description": "Config enrevesada para VM que SE INSTALA con el set funcional actual: GPT, 4 particiones ext4 SIN cifrado, GRUB, microcode, multiples usuarios, toggles (bluetooth/cups/kvm/hwaccel/wireguard/trim/firewall), files y systemd. Evita lo aun no funcional: cifrado LUKS, paquetes AUR, sd-boot, microsoft_fonts activo. Pensada para /dev/vda en una VM (virtio)."
+  },
+
+  "hostname": "dasik-vm",
+  "enable_microcode": true,
+  "enable_trim": true,
+  "initramfs": "mkinitcpio",
+  "bootloader": "grub",
+
+  "drivers": ["amd", "intel"],
+
+  "timezone": { "region": "Europe", "city": "Madrid" },
+
+  "locales": {
+    "selected_locales": ["en_US.UTF-8 UTF-8", "es_ES.UTF-8 UTF-8"],
+    "desired_locale": "en_US.UTF-8",
+    "desired_tty_layout": "es"
+  },
+
+  "network": { "type": "NetworkManager", "add_default_hosts": true },
+
+  "users": [
+    { "username": "alice", "hashed_password": "$6$uKZMr4pT7dysjTW.$45fYDwbwrkeSPx238aFpIF0DM5YBp7Km3xS2rnhHb5jZbbgqTL7Qgjs9NFa3r82fPhJacdlsZgkW5.E3Zv6o..", "shell": "/bin/bash", "groups": ["wheel", "libvirt", "docker"] },
+    { "username": "bob",   "hashed_password": "$6$9rgMO6aI5Qt5YNzf$WWrX445i1JQVW1X7RAyYBY3jvoW614HvKaJf9ZwCPYTUFs6Nw/blCOhu/nVIMd3P5YAJPaChHrvXld1.47sz61", "shell": "/bin/bash", "groups": ["wheel", "audio"] },
+    { "username": "svc",   "hashed_password": "$6$9BMWIZxUEv60YPwV$obww6Gg3YrCZYk1PSVTcASinae0r/10XpSpPHD1mBffQ92r6fOrgXzNFT9dbr/liwJFKtmBTAHgBrFWxYEVsz.", "shell": "/usr/bin/nologin", "groups": [] }
+  ],
+  "remove_home_on_delete": false,
+
+  "packages": [
+    "base",
+    "linux",
+    "linux-firmware",
+    "networkmanager",
+    "sudo",
+    "base-devel",
+    "git",
+    "vim",
+    "htop",
+    "wget",
+    "openssh",
+    { "name": "imagemagick", "reason": "dep" },
+    { "name": "unzip", "reason": "dep" }
+  ],
+
+  "pacman": {
+    "options": { "Parallel": true, "Color": true, "VerbosePkgLists": true },
+    "multilib": true
+  },
+
+  "systemd": {
+    "enable_units": ["NetworkManager.service", "sshd.service"],
+    "enable_sockets": [],
+    "disable_units": ["systemd-networkd.service"]
+  },
+
+  "bluetooth": { "enable": true, "package": "bluez" },
+  "cups": { "install": true },
+  "kvm": { "install": true },
+  "hardware_acceleration": { "enable": true, "install_codecs": true },
+
+  "wireguard": {
+    "enable": true,
+    "interface_name": "wg0",
+    "config_content": "[Interface]\nAddress = 10.0.0.2/24\nPrivateKey = <PLACEHOLDER_PRIVATE_KEY>\nDNS = 1.1.1.1\n\n[Peer]\nPublicKey = <PLACEHOLDER_SERVER_PUBLIC_KEY>\nEndpoint = vpn.example.com:51820\nAllowedIPs = 0.0.0.0/0\nPersistentKeepalive = 25\n"
+  },
+
+  "firewall": {
+    "enable": true,
+    "remove_services": ["ssh"],
+    "rich_rules": ["rule service name=\"ssh\" accept limit value=\"2/m\""],
+    "allowed_services": ["syncthing"]
+  },
+
+  "microsoft_fonts": { "install": false, "source_iso": null },
+
+  "udev_rules": [
+    { "name": "99-ub400.rules", "content": "# TP-Link UB400 BT adapter\nACTION==\"add\", SUBSYSTEM==\"usb\", ATTR{idVendor}==\"0bda\", ATTR{idProduct}==\"c821\", MODE=\"0666\"\n" }
+  ],
+  "modprobe_conf": [
+    { "name": "blacklist-pcspkr.conf", "content": "blacklist pcspkr\n" }
+  ],
+  "profile_d": [
+    { "name": "editor.sh", "content": "export EDITOR=vim\n" }
+  ],
+  "etc_environment": ["EDITOR=vim", "QT_QPA_PLATFORMTHEME=qt5ct"],
+  "files": [
+    { "path": "/etc/sysctl.d/99-dasik.conf", "content": "vm.swappiness=10\n" }
+  ],
+
+  "kernel_cmdline": ["quiet", "loglevel=3"],
+
+  "disks": {
+    "disks": [
+      {
+        "device": "/dev/vda",
+        "partition_table": "gpt",
+        "wipe_disk": true,
+        "partitions": [
+          { "label": "ESP",  "size": "512MiB", "filesystem": "fat32", "partition_type": "esp",        "mountpoint": "/boot", "format": true },
+          { "label": "swap", "size": "4GiB",   "filesystem": "swap",  "partition_type": "linux-swap", "format": true },
+          { "label": "root", "size": "25GiB",  "filesystem": "ext4",  "partition_type": "linux",      "mountpoint": "/",     "format": true, "encrypt": false, "mount_options": ["noatime"] },
+          { "label": "home", "size": "rest",   "filesystem": "ext4",  "partition_type": "linux",      "mountpoint": "/home", "format": true, "encrypt": false, "mount_options": ["noatime"] }
+        ]
+      }
+    ]
+  }
+}

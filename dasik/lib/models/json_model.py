@@ -1,4 +1,4 @@
-from typing import Optional, List
+from typing import Optional, List, Union
 from pydantic import BaseModel, Field
 
 from .locale_model import LocaleModel
@@ -7,6 +7,7 @@ from .network_model import NetworkModel
 from .disk_model import DisksConfiguration
 from .user_model import UserModel
 from .file_model import FileEntry, EtcFile
+from .package_model import PackageSpec
 from .pacman_model import PacmanModel
 from .systemd_model import SystemdModel
 from .bluetooth_model import BluetoothModel
@@ -36,7 +37,9 @@ class JsonModel(BaseModel):
     # --- new fields ---
     users: List[UserModel] = Field(default_factory=list)
     drivers: List[str] = Field(default_factory=list, description="GPU driver selection")
-    packages: List[str] = Field(default_factory=list, description="Packages to install (aur- prefix for AUR)")
+    packages: List[Union[str, PackageSpec]] = Field(
+        default_factory=list,
+        description="Packages (str=explicit, {name,reason} for deps; aur- prefix for AUR)")
     bootloader: str = Field(default="grub", description="grub | sd-boot")
 
     # Files / lines to drop on the target system

@@ -1,67 +1,121 @@
-from unittest.mock import mock_open, patch
+import pytest
 
 from dasik.lib.actions.network_action import NetworkAction
+from dasik.lib.actions.action_context import ActionContext
+from dasik.lib.target.target import Target
+from dasik.lib.state.change import Op
+from dasik.lib.exceptions.exceptions import NetworkTypeNotFoundException
+
+_BLOCK = "127.0.0.1 localhost\n::1 localhost\n127.0.1.1 arch\n"
+
+
+def _ctx(root):
+    return ActionContext(target=Target(root=str(root)))
 
 
 def _cfg(hostname="arch", add_hosts=True, ntype="NetworkManager"):
-    return {
-        "hostname": hostname,
-        "network": {"type": ntype, "add_default_hosts": add_hosts},
-    }
+    return {"hostname": hostname, "network": {"type": ntype, "add_default_hosts": add_hosts}}
+
+
+def _write(tmp_path, hostname=None, hosts=None):
+    etc = tmp_path / "etc"
+    etc.mkdir(parents=True, exist_ok=True)
+    if hostname is not None:
+        (etc / "hostname").write_text(hostname)
+    if hosts is not None:
+        (etc / "hosts").write_text(hosts)
+
+
+def test_is_v3_true():
+    assert NetworkAction.is_v3() is True
 
 
 def test_reads_root_hostname_and_network_section():
     a = NetworkAction(_cfg(hostname="box", ntype="systemd-networkd"))
-    assert a.hostname == "box"
-    assert a.type == "systemd-networkd"
-    assert a.add_default_hosts is True
+    assert a.hostname == "box" and a.type == "systemd-networkd" and a.add_default_hosts is True
 
 
-def test_needed_when_hostname_file_absent():
-    a = NetworkAction(_cfg())
-    with patch("dasik.lib.actions.network_action.os.path.exists", return_value=False):
-        assert a.is_needed() is True
-
-
-def test_needed_when_hostname_differs():
-    a = NetworkAction(_cfg(hostname="arch"))
-    with patch("dasik.lib.actions.network_action.os.path.exists", return_value=True), \
-         patch("builtins.open", mock_open(read_data="oldname\n")):
-        assert a._hostname_needs_write() is True
-        assert a.is_needed() is True
-
-
-def test_needed_when_default_hosts_missing():
+def test_desired_state_excludes_type():
     a = NetworkAction(_cfg(hostname="arch", add_hosts=True))
-
-    def opener(path, *a_, **k):
-        data = "arch\n" if "hostname" in str(path) else "# empty hosts\n"
-        return mock_open(read_data=data)()
-
-    with patch("dasik.lib.actions.network_action.os.path.exists", return_value=True), \
-         patch("builtins.open", side_effect=opener):
-        assert a._hostname_needs_write() is False
-        assert a._hosts_needs_write() is True
-        assert a.is_needed() is True
+    assert a._desired_state() == {"hostname": "arch", "default_hosts": True}
 
 
-def test_not_needed_when_hostname_and_hosts_ok():
-    a = NetworkAction(_cfg(hostname="arch", add_hosts=True))
-    hosts = "127.0.0.1 localhost\n::1 localhost\n127.0.1.1 arch\n"
-
-    def opener(path, *a_, **k):
-        data = "arch\n" if "hostname" in str(path) else hosts
-        return mock_open(read_data=data)()
-
-    with patch("dasik.lib.actions.network_action.os.path.exists", return_value=True), \
-         patch("builtins.open", side_effect=opener):
-        assert a.is_needed() is False
-        assert a.verify() is True
+def test_actual_state_none_when_hostname_missing(tmp_path):
+    a = NetworkAction(_cfg(), _ctx(tmp_path))  # no /etc/hostname
+    assert a._actual_state() is None
 
 
-def test_hosts_check_skipped_when_add_default_hosts_false():
-    a = NetworkAction(_cfg(add_hosts=False))
-    assert a._hosts_needs_write() is False
+def test_actual_state_reads_hostname_and_block(tmp_path):
+    _write(tmp_path, hostname="arch\n", hosts=_BLOCK)
+    a = NetworkAction(_cfg(hostname="arch"), _ctx(tmp_path))
+    assert a._actual_state() == {"hostname": "arch", "default_hosts": True}
+
+
+def test_plan_empty_when_converged(tmp_path):
+    _write(tmp_path, hostname="arch\n", hosts=_BLOCK)
+    a = NetworkAction(_cfg(hostname="arch", add_hosts=True), _ctx(tmp_path))
+    assert a.plan(managed=[]) == []
+
+
+def test_plan_modify_when_hostname_differs(tmp_path):
+    _write(tmp_path, hostname="oldname\n", hosts=_BLOCK)
+    a = NetworkAction(_cfg(hostname="arch"), _ctx(tmp_path))
+    changes = a.plan(managed=[])
+    assert changes and changes[0].op is Op.MODIFY and "hostname" in changes[0].item
+
+
+def test_plan_modify_when_default_hosts_absent(tmp_path):
+    _write(tmp_path, hostname="arch\n", hosts="# empty\n")
+    a = NetworkAction(_cfg(hostname="arch", add_hosts=True), _ctx(tmp_path))
+    changes = a.plan(managed=[])
+    assert changes and changes[0].op is Op.MODIFY and "default_hosts" in changes[0].item
+
+
+def test_import_fragment_two_keys_with_type_passthrough(tmp_path):
+    _write(tmp_path, hostname="arch\n", hosts=_BLOCK)
+    a = NetworkAction(_cfg(hostname="arch", ntype="systemd-networkd"), _ctx(tmp_path))
+    frag = a.import_state(managed=[])
+    assert frag == {
+        "hostname": "arch",
+        "network": {"type": "systemd-networkd", "add_default_hosts": True},
+    }
+
+
+def test_nothing_declared_guard_empty_plan(tmp_path):
+    a = NetworkAction({"packages": ["git"]}, _ctx(tmp_path))  # no hostname
+    assert a.hostname == ""
+    assert a.plan(managed=[]) == []
+    assert a.import_state(managed=[]) == {}
+
+
+def test_nothing_declared_guard_set_value_noop_no_raise(tmp_path):
+    a = NetworkAction({"packages": ["git"]}, _ctx(tmp_path))  # type == "" would raise
+    a._set_value()  # must NOT raise NetworkTypeNotFoundException
+    assert not (tmp_path / "etc" / "hostname").exists()
+
+
+def test_set_value_writes_hostname_and_block(tmp_path):
+    _write(tmp_path, hosts="192.168.0.1 router\n")
+    a = NetworkAction(_cfg(hostname="arch", add_hosts=True), _ctx(tmp_path))
+    a._set_value()
+    assert (tmp_path / "etc" / "hostname").read_text() == "arch"
+    hosts_text = (tmp_path / "etc" / "hosts").read_text()
+    assert "127.0.1.1 arch" in hosts_text and "192.168.0.1 router" in hosts_text
+
+
+def test_set_value_idempotent(tmp_path):
+    _write(tmp_path, hosts="")
+    a = NetworkAction(_cfg(hostname="arch", add_hosts=True), _ctx(tmp_path))
+    a._set_value()
+    a._set_value()
+    assert a.plan(managed=[]) == []
+
+
+def test_invalid_type_raises_on_set_value(tmp_path):
+    _write(tmp_path, hosts="")
+    a = NetworkAction(_cfg(hostname="arch", ntype="bogus"), _ctx(tmp_path))
+    with pytest.raises(NetworkTypeNotFoundException):
+        a._set_value()
 
 
 def test_name_and_optional():

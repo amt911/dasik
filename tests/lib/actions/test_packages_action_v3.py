@@ -338,3 +338,129 @@ def test_import_state_captures_owned_present_undeclared():
         a = PackagesAction(config=["git"], context=_ctx("/"))
         frag = a.import_state(managed=["htop"])   # htop owned, not declared
     assert frag == {"packages": ["git", "htop", "vim"]}
+
+
+# ---------------------------------------------------------------------- #
+#  Install reason (explicit/dep) — pacman only                           #
+# ---------------------------------------------------------------------- #
+
+
+def _reason_fake(explicit=b"", installed=b""):
+    """Command.execute fake: -Qqe -> explicit set, -Qq -> all installed."""
+    def run(cmd, args, *a, **k):
+        flag = args[0] if args else ""
+        out = explicit if flag == "-Qqe" else installed if flag == "-Qq" else b""
+        return MagicMock(stdout=out, stderr=b"", returncode=0)
+    return run
+
+
+def test_parses_reason_for_pacman_objects():
+    a = PackagesAction(config=["git", {"name": "foo", "reason": "dep"}], context=_ctx("/"))
+    assert a.pacman_pkgs == ["git", "foo"]
+    assert a._reason["git"] == "explicit"
+    assert a._reason["foo"] == "dep"
+
+
+def test_aur_object_ignores_reason():
+    a = PackagesAction(config=[{"name": "aur-yay", "reason": "dep"}], context=_ctx("/"))
+    assert a.aur_pkgs == ["yay"]
+    assert "yay" not in a._reason     # AUR reason-exempt
+
+
+def test_installed_all_and_reason_of():
+    with patch("dasik.lib.actions.packages_action.Command.execute",
+               _reason_fake(explicit=b"git\n", installed=b"git\ndep1\n")):
+        a = PackagesAction(config=[], context=_ctx("/"))
+        assert a._installed_all() == {"git", "dep1"}
+        assert a._reason_of("git") == "explicit"
+        assert a._reason_of("dep1") == "dep"   # installed but not in -Qqe
+
+
+def test_plan_no_install_when_declared_dep_already_installed_as_dep():
+    with patch("dasik.lib.actions.packages_action.Command.execute",
+               _reason_fake(explicit=b"git\n", installed=b"git\nfoo\n")):
+        a = PackagesAction(config=["git", {"name": "foo", "reason": "dep"}], context=_ctx("/"))
+        changes = a.plan(managed=["git", "foo"])
+    assert changes == []
+
+
+def test_plan_modify_when_reason_drifts():
+    with patch("dasik.lib.actions.packages_action.Command.execute",
+               _reason_fake(explicit=b"git\nfoo\n", installed=b"git\nfoo\n")):
+        a = PackagesAction(config=["git", {"name": "foo", "reason": "dep"}], context=_ctx("/"))
+        changes = a.plan(managed=["git", "foo"])
+    assert [(c.op, c.item) for c in changes] == [(Op.MODIFY, "foo")]
+
+
+def test_plan_install_for_declared_dep_not_installed():
+    with patch("dasik.lib.actions.packages_action.Command.execute",
+               _reason_fake(explicit=b"git\n", installed=b"git\n")):
+        a = PackagesAction(config=["git", {"name": "foo", "reason": "dep"}], context=_ctx("/"))
+        changes = a.plan(managed=[])
+    assert [(c.op, c.item) for c in changes] == [(Op.INSTALL, "foo")]
+
+
+def test_plan_no_modify_for_aur():
+    with patch("dasik.lib.actions.packages_action.Command.execute",
+               _reason_fake(explicit=b"git\n", installed=b"git\nyay\n")):
+        a = PackagesAction(config=["git", "aur-yay"], context=_ctx("/"))
+        changes = a.plan(managed=["git", "yay"])
+    assert changes == []   # yay installed (any reason), AUR never MODIFY
+
+
+def test_apply_marks_installed_dep_as_asdeps():
+    a = PackagesAction(config=[{"name": "foo", "reason": "dep"}], context=_ctx("/"))
+    with patch("dasik.lib.actions.packages_action.Command.execute") as run:
+        a.apply([Change("packages", Op.INSTALL, "foo")])
+    calls = [(c.args[0], c.args[1]) for c in run.call_args_list]
+    assert any(c[0] == "pacman" and "-S" in c[1] and "foo" in c[1] for c in calls)
+    assert any(c[0] == "pacman" and "-D" in c[1] and "--asdeps" in c[1] and "foo" in c[1]
+               for c in calls)
+
+
+def test_apply_modify_sets_reason_dep():
+    a = PackagesAction(config=[{"name": "foo", "reason": "dep"}], context=_ctx("/"))
+    with patch("dasik.lib.actions.packages_action.Command.execute") as run:
+        a.apply([Change("packages", Op.MODIFY, "foo")])
+    calls = [(c.args[0], c.args[1]) for c in run.call_args_list]
+    assert ("pacman", ["-D", "--asdeps", "foo"]) in calls
+
+
+def test_apply_modify_to_explicit():
+    a = PackagesAction(config=["foo"], context=_ctx("/"))   # explicit
+    with patch("dasik.lib.actions.packages_action.Command.execute") as run:
+        a.apply([Change("packages", Op.MODIFY, "foo")])
+    calls = [(c.args[0], c.args[1]) for c in run.call_args_list]
+    assert ("pacman", ["-D", "--asexplicit", "foo"]) in calls
+
+
+def test_apply_explicit_install_no_asdeps():
+    a = PackagesAction(config=["git"], context=_ctx("/"))
+    with patch("dasik.lib.actions.packages_action.Command.execute") as run:
+        a.apply([Change("packages", Op.INSTALL, "git")])
+    calls = [(c.args[0], c.args[1]) for c in run.call_args_list]
+    assert not any("-D" in c[1] for c in calls)   # explicit needs no -D
+
+
+def test_import_state_declared_dep_kept_as_object():
+    with patch("dasik.lib.actions.packages_action.Command.execute",
+               _reason_fake(explicit=b"git\n", installed=b"git\nfoo\n")):
+        a = PackagesAction(config=["git", {"name": "foo", "reason": "dep"}], context=_ctx("/"))
+        frag = a.import_state(managed=["git", "foo"])
+    assert frag == {"packages": ["git", {"name": "foo", "reason": "dep"}]}
+
+
+def test_import_state_explicit_drift_is_plain_string():
+    with patch("dasik.lib.actions.packages_action.Command.execute",
+               _reason_fake(explicit=b"git\nhtop\n", installed=b"git\nhtop\n")):
+        a = PackagesAction(config=["git"], context=_ctx("/"))
+        frag = a.import_state(managed=[])
+    assert frag == {"packages": ["git", "htop"]}
+
+
+def test_import_state_keeps_aur_verbatim():
+    with patch("dasik.lib.actions.packages_action.Command.execute",
+               _reason_fake(explicit=b"git\n", installed=b"git\nyay\n")):
+        a = PackagesAction(config=["git", "aur-yay"], context=_ctx("/"))
+        frag = a.import_state(managed=["git", "yay"])
+    assert frag == {"packages": ["git", "aur-yay"]}

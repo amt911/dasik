@@ -15,6 +15,7 @@ from dasik.lib.models.timezone_model import TimezoneModel
 from dasik.lib.models.network_model import NetworkModel
 from dasik.lib.models.user_model import UserModel
 from dasik.lib.models.file_model import FileEntry, EtcFile
+from dasik.lib.models.package_model import PackageSpec
 from dasik.lib.models.pacman_model import PacmanModel, PacmanOptionsModel
 from dasik.lib.models.systemd_model import SystemdModel
 from dasik.lib.models.bluetooth_model import BluetoothModel
@@ -40,6 +41,7 @@ __all__ = [
     "UserModel",
     "FileEntry",
     "EtcFile",
+    "PackageSpec",
     "PacmanModel",
     "PacmanOptionsModel",
     "SystemdModel",

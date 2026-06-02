@@ -49,6 +49,7 @@ def setup_actions() -> None:
     from .drop_files_action import DropFilesAction
     from .initramfs_action import InitramfsAction
     from .kernel_cmdline_action import KernelCmdlineAction
+    from .bootloader_action import BootloaderAction
     from .trim_action import TrimAction
     from .bluetooth_action import BluetoothAction
     from .hw_accel_action import HardwareAccelAction
@@ -169,6 +170,13 @@ def setup_actions() -> None:
         action_class=InitramfsAction,
         config_key='__root__',
         is_optional=True,
+    )
+    register_action(
+        # Install the bootloader + base entry BEFORE KernelCmdlineAction, which
+        # then maintains the entry's kernel params.
+        action_class=BootloaderAction,
+        config_key='__root__',
+        is_optional=False,
     )
     register_action(
         action_class=KernelCmdlineAction,

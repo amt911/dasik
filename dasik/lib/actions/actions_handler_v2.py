@@ -50,10 +50,7 @@ def setup_actions() -> None:
     from .initramfs_action import InitramfsAction
     from .kernel_cmdline_action import KernelCmdlineAction
     from .bootloader_action import BootloaderAction
-    from .hw_accel_action import HardwareAccelAction
     from .ms_fonts_action import MicrosoftFontsAction
-    from .firewall_action import FirewallAction
-    from .wireguard_action import WireguardAction
 
     # === Phase 1: disk & base install =====================================
     register_action(
@@ -121,23 +118,8 @@ def setup_actions() -> None:
         is_optional=True,
     )
     register_action(
-        action_class=HardwareAccelAction,
-        config_key='hardware_acceleration',
-        is_optional=True,
-    )
-    register_action(
         action_class=MicrosoftFontsAction,
         config_key='microsoft_fonts',
-        is_optional=True,
-    )
-    register_action(
-        action_class=FirewallAction,
-        config_key='firewall',
-        is_optional=True,
-    )
-    register_action(
-        action_class=WireguardAction,
-        config_key='wireguard',
         is_optional=True,
     )
 

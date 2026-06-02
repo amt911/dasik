@@ -1,5 +1,6 @@
 from dasik.lib.expand.toggles import (
     expand_bluetooth, expand_cups, expand_trim, expand_kvm,
+    expand_wireguard, expand_firewall, expand_hwaccel,
 )
 
 
@@ -45,3 +46,49 @@ def test_kvm_enabled():
     assert out["units"] == ["libvirtd.service", "virtlogd.service"]
     assert out["modprobe_conf"][0]["name"] == "dasik-nested-virt.conf"
     assert "nested=1" in out["modprobe_conf"][0]["content"]
+
+
+def test_wireguard_disabled_empty():
+    assert expand_wireguard({}) == {}
+    assert expand_wireguard({"wireguard": {"enable": False}}) == {}
+
+
+def test_wireguard_enabled():
+    out = expand_wireguard({"wireguard": {
+        "enable": True, "interface_name": "wg0", "config_content": "[Interface]\n",
+    }})
+    assert out["packages"] == ["wireguard-tools"]
+    assert out["units"] == ["wg-quick@wg0.service"]
+    assert out["files"][0]["path"] == "/etc/wireguard/wg0.conf"
+    assert out["files"][0]["content"] == "[Interface]\n"
+
+
+def test_firewall_disabled_empty():
+    assert expand_firewall({}) == {}
+    assert expand_firewall({"firewall": {"enable": False}}) == {}
+
+
+def test_firewall_enabled():
+    out = expand_firewall({"firewall": {"enable": True}})
+    assert out["packages"] == ["firewalld"]
+    assert out["units"] == ["firewalld.service"]
+
+
+def test_hwaccel_disabled_empty():
+    assert expand_hwaccel({}) == {}
+    assert expand_hwaccel({"hardware_acceleration": {"enable": False}}) == {}
+
+
+def test_hwaccel_enabled_uses_drivers():
+    out = expand_hwaccel({
+        "hardware_acceleration": {"enable": True, "install_codecs": True},
+        "drivers": ["intel", "amd"],
+    })
+    assert "intel-media-driver" in out["packages"]
+    assert "libva-mesa-driver" in out["packages"]
+    assert "libva-utils" in out["packages"]  # common
+
+
+def test_hwaccel_enabled_no_drivers_only_common():
+    out = expand_hwaccel({"hardware_acceleration": {"enable": True}, "drivers": []})
+    assert out["packages"] == ["libva-utils", "vdpauinfo"]

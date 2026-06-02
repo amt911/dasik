@@ -32,14 +32,21 @@ class PackagesAction(AbstractAction):
 
     def __init__(self, config: Any, context=None):
         super().__init__(config, context)
-        raw: List[str] = config if isinstance(config, list) else []
+        raw: List[Any] = config if isinstance(config, list) else []
+        self._original = raw
         self.pacman_pkgs: List[str] = []
         self.aur_pkgs: List[str] = []
-        for pkg in raw:
-            if pkg.startswith(AUR_PREFIX):
-                self.aur_pkgs.append(pkg[len(AUR_PREFIX):])
+        self._reason: dict[str, str] = {}   # pacman name -> "explicit"|"dep"
+        for entry in raw:
+            if isinstance(entry, dict):
+                name, reason = entry["name"], entry.get("reason", "explicit")
             else:
-                self.pacman_pkgs.append(pkg)
+                name, reason = entry, "explicit"
+            if name.startswith(AUR_PREFIX):
+                self.aur_pkgs.append(name[len(AUR_PREFIX):])   # AUR: reason-exempt
+            else:
+                self.pacman_pkgs.append(name)
+                self._reason[name] = reason
 
     @property
     def name(self) -> str:
@@ -214,6 +221,21 @@ class PackagesAction(AbstractAction):
         if isinstance(stdout, bytes):
             stdout = stdout.decode("utf-8", errors="replace")
         return {line.strip() for line in stdout.splitlines() if line.strip()}
+
+    def _installed_all(self) -> set[str]:
+        """All installed packages (any reason): pacman -Qq."""
+        target = getattr(self.context, "target", None) if self.context else None
+        if target is None:
+            return set()
+        result = Command.execute("pacman", ["-Qq"], target=target)
+        stdout = getattr(result, "stdout", b"") or b""
+        if isinstance(stdout, bytes):
+            stdout = stdout.decode("utf-8", errors="replace")
+        return {line.strip() for line in stdout.splitlines() if line.strip()}
+
+    def _reason_of(self, pkg: str) -> str:
+        """Install reason of an installed package: explicit if in -Qqe else dep."""
+        return "explicit" if pkg in self.actual() else "dep"
 
     def plan(self, managed):
         """Compute INSTALL/REMOVE for both pacman and AUR packages.

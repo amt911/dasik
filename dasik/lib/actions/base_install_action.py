@@ -98,10 +98,10 @@ class BaseInstallAction(AbstractAction):
 
     # --- the destructive bit (mocked in tests) ------------------------ #
 
-    def _install(self) -> None:  # pragma: no cover - destructive: pacstrap/genfstab
+    def _install(self) -> None:
         root = self._target_root()
-        Command.execute("pacman", ["--noconfirm", "-Sy", "archlinux-keyring"])
-        Command.execute("pacstrap", ["-K", root] + self.packages)
-        fstab = Command.execute("genfstab", ["-U", root]).stdout.decode()
+        Command.execute_checked("pacman", ["--noconfirm", "-Sy", "archlinux-keyring"])
+        Command.execute_checked("pacstrap", ["-K", root] + self.packages)
+        fstab = Command.execute_checked("genfstab", ["-U", root]).stdout.decode()
         with open(self._p("/etc/fstab"), "a") as f:
             f.write(fstab)

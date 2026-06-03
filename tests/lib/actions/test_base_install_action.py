@@ -1,9 +1,11 @@
-from unittest.mock import mock_open, patch
+from unittest.mock import MagicMock, mock_open, patch
 
 import pytest
 
 from dasik.lib.actions.base_install_action import BaseInstallAction
 from dasik.lib.actions.action_context import ActionContext
+from dasik.lib.command_worker.command_worker import Command
+from dasik.lib.exceptions.exceptions import CommandExecutionError
 from dasik.lib.target.target import Target
 from dasik.lib.state.change import Op
 
@@ -103,6 +105,24 @@ def test_managed_keys(tmp_path):
 def test_import_state_empty(tmp_path):
     a = BaseInstallAction({"enable_microcode": False}, _ctx(tmp_path))
     assert a.import_state(managed=[]) == {}
+
+
+def test_install_pacstraps_and_writes_fstab(tmp_path):
+    (tmp_path / "etc").mkdir(parents=True, exist_ok=True)
+    a = BaseInstallAction({"enable_microcode": False}, _ctx(tmp_path))
+    with patch.object(Command, "execute_checked",
+                      return_value=MagicMock(stdout=b"UUID=1 / ext4 defaults 0 1\n")) as ck:
+        a._install()
+    assert (tmp_path / "etc" / "fstab").read_text() == "UUID=1 / ext4 defaults 0 1\n"
+    assert any(c.args[0] == "pacstrap" for c in ck.call_args_list)
+
+
+def test_install_propagates_command_failure(tmp_path):
+    a = BaseInstallAction({"enable_microcode": False}, _ctx(tmp_path))
+    with patch.object(Command, "execute_checked",
+                      side_effect=CommandExecutionError("pacstrap ... failed (rc=1): not enough free disk space")):
+        with pytest.raises(CommandExecutionError):
+            a._install()
 
 
 def test_name_and_optional():

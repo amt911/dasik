@@ -141,7 +141,9 @@ def test_apply_install_routes_pacman_pkgs_through_pacman_S():
         Change("packages", Op.INSTALL, "git"),
         Change("packages", Op.INSTALL, "htop"),
     ]
-    with patch("dasik.lib.actions.packages_action.Command.execute") as run:
+    run = MagicMock()
+    with patch("dasik.lib.actions.packages_action.Command.execute", run), \
+         patch("dasik.lib.actions.packages_action.Command.execute_checked", run):
         a.apply(changes)
     # One pacman -S call with both names + --noconfirm --needed
     assert run.call_count == 1
@@ -177,7 +179,9 @@ def test_apply_mixes_install_and_remove_in_correct_order():
         Change("packages", Op.REMOVE, "vim"),
         Change("packages", Op.INSTALL, "git"),
     ]
-    with patch("dasik.lib.actions.packages_action.Command.execute") as run:
+    run = MagicMock()
+    with patch("dasik.lib.actions.packages_action.Command.execute", run), \
+         patch("dasik.lib.actions.packages_action.Command.execute_checked", run):
         a.apply(changes)
     # Two calls: pacman -S first, then pacman -Rns
     assert run.call_count == 2
@@ -211,8 +215,10 @@ def test_apply_separates_pacman_install_from_aur_install():
         Change("packages", Op.INSTALL, "git"),
         Change("packages", Op.INSTALL, "yay"),
     ]
+    run = MagicMock()
     with patch.object(PackagesAction, "_apply_aur_install") as aur_install, \
-         patch("dasik.lib.actions.packages_action.Command.execute") as run:
+         patch("dasik.lib.actions.packages_action.Command.execute", run), \
+         patch("dasik.lib.actions.packages_action.Command.execute_checked", run):
         a.apply(changes)
     aur_install.assert_called_once_with(["yay"])
     # Exactly one pacman -S call for the pacman items
@@ -410,7 +416,9 @@ def test_plan_no_modify_for_aur():
 
 def test_apply_marks_installed_dep_as_asdeps():
     a = PackagesAction(config=[{"name": "foo", "reason": "dep"}], context=_ctx("/"))
-    with patch("dasik.lib.actions.packages_action.Command.execute") as run:
+    run = MagicMock()
+    with patch("dasik.lib.actions.packages_action.Command.execute", run), \
+         patch("dasik.lib.actions.packages_action.Command.execute_checked", run):
         a.apply([Change("packages", Op.INSTALL, "foo")])
     calls = [(c.args[0], c.args[1]) for c in run.call_args_list]
     assert any(c[0] == "pacman" and "-S" in c[1] and "foo" in c[1] for c in calls)
@@ -436,7 +444,9 @@ def test_apply_modify_to_explicit():
 
 def test_apply_explicit_install_no_asdeps():
     a = PackagesAction(config=["git"], context=_ctx("/"))
-    with patch("dasik.lib.actions.packages_action.Command.execute") as run:
+    run = MagicMock()
+    with patch("dasik.lib.actions.packages_action.Command.execute", run), \
+         patch("dasik.lib.actions.packages_action.Command.execute_checked", run):
         a.apply([Change("packages", Op.INSTALL, "git")])
     calls = [(c.args[0], c.args[1]) for c in run.call_args_list]
     assert not any("-D" in c[1] for c in calls)   # explicit needs no -D

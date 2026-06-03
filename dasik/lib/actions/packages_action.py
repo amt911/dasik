@@ -352,7 +352,7 @@ class PackagesAction(AbstractAction):
                 removes.append(change.item)
 
         if pacman_installs:
-            Command.execute(
+            Command.execute_checked(
                 "pacman",
                 ["--noconfirm", "--needed", "-S", *pacman_installs],
                 target=target,

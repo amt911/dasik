@@ -35,6 +35,8 @@ def _fake_exec(table=None):
 def _invoke(argv, table=None):
     with patch("dasik.lib.command_worker.command_worker.Command.execute",
                side_effect=_fake_exec(table)), \
+         patch("dasik.lib.command_worker.command_worker.Command.execute_checked",
+               side_effect=_fake_exec(table)), \
          patch("subprocess.run", side_effect=_fake_exec(table)):
         return main(argv)
 
@@ -131,6 +133,7 @@ def test_apply_expands_bluetooth_toggle_into_packages(tmp_path):
         return MagicMock(stdout=b"", stderr=b"", returncode=0)
 
     with patch("dasik.lib.command_worker.command_worker.Command.execute", side_effect=run), \
+         patch("dasik.lib.command_worker.command_worker.Command.execute_checked", side_effect=run), \
          patch("subprocess.run", side_effect=_fake_exec({("pacman", "-Qqe"): b""})):
         code = main(["apply", str(p), "--target", str(tmp_path), "--yes"])
     assert code == 0

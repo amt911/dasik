@@ -2,6 +2,15 @@
 
 Declarative Arch Linux installer. Goal: behave like Nix/NixOS — describe the target system in one JSON file, run `dasik config.json`, and get that system. Running the **same** JSON again changes nothing (idempotent).
 
+## Always use superpowers (user directive)
+
+For ALL non-trivial work in this repo, use the superpowers skills — no exceptions:
+
+- New feature / change → `brainstorming` → `writing-plans` → `executing-plans` → `finishing-a-development-branch`.
+- Any bug / test failure / unexpected behavior → `systematic-debugging` (find root cause before any fix; don't pile fixes).
+- New logic in `models/`, `json_parser/`, `actions/`, `command_worker/`, `expand/` → strict TDD (red → green → refactor).
+- One slice per session, each ending in a PR. Never `git push` (user pushes; I open PRs with `gh`).
+
 This file documents the `dasik/` package at the repo root — the active reimplementation (formerly `new/`, promoted to root in commit `3a17d00`). Ignore `archinstall/` (reference dumps) and the legacy scripts described in the repo-root `README.md`.
 
 ## Resources (local reference — bind-mounted, not committed)

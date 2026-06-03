@@ -105,7 +105,7 @@ class BootloaderAction(AbstractAction):
     def _install(self) -> None:  # pragma: no cover - shells out to bootctl/grub
         t = self._target()
         if self._is_sdboot():
-            Command.execute("bootctl", ["install"], target=t)
+            Command.execute_checked("bootctl", ["install"], target=t)
             loader = self._p("/boot/loader/loader.conf")
             os.makedirs(os.path.dirname(loader), exist_ok=True)
             with open(loader, "w") as f:
@@ -120,8 +120,8 @@ class BootloaderAction(AbstractAction):
             with open(os.path.join(entries_dir, "arch.conf"), "w") as f:
                 f.write("\n".join(lines) + "\n")
         else:
-            Command.execute("pacman", ["--noconfirm", "--needed", "-S", "grub", "efibootmgr"], target=t)
-            Command.execute("grub-install", [
+            Command.execute_checked("pacman", ["--noconfirm", "--needed", "-S", "grub", "efibootmgr"], target=t)
+            Command.execute_checked("grub-install", [
                 "--target=x86_64-efi", "--efi-directory=/boot", "--bootloader-id=GRUB",
             ], target=t)
-            Command.execute("grub-mkconfig", ["-o", "/boot/grub/grub.cfg"], target=t)
+            Command.execute_checked("grub-mkconfig", ["-o", "/boot/grub/grub.cfg"], target=t)

@@ -90,11 +90,55 @@ def test_apply_processes_changed_disks():
     proc.assert_called_once()
 
 
-def test_apply_noop_when_no_changes():
+def test_apply_noop_when_no_changes_and_not_converged():
     a = DiskPartitionAction(_cfg(), _ctx())
-    with patch.object(DiskPartitionAction, "_process_disk") as proc:
+    with patch.object(DiskPartitionAction, "_device_labels", return_value=set()), \
+         patch.object(DiskPartitionAction, "_process_disk") as proc, \
+         patch.object(DiskPartitionAction, "_mount_existing") as me:
         a.apply([])
     proc.assert_not_called()
+    me.assert_not_called()
+
+
+def test_apply_mounts_existing_on_converged_rerun():
+    # converged disk (all labels present) + install target + no plan changes
+    # -> mount the existing partitions, never re-format
+    a = DiskPartitionAction(_cfg(), _ctx("/mnt"))
+    with patch.object(DiskPartitionAction, "_device_labels", return_value={"boot", "root"}), \
+         patch.object(DiskPartitionAction, "_process_disk") as proc, \
+         patch.object(DiskPartitionAction, "_mount_existing") as me:
+        a.apply([])
+    proc.assert_not_called()        # NEVER re-partition/format a converged disk
+    me.assert_called_once()
+
+
+def test_apply_does_not_mount_existing_on_live_host():
+    a = DiskPartitionAction(_cfg(), _ctx("/"))      # root="/" not an install target
+    with patch.object(DiskPartitionAction, "_device_labels", return_value={"boot", "root"}), \
+         patch.object(DiskPartitionAction, "_mount_existing") as me:
+        a.apply([])
+    me.assert_not_called()
+
+
+def test_mount_existing_rebuilds_map_by_config_order():
+    a = DiskPartitionAction(_cfg(device="/dev/vda"), _ctx("/mnt"))
+    with patch.object(DiskPartitionAction, "_mount_partitions") as mp:
+        a._mount_existing(a.disks[0])
+    assert a.partition_map["boot"] == "/dev/vda1"   # config order: boot=1, root=2
+    assert a.partition_map["root"] == "/dev/vda2"
+    mp.assert_called_once()
+
+
+def test_mount_partitions_root_before_boot():
+    # / must mount before /boot so the ESP isn't shadowed under the root fs
+    a = DiskPartitionAction(_cfg(), _ctx("/mnt"))
+    a.partition_map = {"boot": "/dev/vda1", "root": "/dev/vda2"}
+    order = []
+    with patch.object(DiskPartitionAction, "_mount_partition",
+                      side_effect=lambda p: order.append(p.mountpoint)), \
+         patch("dasik.lib.actions.disk_partition_action.Command.execute"):
+        a._mount_partitions(a.disks[0])
+    assert order[0] == "/"          # root first
 
 
 def test_managed_keys_lists_converged():

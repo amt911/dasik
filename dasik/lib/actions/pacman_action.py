@@ -9,6 +9,7 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, Optional
 from .composite_action import CompositeV3Action
+from ..command_worker.command_worker import Command
 
 _PACMAN_CONF = "/etc/pacman.conf"
 
@@ -88,6 +89,18 @@ class PacmanAction(CompositeV3Action):
             "VerbosePkgLists": self._option_active(text, "VerbosePkgLists"),
             "multilib": self._multilib_active(text),
         }
+
+    def apply(self, changes) -> None:
+        # Write pacman.conf (only when it drifts) via the composite machinery…
+        super().apply(changes)
+        # …then, if multilib is enabled on an install target, refresh the pacman
+        # databases so the newly-enabled [multilib] repo has a DB. Without this a
+        # later `pacman -S` aborts with "failed to prepare transaction (could not
+        # find database)". Run every apply (not just on conf drift) so a re-run
+        # after a partial install still ends up with the DB synced.
+        t = self._target()
+        if self.multilib and t is not None and getattr(t, "is_chroot", False):
+            Command.execute_checked("pacman", ["-Sy"], target=t)
 
     def _import_fragment(self, value) -> dict:
         st = self._actual_state() or self._desired_state()

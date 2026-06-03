@@ -1,4 +1,5 @@
 """Disk partitioning action."""
+import os
 from pathlib import Path
 from typing import Dict, List, Optional
 from dasik.lib.actions.abstract_action import AbstractAction
@@ -103,13 +104,30 @@ class DiskPartitionAction(AbstractAction):
                 )
         return changes
 
+    def _is_install_target(self) -> bool:
+        t = getattr(self.context, "target", None) if self.context else None
+        return t is not None and getattr(t, "is_chroot", False)
+
+    def _mount_existing(self, disk: DiskLayout) -> None:
+        """Mount an already-partitioned disk WITHOUT formatting it.
+
+        On a re-run (the partitions are converged so ``plan`` is empty) the
+        target still needs mounting at /mnt for the rest of the install. Rebuild
+        the label→device map from the config order (partition N = index+1) and
+        mount; never wipe or mkfs here.
+        """
+        for i, part in enumerate(disk.partitions, start=1):
+            self.partition_map[part.label] = self._get_partition_device(disk.device, i)
+        self._mount_partitions(disk)
+
     def apply(self, changes) -> None:
-        if not changes:
-            return
         targets = {c.item for c in changes}
         for disk in self.disks:
             if disk.device in targets:
-                self._process_disk(disk)
+                self._process_disk(disk)                  # partition + format + mount
+            elif self._is_install_target() and self._disk_converged(disk):
+                # converged re-run: mount the existing partitions, never format
+                self._mount_existing(disk)
 
     def import_state(self, managed=None) -> dict:
         # Disks are user-declared; sync does not rewrite the section.
@@ -636,12 +654,15 @@ class DiskPartitionAction(AbstractAction):
         """
         print("\nMounting partitions...")
         
-        # Sort partitions by mountpoint depth (mount root first)
+        # Sort by path depth so the root "/" mounts FIRST, then nested mounts
+        # (/boot, /home, …). Using count('/') alone ties "/" with "/boot" (both
+        # 1) and could mount /boot before / — shadowing the ESP under the root
+        # fs. rstrip("/").count("/") gives "/"=0, "/boot"=1, "/home/x"=2.
         partitions_to_mount = [
-            p for p in disk.partitions 
+            p for p in disk.partitions
             if p.mountpoint and p.filesystem != FileSystemType.SWAP
         ]
-        partitions_to_mount.sort(key=lambda p: p.mountpoint.count('/') if p.mountpoint else 0)
+        partitions_to_mount.sort(key=lambda p: p.mountpoint.rstrip("/").count("/"))
         
         for partition in partitions_to_mount:
             if partition.filesystem == FileSystemType.BTRFS and partition.btrfs_subvolumes:
@@ -664,10 +685,15 @@ class DiskPartitionAction(AbstractAction):
         """
         device = self.partition_map[partition.label]
         mountpoint = f"/mnt{partition.mountpoint}"
-        
+
         # Create mountpoint
         Path(mountpoint).mkdir(parents=True, exist_ok=True)
-        
+
+        # Already mounted (e.g. re-run in the same live session) → skip
+        if os.path.ismount(mountpoint):
+            print(f"  {mountpoint} already mounted, skipping")
+            return
+
         # Build mount command
         mount_cmd = ["mount"]
         if partition.mount_options:

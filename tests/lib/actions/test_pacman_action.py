@@ -1,5 +1,8 @@
+from unittest.mock import patch
+
 from dasik.lib.actions.pacman_action import PacmanAction
 from dasik.lib.actions.action_context import ActionContext
+from dasik.lib.command_worker.command_worker import Command
 from dasik.lib.target.target import Target
 from dasik.lib.state.change import Op
 
@@ -126,6 +129,32 @@ def test_import_fragment_shape(tmp_path):
         "options": {"Parallel": True, "Color": True, "VerbosePkgLists": True},
         "multilib": True,
     }}
+
+
+def test_apply_syncs_db_when_multilib_on_chroot(tmp_path):
+    # multilib enabled + install target -> pacman -Sy so the multilib DB exists
+    _write_conf(tmp_path, _ACTIVE)
+    a = PacmanAction(_cfg(multilib=True), _ctx(tmp_path))   # tmp_path = chroot target
+    with patch.object(Command, "execute_checked") as ck:
+        a.apply([])                                         # even with no conf drift
+    assert any(c.args[0] == "pacman" and c.args[1] == ["-Sy"] for c in ck.call_args_list)
+
+
+def test_apply_no_sync_when_multilib_off(tmp_path):
+    _write_conf(tmp_path, _ACTIVE)
+    a = PacmanAction(_cfg(multilib=False), _ctx(tmp_path))
+    with patch.object(Command, "execute_checked") as ck:
+        a.apply([])
+    assert not any(c.args[1] == ["-Sy"] for c in ck.call_args_list)
+
+
+def test_apply_no_sync_on_live_host(tmp_path):
+    # root="/" is not a chroot install target -> don't refresh host DBs
+    _write_conf(tmp_path, _ACTIVE)
+    a = PacmanAction(_cfg(multilib=True), ActionContext(target=Target(root="/")))
+    with patch.object(Command, "execute_checked") as ck:
+        a.apply([])
+    assert not any(c.args[1] == ["-Sy"] for c in ck.call_args_list)
 
 
 def test_name_and_optional():

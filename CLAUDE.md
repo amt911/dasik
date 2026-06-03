@@ -24,6 +24,8 @@ This file documents the `dasik/` package at the repo root — the active reimple
 
 **Don't graphify `resources/`** — together they are >12k files and would swamp the graph. Graph scope is the `dasik/` package only (~52 files); these dirs are reference, not source.
 
+**Verify Arch specifics against the wiki mirror (user directive).** Before changing any package name, repo, or Arch command in the codebase (e.g. the hardcoded package lists in `dasik/lib/expand/toggles.py`, mkinitcpio hooks, dm-crypt flags, bootloader install steps), check `resources/arch-wiki/` (and the old `resources/archlinux-script-installer/`) instead of guessing. Arch is rolling — package names rot. Example: `mesa-vdpau` was **removed** in mesa 25.3.0 (VDPAU dropped from the open-source drivers; no replacement — VA-API via `libva-mesa-driver` is the modern path), per `resources/arch-wiki/Hardware_video_acceleration.html`. A wrong/removed package makes the whole `pacman -S` abort with "target not found".
+
 ## Start here
 
 Run `/graphify` before each session. The persistent graph at `graphify-out/graph.json` summarizes architecture, dependencies, and cross-cutting concepts without re-reading the repo each time.

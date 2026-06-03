@@ -208,7 +208,10 @@ class DiskPartitionAction(AbstractAction):
         print(f"\nCurrent layout of {device}:")
         try:
             result = Command.execute("lsblk", [device, "-o", "NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT"])
-            print(result.stdout)
+            out = result.stdout
+            if isinstance(out, bytes):
+                out = out.decode("utf-8", "replace")
+            print(out.rstrip("\n"))
         except Exception as e:
             print(f"Warning: Could not display current layout: {e}")
 

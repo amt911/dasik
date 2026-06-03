@@ -87,6 +87,7 @@ def test_hwaccel_enabled_uses_drivers():
     assert "intel-media-driver" in out["packages"]
     assert "libva-mesa-driver" in out["packages"]
     assert "libva-utils" in out["packages"]  # common
+    assert "mesa-vdpau" not in out["packages"]  # dropped: no longer in Arch repos
 
 
 def test_hwaccel_enabled_no_drivers_only_common():

@@ -83,7 +83,7 @@ _HWACCEL_COMMON = ["libva-utils", "vdpauinfo"]
 _HWACCEL_DRIVER_PKGS = {
     "nvidia": ["libva-nvidia-driver", "nvtop"],
     "intel": ["intel-media-driver", "intel-gpu-tools", "libvdpau-va-gl"],
-    "amd": ["libva-mesa-driver", "mesa-vdpau"],
+    "amd": ["libva-mesa-driver"],
 }
 
 

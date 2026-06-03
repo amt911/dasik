@@ -125,6 +125,48 @@ def test_install_propagates_command_failure(tmp_path):
             a._install()
 
 
+def test_cache_to_ram_mounts_tmpfs_before_pacstrap(tmp_path):
+    (tmp_path / "etc").mkdir(parents=True, exist_ok=True)
+    a = BaseInstallAction({"enable_microcode": False}, _ctx(tmp_path))  # chroot target
+    with patch.object(Command, "execute_checked",
+                      return_value=MagicMock(stdout=b"")) as ck, \
+         patch("dasik.lib.actions.base_install_action.os.path.ismount", return_value=False), \
+         patch.object(BaseInstallAction, "_available_ram_kb", return_value=2_000_000):
+        a._install()
+    cmds = [c.args for c in ck.call_args_list]
+    names = [c[0] for c in cmds]
+    assert "mount" in names and "pacstrap" in names
+    assert names.index("mount") < names.index("pacstrap")
+    mount_args = cmds[names.index("mount")][1]
+    assert "tmpfs" in mount_args
+    assert "/var/cache/pacman/pkg" in mount_args          # host cache, NOT under the disk
+    assert any(a_.startswith("size=") for a_ in mount_args)
+
+
+def test_cache_to_ram_skips_on_live_host():
+    a = BaseInstallAction({"enable_microcode": False}, ActionContext(target=Target(root="/")))
+    with patch.object(Command, "execute_checked", return_value=MagicMock(stdout=b"")) as ck, \
+         patch("builtins.open", mock_open()):
+        a._install()
+    assert "mount" not in [c.args[0] for c in ck.call_args_list]
+
+
+def test_cache_to_ram_skips_if_already_mounted(tmp_path):
+    (tmp_path / "etc").mkdir(parents=True, exist_ok=True)
+    a = BaseInstallAction({"enable_microcode": False}, _ctx(tmp_path))
+    with patch.object(Command, "execute_checked", return_value=MagicMock(stdout=b"")) as ck, \
+         patch("dasik.lib.actions.base_install_action.os.path.ismount", return_value=True), \
+         patch.object(BaseInstallAction, "_available_ram_kb", return_value=2_000_000):
+        a._install()
+    assert "mount" not in [c.args[0] for c in ck.call_args_list]
+
+
+def test_available_ram_kb_parses_meminfo():
+    data = "MemTotal:       4000000 kB\nMemAvailable:    3000000 kB\n"
+    with patch("builtins.open", mock_open(read_data=data)):
+        assert BaseInstallAction._available_ram_kb() == 3_000_000
+
+
 def test_name_and_optional():
     a = BaseInstallAction({"enable_microcode": False})
     assert a.name == "Base Installation"

@@ -6,11 +6,15 @@ pacstrap/genfstab lives in ``_install()`` (mocked in tests).
 """
 from __future__ import annotations
 import os
+import sys
 from typing import Any, Dict, List
 from colorama import Fore, Style, init
 from .abstract_action import AbstractAction
 from ..command_worker.command_worker import Command
+from ..exceptions.exceptions import CommandExecutionError
 from ..state.change import Change, Op
+
+_PACMAN_CACHE = "/var/cache/pacman/pkg"
 
 _MARKER = "/usr/bin/pacman"
 _DOMAIN = "base"
@@ -98,9 +102,51 @@ class BaseInstallAction(AbstractAction):
 
     # --- the destructive bit (mocked in tests) ------------------------ #
 
+    @staticmethod
+    def _available_ram_kb() -> int:
+        """Available RAM in KiB from /proc/meminfo (0 if unreadable)."""
+        try:
+            with open("/proc/meminfo", "r") as f:
+                for line in f:
+                    if line.startswith("MemAvailable:"):
+                        return int(line.split()[1])
+        except (OSError, ValueError):
+            pass
+        return 0
+
+    def _cache_to_ram(self) -> None:
+        """Give pacman's download cache its own RAM-backed tmpfs, sized to most
+        of the available memory.
+
+        On a live ISO the writable root (airootfs) overlay is often capped small
+        (e.g. 256 MiB); a large pacstrap fills it and fails with "no space".
+        Mounting a fresh tmpfs over the host cache lets the downloads use real
+        RAM instead of the capped overlay. **Volatile only** — never touches the
+        target disk. Only when installing into a chroot target (root != "/").
+        Best-effort: a failure here falls back to the default cache.
+        """
+        t = self._target()
+        if t is None or not t.is_chroot:
+            return
+        if os.path.ismount(_PACMAN_CACHE):
+            return
+        # leave headroom for pacman/pacstrap themselves
+        size_kb = (self._available_ram_kb() * 3) // 4
+        if size_kb <= 0:
+            return
+        try:
+            Command.execute_checked(
+                "mount",
+                ["-t", "tmpfs", "-o", f"size={size_kb}k", "tmpfs", _PACMAN_CACHE],
+            )
+        except CommandExecutionError:
+            print("  Warning: could not mount a RAM cache for pacman; "
+                  "using the default cache.", file=sys.stderr)
+
     def _install(self) -> None:
         root = self._target_root()
         Command.execute_checked("pacman", ["--noconfirm", "-Sy", "archlinux-keyring"])
+        self._cache_to_ram()
         Command.execute_checked("pacstrap", ["-K", root] + self.packages)
         fstab = Command.execute_checked("genfstab", ["-U", root]).stdout.decode()
         with open(self._p("/etc/fstab"), "a") as f:

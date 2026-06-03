@@ -32,10 +32,30 @@ export TMPDIR=/scratch/tmp PIP_CACHE_DIR=/scratch/pipcache
 mkdir -p "$TMPDIR" "$PIP_CACHE_DIR"
 pip install -e . --break-system-packages
 
-# 4. install
-dasik plan  config/install-vm-complex.json          # read-only preview
-dasik apply config/install-vm-complex.json --yes     # DESTRUCTIVE
+# 4. install   (-v streams pacstrap/pacman/grub output live instead of going silent)
+dasik plan      config/install-vm-complex.json        # read-only preview
+dasik -v apply  config/install-vm-complex.json --yes  # DESTRUCTIVE, verbose
 ```
+
+> `-v` goes **before** the verb: `dasik -v apply …`.
+
+## Credentials / passwords
+
+The users in a config carry a **hashed** password (`hashed_password`, `$6$…`
+sha512crypt). The sample's hashes are placeholders — you don't know their
+plaintext. Generate your own:
+
+```bash
+mkpasswd -m sha-512        # or: openssl passwd -6
+```
+
+Put the resulting hash in each user's `hashed_password`. Changing only the
+passwords and re-running `dasik apply` updates them (the users domain compares
+the hash against `/etc/shadow` and runs `usermod -p`). Or set them after the
+fact in the chroot: `arch-chroot /mnt passwd <user>`. `root` has no password in
+the sample → log in as a normal user. (Note: dasik does not yet enable `sudo`
+for the `wheel` group — do `arch-chroot /mnt EDITOR=vim visudo` to uncomment
+`%wheel`.)
 
 ### No-pip alternative (deps via pacman)
 
@@ -64,6 +84,13 @@ steps are skipped, the disk is **not** re-wiped once its partitions exist).
   automatically on a converged re-run. (If you ever need to do it by hand:
   `mount /dev/vdaN /mnt`, the ESP at `/mnt/boot`, home at `/mnt/home`,
   `swapon /dev/vdaM`.)
+
+> A re-run is a true no-op for already-done work: base/bootloader/fonts re-check
+> reality at apply time and skip, packages use `--needed`, the disk is not
+> re-wiped. The `plan` output may still **show** `+ install …` lines (the plan is
+> computed before `/mnt` is mounted, so it can't see the installed target yet),
+> but `apply` then does nothing for those. Full plan-display accuracy needs the
+> phased-apply refactor (mount disks → re-plan the rest), still pending.
 
 ## Cleanup
 

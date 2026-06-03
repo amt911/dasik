@@ -1,5 +1,7 @@
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from dasik.lib.actions.disk_partition_action import DiskPartitionAction
 from dasik.lib.actions.action_context import ActionContext
 from dasik.lib.target.target import Target
@@ -157,6 +159,48 @@ def test_device_labels_parses_lsblk():
     with patch("dasik.lib.actions.disk_partition_action.Command.execute",
                return_value=MagicMock(stdout=b"boot\nroot\n\n")):
         assert a._device_labels("/dev/vda") == {"boot", "root"}
+
+
+def _cfg_sizes(*sizes, device="/dev/vda"):
+    parts = [{"label": f"p{i}", "size": s, "filesystem": "ext4",
+              "partition_type": "linux", "mountpoint": "/", "format": True}
+             for i, s in enumerate(sizes)]
+    return {"disks": [{"device": device, "partition_table": "gpt",
+                       "wipe_disk": True, "partitions": parts}]}
+
+
+def test_size_to_mib():
+    assert DiskPartitionAction._size_to_mib("512MiB") == 512
+    assert DiskPartitionAction._size_to_mib("4GiB") == 4096
+    assert round(DiskPartitionAction._size_to_mib("1GB")) == 954   # decimal GB
+
+
+def test_validate_sizes_raises_when_layout_exceeds_disk():
+    from dasik.lib.exceptions.exceptions import CommandExecutionError
+    a = DiskPartitionAction(_cfg_sizes("512MiB", "4GiB", "25GiB"), _ctx())  # ~29.5GiB
+    with patch.object(DiskPartitionAction, "_get_disk_size_mib", return_value=20480):  # 20GiB
+        with pytest.raises(CommandExecutionError) as e:
+            a._validate_sizes(a.disks[0])
+    assert "bigger disk" in str(e.value)
+
+
+def test_validate_sizes_ok_when_fits():
+    a = DiskPartitionAction(_cfg_sizes("512MiB", "4GiB", "rest"), _ctx())
+    with patch.object(DiskPartitionAction, "_get_disk_size_mib", return_value=20480):
+        a._validate_sizes(a.disks[0])  # no raise (rest skipped)
+
+
+def test_process_disk_validates_before_wiping():
+    from dasik.lib.exceptions.exceptions import CommandExecutionError
+    a = DiskPartitionAction(_cfg(), _ctx())
+    with patch("dasik.lib.actions.disk_partition_action.Path") as P, \
+         patch.object(DiskPartitionAction, "_validate_sizes",
+                      side_effect=CommandExecutionError("too big")), \
+         patch.object(DiskPartitionAction, "_wipe_disk") as wipe:
+        P.return_value.exists.return_value = True
+        with pytest.raises(CommandExecutionError):
+            a._process_disk(a.disks[0])
+    wipe.assert_not_called()   # validation aborts BEFORE any destructive op
 
 
 def test_name_and_optional():

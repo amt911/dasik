@@ -11,6 +11,7 @@ from dasik.lib.models.disk_model import (
     BtrfsSubvolume
 )
 from dasik.lib.command_worker.command_worker import Command
+from dasik.lib.exceptions.exceptions import CommandExecutionError
 from dasik.lib.state.change import Change, Op
 
 
@@ -108,6 +109,43 @@ class DiskPartitionAction(AbstractAction):
         t = getattr(self.context, "target", None) if self.context else None
         return t is not None and getattr(t, "is_chroot", False)
 
+    @staticmethod
+    def _size_to_mib(size: str) -> float:
+        """Parse a partition size ('512MiB', '4GiB', '2GB', …) into MiB."""
+        s = size.strip()
+        i = 0
+        while i < len(s) and (s[i].isdigit() or s[i] == "."):
+            i += 1
+        num = float(s[:i] or 0)
+        unit = s[i:].strip().lower()
+        factors = {
+            "tib": 1024 * 1024, "gib": 1024, "mib": 1, "kib": 1 / 1024,
+            "tb": 1000 * 1000 / 1.048576, "gb": 1000 / 1.048576,
+            "mb": 1 / 1.048576, "kb": 1000 / (1024 * 1024),
+            "b": 1 / (1024 * 1024), "": 1,
+        }
+        return num * factors.get(unit, 1)
+
+    def _validate_sizes(self, disk: DiskLayout) -> None:
+        """Abort BEFORE wiping if the fixed-size partitions exceed the disk.
+
+        A layout larger than the device used to fail silently (parted clamps /
+        errors, swallowed) and only surfaced later as a confusing "no space".
+        'rest' / percentage partitions are skipped (they fill what's left).
+        """
+        disk_mib = self._get_disk_size_mib(disk.device)
+        fixed = 0.0
+        for p in disk.partitions:
+            s = p.size.strip().lower()
+            if s == "rest" or s.endswith("%"):
+                continue
+            fixed += self._size_to_mib(p.size)
+        if fixed + 1 > disk_mib:   # +1 MiB for the GPT/alignment start offset
+            raise CommandExecutionError(
+                f"declared partitions need ~{fixed:.0f} MiB but {disk.device} is "
+                f"only ~{disk_mib:.0f} MiB — shrink the sizes or use a bigger disk."
+            )
+
     def _mount_existing(self, disk: DiskLayout) -> None:
         """Mount an already-partitioned disk WITHOUT formatting it.
 
@@ -186,7 +224,10 @@ class DiskPartitionAction(AbstractAction):
         # Check if device exists
         if not Path(disk.device).exists():
             raise FileNotFoundError(f"Device {disk.device} does not exist")
-        
+
+        # Fail loudly BEFORE any destructive op if the layout can't fit the disk
+        self._validate_sizes(disk)
+
         # Show current partition layout
         self._show_current_layout(disk.device)
         
@@ -381,8 +422,8 @@ class DiskPartitionAction(AbstractAction):
         print("WARNING: This will destroy all data on the disk!")
         
         # Wipe first and last few MB of the disk
-        Command.execute("wipefs", ["--all", "--force", device])
-        Command.execute("sgdisk", ["--zap-all", device])
+        Command.execute_checked("wipefs", ["--all", "--force", device])
+        Command.execute_checked("sgdisk", ["--zap-all", device])
 
     def _create_partition_table(self, device: str, table_type: str) -> None:
         """Create a new partition table.
@@ -392,7 +433,7 @@ class DiskPartitionAction(AbstractAction):
             table_type: Partition table type (gpt or msdos)
         """
         print(f"Creating {table_type} partition table on {device}...")
-        Command.execute("parted", ["-s", device, "mklabel", table_type])
+        Command.execute_checked("parted", ["-s", device, "mklabel", table_type])
 
     def _create_partitions(self, disk: DiskLayout) -> None:
         """Create all partitions on the disk.
@@ -453,14 +494,14 @@ class DiskPartitionAction(AbstractAction):
             cmd.extend([start, end])
             
             print(f"Creating partition {partition.label}: {start} to {end}")
-            Command.execute("parted", cmd)
-            
+            Command.execute_checked("parted", cmd)
+
             # Set partition type flags for GPT
             if disk.partition_table.value == "gpt":
                 if partition.partition_type.value == "esp":
-                    Command.execute("parted", ["-s", disk.device, "set", str(partition_number), "esp", "on"])
+                    Command.execute_checked("parted", ["-s", disk.device, "set", str(partition_number), "esp", "on"])
                 elif partition.partition_type.value == "linux-swap":
-                    Command.execute("parted", ["-s", disk.device, "set", str(partition_number), "swap", "on"])
+                    Command.execute_checked("parted", ["-s", disk.device, "set", str(partition_number), "swap", "on"])
             
             # Store partition device path
             part_device = self._get_partition_device(disk.device, partition_number)
@@ -569,22 +610,22 @@ class DiskPartitionAction(AbstractAction):
         print(f"Formatting {partition.label} ({part_device}) as {partition.filesystem.value}...")
         
         if partition.filesystem == FileSystemType.EXT4:
-            Command.execute("mkfs.ext4", ["-F", "-L", partition.label, part_device])
-        
+            Command.execute_checked("mkfs.ext4", ["-F", "-L", partition.label, part_device])
+
         elif partition.filesystem == FileSystemType.BTRFS:
-            Command.execute("mkfs.btrfs", ["-f", "-L", partition.label, part_device])
+            Command.execute_checked("mkfs.btrfs", ["-f", "-L", partition.label, part_device])
             # Create subvolumes if specified
             if partition.btrfs_subvolumes:
                 self._create_btrfs_subvolumes(part_device, partition.btrfs_subvolumes)
-        
+
         elif partition.filesystem == FileSystemType.FAT32:
-            Command.execute("mkfs.fat", ["-F32", "-n", partition.label, part_device])
-        
+            Command.execute_checked("mkfs.fat", ["-F32", "-n", partition.label, part_device])
+
         elif partition.filesystem == FileSystemType.SWAP:
-            Command.execute("mkswap", ["-L", partition.label, part_device])
-        
+            Command.execute_checked("mkswap", ["-L", partition.label, part_device])
+
         elif partition.filesystem == FileSystemType.XFS:
-            Command.execute("mkfs.xfs", ["-f", "-L", partition.label, part_device])
+            Command.execute_checked("mkfs.xfs", ["-f", "-L", partition.label, part_device])
         
         # Update partition map with encrypted device if applicable
         if partition.encrypt:
@@ -606,15 +647,15 @@ class DiskPartitionAction(AbstractAction):
         # Format with LUKS
         # Note: In a real scenario, you'd want to handle password input securely
         # For now, this assumes interactive password input
-        Command.execute("cryptsetup", [
+        Command.execute_checked("cryptsetup", [
             "luksFormat",
             "--type", "luks2",
             device
         ])
-        
+
         # Open the encrypted partition
         if partition.luks_name:
-            Command.execute("cryptsetup", ["open", device, partition.luks_name])
+            Command.execute_checked("cryptsetup", ["open", device, partition.luks_name])
             return f"/dev/mapper/{partition.luks_name}"
         else:
             raise ValueError(f"luks_name is required for encrypted partition {partition.label}")
@@ -631,14 +672,14 @@ class DiskPartitionAction(AbstractAction):
         Path(temp_mount).mkdir(parents=True, exist_ok=True)
         
         try:
-            Command.execute("mount", [device, temp_mount])
-            
+            Command.execute_checked("mount", [device, temp_mount])
+
             for subvol in subvolumes:
                 print(f"Creating btrfs subvolume: {subvol.name}")
                 subvol_path = f"{temp_mount}/{subvol.name}"
-                Command.execute("btrfs", ["subvolume", "create", subvol_path])
-            
-            Command.execute("umount", [temp_mount])
+                Command.execute_checked("btrfs", ["subvolume", "create", subvol_path])
+
+            Command.execute_checked("umount", [temp_mount])
         finally:
             # Cleanup temp mount point
             try:
@@ -701,7 +742,7 @@ class DiskPartitionAction(AbstractAction):
         mount_cmd.extend([device, mountpoint])
         
         print(f"Mounting {partition.label} at {mountpoint}")
-        Command.execute("mount", mount_cmd[1:])  # Skip 'mount' as Command adds it
+        Command.execute_checked("mount", mount_cmd[1:])  # Skip 'mount' as Command adds it
 
     def _mount_btrfs_subvolumes(self, partition: Partition) -> None:
         """Mount btrfs subvolumes.
@@ -722,7 +763,7 @@ class DiskPartitionAction(AbstractAction):
             mount_cmd = ["mount", "-o", ",".join(options), device, mountpoint]
             
             print(f"Mounting subvolume {subvol.name} at {mountpoint}")
-            Command.execute("mount", mount_cmd[1:])
+            Command.execute_checked("mount", mount_cmd[1:])
 
     def get_partition_device(self, label: str) -> Optional[str]:
         """Get the device path for a partition by its label.

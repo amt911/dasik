@@ -83,7 +83,11 @@ class BaseInstallAction(AbstractAction):
         return []
 
     def apply(self, changes) -> None:
-        if changes:
+        # Re-check at APPLY time, not just from the (possibly stale) plan: on a
+        # re-run from a fresh live, the plan is computed before disks mounts
+        # /mnt, so it may say INSTALL even though base is already there. Don't
+        # re-pacstrap an existing system.
+        if not self._installed():
             self._install()
 
     def import_state(self, managed=None) -> dict:
@@ -148,6 +152,6 @@ class BaseInstallAction(AbstractAction):
         Command.execute_checked("pacman", ["--noconfirm", "-Sy", "archlinux-keyring"])
         self._cache_to_ram()
         Command.execute_checked("pacstrap", ["-K", root] + self.packages)
-        fstab = Command.execute_checked("genfstab", ["-U", root]).stdout.decode()
+        fstab = Command.execute_checked("genfstab", ["-U", root], capture=True).stdout.decode()
         with open(self._p("/etc/fstab"), "a") as f:
             f.write(fstab)

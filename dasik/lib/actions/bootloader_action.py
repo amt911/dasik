@@ -77,7 +77,9 @@ class BootloaderAction(AbstractAction):
         return []
 
     def apply(self, changes) -> None:
-        if changes:
+        # Re-check at apply time: on a re-run the plan can be stale (computed
+        # before disks mounts /mnt). Don't re-install an already-present loader.
+        if not self._installed():
             self._install()
 
     def import_state(self, managed=None) -> dict:

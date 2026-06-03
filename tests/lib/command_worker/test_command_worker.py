@@ -71,6 +71,41 @@ def test_execute_checked_raises_on_nonzero_with_stderr():
     assert "pacstrap" in msg and "not enough free disk space" in msg
 
 
+def test_execute_checked_streams_when_verbose():
+    captured = {}
+
+    def fake_run(argv, **kwargs):
+        captured["kwargs"] = kwargs
+        return _result(rc=0)
+
+    Command.verbose = True
+    try:
+        with patch("dasik.lib.command_worker.command_worker.subprocess.run", fake_run):
+            Command.execute_checked("pacstrap", ["-K", "/mnt", "base"])
+    finally:
+        Command.verbose = False
+    # verbose => stream live (no PIPE capture)
+    assert "stdout" not in captured["kwargs"]
+    assert "stderr" not in captured["kwargs"]
+
+
+def test_execute_checked_capture_pipes_even_when_verbose():
+    captured = {}
+
+    def fake_run(argv, **kwargs):
+        captured["kwargs"] = kwargs
+        return _result(rc=0, out=b"UUID=x")
+
+    Command.verbose = True
+    try:
+        with patch("dasik.lib.command_worker.command_worker.subprocess.run", fake_run):
+            r = Command.execute_checked("genfstab", ["-U", "/mnt"], capture=True)
+    finally:
+        Command.verbose = False
+    assert captured["kwargs"].get("stdout") is not None   # genfstab must capture
+    assert r.stdout == b"UUID=x"
+
+
 def test_execute_checked_chroot_prefix():
     captured = {}
 

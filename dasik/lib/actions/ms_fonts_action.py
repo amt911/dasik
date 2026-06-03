@@ -61,7 +61,10 @@ class MicrosoftFontsAction(AbstractAction):
         return []
 
     def apply(self, changes) -> None:
-        if changes:
+        # Re-check at apply time (the plan can be stale on a re-run before /mnt
+        # is mounted): only extract when declared, an ISO is given and the fonts
+        # aren't already there.
+        if self.install and self.source_iso and not self._fonts_present():
             self._install()
 
     def import_state(self, managed=None) -> dict:

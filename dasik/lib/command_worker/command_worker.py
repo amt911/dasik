@@ -9,6 +9,11 @@ import sys
 class Command:
     """Thin wrapper around subprocess.run with optional arch-chroot support."""
 
+    # When True, long destructive commands run through ``execute_checked`` stream
+    # their output live instead of capturing it (so pacstrap/pacman/grub progress
+    # is visible). Set by ``__main__`` from the ``-v/--verbose`` flag.
+    verbose: bool = False
+
     @staticmethod
     def _locate_binary(name: str) -> str:
         path = which(name)
@@ -51,7 +56,7 @@ class Command:
 
     @staticmethod
     def execute_checked(cmd: str, args: list[str], run_as_chroot: bool = False,
-                        target: "Target | None" = None):
+                        target: "Target | None" = None, capture: bool = False):
         """Like :meth:`execute`, but **raises** on a non-zero exit.
 
         For destructive must-succeed steps (pacstrap, pacman -S, partitioning,
@@ -61,29 +66,34 @@ class Command:
         pacstrap). On failure the captured output is echoed and a
         ``CommandExecutionError`` is raised carrying the command + stderr.
 
-        On success the completed process is returned (``result.stdout`` is
-        available for callers like ``genfstab``).
+        Output handling:
+        - ``capture=True`` always PIPEs stdout (callers like ``genfstab`` read
+          ``result.stdout``).
+        - otherwise, when ``Command.verbose`` is set, the output streams live to
+          the terminal (so a long pacstrap isn't a silent black screen); else it
+          is captured (PIPE) so the error message can carry the real stderr.
+
+        On success the completed process is returned.
         """
         chroot_cmd = Command._chroot_prefix(run_as_chroot, target)
-        result = subprocess.run(
-            chroot_cmd + [cmd, *args],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
+        stream = Command.verbose and not capture
+        kwargs = {} if stream else {"stdout": subprocess.PIPE, "stderr": subprocess.PIPE}
+        result = subprocess.run(chroot_cmd + [cmd, *args], **kwargs)
         if result.returncode != 0:
-            stdout = result.stdout
-            if isinstance(stdout, bytes):
-                stdout = stdout.decode("utf-8", "replace")
             stderr = result.stderr
             if isinstance(stderr, bytes):
                 stderr = stderr.decode("utf-8", "replace")
-            # surface the real error instead of swallowing it
-            if stdout.strip():
+            stdout = result.stdout
+            if isinstance(stdout, bytes):
+                stdout = stdout.decode("utf-8", "replace")
+            # surface the real error instead of swallowing it (already streamed
+            # in verbose mode, so only echo what we captured)
+            if stdout and stdout.strip():
                 print(stdout, file=sys.stderr)
-            if stderr.strip():
+            if stderr and stderr.strip():
                 print(stderr, file=sys.stderr)
+            detail = (stderr.strip() if stderr else "") or "(see output above)"
             raise CommandExecutionError(
-                f"{cmd} {' '.join(args)} failed (rc={result.returncode}): "
-                f"{stderr.strip() or '(no stderr)'}"
+                f"{cmd} {' '.join(args)} failed (rc={result.returncode}): {detail}"
             )
         return result

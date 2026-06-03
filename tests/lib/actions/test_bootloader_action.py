@@ -3,7 +3,7 @@ from unittest.mock import patch
 from dasik.lib.actions.bootloader_action import BootloaderAction
 from dasik.lib.actions.action_context import ActionContext
 from dasik.lib.target.target import Target
-from dasik.lib.state.change import Op
+from dasik.lib.state.change import Change, Op
 
 
 def _ctx(root):
@@ -94,6 +94,15 @@ def test_apply_noop_when_no_changes(tmp_path):
     with patch.object(BootloaderAction, "_install") as inst:
         a.apply(a.plan(managed=[]))
         inst.assert_not_called()
+
+
+def test_apply_skips_when_installed_despite_stale_change(tmp_path):
+    # re-run idempotency: don't re-install grub if it's already there
+    _mark_grub(tmp_path)
+    a = BootloaderAction(_cfg("grub"), _ctx(tmp_path))
+    with patch.object(BootloaderAction, "_install") as inst:
+        a.apply([Change("bootloader", Op.INSTALL, "grub")])
+    inst.assert_not_called()
 
 
 def test_managed_keys(tmp_path):

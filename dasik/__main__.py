@@ -31,6 +31,7 @@ from dasik.lib.state.config_writer import ConfigWriter
 from dasik.lib.state.generation_store import GenerationStore
 from dasik.lib.state.state_store import StateStore
 from dasik.lib.target.target import Target
+from dasik.lib.command_worker.command_worker import Command
 from dasik.lib.expand import expand_config, subtract_contributions
 
 
@@ -363,6 +364,9 @@ def main(argv: Optional[list[str]] = None) -> int:
 
         parser = _build_parser()
         args = parser.parse_args(raw)
+
+        # Stream destructive-command output live (pacstrap/pacman/grub) when -v.
+        Command.verbose = bool(getattr(args, "verbose", False))
 
         if args.verb == "plan":
             path = _validate_config_file(args.config)

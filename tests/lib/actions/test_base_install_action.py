@@ -7,7 +7,7 @@ from dasik.lib.actions.action_context import ActionContext
 from dasik.lib.command_worker.command_worker import Command
 from dasik.lib.exceptions.exceptions import CommandExecutionError
 from dasik.lib.target.target import Target
-from dasik.lib.state.change import Op
+from dasik.lib.state.change import Change, Op
 
 
 def _ctx(root):
@@ -87,6 +87,16 @@ def test_apply_noop_when_no_changes(tmp_path):
     with patch.object(BaseInstallAction, "_install") as inst:
         a.apply(a.plan(managed=[]))
         inst.assert_not_called()
+
+
+def test_apply_skips_reinstall_when_installed_despite_stale_change(tmp_path):
+    # re-run idempotency: plan may say INSTALL (computed before /mnt was mounted),
+    # but apply re-checks reality and must NOT re-pacstrap an installed base
+    _marker(tmp_path)
+    a = BaseInstallAction({"enable_microcode": False}, _ctx(tmp_path))
+    with patch.object(BaseInstallAction, "_install") as inst:
+        a.apply([Change("base", Op.INSTALL, "base")])
+    inst.assert_not_called()
 
 
 def test_is_needed_and_verify_track_marker(tmp_path):

@@ -3,7 +3,7 @@ from unittest.mock import patch
 from dasik.lib.actions.ms_fonts_action import MicrosoftFontsAction
 from dasik.lib.actions.action_context import ActionContext
 from dasik.lib.target.target import Target
-from dasik.lib.state.change import Op
+from dasik.lib.state.change import Change, Op
 
 _FONTS = "/usr/local/share/fonts/WindowsFonts"
 
@@ -63,10 +63,20 @@ def test_apply_runs_install_when_changes(tmp_path):
         inst.assert_called_once()
 
 
-def test_apply_noop_when_no_changes(tmp_path):
+def test_apply_noop_when_fonts_present(tmp_path):
+    # apply is reality-driven: fonts already present -> never re-extract, even if
+    # a (stale) INSTALL change is passed
+    _populate(tmp_path)
     a = MicrosoftFontsAction({"install": True, "source_iso": "/w.iso"}, _ctx(tmp_path))
     with patch.object(MicrosoftFontsAction, "_install") as inst:
-        a.apply([])
+        a.apply([Change("microsoft_fonts", Op.INSTALL, "windows-fonts")])
+        inst.assert_not_called()
+
+
+def test_apply_noop_when_not_declared(tmp_path):
+    a = MicrosoftFontsAction({"install": False, "source_iso": "/w.iso"}, _ctx(tmp_path))
+    with patch.object(MicrosoftFontsAction, "_install") as inst:
+        a.apply([Change("microsoft_fonts", Op.INSTALL, "windows-fonts")])
         inst.assert_not_called()
 
 

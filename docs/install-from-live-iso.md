@@ -46,7 +46,9 @@ sha512crypt). The sample's hashes are placeholders — you don't know their
 plaintext. Generate your own:
 
 ```bash
-mkpasswd -m sha-512        # or: openssl passwd -6
+dasik hash-password        # built-in: prompts (hidden), prints the $6$… hash
+mkpasswd -m sha-512        # or: package whois
+openssl passwd -6          # or: openssl
 ```
 
 Put the resulting hash in each user's `hashed_password`. Changing only the

@@ -12,13 +12,17 @@ Verbs (slice 1 of declarative-convergence):
     current one. **Read-only.**
   * ``rollback [N] [--target /] [--yes]`` — restore generation N's config and
     re-apply it (DESTRUCTIVE; defaults N to the generation before current).
+  * ``hash-password`` — prompt for a password and print its sha512crypt hash,
+    for a user's ``hashed_password`` in the config.
   * (no verb) ``dasik <config>`` — DEPRECATED. Falls back to the legacy
     install path (``ActionsHandler``). Will be removed once ``apply`` lands.
 """
 from __future__ import annotations
 
 import argparse
+import getpass
 import json
+import subprocess
 import sys
 from pathlib import Path
 from typing import Optional
@@ -136,10 +140,54 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Skip the destructive-change confirmation prompt.",
     )
 
+    sub.add_parser(
+        "hash-password",
+        help="Prompt for a password and print its sha512crypt hash "
+             "(for a user's hashed_password in the config).",
+    )
+
     return parser
 
 
-_KNOWN_VERBS = {"plan", "apply", "sync", "generations", "rollback"}
+_KNOWN_VERBS = {"plan", "apply", "sync", "generations", "rollback", "hash-password"}
+
+
+def _cmd_hash_password() -> int:
+    """Prompt for a password (hidden) and print its sha512crypt hash.
+
+    Python 3.13+ dropped the ``crypt`` module, so shell out to
+    ``openssl passwd -6 -stdin`` — the password is fed via stdin, never on the
+    command line (so it doesn't leak through the process list).
+    """
+    try:
+        pw = getpass.getpass("Password: ")
+        pw2 = getpass.getpass("Confirm password: ")
+    except (EOFError, KeyboardInterrupt):
+        print("\nAborted.", file=sys.stderr)
+        return 130
+    if not pw:
+        print("Error: empty password.", file=sys.stderr)
+        return 1
+    if pw != pw2:
+        print("Error: passwords do not match.", file=sys.stderr)
+        return 1
+    try:
+        result = subprocess.run(
+            ["openssl", "passwd", "-6", "-stdin"],
+            input=pw.encode(),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+    except FileNotFoundError:
+        print("Error: 'openssl' not found — install it (pacman -S openssl).",
+              file=sys.stderr)
+        return 1
+    if result.returncode != 0:
+        print(result.stderr.decode("utf-8", "replace").strip() or "openssl failed",
+              file=sys.stderr)
+        return 1
+    print(result.stdout.decode("utf-8", "replace").strip())
+    return 0
 
 
 def _is_legacy_invocation(raw: list[str]) -> Optional[str]:
@@ -385,6 +433,9 @@ def main(argv: Optional[list[str]] = None) -> int:
             if path is None:
                 return 1
             return _cmd_sync(path, args.target)
+
+        if args.verb == "hash-password":
+            return _cmd_hash_password()
 
         if args.verb == "generations":
             return _cmd_generations(args.target)

@@ -31,6 +31,23 @@ Run `/graphify` before each session. The persistent graph at `graphify-out/graph
 
 Outputs in `graphify-out/`: `graph.json` (source of truth), `GRAPH_REPORT.md`, `graph.html` (interactive view). Run `/graphify --update` at end of session if you touched docs.
 
+## ⚡ superpowers — use whenever applicable
+
+Always prefer **superpowers** skills over ad-hoc approaches. If there's even a small chance a skill applies to the task, invoke it via the `Skill` tool before acting (including before clarifying questions).
+
+- **Process skills first** — `brainstorming` before creative/feature work, `systematic-debugging` before fixing bugs, `test-driven-development` before writing implementation.
+- **Then implementation skills** — domain-specific skills guide execution.
+- **Verify before claiming done** — `verification-before-completion` / `requesting-code-review` before merging.
+
+User instructions always take precedence over skills; skills override default behavior.
+
+### Mode switch
+
+- **"lite mode"** — fully disables superpowers: no skill is invoked, not even the applicability check, until **"normal mode"** is said.
+- **"normal mode"** (default) — standard superpowers behavior, plus: when delegating coding work, dispatch at most 1 agent at a time, and never use a model above Sonnet (no Opus).
+
+Confirm the switch briefly when it happens.
+
 ## Stack
 
 - **Python** ≥ 3.10 — CLI tool, packaged via `setuptools` (`pyproject.toml`).
@@ -43,6 +60,7 @@ Outputs in `graphify-out/`: `graph.json` (source of truth), `GRAPH_REPORT.md`, `
 ```bash
 # install (editable, for development)
 pip install -e .
+pip install -e .[dev]   # also installs pytest + pytest-cov
 
 # run against a config
 dasik config/install-megamix.json          # console-script entry point
@@ -51,9 +69,15 @@ python -m dasik config/install-megamix.json # equivalent module form
 # flags
 dasik config.json -v        # verbose
 dasik config.json --dry-run # NOTE: parsed but NOT implemented yet (see __main__.py TODO)
+
+# test / quality
+pytest                       # unit tests (~430, all passing)
+pytest --cov=dasik           # coverage (gate: 80%; needs the [dev] extra)
+pytest -k is_needed          # filter by name
+mypy dasik                   # static type checking (a .mypy_cache is present)
 ```
 
-A pytest suite **does** exist now (`tests/` mirrors `dasik/lib/`, configured in `pyproject.toml`; ~430 tests, all passing — run `pytest`). Note that `INTEGRATION-COMPLETE.md` and `docs/HOW-TO-TEST.md` still describe a `tests/test_disk_integration.py` that does **not** exist — treat those two docs as aspirational. See [Tests and quality](#tests-and-quality).
+A pytest suite **does** exist (`tests/` mirrors `dasik/lib/`, configured in `pyproject.toml`; ~430 tests, all passing — run `pytest`). Note that `INTEGRATION-COMPLETE.md` and `docs/HOW-TO-TEST.md` still describe a `tests/test_disk_integration.py` that does **not** exist — treat those two docs as aspirational. See [Tests and quality](#tests-and-quality).
 
 ## How it works
 
@@ -111,7 +135,7 @@ A pytest suite exists (~430 tests under `tests/`, mirroring `dasik/lib/`). These
 - **pytest** for unit tests, **pytest-cov** for coverage (a `dev` extra in `pyproject.toml` — `pip install -e .[dev]`; not always installed, so `--cov` may be unavailable until you do). Config: `pyproject.toml` (`[tool.pytest.ini_options]` + `[tool.coverage.*]`).
 - **pytest monkeypatch / unittest.mock** to stub system access (`Command.execute`, `pathlib.Path`, `subprocess`). Never touch a real disk in a test.
 - File convention: `test_*.py` under a top-level `tests/` directory mirroring `dasik/lib/` layout.
-- **Coverage gate: 80%** (statements/branches). Don't lower the gate — exclude untestable modules in config with a written justification instead.
+- **Coverage gate: 80%** (statements/branches, `fail_under = 80`). Don't lower the gate — exclude untestable modules in config with a written justification instead.
 
 ```bash
 pytest                       # unit tests
@@ -161,6 +185,21 @@ Rules:
   omit = ["dasik/lib/actions/disk_partition_action.py"]
   ```
 
+## Quality beyond coverage
+
+**Coverage measures how much code runs, not whether it's correct.** This is especially treacherous with AI: it tends to write the test *and* the code in one move, so if it misread the requirement, both encode the same mistake and the test passes happily. 80% coverage with weak asserts is a false sense of security. For dasik the stakes are literal — a covered-but-wrong `is_needed()` breaks idempotency or wipes a disk. These gates attack that blind spot.
+
+- **Mutation testing** *(highest priority)* — **mutmut** or **cosmic-ray** inject deliberate bugs (`>` → `>=`, drop a line, flip a boolean) and check some test fails. A surviving mutant means the code is *covered but not verified*. Target the **idempotency logic** first: the `is_needed()` / `verify()` methods in `dasik/lib/actions/` and the reconciler set-math in `dasik/lib/reconciler/`. A flipped comparison there is exactly the AI-shaped bug that passes coverage but re-runs destructively.
+- **Property-based testing** *(highest priority)* — **Hypothesis**. Define invariants and let it generate hundreds of cases including weird boundaries: "parsing then re-serializing a config round-trips", "reconcile(current, current) yields an empty plan (a no-op)", "applying a plan twice is a no-op". This is the automated proof of the idempotency promise.
+- **Runtime boundary validation** — **pydantic** already guards the config boundary (`dasik/lib/models/`); keep every new top-level field modeled and validated there rather than reaching into raw dicts. Untrusted input (the user's JSON, `/mnt/etc/...` file contents) must cross a validated boundary, not be trusted by shape.
+- **Strict types + static analysis** — **mypy** (a `.mypy_cache` is already present — run `mypy dasik` and keep it clean) plus a SAST pass (**Semgrep** or **Bandit** for Python). SAST matters here because this tool shells out constantly: watch for command injection when building `Command.execute` argument lists from config, and never interpolate untrusted strings into a shell.
+- **Smoke / dry-run validation** — there is no live-ISO in CI and installs are destructive, so the "does it actually boot" check is: run `dasik <config>` against the real sample configs under `config/` with all destructive flags **off** (or the future `--dry-run`, once implemented) and confirm parsing + `is_needed()` planning complete without exceptions. Never run a real install against the dev machine's disks.
+- **Dependency auditing** — AI invents non-existent packages ("slopsquatting") and pulls vulnerable versions. Runtime deps are intentionally two (`pydantic`, `colorama`); use `pip-audit`, and verify every new dependency actually exists and is the one you think it is before adding it.
+
+**Process rule (worth more than any tool): don't let the AI define the acceptance criteria.** You write or review the important test cases yourself — at least the key asserts and the requirement's edge cases (does a re-run really no-op? does the destructive flag really gate?) — and have the AI implement against them. That breaks the loop where the same misunderstanding lives in both the test and the code. Mutation testing is the automated backstop; the judgment about *what the system should do* stays yours.
+
+Priority by immediate payoff: **mutation + property-based testing first** on the idempotency logic, then **keep mypy clean and a couple of dry-run smoke checks**.
+
 ## Safety — this tool is destructive
 
 - It **partitions disks, formats filesystems, and runs `pacman`** against `/mnt`. Treat any code path that reaches `execute()` as capable of wiping a disk.
@@ -169,14 +208,20 @@ Rules:
 
 ## Working rules
 
-- **Don't install packages without asking** — runtime deps are intentionally minimal (`pydantic`, `colorama`).
+- **Use superpowers skills whenever they apply** — invoke via `Skill` before acting; process skills before implementation skills.
+- **Don't install packages without asking** — runtime deps are intentionally minimal (`pydantic`, `colorama`); the stack is intentional.
+- **TDD by default** for new logic (`models/`, `json_parser/`, `actions/` `is_needed`/`verify`, `command_worker/`). Don't merge logic without tests.
+- **Don't lower the coverage gate** — exclude untestable modules in config with a written justification instead.
 - **Preserve idempotency** — any new action must implement a real `is_needed()` that reads system state. A re-run of the same JSON must be a no-op.
 - **Keep sections optional** — config has many optional blocks (disks, kvm, cups, wireguard, …), not just disks. New top-level fields should be `Optional`/defaulted in `JsonModel`.
 - **Don't expand the legacy handler** — put new behavior in the v2 registry/action path, not in `actions_handler.py`'s `_handle_*` methods.
 - **Mind the entry-point gap** — remember `__main__` still uses the legacy handler; flag it when relevant.
+- **Never run `execute()` against real hardware** — partitioning/`pacman`/`arch-chroot` are destructive. Mock `Command.execute` in tests.
 
 ## Git & GitHub
 
 - **Commits and branches OK** — create commits and new branches whenever it makes sense, without asking first.
 - **Never push** — no `git push` under any circumstance, and absolutely never `git push --force` / `--force-with-lease`. Leave pushing to the user.
-- **GitHub via `gh`** — if the `gh` CLI is available, you may open pull requests, issues, comments, labels, etc. (no pushing on your part beyond what `gh` does for an already-pushed branch).
+- **Never merge — no permission** — you do NOT have permission to merge anything into any branch, nor to merge any pull request. No `git merge`, no fast-forward integration, no `gh pr merge`. Leave every merge (branches and PRs alike) to the user.
+- **GitHub via `gh`** — if the `gh` CLI is available, you may open pull requests, issues, and similar (comments, labels, etc.). These don't require pushing on your part beyond what `gh` itself does for an already-pushed branch.
+- **Every PR must include a manual test plan** — when opening a PR, add a **How to test manually** section describing the exact steps to exercise the change by hand. For dasik, list the concrete `dasik config/<file>.json` invocation(s) to run, any flags (`-v`, `--dry-run`), the sample config to use (destructive flags **off**), and the expected result (parsing succeeds, `is_needed()` planning is correct, a re-run is a no-op). Include setup (which config, whether `/mnt` must be mounted) and edge/error cases (invalid JSON, missing binary, already-satisfied state) to check.

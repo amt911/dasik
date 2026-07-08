@@ -201,6 +201,32 @@ Rules:
 
 Priority by immediate payoff: **mutation + property-based testing first** on the idempotency logic, then **keep mypy clean and a couple of dry-run smoke checks**.
 
+## Agentic PR verification (MANDATORY on every PR)
+
+**Every PR MUST be verified end-to-end before merge, and the verdict MUST be posted as a PR
+comment** via `gh pr comment`. A headless agent (`claude -p`, local) builds the package and drives
+the CLI, then posts the result; it **never merges** — it waits for you. Running the pass and
+posting the verdict comment is **not optional**. It catches what unit tests miss: a broken entry
+point, a config that pydantic no longer parses, an action wired into the wrong handler, a verb
+that crashes before it ever reaches `is_needed()`.
+
+- **Engine.** CLI, no browser/server → **build + smoke**: in a scratch venv, `pip install -e .[dev]`,
+  then exercise the CLI's non-destructive verbs against a real tracked sample config (e.g.
+  `dasik plan config/install-megamix.json`, `dasik generations`, `dasik hash-password`), plus the
+  entry point (`dasik --help`, `python -m dasik --help`). Configs that touch `disks`/require
+  `arch-chroot` will fail fast off real Arch hardware with `CommandNotFoundException` (expected,
+  not a defect) — when the PR touches disk/chroot-dependent actions, run the smoke inside a
+  disposable Arch container instead of a bare runner. **Never run `apply`/`rollback` for real** —
+  they partition disks and run `pacman`; assert intent via exit code/output/mocked
+  `Command.execute`, never against real hardware. Attach the captured output to the verdict
+  comment.
+- **Two layers.** The pytest suite (Coverage gate ≥80%, `pytest --cov=dasik`) stays the hard merge
+  gate; the agentic pass is advisory and never vetoes a merge on its own — but running it and
+  posting the verdict comment is mandatory.
+- **Hard limits.** The verdict awaits your close; the agent never merges. Scope `--allowedTools`;
+  use `--dangerously-skip-permissions` only in a controlled local env — never against real
+  hardware/disks (see *Safety*, below).
+
 ## Safety — this tool is destructive
 
 - It **partitions disks, formats filesystems, and runs `pacman`** against `/mnt`. Treat any code path that reaches `execute()` as capable of wiping a disk.

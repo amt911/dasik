@@ -1,0 +1,93 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Tests + coverage gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install package (with dev extras)
+        run: pip install -e ".[dev]"
+
+      # pytest-cov enforces the 80% gate via [tool.coverage.report] fail_under
+      # in pyproject.toml — no extra flags needed for the gate itself.
+      - name: Run pytest with coverage
+        run: pytest --cov=dasik
+
+  type-check:
+    name: mypy (advisory)
+    runs-on: ubuntu-latest
+    # Advisory: mypy is a documented practice (CLAUDE.md § Commands) but is not
+    # yet a pinned `dev` extra in pyproject.toml, and the codebase currently has
+    # a handful of known findings (missing colorama stubs, a couple of Optional
+    # narrowing issues in reconciler.py/packages_action.py). Not a merge gate
+    # until those are triaged and mypy is formalized as a dev dependency.
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install package + mypy
+        run: |
+          pip install -e .
+          pip install mypy
+
+      # continue-on-error at the step (not job) level so this reports green —
+      # it's advisory, not a merge gate; see the note above.
+      - name: Run mypy
+        continue-on-error: true
+        run: mypy dasik
+
+  audit:
+    name: Dependency audit — pip-audit (advisory)
+    runs-on: ubuntu-latest
+    # Advisory: queries the PyPI advisory DB over the network, which can be
+    # flaky in CI; not a merge gate, just a signal to review.
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install package
+        run: pip install -e .
+
+      - name: Install pip-audit
+        run: pip install pip-audit
+
+      # continue-on-error at the step (not job) level so this reports green —
+      # it's advisory, not a merge gate; see the note above.
+      - name: Run pip-audit
+        continue-on-error: true
+        run: pip-audit
+
+  semgrep:
+    name: Semgrep SAST (p/python)
+    runs-on: ubuntu-latest
+    container:
+      image: semgrep/semgrep
+    steps:
+      - uses: actions/checkout@v4
+
+      # Verified locally: 0 findings against dasik/ + tests/ with this ruleset,
+      # so this stays a blocking gate. If the ruleset later flags something,
+      # drop --error and make it advisory rather than letting main go red.
+      - name: Run semgrep
+        run: semgrep scan --config p/python --error dasik tests

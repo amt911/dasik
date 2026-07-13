@@ -1,11 +1,6 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-settings.json",
-  "permissions": {
-    "deny": [
-      "Read(resources/**)",
-      "Read(./resources/**)",
-      "Glob(resources/**)",
-      "Grep(resources/**)"
-    ]
+  "env": {
+    "CLAUDE_CODE_GLOB_NO_IGNORE": "false"
   }
 }

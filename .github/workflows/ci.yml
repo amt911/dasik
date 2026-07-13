@@ -91,3 +91,28 @@ jobs:
       # drop --error and make it advisory rather than letting main go red.
       - name: Run semgrep
         run: semgrep scan --config p/python --error dasik tests
+
+  mutation:
+    name: Mutation testing — set_math (advisory)
+    runs-on: ubuntu-latest
+    # Advisory: mutation testing is the CLAUDE.md § Quality "highest priority"
+    # backstop against covered-but-unverified idempotency logic, but the pytest
+    # coverage gate stays the hard merge gate. Tier 1 only (set_math.py) — fast
+    # and deterministic (~48 mutants, <1s). The reconciler tier is a slower,
+    # on-demand local run: `scripts/mutation.sh --reconciler`. Details in
+    # docs/mutation-testing.md.
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install package (dev + mut extras)
+        run: pip install -e ".[dev,mut]"
+
+      # continue-on-error at the step level so a surviving mutant is surfaced in
+      # the log without blocking merge — advisory, like mypy/pip-audit above.
+      - name: Run mutation testing (tier 1)
+        continue-on-error: true
+        run: scripts/mutation.sh

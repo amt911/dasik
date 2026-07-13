@@ -32,6 +32,10 @@ exclude = ["tests*"]
 
 [project.optional-dependencies]
 dev = ["pytest", "pytest-cov"]
+# Mutation testing (CLAUDE.md § Quality: highest priority). Kept in its own
+# extra so the `dev` extra / CI test job stay lean — install with
+# `pip install -e .[mut]`. See docs/mutation-testing.md.
+mut = ["mutmut>=3.6,<4"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -53,3 +57,25 @@ omit = [
 [tool.coverage.report]
 fail_under = 80
 show_missing = true
+
+# --- Mutation testing (mutmut 3.x) ---------------------------------------
+# The idempotency core is the highest-value mutation target (CLAUDE.md
+# § Quality): a flipped `>`/`>=`, a dropped line, or a swapped set operator
+# here is exactly the "covered but not verified" bug that breaks idempotency
+# or wipes a disk. mutmut copies `source_paths` into ./mutants, applies one
+# mutation at a time, and re-runs the selected tests; a mutant that survives
+# means no test asserts on that behaviour.
+#
+# `source_paths` copies the whole package so imports resolve inside ./mutants;
+# `only_mutate` restricts *which* files actually get mutated to the pure
+# set-math core. Widen it (or use scripts/mutation.sh --reconciler) for the
+# tier-2 reconciler pass. See docs/mutation-testing.md.
+[tool.mutmut]
+source_paths = ["dasik"]
+only_mutate = ["dasik/lib/state/set_math.py"]
+# Per-mutant test selection: only the set-math + reconciler suites exercise the
+# core, so running the whole suite per mutant would be pure overhead.
+pytest_add_cli_args_test_selection = [
+    "tests/lib/state/test_set_math.py",
+    "tests/lib/reconciler/",
+]

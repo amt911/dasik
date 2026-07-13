@@ -56,6 +56,26 @@ _ovmf_args() {
     fi
 }
 
+# Software TPM 2.0 (swtpm) for TPM2 LUKS auto-unlock tests. Sets the globals
+# TPM_QARGS (qemu device args) and SWTPM_PID; NOT a $(...) helper because it must
+# start the daemon in the caller's shell. Enable with DASIK_VM_TPM=1. The TPM
+# STATE lives under <work>/tpm and persists across the install + boot runs, so a
+# key enrolled at install unlocks at boot.
+TPM_QARGS=""; SWTPM_PID=""
+_start_tpm() {
+    TPM_QARGS=""; SWTPM_PID=""
+    [ "${DASIK_VM_TPM:-0}" = "1" ] || return 0
+    command -v swtpm >/dev/null 2>&1 || { warn "DASIK_VM_TPM=1 but swtpm not installed — skipping TPM."; return 0; }
+    local dir="$1/tpm"; mkdir -p "$dir"
+    swtpm socket --tpmstate "dir=$dir" --ctrl "type=unixio,path=$dir/sock" \
+        --tpm2 --flags not-need-init >/dev/null 2>&1 &
+    SWTPM_PID=$!
+    sleep 1
+    TPM_QARGS="-chardev socket,id=chrtpm,path=$dir/sock -tpmdev emulator,id=tpm0,chardev=chrtpm -device tpm-tis,tpmdev=tpm0"
+    log "TPM2 (swtpm) enabled: state $dir"
+}
+_stop_tpm() { [ -n "$SWTPM_PID" ] && kill "$SWTPM_PID" 2>/dev/null; SWTPM_PID=""; }
+
 # NOTE: validate_ram must be called by each command DIRECTLY, never inside a
 # $(...) — a `die` inside command-substitution only exits the subshell and the
 # script would sail on with the RAM cap unenforced.
@@ -109,7 +129,8 @@ cmd_boot() {
     local ovmf; ovmf="$(_ovmf_args "$(dirname "$image")")"
     [ -z "$ovmf" ] && warn "No OVMF — a UEFI-installed image will not boot without it."
     local args
-    args="$(_base_args) $(_accel_args) $ovmf"
+    _start_tpm "$(dirname "$image")"
+    args="$(_base_args) $(_accel_args) $ovmf $TPM_QARGS"
     args="$args -drive file=$image,if=virtio -boot c"
 
     log "QEMU command:"; echo "  qemu-system-x86_64 $args"
@@ -120,6 +141,7 @@ cmd_boot() {
     # -no-reboot so the guest halts instead of looping; kill after the timeout.
     # shellcheck disable=SC2086
     timeout "$BOOT_TIMEOUT" qemu-system-x86_64 $args -no-reboot > "$out" 2>&1 || true
+    _stop_tpm
     if grep -qiE "login:|reached target|Welcome to|systemd\[1\]" "$out"; then
         log "boot layer PASSED — guest reached a boot/login marker."
         rm -f "$out"; return 0
@@ -182,7 +204,8 @@ cmd_install() {
     qargs="$qargs -drive file=$disk,if=virtio,format=qcow2"
     qargs="$qargs -drive file=$DASIK_VM_ISO,if=virtio,media=cdrom,format=raw"
     qargs="$qargs -virtfs local,path=$REPO_ROOT,mount_tag=dasik,security_model=none,readonly=on"
-    qargs="$qargs -netdev user,id=n0 -device virtio-net,netdev=n0"
+    _start_tpm "$work"
+    qargs="$qargs -netdev user,id=n0 -device virtio-net,netdev=n0 $TPM_QARGS"
     qargs="$qargs -serial file:$work/serial.log -no-reboot"
 
     log "QEMU install command:"; echo "  qemu-system-x86_64 $qargs"
@@ -199,7 +222,7 @@ cmd_install() {
         grep -qa "DASIK-VM-DONE" "$work/serial.log" 2>/dev/null && break
         sleep 5
     done
-    kill "$qpid" 2>/dev/null; kill "$http_pid" 2>/dev/null; wait 2>/dev/null
+    kill "$qpid" 2>/dev/null; kill "$http_pid" 2>/dev/null; _stop_tpm; wait 2>/dev/null
 
     echo; log "Install serial highlights:"
     grep -a "DASIK-VM" "$work/serial.log" 2>/dev/null | tail -25

@@ -631,7 +631,26 @@ class DiskPartitionAction(AbstractAction):
             Command.execute("cryptsetup", ["luksFormat", "--type", "luks2", *uuid_args, device])
             Command.execute("cryptsetup", ["open", device, name])
 
+        # Optional extra key for automatic boot unlock (e.g. a pendrive keyfile).
+        if partition.unlock_keyfile:
+            self._add_unlock_keyfile(device, partition)
+
         return f"/dev/mapper/{name}"
+
+    def _add_unlock_keyfile(self, device: str, partition: Partition) -> None:
+        """Add ``unlock_keyfile`` as an additional LUKS key, authorised by the
+        existing passphrase/keyfile. The initramfs then unlocks with it
+        (rd.luks.key); the passphrase keeps working as a fallback.
+        """
+        kf = partition.unlock_keyfile or ""
+        if partition.luks_keyfile:                     # existing key is a file
+            Command.execute("cryptsetup",
+                            ["luksAddKey", "--key-file", partition.luks_keyfile, device, kf])
+        elif partition.luks_password is not None:      # existing key over stdin
+            Command.execute("cryptsetup", ["luksAddKey", "--key-file", "-", device, kf],
+                            input=partition.luks_password.encode())
+        else:                                          # interactive existing key
+            Command.execute("cryptsetup", ["luksAddKey", device, kf])
 
     def _create_btrfs_subvolumes(self, device: str, subvolumes: List[BtrfsSubvolume]) -> None:
         """Create btrfs subvolumes.

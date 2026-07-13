@@ -118,6 +118,24 @@ def test_invalid_type_raises_on_set_value(tmp_path):
         a._set_value()
 
 
+def test_hostname_without_network_type_writes_hostname_no_raise(tmp_path):
+    """A minimal config that sets a hostname but declares no `network` section
+    (type == "") must WRITE the hostname, not raise — the module docstring
+    promises minimal configs "do not ... raise on an absent type". Only a
+    non-empty, unrecognised type (a typo) should raise.
+
+    Regression: found by the QEMU install harness — `dasik apply` on a
+    hostname-only config pacstrapped a full base system, then aborted at the
+    network step with "Network type not recognized.", blocking initramfs +
+    bootloader.
+    """
+    _write(tmp_path, hosts="")
+    a = NetworkAction({"hostname": "dasik-vm"}, _ctx(tmp_path))  # no network section
+    assert a.type == ""
+    a._set_value()  # must NOT raise NetworkTypeNotFoundException
+    assert (tmp_path / "etc" / "hostname").read_text() == "dasik-vm"
+
+
 def test_name_and_optional():
     a = NetworkAction(_cfg())
     assert a.name == "Network Configuration"

@@ -14,7 +14,7 @@ from typing import Any, Dict
 
 from .toggles import TOGGLES
 
-_LIST_KEYS = ("packages", "units", "sockets", "modprobe_conf", "files")
+_LIST_KEYS = ("packages", "units", "sockets", "modprobe_conf", "files", "user_groups")
 
 
 def contributions(config: Dict[str, Any]) -> Dict[str, Any]:
@@ -57,6 +57,15 @@ def expand_config(config: Dict[str, Any]) -> Dict[str, Any]:
     if c["files"]:
         merged["files"] = _merge_list(merged.get("files", []), c["files"])
 
+    if c["user_groups"]:
+        # A toggle (e.g. kvm → libvirt) can grant a group to every declared
+        # user; UsersAction then reconciles the membership idempotently.
+        users = merged.get("users") or []
+        merged["users"] = [
+            {**u, "groups": _merge_list(u.get("groups", []), c["user_groups"])}
+            for u in users
+        ]
+
     return merged
 
 
@@ -83,5 +92,13 @@ def subtract_contributions(new_config: Dict[str, Any], original: Dict[str, Any])
         if key in result:
             orig_items = original.get(key, [])
             result[key] = [x for x in result[key] if x not in items or x in orig_items]
+
+    if c["user_groups"] and "users" in result:
+        orig_groups = {u.get("username"): set(u.get("groups", []))
+                       for u in original.get("users", [])}
+        for u in result["users"]:
+            keep = orig_groups.get(u.get("username"), set())
+            u["groups"] = [g for g in u.get("groups", [])
+                           if g not in c["user_groups"] or g in keep]
 
     return result

@@ -36,6 +36,34 @@ def test_network_none_survives_model_dump():
     assert _base().model_dump()["network"] is None
 
 
+def test_locales_timezone_hostname_all_optional():
+    # A truly minimal config (only packages) must parse: the v2 registry already
+    # marks locale/timezone/network actions is_optional=True, and the reconciler
+    # skips absent optional sections. Only JsonModel used to disagree.
+    m = JsonModel.model_validate({"packages": ["base", "linux"]})
+    assert m.locales is None
+    assert m.timezone is None
+    assert m.network is None
+    assert m.hostname == ""
+
+
+def test_empty_config_parses():
+    # Nothing declared at all — every top-level section is optional.
+    JsonModel.model_validate({})
+
+
+def test_declared_locales_timezone_still_parsed():
+    m = JsonModel.model_validate({
+        "locales": {"selected_locales": ["en_US.UTF-8 UTF-8"],
+                    "desired_locale": "en_US.UTF-8", "desired_tty_layout": "us"},
+        "timezone": {"region": "Europe", "city": "Madrid"},
+        "hostname": "box",
+    })
+    assert m.locales.desired_locale == "en_US.UTF-8"
+    assert m.timezone.city == "Madrid"
+    assert m.hostname == "box"
+
+
 def test_declared_network_still_parsed():
     m = _base(network={"type": "NetworkManager", "add_default_hosts": True})
     assert m.network is not None

@@ -7,9 +7,27 @@ package + timers come from the expand toggle; this action does the create-config
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
 from dasik.lib.actions.snapper_action import SnapperAction
+from dasik.lib.exceptions.exceptions import CommandExecutionError
 from dasik.lib.expand.toggles import expand_snapper
 from dasik.lib.state.change import Op
+
+
+def _fake_exec(mountpoint_rc=1, create_rc=0):
+    """Fake Command.execute recording calls; mountpoint/create returncodes tunable."""
+    calls = []
+
+    def fake(cmd, args, *aa, **kw):
+        calls.append((cmd, tuple(args)))
+        if cmd == "mountpoint":
+            return SimpleNamespace(returncode=mountpoint_rc, stdout=b"")
+        if cmd == "snapper":
+            return SimpleNamespace(returncode=create_rc, stdout=b"")
+        return SimpleNamespace(returncode=0, stdout=b"")
+
+    return fake, calls
 
 
 def _snap(existing=(), **cfg):
@@ -61,6 +79,49 @@ def test_apply_runs_snapper_create_config():
     with patch("dasik.lib.actions.snapper_action.Command.execute", side_effect=fake):
         a.apply(a.plan([]))
     assert ("snapper", ("--no-dbus", "-c", "home", "create-config", "/home")) in calls
+
+
+def test_apply_preexisting_snapshots_does_wiki_dance():
+    # When our @snapshots is already mounted at /.snapshots, snapper create-config
+    # fails; follow the Arch wiki: umount → rmdir → create-config → delete
+    # snapper's nested .snapshots → mkdir → remount our subvolume (via fstab).
+    a = _snap(existing=())      # root config missing
+    fake, calls = _fake_exec(mountpoint_rc=0)   # /.snapshots IS a mountpoint
+    with patch("dasik.lib.actions.snapper_action.Command.execute", side_effect=fake):
+        a.apply(a.plan([]))
+    seq = [c for c in calls]
+    assert ("mountpoint", ("-q", "/.snapshots")) in seq
+    assert ("umount", ("/.snapshots",)) in seq
+    assert ("rmdir", ("/.snapshots",)) in seq
+    assert ("snapper", ("--no-dbus", "-c", "root", "create-config", "/")) in seq
+    assert ("btrfs", ("subvolume", "delete", "/.snapshots")) in seq
+    assert ("mkdir", ("-p", "/.snapshots")) in seq
+    assert ("mount", ("/.snapshots",)) in seq
+    # order: umount before create-config before btrfs-delete before remount
+    i_umount = seq.index(("umount", ("/.snapshots",)))
+    i_create = seq.index(("snapper", ("--no-dbus", "-c", "root", "create-config", "/")))
+    i_delete = seq.index(("btrfs", ("subvolume", "delete", "/.snapshots")))
+    i_mount = seq.index(("mount", ("/.snapshots",)))
+    assert i_umount < i_create < i_delete < i_mount
+
+
+def test_apply_no_preexisting_snapshots_just_creates():
+    a = _snap(existing=())
+    fake, calls = _fake_exec(mountpoint_rc=1)   # /.snapshots NOT a mountpoint
+    with patch("dasik.lib.actions.snapper_action.Command.execute", side_effect=fake):
+        a.apply(a.plan([]))
+    cmds = [c[0] for c in calls]
+    assert "snapper" in cmds
+    assert "umount" not in cmds and "btrfs" not in cmds   # no dance needed
+
+
+def test_apply_raises_when_create_config_fails():
+    # Don't silently swallow a failure (the bug the VM caught): surface it.
+    a = _snap(existing=())
+    fake, _ = _fake_exec(mountpoint_rc=1, create_rc=1)
+    with patch("dasik.lib.actions.snapper_action.Command.execute", side_effect=fake):
+        with pytest.raises(CommandExecutionError):
+            a.apply(a.plan([]))
 
 
 def test_toggle_contributes_packages_and_timers():

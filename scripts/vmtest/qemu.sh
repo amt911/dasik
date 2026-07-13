@@ -36,6 +36,26 @@ _accel_args() {
         warn "/dev/kvm not available — using slow TCG emulation."; echo "-cpu max"; fi
 }
 
+# OVMF (UEFI) firmware pflash args, with a FRESH writable VARS copy in $1 (work
+# dir). Verified: `-kernel` + this pflash gives the archiso guest a real EFI env
+# (/sys/firmware/efi/efivars present), so dasik's bootloader step actually
+# installs systemd-boot. Echoes nothing when OVMF isn't installed.
+_ovmf_args() {
+    local work="$1" code="" vars=""
+    for c in /usr/share/edk2/x64/OVMF_CODE.4m.fd /usr/share/OVMF/OVMF_CODE.fd \
+             /usr/share/ovmf/x64/OVMF_CODE.fd /usr/share/edk2-ovmf/x64/OVMF_CODE.fd; do
+        [ -f "$c" ] && { code="$c"; break; }
+    done
+    for v in /usr/share/edk2/x64/OVMF_VARS.4m.fd /usr/share/OVMF/OVMF_VARS.fd \
+             /usr/share/ovmf/x64/OVMF_VARS.fd /usr/share/edk2-ovmf/x64/OVMF_VARS.fd; do
+        [ -f "$v" ] && { vars="$v"; break; }
+    done
+    if [ -n "$code" ] && [ -n "$vars" ]; then
+        cp -f "$vars" "$work/OVMF_VARS.fd"
+        echo "-drive if=pflash,unit=0,format=raw,readonly=on,file=$code -drive if=pflash,unit=1,format=raw,file=$work/OVMF_VARS.fd"
+    fi
+}
+
 # NOTE: validate_ram must be called by each command DIRECTLY, never inside a
 # $(...) — a `die` inside command-substitution only exits the subshell and the
 # script would sail on with the RAM cap unenforced.
@@ -85,8 +105,11 @@ cmd_boot() {
     validate_ram
     require_cmds qemu-system-x86_64
 
+    # UEFI images need OVMF to boot (fresh VARS copy kept beside the image).
+    local ovmf; ovmf="$(_ovmf_args "$(dirname "$image")")"
+    [ -z "$ovmf" ] && warn "No OVMF — a UEFI-installed image will not boot without it."
     local args
-    args="$(_base_args) $(_accel_args)"
+    args="$(_base_args) $(_accel_args) $ovmf"
     args="$args -drive file=$image,if=virtio -boot c"
 
     log "QEMU command:"; echo "  qemu-system-x86_64 $args"
@@ -139,18 +162,23 @@ cmd_install() {
     cp guest-install-auto.sh "$work/http/install.sh"
     local port="${DASIK_VM_HTTP_PORT:-8712}"
 
-    # NOTE on UEFI: this unattended path boots the ISO kernel DIRECTLY (-kernel),
-    # which bypasses OVMF, so the guest has no EFI environment. dasik's bootloader
-    # step (bootctl / grub --target=x86_64-efi needs efivars) therefore can't run
-    # here — expected. This layer verifies partition + pacstrap + config + the
-    # idempotency of a re-apply; a full boot-verified UEFI install is the manual
-    # `run-iso` + OVMF path in docs/vm-testing.md.
-    warn "Unattended -kernel boot has no UEFI env; dasik's bootloader step is skipped/expected-to-fail (see docs/vm-testing.md)."
+    # UEFI: `-kernel` + OVMF pflash gives the guest a real EFI env (efivars), so
+    # dasik's bootloader step (bootctl) installs for real and a re-apply is a
+    # no-op. Without OVMF the guest boots BIOS-style and the bootloader step
+    # can't complete (partition/pacstrap/config/idempotency still verified).
+    local ovmf; ovmf="$(_ovmf_args "$work")"
+    if [ -n "$ovmf" ]; then
+        log "UEFI firmware: OVMF (efivars enabled) — bootloader step will run."
+    else
+        warn "No OVMF — guest boots without UEFI; dasik's bootloader step can't complete. Install edk2-ovmf for a bootable+idempotent bootloader result."
+    fi
 
     local append="archisobasedir=arch archisolabel=$label cow_spacesize=2G copytoram=n console=ttyS0,115200 script=http://10.0.2.2:$port/install.sh"
     local qargs="-enable-kvm -cpu host -m $DASIK_VM_RAM -smp $DASIK_VM_CPUS -nographic -display none"
-    qargs="$qargs -kernel $kernel -initrd $initrd -append \"$append\""
-    qargs="$qargs -drive file=$disk,if=virtio,format=qcow2 -cdrom $DASIK_VM_ISO"
+    qargs="$qargs $ovmf -kernel $kernel -initrd $initrd -append \"$append\""
+    # ISO on virtio (OVMF does not enumerate the IDE -cdrom); qcow2 as vda.
+    qargs="$qargs -drive file=$disk,if=virtio,format=qcow2"
+    qargs="$qargs -drive file=$DASIK_VM_ISO,if=virtio,media=cdrom,format=raw"
     qargs="$qargs -virtfs local,path=$REPO_ROOT,mount_tag=dasik,security_model=none,readonly=on"
     qargs="$qargs -netdev user,id=n0 -device virtio-net,netdev=n0"
     qargs="$qargs -serial file:$work/serial.log -no-reboot"

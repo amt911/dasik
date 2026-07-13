@@ -10,6 +10,7 @@ from dasik.lib.models.disk_model import (
     BtrfsSubvolume
 )
 from dasik.lib.command_worker.command_worker import Command
+from dasik.lib.exceptions.exceptions import CommandExecutionError
 from dasik.lib.state.change import Change, Op
 
 
@@ -159,9 +160,42 @@ class DiskPartitionAction(AbstractAction):
 
         print("\nDisk partitioning completed successfully!")
 
+    @staticmethod
+    def _size_to_mib(size: str) -> float:
+        """Parse a partition size string (e.g. '512MiB', '4GiB') to MiB."""
+        s = size.strip()
+        # binary (GiB/MiB) and decimal (GB/MB) suffixes, normalised to MiB
+        for suffix, factor in (("GiB", 1024.0), ("MiB", 1.0),
+                               ("GB", 1e9 / 2 ** 20), ("MB", 1e6 / 2 ** 20)):
+            if s.endswith(suffix):
+                return float(s[: -len(suffix)]) * factor
+        # bare number → assume MiB
+        return float(s)
+
+    def _validate_sizes(self, disk: DiskLayout) -> None:
+        """Abort BEFORE wiping if the fixed-size partitions exceed the disk.
+
+        A layout larger than the device used to fail late (parted clamps/errors,
+        swallowed) and only surfaced as a confusing "no space" after other
+        destructive steps ran. 'rest' / percentage partitions are skipped — they
+        fill whatever is left.
+        """
+        disk_mib = self._get_disk_size_mib(disk.device)
+        fixed = 0.0
+        for p in disk.partitions:
+            s = p.size.strip().lower()
+            if s == "rest" or s.endswith("%"):
+                continue
+            fixed += self._size_to_mib(p.size)
+        if fixed + 1 > disk_mib:   # +1 MiB for the GPT/alignment start offset
+            raise CommandExecutionError(
+                f"declared partitions need ~{fixed:.0f} MiB but {disk.device} is "
+                f"only ~{disk_mib:.0f} MiB — shrink the sizes or use a bigger disk."
+            )
+
     def _process_disk(self, disk: DiskLayout) -> None:
         """Process a single disk layout.
-        
+
         Args:
             disk: Disk layout configuration
         """
@@ -171,7 +205,10 @@ class DiskPartitionAction(AbstractAction):
         
         # Show current partition layout
         self._show_current_layout(disk.device)
-        
+
+        # Fail loudly BEFORE any destructive op if the layout can't fit the disk
+        self._validate_sizes(disk)
+
         # Wipe disk if requested
         if disk.wipe_disk:
             self._wipe_disk(disk.device)

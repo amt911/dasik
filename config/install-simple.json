@@ -1,0 +1,39 @@
+{
+  "hostname": "archbox",
+  "timezone": { "region": "Europe", "city": "Madrid" },
+  "locales": {
+    "selected_locales": ["en_US.UTF-8"],
+    "desired_locale": "en_US.UTF-8",
+    "desired_tty_layout": "us"
+  },
+  "network": { "type": "NetworkManager", "add_default_hosts": true },
+
+  "users": [
+    {
+      "username": "andres",
+      "hashed_password": "$6$uKZMr4pT7dysjTW.$45fYDwbwrkeSPx238aFpIF0DM5YBp7Km3xS2rnhHb5jZbbgqTL7Qgjs9NFa3r82fPhJacdlsZgkW5.E3Zv6o..",
+      "shell": "/bin/zsh",
+      "groups": ["wheel"]
+    }
+  ],
+
+  "packages": ["base", "linux", "linux-firmware", "git", "vim", "htop"],
+
+  "disks": {
+    "disks": [
+      {
+        "device": "/dev/sda",
+        "partition_table": "gpt",
+        "wipe_disk": false,
+        "partitions": [
+          { "label": "boot", "size": "512MiB", "filesystem": "fat32", "partition_type": "esp", "mountpoint": "/boot", "format": true },
+          { "label": "swap", "size": "4GiB", "filesystem": "swap", "partition_type": "linux-swap", "format": true },
+          { "label": "root", "size": "rest", "filesystem": "ext4", "partition_type": "linux", "mountpoint": "/", "format": true }
+        ]
+      }
+    ]
+  },
+
+  "bootloader": "sd-boot",
+  "enable_microcode": true
+}

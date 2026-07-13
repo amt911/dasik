@@ -222,8 +222,10 @@ class ActionsHandler:
         print(f"{action_name.upper()}")
         print(f"{'='*60}")
         
-        # Check if network configuration exists
-        if 'network' not in data:
+        # Check if network configuration exists. model_dump() always emits the
+        # key (now `network: None` when omitted), so guard on falsiness, not
+        # just key presence — otherwise line below would index into None.
+        if not data.get('network'):
             reason = "No network configuration found in JSON"
             print(f"{Fore.YELLOW}⚠️  Skipping {action_name}: {reason}{Style.RESET_ALL}")
             self.skipped_actions.append((action_name, reason))

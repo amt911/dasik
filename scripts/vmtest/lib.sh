@@ -33,6 +33,13 @@ validate_ram() {
     if [ "$DASIK_VM_RAM" -lt 512 ]; then
         warn "DASIK_VM_RAM=$DASIK_VM_RAM MiB is very low; the Arch ISO wants >=1024."
     fi
+    # Refuse to start a VM that would starve the host (protect the dev machine):
+    # need the guest RAM + ~1 GiB headroom to stay under MemAvailable.
+    local avail
+    avail="$(awk '/^MemAvailable:/{print int($2/1024)}' /proc/meminfo 2>/dev/null || echo 0)"
+    if [ "${avail:-0}" -gt 0 ] && [ $((DASIK_VM_RAM + 1024)) -gt "$avail" ]; then
+        die "DASIK_VM_RAM=$DASIK_VM_RAM MiB + 1 GiB overhead exceeds host MemAvailable (${avail} MiB). Lower DASIK_VM_RAM so you don't OOM the machine."
+    fi
 }
 
 require_cmds() {

@@ -1,25 +1,28 @@
 #!/usr/bin/env bash
 # VM test — Layer B: QEMU (full boot).
 #
-# Three flows:
-#   install   UNATTENDED: boot the ISO kernel with archiso's script= param, which
-#             fetches guest-install-auto.sh (served over HTTP) and runs a real
-#             `dasik apply` onto the guest /dev/vda, then poweroffs. The host
-#             waits for the DASIK-VM-DONE marker. (A *bootable* result needs OVMF;
-#             see docs/vm-testing.md.)
-#   run-iso   boot the Arch ISO + repo over 9p for a MANUAL in-guest install via
-#             guest-install.sh.
-#   boot      boot an already-installed image headless and verify it reaches a
-#             login/boot marker within a timeout.
+# Four flows:
+#   install         UNATTENDED via archiso's script= param, which fetches
+#                   guest-install-auto.sh (served over HTTP) and runs a real
+#                   `dasik apply` onto the guest /dev/vda, then poweroffs. NOTE:
+#                   the script= autologin hook does NOT fire on ttyS0 with recent
+#                   ISOs (2025.12+) — use install-driven there.
+#   install-driven  Same install, but drives the guest over an interactive serial
+#                   socket (serial_driver.py logs in as root and runs the
+#                   installer). Works regardless of the archiso autologin hook.
+#   run-iso         boot the Arch ISO + repo over 9p for a MANUAL in-guest install.
+#   boot            boot an already-installed image headless and verify it reaches
+#                   a login/boot marker within a timeout.
 #
 # Usage:
 #   scripts/vmtest/qemu.sh install [config.json] [--dry-run]
+#   scripts/vmtest/qemu.sh install-driven [config.json] [--dry-run]
 #   scripts/vmtest/qemu.sh run-iso [--dry-run]
 #   scripts/vmtest/qemu.sh boot <disk-image> [--dry-run]
 #
-# Knobs (see lib.sh): DASIK_VM_RAM (MiB, default 2048, cap 8192),
-#   DASIK_VM_CPUS (2), DASIK_VM_DISK (8G), DASIK_VM_ISO (path to Arch ISO,
-#   required for run-iso), DASIK_VM_WORKDIR.
+# Knobs (see lib.sh): DASIK_VM_RAM (MiB, default 2048, cap 8192, also refused if
+#   it would exceed host MemAvailable), DASIK_VM_CPUS (2), DASIK_VM_DISK (8G),
+#   DASIK_VM_ISO (path to Arch ISO), DASIK_VM_TPM (1=swtpm), DASIK_VM_WORKDIR.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
 # shellcheck source=lib.sh
@@ -28,7 +31,7 @@ cd "$(dirname "${BASH_SOURCE[0]}")"
 REPO_ROOT="$(_vmtest_repo_root)"
 BOOT_TIMEOUT="${DASIK_VM_BOOT_TIMEOUT:-180}"
 
-usage() { sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+usage() { sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 
 # KVM if available (fast); fall back to TCG with a warning (slow but works).
 _accel_args() {
@@ -234,10 +237,89 @@ cmd_install() {
     return 1
 }
 
+# Like `install`, but drives the guest over an interactive serial socket instead
+# of relying on archiso's `script=` autologin hook — which does NOT fire on ttyS0
+# with recent ISOs (2025.12+), leaving the guest stuck at `archiso login:`. Boots
+# with the serial on a unix socket and hands it to serial_driver.py, which logs in
+# as root and runs the same guest installer. Use this on modern ISOs.
+cmd_install_driven() {
+    local config="config/vm-minimal.json" dry=0
+    for a in "$@"; do case "$a" in --dry-run) dry=1;; *.json) config="$a";; esac; done
+    validate_ram
+    require_cmds qemu-system-x86_64 qemu-img bsdtar python3
+    [ -n "$DASIK_VM_ISO" ] || die "DASIK_VM_ISO unset (path to an Arch ISO)."
+    [ -f "$DASIK_VM_ISO" ] || die "DASIK_VM_ISO '$DASIK_VM_ISO' not found."
+    [ -f "$REPO_ROOT/$config" ] || [ -f "$config" ] || die "config '$config' not found."
+
+    local work="${DASIK_VM_WORKDIR:-$HOME/.cache/dasik-vmtest}"
+    mkdir -p "$work/http"
+    local label; label="$(blkid -o value -s LABEL "$DASIK_VM_ISO" 2>/dev/null)"
+    [ -n "$label" ] || die "could not read the ISO volume label."
+
+    log "Extracting kernel + initramfs from the ISO"
+    bsdtar -xf "$DASIK_VM_ISO" -C "$work" \
+        arch/boot/x86_64/vmlinuz-linux arch/boot/x86_64/initramfs-linux.img
+    local kernel="$work/arch/boot/x86_64/vmlinuz-linux"
+    local initrd="$work/arch/boot/x86_64/initramfs-linux.img"
+
+    local disk="$work/vda.qcow2"
+    log "Creating ${DASIK_VM_DISK} qcow2 at $disk"
+    qemu-img create -f qcow2 "$disk" "$DASIK_VM_DISK" >/dev/null
+
+    cp guest-install-auto.sh "$work/http/install.sh"
+    local port="${DASIK_VM_HTTP_PORT:-8712}"
+    local sock="$work/serial.sock"; rm -f "$sock"
+
+    local ovmf; ovmf="$(_ovmf_args "$work")"
+    if [ -n "$ovmf" ]; then
+        log "UEFI firmware: OVMF (efivars enabled)."
+    else
+        warn "No OVMF — bootloader step can't complete."
+    fi
+
+    # NOTE: no `script=`; the driver runs the installer after logging in.
+    local append="archisobasedir=arch archisolabel=$label cow_spacesize=2G copytoram=n console=ttyS0,115200 dasik_config=$config"
+    local qargs="-enable-kvm -cpu host -m $DASIK_VM_RAM -smp $DASIK_VM_CPUS -display none -monitor none"
+    qargs="$qargs $ovmf -kernel $kernel -initrd $initrd -append \"$append\""
+    qargs="$qargs -drive file=$disk,if=virtio,format=qcow2"
+    qargs="$qargs -drive file=$DASIK_VM_ISO,if=virtio,media=cdrom,format=raw"
+    qargs="$qargs -virtfs local,path=$REPO_ROOT,mount_tag=dasik,security_model=none,readonly=on"
+    _start_tpm "$work"
+    qargs="$qargs -netdev user,id=n0 -device virtio-net,netdev=n0 $TPM_QARGS"
+    qargs="$qargs -serial unix:$sock,server,nowait -no-reboot"
+
+    log "QEMU install command:"; echo "  qemu-system-x86_64 $qargs"
+    [ "$dry" -eq 1 ] && { log "(dry-run) not launching."; _stop_tpm; return 0; }
+
+    ( cd "$work/http" && python3 -m http.server "$port" --bind 127.0.0.1 >/dev/null 2>&1 ) &
+    local http_pid=$!
+    local timeout_s="${DASIK_VM_INSTALL_TIMEOUT:-1500}"
+    log "Booting guest and driving the install over serial (this takes minutes)…"
+    eval "qemu-system-x86_64 $qargs" >/dev/null 2>&1 &
+    local qpid=$!
+
+    set +e
+    python3 serial_driver.py "$sock" "$port" "$timeout_s" | tee "$work/serial.log"
+    local rc=${PIPESTATUS[0]}
+    set -e
+
+    kill "$qpid" 2>/dev/null; kill "$http_pid" 2>/dev/null; _stop_tpm; wait 2>/dev/null
+
+    echo; log "Install serial highlights:"
+    grep -a "DASIK-VM" "$work/serial.log" 2>/dev/null | tail -25
+    if [ "$rc" -eq 0 ] && grep -qa "DASIK-VM-DONE rc=0" "$work/serial.log"; then
+        log "install layer: dasik apply completed (rc=0). qcow2: $disk"
+        return 0
+    fi
+    warn "install did not report rc=0 — see $work/serial.log."
+    return 1
+}
+
 case "${1:-}" in
-    run-iso) shift; cmd_run_iso "$@" ;;
-    install) shift; cmd_install "$@" ;;
-    boot)    shift; cmd_boot "$@" ;;
+    run-iso)        shift; cmd_run_iso "$@" ;;
+    install)        shift; cmd_install "$@" ;;
+    install-driven) shift; cmd_install_driven "$@" ;;
+    boot)           shift; cmd_boot "$@" ;;
     -h|--help|"") usage 0 ;;
     *) die "unknown subcommand '$1' (try --help)" ;;
 esac

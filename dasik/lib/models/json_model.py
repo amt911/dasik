@@ -26,11 +26,15 @@ class JsonModel(BaseModel):
     # --- existing mandatory fields ---
     locales: LocaleModel
     timezone: TimezoneModel
-    network: NetworkModel
     hostname: str
     enable_microcode: bool = False
 
     # --- existing optional fields ---
+    # `network` is optional: NetworkAction no-ops on an absent block (it only
+    # writes /etc/hostname + /etc/hosts, gated on `hostname`). Requiring it broke
+    # truly minimal configs (e.g. config/vm-minimal.json) and contradicted the
+    # "keep sections optional" design. See tests/lib/models/test_network_optional.py.
+    network: Optional[NetworkModel] = None
     metadata: Optional[dict] = None
     disks: Optional[DisksConfiguration] = None
     notes: Optional[str] = None

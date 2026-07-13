@@ -513,8 +513,13 @@ class DiskPartitionAction(AbstractAction):
         Returns:
             Full partition device path (e.g., /dev/sda1 or /dev/nvme0n1p1)
         """
-        # NVMe and MMC devices use 'p' separator
-        if 'nvme' in device or 'mmcblk' in device:
+        # A partition node is "<dev>p<N>" when the device name ends in a digit
+        # (nvme0n1 -> nvme0n1p1, mmcblk0 -> mmcblk0p1, loop0 -> loop0p1,
+        # nbd0 -> nbd0p1); otherwise the number appends directly (sda -> sda1,
+        # vda -> vda1). Keying off the trailing digit is the standard rule and
+        # also covers loop/nbd, which the old nvme/mmcblk special-case missed
+        # (breaking the documented loopback test flow).
+        if device and device[-1].isdigit():
             return f"{device}p{partition_number}"
         else:
             return f"{device}{partition_number}"

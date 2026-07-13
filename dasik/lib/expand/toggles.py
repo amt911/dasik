@@ -114,8 +114,42 @@ def expand_hwaccel(config: Dict[str, Any]) -> Dict[str, Any]:
     return {"packages": pkgs}
 
 
+# Canonical GPU driver packages (verified against the arch-wiki NVIDIA /
+# Hardware_video_acceleration pages). `base` is always installed for a declared
+# driver; `lib32` is added only when multilib is enabled (those packages live in
+# the [multilib] repo and are needed for 32-bit apps like Steam).
+# Unknown keys (e.g. a legacy "nvidia_old") are intentionally NOT mapped — a
+# wrong package is worse than a documented no-op; list it in `packages` instead.
+_DRIVER_PKGS = {
+    "nvidia": {"base": ["nvidia", "nvidia-utils", "nvidia-settings"],
+               "lib32": ["lib32-nvidia-utils"]},
+    "nvidia-open": {"base": ["nvidia-open", "nvidia-utils", "nvidia-settings"],
+                    "lib32": ["lib32-nvidia-utils"]},
+    "nouveau": {"base": ["mesa", "vulkan-nouveau"],
+                "lib32": ["lib32-mesa", "lib32-vulkan-nouveau"]},
+    "intel": {"base": ["mesa", "vulkan-intel", "intel-media-driver"],
+              "lib32": ["lib32-mesa", "lib32-vulkan-intel"]},
+    "amd": {"base": ["mesa", "vulkan-radeon", "libva-mesa-driver"],
+            "lib32": ["lib32-mesa", "lib32-vulkan-radeon"]},
+}
+
+
+def expand_drivers(config: Dict[str, Any]) -> Dict[str, Any]:
+    multilib = bool((config.get("pacman") or {}).get("multilib"))
+    pkgs: list = []
+    for drv in config.get("drivers", []):
+        spec = _DRIVER_PKGS.get(drv)
+        if not spec:
+            continue
+        for p in spec["base"] + (spec["lib32"] if multilib else []):
+            if p not in pkgs:
+                pkgs.append(p)
+    return {"packages": pkgs} if pkgs else {}
+
+
 # Order matters only for deterministic output; aggregation de-dups.
 TOGGLES = [
     expand_bluetooth, expand_cups, expand_trim, expand_kvm,
     expand_wireguard, expand_firewall, expand_hwaccel, expand_snapper,
+    expand_drivers,
 ]

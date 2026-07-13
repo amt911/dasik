@@ -14,7 +14,9 @@ class JsonParser:
                 try:
                     json_data = json.load(json_file)
                     json_validated_data = JsonModel.model_validate(json_data)
-                except ValidationError as e:
+                except (ValidationError, json.JSONDecodeError) as e:
+                    # Invalid config OR syntactically broken JSON: exit 2 with the
+                    # error, rather than crashing with an uncaught traceback.
                     print(e)
                     exit(2)
                 self._data = json_validated_data.model_dump()

@@ -89,6 +89,14 @@ class KernelCmdlineAction(AbstractAction):
                     uuid = luks_uuid(dm_name, part.get("luks_uuid"))
                     params.append(f"rd.luks.name={uuid}={dm_name}")
                     params.append(f"root=/dev/mapper/{dm_name} rw")
+                    keyfile = part.get("unlock_keyfile")
+                    if keyfile:
+                        # Automatic unlock via a keyfile (e.g. on a pendrive);
+                        # append the key device UUID when given so the initramfs
+                        # locates it. The passphrase still works as a fallback.
+                        keydev = part.get("unlock_keydev")
+                        key = f"{keyfile}:{keydev}" if keydev else keyfile
+                        params.append(f"rd.luks.key={uuid}={key}")
 
                 fs = part.get("filesystem", "")
                 if fs == "btrfs":

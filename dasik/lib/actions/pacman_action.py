@@ -9,6 +9,7 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, Optional
 from .composite_action import CompositeV3Action
+from ..command_worker.command_worker import Command
 
 _PACMAN_CONF = "/etc/pacman.conf"
 
@@ -88,6 +89,20 @@ class PacmanAction(CompositeV3Action):
             "VerbosePkgLists": self._option_active(text, "VerbosePkgLists"),
             "multilib": self._multilib_active(text),
         }
+
+    def apply(self, changes) -> None:
+        # Write pacman.conf when it drifts (the composite base gates on changes)…
+        super().apply(changes)
+        # …then, if this apply just enabled [multilib] on an install target,
+        # sync the pacman databases so the newly-enabled repo has a DB. Without
+        # it a later `pacman -S lib32-...` aborts with "could not find database".
+        # Gated on `changes`: the reconciler calls apply() for every action even
+        # with no changes, so an unconditional -Sy would hit the network on every
+        # idempotent re-run. `is_chroot` scopes it to install targets, not the
+        # live host.
+        t = self._target()
+        if changes and self.multilib and t is not None and getattr(t, "is_chroot", False):
+            Command.execute("pacman", ["-Sy"], target=t)
 
     def _import_fragment(self, value) -> dict:
         st = self._actual_state() or self._desired_state()

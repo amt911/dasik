@@ -1,15 +1,19 @@
 #!/usr/bin/env bash
 # VM test — Layer B: QEMU (full boot).
 #
-# Two flows:
-#   run-iso   boot the Arch ISO with a fresh qcow2 disk + the dasik repo shared
-#             over 9p, so you can run guest-install.sh inside the guest to do a
-#             real `dasik apply` install. (Interactive: archiso has no unattended
-#             hook without rebuilding it; see docs/vm-testing.md.)
+# Three flows:
+#   install   UNATTENDED: boot the ISO kernel with archiso's script= param, which
+#             fetches guest-install-auto.sh (served over HTTP) and runs a real
+#             `dasik apply` onto the guest /dev/vda, then poweroffs. The host
+#             waits for the DASIK-VM-DONE marker. (A *bootable* result needs OVMF;
+#             see docs/vm-testing.md.)
+#   run-iso   boot the Arch ISO + repo over 9p for a MANUAL in-guest install via
+#             guest-install.sh.
 #   boot      boot an already-installed image headless and verify it reaches a
-#             login/boot marker within a timeout. This is the automatable check.
+#             login/boot marker within a timeout.
 #
 # Usage:
+#   scripts/vmtest/qemu.sh install [config.json] [--dry-run]
 #   scripts/vmtest/qemu.sh run-iso [--dry-run]
 #   scripts/vmtest/qemu.sh boot <disk-image> [--dry-run]
 #
@@ -102,8 +106,84 @@ cmd_boot() {
     die "boot layer FAILED — guest did not reach a login/boot marker."
 }
 
+# Fully UNATTENDED install: boot the ISO's kernel with archiso's `script=` param
+# pointing at guest-install-auto.sh (served over HTTP), which runs `dasik apply`
+# against the guest's /dev/vda, then poweroffs. The host waits for the
+# "DASIK-VM-DONE" marker on the serial console.
+cmd_install() {
+    local config="config/vm-minimal.json" dry=0
+    for a in "$@"; do case "$a" in --dry-run) dry=1;; *.json) config="$a";; esac; done
+    validate_ram
+    require_cmds qemu-system-x86_64 qemu-img bsdtar python3
+    [ -n "$DASIK_VM_ISO" ] || die "DASIK_VM_ISO unset (path to an Arch ISO)."
+    [ -f "$DASIK_VM_ISO" ] || die "DASIK_VM_ISO '$DASIK_VM_ISO' not found."
+    [ -f "$REPO_ROOT/$config" ] || [ -f "$config" ] || die "config '$config' not found."
+
+    # Work dir on a REAL disk, never /tmp (often tmpfs = RAM-backed).
+    local work="${DASIK_VM_WORKDIR:-$HOME/.cache/dasik-vmtest}"
+    mkdir -p "$work/http"
+    local label; label="$(blkid -o value -s LABEL "$DASIK_VM_ISO" 2>/dev/null)"
+    [ -n "$label" ] || die "could not read the ISO volume label."
+
+    log "Extracting kernel + initramfs from the ISO (bsdtar, no root)"
+    bsdtar -xf "$DASIK_VM_ISO" -C "$work" \
+        arch/boot/x86_64/vmlinuz-linux arch/boot/x86_64/initramfs-linux.img
+    local kernel="$work/arch/boot/x86_64/vmlinuz-linux"
+    local initrd="$work/arch/boot/x86_64/initramfs-linux.img"
+
+    local disk="$work/vda.qcow2"
+    log "Creating ${DASIK_VM_DISK} qcow2 at $disk"
+    qemu-img create -f qcow2 "$disk" "$DASIK_VM_DISK" >/dev/null
+
+    # cwd is this script's dir (set at the top), so the guest installer is local.
+    cp guest-install-auto.sh "$work/http/install.sh"
+    local port="${DASIK_VM_HTTP_PORT:-8712}"
+
+    # NOTE on UEFI: this unattended path boots the ISO kernel DIRECTLY (-kernel),
+    # which bypasses OVMF, so the guest has no EFI environment. dasik's bootloader
+    # step (bootctl / grub --target=x86_64-efi needs efivars) therefore can't run
+    # here — expected. This layer verifies partition + pacstrap + config + the
+    # idempotency of a re-apply; a full boot-verified UEFI install is the manual
+    # `run-iso` + OVMF path in docs/vm-testing.md.
+    warn "Unattended -kernel boot has no UEFI env; dasik's bootloader step is skipped/expected-to-fail (see docs/vm-testing.md)."
+
+    local append="archisobasedir=arch archisolabel=$label cow_spacesize=2G copytoram=n console=ttyS0,115200 script=http://10.0.2.2:$port/install.sh"
+    local qargs="-enable-kvm -cpu host -m $DASIK_VM_RAM -smp $DASIK_VM_CPUS -nographic -display none"
+    qargs="$qargs -kernel $kernel -initrd $initrd -append \"$append\""
+    qargs="$qargs -drive file=$disk,if=virtio,format=qcow2 -cdrom $DASIK_VM_ISO"
+    qargs="$qargs -virtfs local,path=$REPO_ROOT,mount_tag=dasik,security_model=none,readonly=on"
+    qargs="$qargs -netdev user,id=n0 -device virtio-net,netdev=n0"
+    qargs="$qargs -serial file:$work/serial.log -no-reboot"
+
+    log "QEMU install command:"; echo "  qemu-system-x86_64 $qargs"
+    [ "$dry" -eq 1 ] && { log "(dry-run) not launching."; return 0; }
+
+    : > "$work/serial.log"
+    log "Serving installer on 127.0.0.1:$port and booting guest (this takes minutes)…"
+    ( cd "$work/http" && python3 -m http.server "$port" --bind 127.0.0.1 >/dev/null 2>&1 ) &
+    local http_pid=$!
+    local timeout_s="${DASIK_VM_INSTALL_TIMEOUT:-900}"
+    eval "timeout $timeout_s qemu-system-x86_64 $qargs" >/dev/null 2>&1 &
+    local qpid=$!
+    while kill -0 "$qpid" 2>/dev/null; do
+        grep -qa "DASIK-VM-DONE" "$work/serial.log" 2>/dev/null && break
+        sleep 5
+    done
+    kill "$qpid" 2>/dev/null; kill "$http_pid" 2>/dev/null; wait 2>/dev/null
+
+    echo; log "Install serial highlights:"
+    grep -a "DASIK-VM" "$work/serial.log" 2>/dev/null | tail -25
+    if grep -qa "DASIK-VM-DONE rc=0" "$work/serial.log"; then
+        log "install layer: dasik apply completed (rc=0). qcow2: $disk"
+        return 0
+    fi
+    warn "install did not report rc=0 — see $work/serial.log (may be a dasik gap or the OVMF/UEFI prerequisite)."
+    return 1
+}
+
 case "${1:-}" in
     run-iso) shift; cmd_run_iso "$@" ;;
+    install) shift; cmd_install "$@" ;;
     boot)    shift; cmd_boot "$@" ;;
     -h|--help|"") usage 0 ;;
     *) die "unknown subcommand '$1' (try --help)" ;;

@@ -56,6 +56,24 @@ class BootloaderAction(AbstractAction):
                     return part.get("label", "root")
         return "root"
 
+    def _root_param(self) -> str:
+        """The ``root=`` cmdline the base boot entry should carry.
+
+        For an encrypted root this MUST be ``root=/dev/mapper/<luks_name>`` — the
+        SAME token KernelCmdlineAction derives — so the two agree and the entry
+        has a single, correct ``root=``. Emitting ``root=LABEL=…`` here (the old
+        behaviour) left a stale second ``root=`` that kernel-cmdline could not
+        remove (it's drift), producing a duplicate and a non-idempotent re-apply.
+        """
+        disks = self._cfg.get("disks") or {}
+        for disk in disks.get("disks", []):
+            for part in disk.get("partitions", []):
+                if part.get("mountpoint") == "/":
+                    if part.get("encrypt"):
+                        return f"root=/dev/mapper/{part.get('luks_name', 'cryptroot')}"
+                    return f"root=LABEL={part.get('label', 'root')}"
+        return "root=LABEL=root"
+
     def _is_sdboot(self) -> bool:
         return self.bootloader in ("sd-boot", "systemd-boot")
 
@@ -116,7 +134,7 @@ class BootloaderAction(AbstractAction):
             for img in self._ucode_initrds():
                 lines.append(f"initrd {img}")
             lines.append("initrd /initramfs-linux.img")
-            lines.append(f"options root=LABEL={self._root_label()} rw")
+            lines.append(f"options {self._root_param()} rw")
             with open(os.path.join(entries_dir, "arch.conf"), "w") as f:
                 f.write("\n".join(lines) + "\n")
         else:

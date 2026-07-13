@@ -133,7 +133,7 @@ class ActionsHandler:
         print(f"{'='*60}")
         
         # Check if timezone configuration exists
-        if 'timezone' not in data:
+        if not data.get('timezone'):        # model_dump emits None when omitted
             reason = "No timezone configuration found in JSON"
             print(f"{Fore.YELLOW}⚠️  Skipping {action_name}: {reason}{Style.RESET_ALL}")
             self.skipped_actions.append((action_name, reason))
@@ -178,7 +178,7 @@ class ActionsHandler:
         print(f"{'='*60}")
         
         # Check if locale configuration exists
-        if 'locales' not in data:
+        if not data.get('locales'):         # model_dump emits None when omitted
             reason = "No locale configuration found in JSON"
             print(f"{Fore.YELLOW}⚠️  Skipping {action_name}: {reason}{Style.RESET_ALL}")
             self.skipped_actions.append((action_name, reason))

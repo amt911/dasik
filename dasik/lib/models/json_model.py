@@ -23,18 +23,20 @@ from .snapper_model import SnapperModel
 class JsonModel(BaseModel):
     """Root configuration model – validated with pydantic."""
 
-    # --- existing mandatory fields ---
-    locales: LocaleModel
-    timezone: TimezoneModel
-    hostname: str
+    # --- sections that used to be mandatory, now optional ---
+    # The v2 registry already registers the locale/timezone/network actions
+    # `is_optional=True` and the reconciler skips an absent optional section, so
+    # the actions no-op when these are omitted. Requiring them in the model was
+    # the sole thing blocking truly minimal (package-only / disk-only) configs
+    # and it contradicted the "keep sections optional" design. `hostname`
+    # defaults to "" — NetworkAction gates all its writes on a non-empty hostname.
+    locales: Optional[LocaleModel] = None
+    timezone: Optional[TimezoneModel] = None
+    network: Optional[NetworkModel] = None
+    hostname: str = ""
     enable_microcode: bool = False
 
     # --- existing optional fields ---
-    # `network` is optional: NetworkAction no-ops on an absent block (it only
-    # writes /etc/hostname + /etc/hosts, gated on `hostname`). Requiring it broke
-    # truly minimal configs (e.g. config/vm-minimal.json) and contradicted the
-    # "keep sections optional" design. See tests/lib/models/test_network_optional.py.
-    network: Optional[NetworkModel] = None
     metadata: Optional[dict] = None
     disks: Optional[DisksConfiguration] = None
     notes: Optional[str] = None

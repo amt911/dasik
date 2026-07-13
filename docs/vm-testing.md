@@ -66,8 +66,32 @@ neither.
 
 ## Layer B — QEMU (full boot)
 
-archiso has no built-in unattended hook, so the install is driven by a script you
-run **inside** the guest; booting the result is fully automatic.
+### Unattended (`install`)
+
+```bash
+DASIK_VM_ISO=~/Downloads/archlinux.iso DASIK_VM_RAM=3072 \
+  scripts/vmtest/qemu.sh install config/vm-minimal.json
+```
+
+This boots the ISO's kernel directly (`-kernel`/`-initrd`) with archiso's
+`script=` parameter pointing at `guest-install-auto.sh` — served over a
+throwaway HTTP server on `127.0.0.1` — which archiso fetches and runs as root.
+That script 9p-mounts the repo, installs dasik into a venv, runs `dasik apply`
+against the guest's `/dev/vda`, re-applies to check idempotency, and poweroffs.
+The host follows progress on the serial console (every line is prefixed
+`DASIK-VM:`) and waits for the `DASIK-VM-DONE rc=<n>` marker. The qcow2 and
+extracted kernel live under `~/.cache/dasik-vmtest/` (a real disk — **not**
+`/tmp`, which is often tmpfs/RAM). RAM is `DASIK_VM_RAM` (default 2048, capped
+8192); `DASIK_VM_INSTALL_TIMEOUT` bounds the whole run.
+
+> **UEFI caveat.** `-kernel` direct boot bypasses OVMF, so the guest has no EFI
+> environment and dasik's bootloader step (`bootctl` / `grub --target=x86_64-efi`,
+> both need efivars) cannot run in this path. The `install` layer therefore
+> verifies **partition + pacstrap + config + idempotency**, not the bootloader.
+> For a boot-verified UEFI image, use the manual `run-iso` path below on an
+> OVMF-capable host, then `qemu.sh boot`.
+
+### Manual (`run-iso` + `boot`)
 
 ```bash
 # 1. boot the ISO with a fresh disk + the repo shared over 9p
@@ -79,7 +103,7 @@ mount -t 9p -o trans=virtio,ro dasik /mnt-src
 poweroff
 
 # 3. back on the host, verify the installed image boots:
-scripts/vmtest/qemu.sh boot /tmp/dasik-qemu.XXXX/vda.qcow2
+scripts/vmtest/qemu.sh boot ~/.cache/dasik-vmtest/vda.qcow2
 ```
 
 `guest-install.sh` installs dasik into a venv from the share, runs `dasik plan`
@@ -88,7 +112,7 @@ runs — against the guest's throwaway qcow2), and refuses to run if it does not
 detect a QEMU guest. `qemu.sh boot` boots headless and passes when the guest
 reaches a login/boot marker within `DASIK_VM_BOOT_TIMEOUT`, else fails.
 
-Add `--dry-run` to either `qemu.sh` subcommand to print the exact
+Add `--dry-run` to any `qemu.sh` subcommand to print the exact
 `qemu-system-x86_64` command without launching.
 
 ## CI
@@ -101,11 +125,29 @@ KVM-capable host.
 
 ## Status (what has been executed)
 
-- Layer A driver guard + partition-node naming: **unit-tested and passing**
-  (`tests/integration/test_vmtest_disk_driver.py`,
-  `tests/lib/actions/test_partition_device_naming.py`).
-- Script syntax, safety guards, RAM cap, and `--dry-run` command assembly:
-  **verified**.
-- A full end-to-end boot install was **not** run in the authoring session (no
-  Arch ISO / no root there); run Layer A and B locally per the steps above. The
-  guards make a mis-pointed run fail safe rather than touch real hardware.
+- **Layer A (loopback)** — run for real against `/dev/loop0`: GPT + ESP(vfat) +
+  ROOT(ext4) landed, and a **second apply of the same config was a no-op**
+  ("already matches") — real-hardware idempotency, `/mnt` untouched.
+- **Layer B (`install`, unattended)** — run for real (Arch ISO 2026.06, KVM,
+  3 GB): archiso's `script=` fetched the installer, and `dasik apply` produced a
+  **complete base system on the guest `/dev/vda`** — GPT/ESP/ROOT, **154
+  packages** pacstrapped, kernel installed, `hostname=dasik-vm`,
+  `/etc/localtime → Etc/UTC`, locale + initramfs configured. `dasik apply`
+  exited 0.
+  - **Idempotency (the NixOS goal):** a second `apply` was a no-op for
+    **disks, base, packages, timezone, locale, network, initramfs**.
+  - **Bootloader caveat:** the `bootloader` step re-fires on the second apply
+    and the ESP is empty — because the `-kernel` unattended guest has **no UEFI
+    environment**, so `bootctl install` writes no EFI files and the
+    `_installed()` marker never lands. This is the harness's UEFI limitation,
+    not a wrong marker path. Verify bootloader idempotency with a UEFI (OVMF)
+    run via `run-iso`. (Secondary observation: `BootloaderAction` trusts
+    `bootctl`'s exit code without confirming the files landed — a robustness
+    nicety, out of scope here.)
+- The `install` run also **found a real dasik bug**: `NetworkAction` raised
+  "Network type not recognized." on a hostname-only config, aborting the install
+  before initramfs/bootloader. Fixed (an absent `network.type` no longer raises;
+  regression test in `tests/lib/actions/test_network_action.py`).
+- Unit-level guards (driver device allowlist, partition-node naming,
+  `_has_partition_table`, RAM cap, `--dry-run` assembly) are **unit-tested /
+  verified**. The safety guards make a mis-pointed run fail safe.

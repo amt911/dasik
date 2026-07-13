@@ -102,7 +102,12 @@ class NetworkAction(CompositeV3Action):
     def _set_value(self) -> None:
         if not self._declared():
             return
-        if self.type not in ("NetworkManager", "systemd-networkd"):
+        # An absent type (minimal / hostname-only config) is fine — just write
+        # the hostname, per this module's contract. Only a non-empty, unknown
+        # type (a typo like "networkmanager") is an error. Requiring a network
+        # manager to be declared just to set a hostname blocked otherwise-valid
+        # installs at the network step (found by the QEMU install harness).
+        if self.type and self.type not in ("NetworkManager", "systemd-networkd"):
             raise NetworkTypeNotFoundException
         self._clear_loopback()
         with open(self._p(_HOSTNAME), "w") as f:

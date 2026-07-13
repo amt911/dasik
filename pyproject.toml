@@ -31,7 +31,9 @@ include = ["dasik*"]
 exclude = ["tests*"]
 
 [project.optional-dependencies]
-dev = ["pytest", "pytest-cov"]
+# hypothesis powers the property-based idempotency tests (CLAUDE.md § Quality:
+# "highest priority") — see tests/lib/**/test_*_propert*.py and *_roundtrip.py.
+dev = ["pytest", "pytest-cov", "hypothesis"]
 # Mutation testing (CLAUDE.md § Quality: highest priority). Kept in its own
 # extra so the `dev` extra / CI test job stay lean — install with
 # `pip install -e .[mut]`. See docs/mutation-testing.md.

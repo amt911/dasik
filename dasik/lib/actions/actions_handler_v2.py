@@ -46,6 +46,7 @@ def setup_actions() -> None:
     from .users_action import UsersAction
     from .packages_action import PackagesAction
     from .systemd_action import SystemdAction
+    from .firewall_action import FirewallAction
     from .drop_files_action import DropFilesAction
     from .initramfs_action import InitramfsAction
     from .kernel_cmdline_action import KernelCmdlineAction
@@ -110,6 +111,14 @@ def setup_actions() -> None:
     register_action(
         action_class=SystemdAction,
         config_key='systemd',
+        is_optional=True,
+    )
+    # Firewalld install+enable is handled by the `firewall` expand toggle
+    # (packages + systemd); this applies the zone RULES (offline-cmd). Runs after
+    # packages installed firewalld.
+    register_action(
+        action_class=FirewallAction,
+        config_key='firewall',
         is_optional=True,
     )
     register_action(

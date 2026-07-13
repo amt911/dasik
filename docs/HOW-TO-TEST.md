@@ -1,3 +1,10 @@
+> **Nota (2026-07):** este documento es en parte aspiracional. `tests/test_disk_integration.py`
+> **no existe**, y `--dry-run` **no está implementado** — el equivalente real es
+> `dasik plan <config>` (solo lectura). Para probar el particionado y una
+> instalación completa de forma funcional y segura, usa el harness nuevo:
+> [`docs/vm-testing.md`](vm-testing.md) (capa loopback + capa QEMU) y
+> [`docs/testing-without-a-vm.md`](testing-without-a-vm.md).
+
 # Cómo Probar el Sistema de Particionado
 
 ## ✅ Validación de Configuración (Seguro)

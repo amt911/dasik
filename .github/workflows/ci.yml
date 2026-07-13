@@ -4,6 +4,10 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Allows the VM harness (and the rest of CI) to be triggered by hand. The
+  # actual loopback/QEMU runs need root / nested KVM and run locally, not here
+  # (see docs/vm-testing.md); this just enables manual dispatch.
+  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -116,3 +120,25 @@ jobs:
       - name: Run mutation testing (tier 1)
         continue-on-error: true
         run: scripts/mutation.sh
+
+  vm-harness-lint:
+    name: VM harness — lint (advisory)
+    runs-on: ubuntu-latest
+    # The loopback/QEMU layers themselves need root + nested KVM and run on a
+    # local host (docs/vm-testing.md); the driver's safety guards are unit-tested
+    # in the `test` job. This job just static-checks the harness scripts so a
+    # broken guard/quoting can't rot unnoticed.
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: bash -n (syntax) all harness scripts
+        run: for f in scripts/*.sh scripts/vmtest/*.sh; do bash -n "$f"; done
+
+      - name: shellcheck
+        continue-on-error: true
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y shellcheck
+          shellcheck -S warning -x scripts/vmtest/*.sh scripts/*.sh || true
+
+      - name: python syntax — apply_disks_only.py
+        run: python -m py_compile scripts/vmtest/apply_disks_only.py

@@ -11,6 +11,7 @@ from typing import Any, List
 
 from .abstract_action import AbstractAction
 from ..command_worker.command_worker import Command
+from ..exceptions.exceptions import CommandExecutionError
 from ..state.change import Change, Op
 
 _CONFIGS_DIR = "/etc/snapper/configs"
@@ -73,6 +74,15 @@ class SnapperAction(AbstractAction):
                                       reason="create-config"))
         return changes
 
+    @staticmethod
+    def _snapshots_dir(subvol: str) -> str:
+        base = subvol.rstrip("/")
+        return f"{base}/.snapshots" if base else "/.snapshots"
+
+    def _is_snapshots_mount(self, snap_dir: str, target) -> bool:
+        res = Command.execute("mountpoint", ["-q", snap_dir], target=target)
+        return getattr(res, "returncode", 1) == 0
+
     def apply(self, changes) -> None:
         target = self._target()
         if target is None:
@@ -82,11 +92,38 @@ class SnapperAction(AbstractAction):
             subvol = by_name.get(change.item)
             if subvol is None:
                 continue
-            Command.execute(
-                "snapper",
-                ["--no-dbus", "-c", change.item, "create-config", subvol],
-                target=target,
+            self._create_config(change.item, subvol, target)
+
+    def _create_config(self, name: str, subvol: str, target) -> None:
+        # `snapper create-config` fails if a `.snapshots` subvolume already
+        # exists at the config path. Dasik pre-creates & mounts a dedicated
+        # @snapshots subvolume there, so follow the Arch wiki: unmount it, let
+        # snapper make its own nested .snapshots, delete that, and remount our
+        # subvolume (via its existing fstab entry). Without this the create
+        # failed silently and re-fired on every apply (non-idempotent).
+        snap_dir = self._snapshots_dir(subvol)
+        preexist = self._is_snapshots_mount(snap_dir, target)
+        if preexist:
+            Command.execute("umount", [snap_dir], target=target)
+            Command.execute("rmdir", [snap_dir], target=target)
+
+        res = Command.execute(
+            "snapper", ["--no-dbus", "-c", name, "create-config", subvol],
+            target=target,
+        )
+        if getattr(res, "returncode", 0) != 0:
+            # Surface the failure instead of swallowing it (the bug the VM caught):
+            # a swallowed error left the config uncreated and the action re-firing.
+            raise CommandExecutionError(
+                f"snapper create-config for '{name}' failed "
+                f"(rc={getattr(res, 'returncode', '?')})"
             )
+
+        if preexist:
+            # Delete snapper's auto-created nested .snapshots and restore our own.
+            Command.execute("btrfs", ["subvolume", "delete", snap_dir], target=target)
+            Command.execute("mkdir", ["-p", snap_dir], target=target)
+            Command.execute("mount", [snap_dir], target=target)
 
     def managed_keys(self) -> dict:
         return {self._DOMAIN: [c["name"] for c in self.configs]}

@@ -18,7 +18,9 @@ Verbs (slice 1 of declarative-convergence):
 from __future__ import annotations
 
 import argparse
+import getpass
 import json
+import subprocess
 import sys
 from pathlib import Path
 from typing import Optional
@@ -135,10 +137,16 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Skip the destructive-change confirmation prompt.",
     )
 
+    sub.add_parser(
+        "hash-password",
+        help="Prompt for a password (twice) and print its sha512crypt hash "
+             "for use as a user's hashed_password.",
+    )
+
     return parser
 
 
-_KNOWN_VERBS = {"plan", "apply", "sync", "generations", "rollback"}
+_KNOWN_VERBS = {"plan", "apply", "sync", "generations", "rollback", "hash-password"}
 
 
 def _is_legacy_invocation(raw: list[str]) -> Optional[str]:
@@ -349,6 +357,33 @@ def _cmd_legacy(config_path_str: str) -> int:
     return 0
 
 
+def _cmd_hash_password() -> int:
+    """Prompt for a password twice and print its sha512crypt hash.
+
+    The password is fed to ``openssl passwd -6`` over **stdin** (never argv,
+    which is world-readable via /proc). Returns 1 on mismatch, empty input, or
+    an openssl failure; 0 on success.
+    """
+    pw = getpass.getpass("Password: ")
+    if not pw:
+        print("Error: empty password.", file=sys.stderr)
+        return 1
+    if pw != getpass.getpass("Confirm: "):
+        print("Error: passwords do not match.", file=sys.stderr)
+        return 1
+    result = subprocess.run(
+        ["openssl", "passwd", "-6", "-stdin"],
+        input=pw.encode(),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if result.returncode != 0:
+        print(f"Error: openssl failed: {result.stderr.decode().strip()}", file=sys.stderr)
+        return 1
+    print(result.stdout.decode().strip())
+    return 0
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     raw = sys.argv[1:] if argv is None else list(argv)
 
@@ -387,6 +422,9 @@ def main(argv: Optional[list[str]] = None) -> int:
 
         if args.verb == "rollback":
             return _cmd_rollback(args.target, args.generation, args.yes)
+
+        if args.verb == "hash-password":
+            return _cmd_hash_password()
 
         parser.print_help(file=sys.stderr)
         return 2

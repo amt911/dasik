@@ -58,10 +58,17 @@ def test_unknown_top_level_keys_are_ignored(tmp_path):
 
 def test_missing_required_section_exits_with_code_2(tmp_path):
     cfg = _valid()
-    del cfg["network"]                               # required section removed
+    del cfg["locales"]                               # still-required section removed
     with pytest.raises(SystemExit) as exc:
         JsonParser(_write(tmp_path, cfg))
     assert exc.value.code == 2
+
+
+def test_missing_optional_network_still_parses(tmp_path):
+    cfg = _valid()
+    del cfg["network"]                               # network is optional now
+    jp = JsonParser(_write(tmp_path, cfg))           # must not exit
+    assert jp.get_attr("network") is None
 
 
 def test_bad_enum_value_exits_with_code_2(tmp_path):

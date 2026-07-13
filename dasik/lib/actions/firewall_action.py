@@ -1,26 +1,69 @@
-"""Action: apply firewalld zone rules declaratively (v3 domain "firewall").
+"""Action: firewalld default-zone rules, written declaratively (idempotent).
 
-Installing firewalld and enabling firewalld.service is handled by the `expand`
-toggle (→ packages + systemd). This action applies the ZONE RULES that toggle
-can't express: allowed services, rich rules, and services to remove from the
-default zone. It uses ``firewall-offline-cmd`` — which works inside the chroot
-without firewalld running and translates rich-rule syntax into the zone XML —
-and is idempotent: a change is emitted only for a rule that is missing (or a
-service that should be removed but is still present), so a converged firewall
-re-plans to nothing.
+Installing firewalld + enabling the service is the `firewall` expand toggle's job
+(packages + systemd). This action owns the RULES the toggle can't express:
+allowed services, rich rules, and services removed from the default zone.
+
+It writes the complete ``/etc/firewalld/zones/public.xml`` — dasik owns the file
+— instead of driving ``firewall-offline-cmd``. That avoids firewalld's
+default-service quirk (``--remove-service`` does not strip a built-in default,
+and ``--list-services`` reports defaults, so a remove_service re-fired on every
+apply). The desired zone is: (default services − remove_services) + allowed
+services + rich rules. Idempotent by construction: a change is planned only when
+the on-disk file differs from the desired content.
 """
-from typing import Any, List, Set
+import os
+import re
+from typing import Any, List
 
 from .abstract_action import AbstractAction
-from ..command_worker.command_worker import Command
+from ..command_worker.command_worker import Command  # noqa: F401 (kept for parity)
 from ..state.change import Change, Op
+
+_ZONE_PATH = "/etc/firewalld/zones/public.xml"
+# firewalld's upstream `public` zone default services.
+_DEFAULT_SERVICES = ["dhcpv6-client", "ssh"]
+
+
+def _rich_rule_to_xml(rule: str) -> str:
+    """Convert a firewall-cmd rich-rule string to a zone-XML <rule> element.
+
+    Tolerant of quoted/unquoted values. Supports the common grammar: family,
+    source/destination address, service name, port+protocol, and the terminal
+    action (accept|reject|drop). Unknown clauses are ignored, never dropped
+    silently to a crash.
+    """
+    def grab(pattern: str):
+        m = re.search(pattern, rule)
+        return m.group(1) if m else None
+
+    family = grab(r'family[=\s]"?([^"\s]+)"?')
+    inner: List[str] = []
+    src = grab(r'source\s+address[=\s]"?([^"\s]+)"?')
+    if src:
+        inner.append(f'<source address="{src}"/>')
+    dst = grab(r'destination\s+address[=\s]"?([^"\s]+)"?')
+    if dst:
+        inner.append(f'<destination address="{dst}"/>')
+    svc = grab(r'service\s+name[=\s]"?([^"\s]+)"?')
+    if svc:
+        inner.append(f'<service name="{svc}"/>')
+    port = grab(r'\bport\s+port[=\s]"?([^"\s]+)"?')
+    proto = grab(r'protocol[=\s]"?([^"\s]+)"?')
+    if port and proto:
+        inner.append(f'<port port="{port}" protocol="{proto}"/>')
+    for action in ("accept", "reject", "drop"):
+        if re.search(rf'\b{action}\b', rule):
+            inner.append(f'<{action}/>')
+            break
+    attrs = f' family="{family}"' if family else ""
+    return f'<rule{attrs}>' + "".join(inner) + "</rule>"
 
 
 class FirewallAction(AbstractAction):
-    """Reconcile firewalld zone rules for the default (public) zone."""
+    """Own the firewalld public zone file declaratively."""
 
     _DOMAIN = "firewall"
-    _ZONE = "public"
 
     def __init__(self, config: Any, context=None):
         super().__init__(config, context)
@@ -42,76 +85,53 @@ class FirewallAction(AbstractAction):
     def empty_config(cls):
         return {}
 
-    # --- target-aware firewall-offline-cmd ---------------------------- #
-
     def _target(self):
         return getattr(self.context, "target", None) if self.context else None
 
-    def _offline(self, args: List[str]):
-        return Command.execute("firewall-offline-cmd", args, target=self._target())
+    def _zone_file(self) -> str:
+        t = self._target()
+        return t.path(_ZONE_PATH) if t is not None else "/mnt" + _ZONE_PATH
 
-    def _list(self, kind: str) -> Set[str]:
-        """Current zone entries. kind='services' (space-sep) | 'rich-rules'."""
+    def _desired_xml(self) -> str:
+        services = sorted((set(_DEFAULT_SERVICES) - set(self.remove)) | set(self.allowed))
+        lines = ['<?xml version="1.0" encoding="utf-8"?>', "<zone>", "  <short>Public</short>"]
+        lines += [f'  <service name="{s}"/>' for s in services]
+        lines += ["  " + _rich_rule_to_xml(r) for r in self.rich]
+        lines.append("</zone>")
+        return "\n".join(lines) + "\n"
+
+    def _current_xml(self):
         try:
-            result = self._offline([f"--zone={self._ZONE}", f"--list-{kind}"])
-        except Exception:
-            return set()
-        out = getattr(result, "stdout", b"") or b""
-        if isinstance(out, bytes):
-            out = out.decode("utf-8", "replace")
-        if kind == "services":
-            return {s for s in out.split() if s}
-        return {line.strip() for line in out.splitlines() if line.strip()}
+            with open(self._zone_file(), "r") as f:
+                return f.read()
+        except FileNotFoundError:
+            return None
 
     # --- v3 contract -------------------------------------------------- #
 
     def actual(self) -> set:
-        if not self.enable or self._target() is None:
-            return set()
-        svc = {f"service:{s}" for s in self._list("services")}
-        rich = {f"rich:{r}" for r in self._list("rich-rules")}
-        return svc | rich
+        return {"public"} if (self.enable and self._current_xml() is not None) else set()
 
     def plan(self, managed):
         if not self.enable:
             return []
-        changes: List[Change] = []
-        current_svc = self._list("services")
-        for s in self.allowed:
-            if s not in current_svc:
-                changes.append(Change(self._DOMAIN, Op.ENABLE, f"service:{s}",
-                                      reason="allow service"))
-        for s in self.remove:
-            if s in current_svc:
-                changes.append(Change(self._DOMAIN, Op.DISABLE, f"service:{s}",
-                                      reason="remove service"))
-        current_rich = self._list("rich-rules")
-        for r in self.rich:
-            if r not in current_rich:
-                changes.append(Change(self._DOMAIN, Op.ENABLE, f"rich:{r}",
-                                      reason="rich rule"))
-        return changes
+        if self._current_xml() == self._desired_xml():
+            return []
+        return [Change(self._DOMAIN, Op.MODIFY, "public", reason="zone rules")]
 
     def apply(self, changes) -> None:
-        if self._target() is None:
+        if not changes:
             return
-        for c in changes:
-            if c.item.startswith("service:"):
-                svc = c.item[len("service:"):]
-                flag = "--add-service" if c.op is Op.ENABLE else "--remove-service"
-                self._offline([f"--zone={self._ZONE}", f"{flag}={svc}"])
-            elif c.item.startswith("rich:"):
-                rule = c.item[len("rich:"):]
-                self._offline([f"--zone={self._ZONE}", f"--add-rich-rule={rule}"])
+        path = self._zone_file()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            f.write(self._desired_xml())
 
     def managed_keys(self) -> dict:
-        return {self._DOMAIN: [f"service:{s}" for s in self.allowed]
-                + [f"rich:{r}" for r in self.rich]}
+        return {self._DOMAIN: ["public"] if self.enable else []}
 
     def import_state(self, managed=None) -> dict:
         return {}
-
-    # --- legacy executor bridge --------------------------------------- #
 
     def is_needed(self) -> bool:
         return bool(self.plan(managed=[]))

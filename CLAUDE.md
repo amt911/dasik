@@ -112,7 +112,7 @@ Every change runs against the **mounted install target at `/mnt`**, typically vi
 | `actions_handler.py` | Legacy, monolithic; one hard-coded `_handle_*` method per section, calls `action.do_action()` | **No** | disks, base install, timezone, locale, network |
 | `actions_handler_v2.py` | Registry + `ActionExecutor`; calls `is_needed()/execute()/verify()` | **Yes** | all ~20 actions (`setup_actions()`) |
 
-⚠️ **`dasik/__main__.py` currently imports the LEGACY `actions_handler`**, so the entry point does *not* yet use the idempotent architecture or most actions. Wiring `__main__` to `actions_handler_v2` (its `ActionsHandler` shim, or `setup_actions()` + `execute_installation()`) is the natural next step. Confirm intent before changing this.
+✅ **`dasik/__main__.py` now drives the v3 idempotent architecture.** The real verbs — `plan`, `apply`, `sync`, `generations`, `rollback` — go through `Reconciler` (`setup_actions()` registry). The legacy `ActionsHandler` survives *only* as the fallback for the **deprecated, no-verb `dasik <config>` form** (`_cmd_legacy`), which is slated for removal. New work targets the verb/reconciler path; don't add behavior to the legacy handler.
 
 ### The Action model (v2 — the target architecture)
 
@@ -160,7 +160,7 @@ pytest -k is_needed          # filter by name
 | Folder | What | Status |
 | --- | --- | --- |
 | `dasik/lib/models/` | pydantic models — accept valid configs, reject invalid. Deterministic, no mocks | ✅ Covered |
-| `dasik/lib/json_parser/` | `JsonParser` against fixture JSON files; assert parsed dict + bad-file handling | ⚠️ Pending (no tests yet) |
+| `dasik/lib/json_parser/` | `JsonParser` against fixture JSON files; assert parsed dict + bad-file handling | ✅ Covered (`tests/lib/json_parser/test_json_parser.py`) |
 | `dasik/lib/actions/` | `is_needed()` / `verify()` decision logic — monkeypatch `/mnt` paths & `Command.execute`, assert the boolean. **Highest value: these guarantee idempotency** | ✅ Covered (largest area) |
 | `dasik/lib/command_worker/` | `Command` — binary lookup, chroot prefix, `CommandNotFoundException`. Mock `subprocess.run` / `shutil.which` | ✅ Covered |
 | `dasik/lib/reconciler/`, `dasik/lib/state/`, `dasik/lib/target/` | v3 `plan`/`apply`/`sync`, set-math, manifests/generations, config writer | ✅ Covered |
@@ -254,7 +254,7 @@ that crashes before it ever reaches `is_needed()`.
 - **Preserve idempotency** — any new action must implement a real `is_needed()` that reads system state. A re-run of the same JSON must be a no-op.
 - **Keep sections optional** — config has many optional blocks (disks, kvm, cups, wireguard, …), not just disks. New top-level fields should be `Optional`/defaulted in `JsonModel`.
 - **Don't expand the legacy handler** — put new behavior in the v2 registry/action path, not in `actions_handler.py`'s `_handle_*` methods.
-- **Mind the entry-point gap** — remember `__main__` still uses the legacy handler; flag it when relevant.
+- **Entry point is on v3** — `__main__`'s verbs (`plan`/`apply`/`sync`/`generations`/`rollback`) use the reconciler; the legacy handler is only the deprecated no-verb fallback (`_cmd_legacy`). Don't route new behavior through it.
 - **Never run `execute()` against real hardware** — partitioning/`pacman`/`arch-chroot` are destructive. Mock `Command.execute` in tests.
 
 ## Git & GitHub

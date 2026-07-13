@@ -594,24 +594,44 @@ class DiskPartitionAction(AbstractAction):
         Returns:
             Path to the opened LUKS device (/dev/mapper/...)
         """
-        print(f"Encrypting partition {partition.label}...")
-        print("NOTE: You will be prompted for the encryption password")
-        
-        # Format with LUKS
-        # Note: In a real scenario, you'd want to handle password input securely
-        # For now, this assumes interactive password input
-        Command.execute("cryptsetup", [
-            "luksFormat",
-            "--type", "luks2",
-            device
-        ])
-        
-        # Open the encrypted partition
-        if partition.luks_name:
-            Command.execute("cryptsetup", ["open", device, partition.luks_name])
-            return f"/dev/mapper/{partition.luks_name}"
-        else:
+        if not partition.luks_name:
             raise ValueError(f"luks_name is required for encrypted partition {partition.label}")
+
+        from dasik.lib.actions.luks_uuid import luks_uuid
+        print(f"Encrypting partition {partition.label}...")
+        name = partition.luks_name
+        # Pin the UUID so kernel-cmdline can derive rd.luks.name up front (the
+        # plan is built before this apply runs, so the header UUID isn't
+        # otherwise known on the first apply).
+        uuid_args = ["--uuid", luks_uuid(name, partition.luks_uuid)]
+
+        if partition.luks_keyfile:
+            # Key-file based: cryptsetup reads the passphrase from the file.
+            key = ["--key-file", partition.luks_keyfile]
+            Command.execute("cryptsetup",
+                            ["luksFormat", "--type", "luks2", "--batch-mode", *uuid_args, *key, device])
+            Command.execute("cryptsetup", ["open", *key, device, name])
+        elif partition.luks_password is not None:
+            # Declarative passphrase: piped over stdin via `--key-file -`, so
+            # nothing is prompted and the passphrase never hits argv/the process
+            # list. This is what makes an encrypted install unattended.
+            passphrase = partition.luks_password.encode()
+            Command.execute(
+                "cryptsetup",
+                ["luksFormat", "--type", "luks2", "--batch-mode", *uuid_args, "--key-file", "-", device],
+                input=passphrase,
+            )
+            Command.execute(
+                "cryptsetup", ["open", "--key-file", "-", device, name],
+                input=passphrase,
+            )
+        else:
+            # No passphrase/keyfile declared — legacy interactive fallback.
+            print("NOTE: no luks_password/luks_keyfile set; cryptsetup will prompt.")
+            Command.execute("cryptsetup", ["luksFormat", "--type", "luks2", *uuid_args, device])
+            Command.execute("cryptsetup", ["open", device, name])
+
+        return f"/dev/mapper/{name}"
 
     def _create_btrfs_subvolumes(self, device: str, subvolumes: List[BtrfsSubvolume]) -> None:
         """Create btrfs subvolumes.

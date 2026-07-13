@@ -17,7 +17,7 @@ class Command:
 
     @staticmethod
     def execute(cmd: str, args: list[str], run_as_chroot: bool = False,
-                target: "Target | None" = None):
+                target: "Target | None" = None, input: "bytes | None" = None):
         """Run *cmd* with *args*, optionally inside ``arch-chroot <root>``.
 
         Chroot root resolution:
@@ -37,6 +37,7 @@ class Command:
 
         return subprocess.run(
             chroot_cmd + [cmd, *args],
+            input=input,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )

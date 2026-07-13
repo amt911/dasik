@@ -22,14 +22,17 @@ a line, swap `&` for `|`, `domain` → `None`) and re-runs the suite:
 
 The pure reconciliation core — the highest-value target per `CLAUDE.md`:
 
-| Tier | File | When | Wired into CI |
+| Tier | Files | When | Wired into CI |
 | --- | --- | --- | --- |
-| 1 | `dasik/lib/state/set_math.py` | every run; fast (~48 mutants, <1 s) | ✅ advisory `mutation` job |
+| 1 | `dasik/lib/state/set_math.py` + `dasik/lib/actions/scalar_action.py` | every run; fast (~80 mutants, ~1 s) | ✅ advisory `mutation` job |
 | 2 | `+ dasik/lib/reconciler/reconciler.py` | on demand, when touching the reconciler | ❌ (many mutants, slow) |
 
-`set_math.compute_changes` is the whole `D`/`M`/`A`/`F` → `Change` set-math: a
-single flipped comparison or swapped set operator there silently turns a no-op
-re-run into a destructive one. That is why it is mutation-clean at 100 %.
+The two tier-1 files are the pure idempotency cores every domain routes through:
+`set_math.compute_changes` is the whole `D`/`M`/`A`/`F` → `Change` set-math (a
+flipped comparison there turns a no-op re-run destructive), and
+`ScalarV3Action.plan` is the shared single-value reconcile behind timezone,
+initramfs, and every scalar domain. Both are mutation-clean modulo the two
+documented equivalents below.
 
 ## Run it
 
@@ -75,11 +78,22 @@ owned-removal, and forced-removal blocks in one scenario and asserts
 ## Equivalent mutants
 
 Occasionally a mutant is *semantically equivalent* — the change can't alter
-observable behaviour (e.g. reordering an internally-sorted set). Those cannot be
-killed by any test. Don't contort a test to chase them: leave a comment in the
-source or this doc explaining why the survivor is equivalent, and move on. As of
-the first pass, `set_math.py` has **no** equivalent survivors — all 48 are real
-and killed.
+observable behaviour. Those cannot be killed by any test. Don't contort a test to
+chase them: document why, and move on.
+
+`scripts/mutation.sh` knows the current equivalents by a **stable diff
+signature** (not the volatile mutant number) and reports them as
+`(equivalent, expected)`, so a run with only equivalents still exits 0.
+
+Current equivalents (both in `scalar_action.py`):
+
+- `ScalarV3Action.is_needed` and `ScalarV3Action.verify` call
+  `self.plan(managed=[])`, but scalar `plan()` **ignores** its `managed`
+  argument (a scalar has no set to own). Mutating `managed=[]` → `managed=None`
+  therefore changes nothing — irreducibly equivalent. Signature:
+  `plan(managed=None)`.
+
+`set_math.py` has **no** equivalents — all its mutants are real and killed.
 
 ## CI
 

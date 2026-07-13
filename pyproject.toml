@@ -74,10 +74,18 @@ show_missing = true
 # tier-2 reconciler pass. See docs/mutation-testing.md.
 [tool.mutmut]
 source_paths = ["dasik"]
-only_mutate = ["dasik/lib/state/set_math.py"]
-# Per-mutant test selection: only the set-math + reconciler suites exercise the
-# core, so running the whole suite per mutant would be pure overhead.
+# The two pure idempotency cores: the D/M/A/F set-math and the shared scalar
+# (single-value) reconcile. A flipped comparison in either breaks the
+# "re-run = no-op" contract for every domain that routes through them.
+only_mutate = [
+    "dasik/lib/state/set_math.py",
+    "dasik/lib/actions/scalar_action.py",
+]
+# Per-mutant test selection: the suites that actually exercise those cores
+# (set-math, reconciler, and the scalar/timezone/users idempotency tests).
+# Running the whole suite per mutant would be pure overhead.
 pytest_add_cli_args_test_selection = [
     "tests/lib/state/test_set_math.py",
     "tests/lib/reconciler/",
+    "tests/lib/actions/",
 ]

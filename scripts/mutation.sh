@@ -24,18 +24,39 @@ if ! command -v mutmut >/dev/null 2>&1; then
   exit 127
 fi
 
+# Documented EQUIVALENT mutants — behaviourally identical to the original, so no
+# test can kill them (CLAUDE.md § Quality: document, don't chase). Matched by a
+# STABLE diff signature, not the volatile mutant number:
+#   ScalarV3Action.is_needed/verify call plan(managed=[]); scalar plan() ignores
+#   `managed`, so mutating it to plan(managed=None) changes nothing.
+# See docs/mutation-testing.md § Equivalent mutants.
+_EQUIVALENT_SIGNATURE='plan(managed=None)'
+
 report_survivors() {
   echo
-  echo ">> Survivors (empty == every mutant was caught):"
-  if mutmut results | grep -q ": survived"; then
-    mutmut results | grep ": survived"
-    echo
-    echo "!! Surviving mutants above are covered-but-unverified code." >&2
-    echo "   Inspect one with:  mutmut show <mutant-name>" >&2
-    echo "   Then add/strengthen a test assert to kill it." >&2
+  echo ">> Survivors:"
+  local survivors real=0
+  survivors="$(mutmut results | grep ': survived' | sed 's/: survived.*//; s/^[[:space:]]*//')"
+  if [ -z "$survivors" ]; then
+    echo "   none -- the mutated code is mutation-clean."
+    return 0
+  fi
+  while IFS= read -r m; do
+    [ -z "$m" ] && continue
+    if mutmut show "$m" 2>/dev/null | grep -qF "$_EQUIVALENT_SIGNATURE"; then
+      echo "   (equivalent, expected) $m"
+    else
+      echo "   SURVIVED        $m"
+      real=$((real + 1))
+    fi
+  done <<< "$survivors"
+  if [ "$real" -gt 0 ]; then
+    echo >&2
+    echo "!! $real real surviving mutant(s) — covered but not verified." >&2
+    echo "   Inspect: mutmut show <name>; then add/strengthen a test to kill it." >&2
     return 1
   fi
-  echo "   none -- the mutated code is mutation-clean."
+  echo "   all survivors are documented equivalent mutants — OK."
   return 0
 }
 

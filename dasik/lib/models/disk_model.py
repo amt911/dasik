@@ -85,6 +85,14 @@ class Partition(BaseModel):
         description="Filesystem UUID of the device holding unlock_keyfile (e.g. a "
                     "USB pendrive); appended to rd.luks.key so the initramfs finds it."
     )
+    unlock_tpm2: bool = Field(
+        default=False,
+        description="Enroll a TPM2 keyslot for automatic (passwordless) unlock."
+    )
+    unlock_fido2: bool = Field(
+        default=False,
+        description="Enroll a FIDO2 token keyslot (needs the physical key at enroll+boot)."
+    )
     mount_options: List[str] = Field(
         default_factory=list,
         description="Additional mount options"

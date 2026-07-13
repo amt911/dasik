@@ -97,6 +97,14 @@ class KernelCmdlineAction(AbstractAction):
                         keydev = part.get("unlock_keydev")
                         key = f"{keyfile}:{keydev}" if keydev else keyfile
                         params.append(f"rd.luks.key={uuid}={key}")
+                    # Hardware-backed auto-unlock (sd-encrypt reads these options).
+                    opts = []
+                    if part.get("unlock_tpm2"):
+                        opts.append("tpm2-device=auto")
+                    if part.get("unlock_fido2"):
+                        opts.append("fido2-device=auto")
+                    if opts:
+                        params.append(f"rd.luks.options={uuid}={','.join(opts)}")
 
                 fs = part.get("filesystem", "")
                 if fs == "btrfs":

@@ -635,7 +635,23 @@ class DiskPartitionAction(AbstractAction):
         if partition.unlock_keyfile:
             self._add_unlock_keyfile(device, partition)
 
+        # Optional hardware-backed keyslots for passwordless unlock.
+        if partition.unlock_tpm2:
+            self._enroll_cryptenroll(device, partition, "--tpm2-device=auto")
+        if partition.unlock_fido2:
+            self._enroll_cryptenroll(device, partition, "--fido2-device=auto")
+
         return f"/dev/mapper/{name}"
+
+    def _enroll_cryptenroll(self, device: str, partition: Partition, kind: str) -> None:
+        """Enroll a TPM2/FIDO2 keyslot with systemd-cryptenroll, authorised by the
+        existing passphrase via $PASSWORD (the passphrase stays as a fallback).
+        """
+        if partition.luks_password is None:
+            print(f"NOTE: {kind} enroll skipped ({partition.label}): needs luks_password.")
+            return
+        Command.execute("systemd-cryptenroll", [kind, device],
+                        env={"PASSWORD": partition.luks_password})
 
     def _add_unlock_keyfile(self, device: str, partition: Partition) -> None:
         """Add ``unlock_keyfile`` as an additional LUKS key, authorised by the

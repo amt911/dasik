@@ -55,7 +55,12 @@ class KernelCmdlineAction(AbstractAction):
         dev = self._luks_backing_device(luks_name)
         if not dev:
             return None
-        result = Command.execute("blkid", ["-s", "UUID", "-o", "value", dev])
+        # Read the LUKS UUID straight from the on-disk header. `blkid` caches in
+        # /run and returns a stale/empty result right after `luksFormat`, which
+        # left `rd.luks.name` off the FIRST apply → a non-bootable encrypted
+        # entry until a redundant second apply. `cryptsetup luksUUID` reads the
+        # header directly, so a single apply produces a bootable, idempotent entry.
+        result = Command.execute("cryptsetup", ["luksUUID", dev])
         stdout = getattr(result, "stdout", b"") or b""
         if isinstance(stdout, bytes):
             stdout = stdout.decode("utf-8", errors="replace")
@@ -76,10 +81,13 @@ class KernelCmdlineAction(AbstractAction):
                 if part.get("mountpoint") != "/":
                     continue
                 if part.get("encrypt"):
+                    from dasik.lib.actions.luks_uuid import luks_uuid
                     dm_name = part.get("luks_name", "cryptroot")
-                    uuid = self._resolve_luks_uuid(dm_name)
-                    if uuid:
-                        params.append(f"rd.luks.name={uuid}={dm_name}")
+                    # Deterministic UUID (same value the disk was formatted with)
+                    # — no probe, so this is correct at plan time on the very
+                    # first apply, before the disk is even encrypted.
+                    uuid = luks_uuid(dm_name, part.get("luks_uuid"))
+                    params.append(f"rd.luks.name={uuid}={dm_name}")
                     params.append(f"root=/dev/mapper/{dm_name} rw")
 
                 fs = part.get("filesystem", "")

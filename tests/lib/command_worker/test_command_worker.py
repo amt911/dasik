@@ -43,3 +43,20 @@ def test_target_host_runs_directly():
     with patch("dasik.lib.command_worker.command_worker.subprocess.run", fake_run):
         Command.execute("pacman", ["-Q"], target=Target(root="/"))
     assert captured["argv"] == ["pacman", "-Q"]
+
+
+def test_execute_passes_input_to_subprocess(monkeypatch):
+    """Command.execute forwards `input=` to subprocess.run (LUKS passphrase over
+    stdin)."""
+    import dasik.lib.command_worker.command_worker as cw
+    captured = {}
+
+    def fake_run(argv, **kw):
+        captured.update(kw)
+        class R: stdout = b""; stderr = b""; returncode = 0
+        return R()
+
+    monkeypatch.setattr(cw, "which", lambda n: "/usr/bin/cryptsetup")
+    monkeypatch.setattr(cw.subprocess, "run", fake_run)
+    cw.Command.execute("cryptsetup", ["luksFormat", "--key-file", "-"], input=b"pw")
+    assert captured.get("input") == b"pw"

@@ -640,20 +640,35 @@ class DiskPartitionAction(AbstractAction):
             except Exception:
                 pass
 
+    @staticmethod
+    def _mount_depth(mountpoint: str) -> int:
+        """Number of path components in a mountpoint, for mount ordering.
+
+        ``/`` -> 0, ``/boot`` -> 1, ``/boot/efi`` -> 2. Using ``count('/')``
+        instead is wrong: both ``/`` and ``/boot`` yield 1, so root ties with a
+        top-level mount and may be mounted *after* it, shadowing the child.
+        """
+        return len([c for c in mountpoint.split("/") if c])
+
     def _mount_partitions(self, disk: DiskLayout) -> None:
         """Mount all partitions according to their configuration.
-        
+
         Args:
             disk: Disk layout configuration
         """
         print("\nMounting partitions...")
         
-        # Sort partitions by mountpoint depth (mount root first)
+        # Sort partitions by mountpoint depth so parents mount before children —
+        # crucially, root ("/") must mount FIRST, else mounting it at /mnt
+        # shadows an already-mounted child (e.g. the ESP at /mnt/boot), leaving
+        # the child empty and the install non-bootable.
         partitions_to_mount = [
-            p for p in disk.partitions 
+            p for p in disk.partitions
             if p.mountpoint and p.filesystem != FileSystemType.SWAP
         ]
-        partitions_to_mount.sort(key=lambda p: p.mountpoint.count('/') if p.mountpoint else 0)
+        partitions_to_mount.sort(
+            key=lambda p: self._mount_depth(p.mountpoint) if p.mountpoint else 0
+        )
         
         for partition in partitions_to_mount:
             if partition.filesystem == FileSystemType.BTRFS and partition.btrfs_subvolumes:

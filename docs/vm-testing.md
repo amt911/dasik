@@ -84,12 +84,15 @@ extracted kernel live under `~/.cache/dasik-vmtest/` (a real disk — **not**
 `/tmp`, which is often tmpfs/RAM). RAM is `DASIK_VM_RAM` (default 2048, capped
 8192); `DASIK_VM_INSTALL_TIMEOUT` bounds the whole run.
 
-> **UEFI caveat.** `-kernel` direct boot bypasses OVMF, so the guest has no EFI
-> environment and dasik's bootloader step (`bootctl` / `grub --target=x86_64-efi`,
-> both need efivars) cannot run in this path. The `install` layer therefore
-> verifies **partition + pacstrap + config + idempotency**, not the bootloader.
-> For a boot-verified UEFI image, use the manual `run-iso` path below on an
-> OVMF-capable host, then `qemu.sh boot`.
+> **UEFI.** When OVMF (`edk2-ovmf`) is installed, `install` boots the ISO kernel
+> with an OVMF pflash pair (CODE + a fresh writable VARS copy). Verified: this
+> gives the guest a real EFI environment (`/sys/firmware/efi/efivars` present),
+> so dasik's bootloader step (`bootctl` / `grub --target=x86_64-efi`) installs
+> for real and its re-apply is a no-op — full idempotency including the
+> bootloader. The ISO is attached on **virtio** (`media=cdrom`) because OVMF does
+> not enumerate the IDE `-cdrom`. Without OVMF the guest boots BIOS-style and the
+> bootloader step can't complete (everything else is still verified);
+> `qemu.sh boot` (also OVMF-aware) then boots the installed image.
 
 ### Manual (`run-iso` + `boot`)
 
@@ -128,26 +131,30 @@ KVM-capable host.
 - **Layer A (loopback)** — run for real against `/dev/loop0`: GPT + ESP(vfat) +
   ROOT(ext4) landed, and a **second apply of the same config was a no-op**
   ("already matches") — real-hardware idempotency, `/mnt` untouched.
-- **Layer B (`install`, unattended)** — run for real (Arch ISO 2026.06, KVM,
-  3 GB): archiso's `script=` fetched the installer, and `dasik apply` produced a
-  **complete base system on the guest `/dev/vda`** — GPT/ESP/ROOT, **154
-  packages** pacstrapped, kernel installed, `hostname=dasik-vm`,
-  `/etc/localtime → Etc/UTC`, locale + initramfs configured. `dasik apply`
-  exited 0.
-  - **Idempotency (the NixOS goal):** a second `apply` was a no-op for
-    **disks, base, packages, timezone, locale, network, initramfs**.
-  - **Bootloader caveat:** the `bootloader` step re-fires on the second apply
-    and the ESP is empty — because the `-kernel` unattended guest has **no UEFI
-    environment**, so `bootctl install` writes no EFI files and the
-    `_installed()` marker never lands. This is the harness's UEFI limitation,
-    not a wrong marker path. Verify bootloader idempotency with a UEFI (OVMF)
-    run via `run-iso`. (Secondary observation: `BootloaderAction` trusts
-    `bootctl`'s exit code without confirming the files landed — a robustness
-    nicety, out of scope here.)
-- The `install` run also **found a real dasik bug**: `NetworkAction` raised
-  "Network type not recognized." on a hostname-only config, aborting the install
-  before initramfs/bootloader. Fixed (an absent `network.type` no longer raises;
-  regression test in `tests/lib/actions/test_network_action.py`).
+- **Layer B (`install`, unattended UEFI)** — run for real (Arch ISO 2026.06,
+  KVM, OVMF, 3 GB): archiso's `script=` fetched the installer, and `dasik apply`
+  produced a **complete, bootable UEFI system on the guest `/dev/vda`**:
+  - GPT + **ESP populated** (`EFI/systemd/systemd-bootx64.efi`, `EFI/BOOT/BOOTX64.EFI`,
+    `loader/loader.conf`, `loader/entries/arch.conf`), ROOT ext4, **154 packages**
+    pacstrapped, kernel installed, `hostname`, `/etc/localtime → Etc/UTC`, locale,
+    initramfs. `/etc/fstab` records **both** `/` and the ESP `/boot`. `dasik apply`
+    exit 0.
+  - **Full idempotency (the NixOS goal):** the second `apply` reported
+    **"No changes - system matches config"** — a complete no-op across **every**
+    step, bootloader included.
+  - The installed image **boots** (`qemu.sh boot`, OVMF).
+- The unattended run **found and this branch FIXES two real dasik bugs** that
+  unit tests missed:
+  1. `NetworkAction` raised "Network type not recognized." on a hostname-only
+     config (empty `network.type`), aborting before initramfs/bootloader.
+  2. **Mount-order shadowing** — `_mount_partitions` sorted by
+     `mountpoint.count('/')`, so `/` and `/boot` tied; the ESP was mounted at
+     `/mnt/boot` then **shadowed** by root at `/mnt`, leaving the ESP empty
+     (kernel + bootloader on the root fs) → a **non-bootable install** whose
+     bootloader never converged. Fixed by ordering on path-component depth so
+     root mounts first. (This also resolved the earlier "bootloader re-fires"
+     observation — it was a symptom of the empty ESP, not the no-UEFI env.)
 - Unit-level guards (driver device allowlist, partition-node naming,
-  `_has_partition_table`, RAM cap, `--dry-run` assembly) are **unit-tested /
-  verified**. The safety guards make a mis-pointed run fail safe.
+  `_has_partition_table`, mount order, network type, RAM cap, `--dry-run`
+  assembly) are **unit-tested**. The safety guards make a mis-pointed run fail
+  safe.

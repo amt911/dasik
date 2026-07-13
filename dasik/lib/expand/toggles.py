@@ -53,6 +53,9 @@ def expand_kvm(config: Dict[str, Any]) -> Dict[str, Any]:
             "name": "dasik-nested-virt.conf",
             "content": "options kvm_intel nested=1\noptions kvm_amd nested=1\n",
         }],
+        # Every declared user gets the libvirt group so they can drive
+        # virt-manager without root; UsersAction reconciles it idempotently.
+        "user_groups": ["libvirt"],
     }
 
 

@@ -1,0 +1,16 @@
+{
+  "metadata": {"note": "Btrfs (@ / @home) + snapper for the QEMU VM harness. NOT for real hardware."},
+  "disks": {"disks": [{"device": "/dev/vda","partition_table": "gpt","wipe_disk": false,"partitions": [
+    {"label": "ESP","size": "512MiB","filesystem": "fat32","partition_type": "esp","mountpoint": "/boot","format": true},
+    {"label": "ROOT","size": "rest","filesystem": "btrfs","partition_type": "linux","mountpoint": "/","format": true,
+     "btrfs_subvolumes": [
+       {"name": "@","mountpoint": "/","mount_options": ["compress-force=zstd","noatime"]},
+       {"name": "@home","mountpoint": "/home","mount_options": ["compress-force=zstd","noatime"]}]}]}]},
+  "enable_microcode": false,
+  "packages": ["base", "linux", "linux-firmware", "btrfs-progs"],
+  "bootloader": "sd-boot","hostname": "dasik-snapper",
+  "timezone": {"region": "Etc", "city": "UTC"},
+  "locales": {"selected_locales": ["en_US.UTF-8 UTF-8"],"desired_locale": "en_US.UTF-8","desired_tty_layout": "us"},
+  "network": {"type": "systemd-networkd"},
+  "snapper": {"enable": true}
+}

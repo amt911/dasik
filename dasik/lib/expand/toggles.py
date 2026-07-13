@@ -74,6 +74,18 @@ def expand_wireguard(config: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def expand_snapper(config: Dict[str, Any]) -> Dict[str, Any]:
+    cfg = config.get("snapper") or {}
+    if not cfg.get("enable"):
+        return {}
+    # snapper + snap-pac (pacman-hook snapshots); timeline + cleanup timers.
+    # The configs themselves are created by SnapperAction.
+    return {
+        "packages": ["snapper", "snap-pac"],
+        "units": ["snapper-timeline.timer", "snapper-cleanup.timer"],
+    }
+
+
 def expand_firewall(config: Dict[str, Any]) -> Dict[str, Any]:
     cfg = config.get("firewall") or {}
     if not cfg.get("enable"):
@@ -105,5 +117,5 @@ def expand_hwaccel(config: Dict[str, Any]) -> Dict[str, Any]:
 # Order matters only for deterministic output; aggregation de-dups.
 TOGGLES = [
     expand_bluetooth, expand_cups, expand_trim, expand_kvm,
-    expand_wireguard, expand_firewall, expand_hwaccel,
+    expand_wireguard, expand_firewall, expand_hwaccel, expand_snapper,
 ]

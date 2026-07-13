@@ -1,7 +1,7 @@
 """Models for disk partitioning configuration."""
 from enum import Enum
 from typing import Optional, List
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class PartitionTableType(str, Enum):
@@ -61,6 +61,20 @@ class Partition(BaseModel):
         None,
         description="LUKS device mapper name if encrypted"
     )
+    luks_password: Optional[str] = Field(
+        None,
+        description="LUKS passphrase (declarative, non-interactive). Stored in "
+                    "plaintext in the config — prefer luks_keyfile for secrecy."
+    )
+    luks_keyfile: Optional[str] = Field(
+        None,
+        description="Path to a LUKS key file (used instead of luks_password)."
+    )
+    luks_uuid: Optional[str] = Field(
+        None,
+        description="Explicit LUKS UUID. If unset a deterministic UUID is used, "
+                    "so the disk header and the kernel cmdline always agree."
+    )
     mount_options: List[str] = Field(
         default_factory=list,
         description="Additional mount options"
@@ -104,14 +118,16 @@ class Partition(BaseModel):
         
         return v
 
-    @field_validator('luks_name')
-    @classmethod
-    def validate_luks_name(cls, v: Optional[str], info) -> Optional[str]:
-        """Validate that luks_name is set if encrypt is True."""
-        values = info.data
-        if values.get('encrypt') and not v:
+    @model_validator(mode='after')
+    def _validate_encryption(self) -> "Partition":
+        """An encrypted partition needs a mapper name. A field_validator on
+        luks_name does NOT run when luks_name is defaulted (pydantic v2 skips
+        validators on defaults), so `encrypt: true` with no luks_name slipped
+        through to a runtime crash — a model_validator always runs.
+        """
+        if self.encrypt and not self.luks_name:
             raise ValueError("luks_name must be set when encrypt is True")
-        return v
+        return self
 
 
 class DiskLayout(BaseModel):

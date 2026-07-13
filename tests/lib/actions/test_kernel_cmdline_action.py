@@ -31,33 +31,34 @@ def test_luks_backing_device_none_on_failure():
         assert a._luks_backing_device("croot") is None
 
 
-def test_resolve_luks_uuid_via_blkid():
+def test_resolve_luks_uuid_from_header():
+    # UUID is read from the LUKS header (cryptsetup luksUUID), not blkid, so it's
+    # correct right after luksFormat (blkid's /run cache would be stale).
     a = KernelCmdlineAction(_enc_cfg())
     status = b"  device:  /dev/sda2\n"
     with patch("dasik.lib.actions.kernel_cmdline_action.Command.execute",
                _fake_exec({("cryptsetup", "status"): status,
-                           ("blkid", "-s"): b"DEAD-BEEF\n"})):
+                           ("cryptsetup", "luksUUID"): b"DEAD-BEEF\n"})):
         assert a._resolve_luks_uuid("croot") == "DEAD-BEEF"
 
 
-def test_derive_encryption_resolves_real_uuid():
+def test_derive_encryption_uses_deterministic_uuid_no_probe():
+    # No mocking: the UUID is deterministic, so the cmdline is correct at plan
+    # time WITHOUT probing the device (which doesn't exist yet on first apply).
+    from dasik.lib.actions.luks_uuid import luks_uuid
     a = KernelCmdlineAction(_enc_cfg())
-    status = b"  device:  /dev/sda2\n"
-    with patch("dasik.lib.actions.kernel_cmdline_action.Command.execute",
-               _fake_exec({("cryptsetup", "status"): status,
-                           ("blkid", "-s"): b"U1\n"})):
-        derived = a._derive_from_disks()
-    assert "rd.luks.name=U1=croot" in derived
+    derived = a._derive_from_disks()
+    assert f"rd.luks.name={luks_uuid('croot')}=croot" in derived
     assert "root=/dev/mapper/croot rw" in derived
 
 
-def test_derive_omits_luks_param_when_unresolved():
-    a = KernelCmdlineAction(_enc_cfg())
-    fail = MagicMock(return_value=MagicMock(stdout=b"", returncode=4))
-    with patch("dasik.lib.actions.kernel_cmdline_action.Command.execute", fail):
-        derived = a._derive_from_disks()
-    assert not any(d.startswith("rd.luks.name=") for d in derived)
-    assert "root=/dev/mapper/croot rw" in derived
+def test_derive_uses_explicit_luks_uuid_when_set():
+    cfg = {"disks": {"disks": [{"partitions": [{
+        "mountpoint": "/", "filesystem": "ext4", "encrypt": True,
+        "luks_name": "croot", "luks_uuid": "11111111-1111-1111-1111-111111111111"}]}]}}
+    a = KernelCmdlineAction(cfg)
+    derived = a._derive_from_disks()
+    assert "rd.luks.name=11111111-1111-1111-1111-111111111111=croot" in derived
 
 
 def test_derive_btrfs_rootflags():

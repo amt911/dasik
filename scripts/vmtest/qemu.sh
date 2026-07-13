@@ -173,7 +173,9 @@ cmd_install() {
         warn "No OVMF — guest boots without UEFI; dasik's bootloader step can't complete. Install edk2-ovmf for a bootable+idempotent bootloader result."
     fi
 
-    local append="archisobasedir=arch archisolabel=$label cow_spacesize=2G copytoram=n console=ttyS0,115200 script=http://10.0.2.2:$port/install.sh"
+    # Pass the chosen config to the guest via the kernel cmdline so it installs
+    # THIS config, not the hard-coded default.
+    local append="archisobasedir=arch archisolabel=$label cow_spacesize=2G copytoram=n console=ttyS0,115200 dasik_config=$config script=http://10.0.2.2:$port/install.sh"
     local qargs="-enable-kvm -cpu host -m $DASIK_VM_RAM -smp $DASIK_VM_CPUS -nographic -display none"
     qargs="$qargs $ovmf -kernel $kernel -initrd $initrd -append \"$append\""
     # ISO on virtio (OVMF does not enumerate the IDE -cdrom); qcow2 as vda.

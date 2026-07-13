@@ -9,7 +9,10 @@
 exec > /dev/ttyS0 2>&1
 set -x
 
-CONFIG="${DASIK_VM_CONFIG:-config/vm-minimal.json}"
+# Config path comes from the kernel cmdline (dasik_config=…), set by the host's
+# qemu.sh install; fall back to the minimal config.
+CONFIG="$(sed -n 's/.*dasik_config=\([^ ]*\).*/\1/p' /proc/cmdline)"
+CONFIG="${CONFIG:-config/vm-minimal.json}"
 
 echo "DASIK-VM: BEGIN unattended install ($CONFIG)"
 

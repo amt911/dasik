@@ -180,6 +180,33 @@ def test_forced_excluded_from_drift():
     assert drift == ["b.service"]
 
 
+def test_all_changes_carry_their_domain_label():
+    """Every emitted Change — install, owned-removal (M\\D), and forced-removal
+    (F∩A) — must be tagged with the domain, so ``Change.render`` groups and
+    labels the destructive ops under the right section.
+
+    Mutation guard: the op/item/reason asserts elsewhere never look at
+    ``Change.domain`` on the removal blocks, so a ``domain`` → ``None`` slip on
+    either removal ``Change(...)`` call survived. This asserts the domain on
+    every change across all three blocks in one scenario.
+    """
+    changes, _ = compute_changes(
+        "systemd",
+        desired=["want.service"],                       # INSTALL block: D\A
+        managed=["owned.service"],                      # owned removal: M\D
+        actual=["owned.service", "forced.service"],
+        op_install=Op.ENABLE,
+        op_remove=Op.DISABLE,
+        forced=["forced.service"],                      # forced removal: F∩A
+    )
+    ops = {(c.op, c.item) for c in changes}
+    assert (Op.ENABLE, "want.service") in ops           # install block present
+    assert (Op.DISABLE, "owned.service") in ops         # owned-removal present
+    assert (Op.DISABLE, "forced.service") in ops        # forced-removal present
+    # The property under test: the domain label is set on *every* change.
+    assert all(c.domain == "systemd" for c in changes)
+
+
 def test_no_forced_is_backward_compatible():
     changes, drift = compute_changes(
         "packages",

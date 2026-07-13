@@ -24,14 +24,15 @@ The pure reconciliation core — the highest-value target per `CLAUDE.md`:
 
 | Tier | Files | When | Wired into CI |
 | --- | --- | --- | --- |
-| 1 | `dasik/lib/state/set_math.py` + `dasik/lib/actions/scalar_action.py` | every run; fast (~80 mutants, ~1 s) | ✅ advisory `mutation` job |
+| 1 | `state/set_math.py` + `actions/scalar_action.py` + `actions/composite_action.py` | every run; fast (~110 mutants, ~1.5 s) | ✅ advisory `mutation` job |
 | 2 | `+ dasik/lib/reconciler/reconciler.py` | on demand, when touching the reconciler | ❌ (many mutants, slow) |
 
-The two tier-1 files are the pure idempotency cores every domain routes through:
-`set_math.compute_changes` is the whole `D`/`M`/`A`/`F` → `Change` set-math (a
-flipped comparison there turns a no-op re-run destructive), and
-`ScalarV3Action.plan` is the shared single-value reconcile behind timezone,
-initramfs, and every scalar domain. Both are mutation-clean modulo the two
+The tier-1 files are the pure idempotency cores every domain routes through:
+`set_math.compute_changes` (the whole `D`/`M`/`A`/`F` → `Change` set-math behind
+packages, users, systemd, files, kernel-cmdline — a flipped comparison turns a
+no-op re-run destructive); `ScalarV3Action.plan` (the single-value reconcile
+behind timezone/initramfs); and `CompositeV3Action.plan` (the multi-field
+reconcile behind locale/network/pacman). All are mutation-clean modulo the two
 documented equivalents below.
 
 ## Run it

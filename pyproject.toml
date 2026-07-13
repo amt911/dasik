@@ -80,6 +80,7 @@ source_paths = ["dasik"]
 only_mutate = [
     "dasik/lib/state/set_math.py",
     "dasik/lib/actions/scalar_action.py",
+    "dasik/lib/actions/composite_action.py",
 ]
 # Per-mutant test selection: the suites that actually exercise those cores
 # (set-math, reconciler, and the scalar/timezone/users idempotency tests).

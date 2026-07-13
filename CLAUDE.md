@@ -224,10 +224,11 @@ that crashes before it ever reaches `is_needed()`.
 - **Engine.** CLI, no browser/server → **build + smoke**: in a scratch venv, `pip install -e .[dev]`,
   then exercise the CLI's non-destructive verbs against a real tracked sample config (e.g.
   `dasik plan config/install-megamix.json`, `dasik generations`, `dasik hash-password`), plus the
-  entry point (`dasik --help`, `python -m dasik --help`). Configs that touch `disks`/require
-  `arch-chroot` will fail fast off real Arch hardware with `CommandNotFoundException` (expected,
-  not a defect) — when the PR touches disk/chroot-dependent actions, run the smoke inside a
-  disposable Arch container instead of a bare runner. **Never run `apply`/`rollback` for real** —
+  entry point (`dasik --help`, `python -m dasik --help`). Configs touching `disks`/`arch-chroot`
+  fail fast off Arch hardware with `CommandNotFoundException` (expected) — escalate to a
+  disposable target (loopback→`nspawn`→qemu, lightest that fits) **only** for what the suites
+  can't cover (real disk ops, a booting install); never a bare runner or real hardware. See
+  [`docs/testing-without-a-vm.md`](docs/testing-without-a-vm.md). **Never run `apply`/`rollback` for real** —
   they partition disks and run `pacman`; assert intent via exit code/output/mocked
   `Command.execute`, never against real hardware. Attach the captured output to the verdict
   comment.

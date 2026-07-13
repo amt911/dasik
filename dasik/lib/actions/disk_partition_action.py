@@ -225,8 +225,18 @@ class DiskPartitionAction(AbstractAction):
             result = Command.execute("parted", ["-s", device, "print"])
             # Decode stdout if it's bytes
             stdout = result.stdout.decode('utf-8') if isinstance(result.stdout, bytes) else result.stdout
-            # If parted can print the table, it exists
-            return "Partition Table:" in stdout or "Tabla de particiones:" in stdout
+            # parted ALWAYS prints a "Partition Table:" line — even for an empty
+            # disk, where it reads "unknown" (and "loop" for a whole-device
+            # filesystem with no table). Only a real label (gpt/msdos/bsd/…)
+            # counts; matching the bare prefix would treat an empty disk as
+            # partitioned and refuse to create a table on first install.
+            import re
+            m = re.search(
+                r"(?:Partition Table|Tabla de particiones):\s*(\S+)", stdout
+            )
+            if not m:
+                return False
+            return m.group(1).strip().lower() not in ("unknown", "loop", "none")
         except Exception:
             return False
 

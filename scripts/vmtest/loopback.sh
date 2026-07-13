@@ -28,9 +28,6 @@ CONFIG="$WORK/config.json"
 
 cleanup() {
     set +e
-    # Deepest mounts first (the disk action mounts /mnt then /mnt/boot).
-    umount /mnt/boot 2>/dev/null
-    umount /mnt 2>/dev/null
     [ -n "$DEV" ] && losetup -d "$DEV" 2>/dev/null
     rm -rf "$WORK"
 }
@@ -45,7 +42,10 @@ require_disposable_device "$DEV"
 log "Loop device: $DEV"
 
 # Minimal GPT layout: 512 MiB ESP (fat32) + ext4 root. Dict-nested "disks" shape
-# is the one the v3 path consumes. wipe_disk:false (fresh image → no sgdisk).
+# is the one the v3 path consumes. wipe_disk:false is fine on a fresh image (no
+# sgdisk needed — parted creates the table). NOTE: partitions are declared WITHOUT
+# mountpoints on purpose, so the disk action does not mount anything at /mnt —
+# the layer never touches the host's /mnt, and blkid verifies the result anyway.
 cat > "$CONFIG" <<JSON
 {
   "disks": {
@@ -56,9 +56,9 @@ cat > "$CONFIG" <<JSON
         "wipe_disk": false,
         "partitions": [
           {"label": "ESP",  "size": "512MiB", "filesystem": "fat32",
-           "partition_type": "esp",   "mountpoint": "/boot", "format": true},
+           "partition_type": "esp",   "format": true},
           {"label": "ROOT", "size": "rest",   "filesystem": "ext4",
-           "partition_type": "linux", "mountpoint": "/",     "format": true}
+           "partition_type": "linux", "format": true}
         ]
       }
     ]

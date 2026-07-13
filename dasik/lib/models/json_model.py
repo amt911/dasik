@@ -17,6 +17,7 @@ from .cups_model import CupsModel
 from .ms_fonts_model import MicrosoftFontsModel
 from .firewall_model import FirewallModel
 from .wireguard_model import WireguardModel
+from .snapper_model import SnapperModel
 
 
 class JsonModel(BaseModel):
@@ -65,3 +66,4 @@ class JsonModel(BaseModel):
     microsoft_fonts: Optional[MicrosoftFontsModel] = None
     firewall: Optional[FirewallModel] = None
     wireguard: Optional[WireguardModel] = None
+    snapper: Optional[SnapperModel] = None

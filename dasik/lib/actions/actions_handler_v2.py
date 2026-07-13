@@ -47,6 +47,7 @@ def setup_actions() -> None:
     from .packages_action import PackagesAction
     from .systemd_action import SystemdAction
     from .firewall_action import FirewallAction
+    from .snapper_action import SnapperAction
     from .drop_files_action import DropFilesAction
     from .initramfs_action import InitramfsAction
     from .kernel_cmdline_action import KernelCmdlineAction
@@ -119,6 +120,13 @@ def setup_actions() -> None:
     register_action(
         action_class=FirewallAction,
         config_key='firewall',
+        is_optional=True,
+    )
+    # snapper create-config (package + timers come from the expand toggle). Runs
+    # after packages installed snapper and the btrfs subvolumes are mounted.
+    register_action(
+        action_class=SnapperAction,
+        config_key='snapper',
         is_optional=True,
     )
     register_action(

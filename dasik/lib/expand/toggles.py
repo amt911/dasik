@@ -98,7 +98,8 @@ _HWACCEL_COMMON = ["libva-utils", "vdpauinfo"]
 _HWACCEL_DRIVER_PKGS = {
     "nvidia": ["libva-nvidia-driver", "nvtop"],
     "intel": ["intel-media-driver", "intel-gpu-tools", "libvdpau-va-gl"],
-    "amd": ["libva-mesa-driver", "mesa-vdpau"],
+    # mesa-vdpau was removed from the Arch repos (radeonsi VDPAU is in `mesa`).
+    "amd": ["libva-mesa-driver"],
 }
 
 

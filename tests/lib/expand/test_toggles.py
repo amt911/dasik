@@ -92,3 +92,15 @@ def test_hwaccel_enabled_uses_drivers():
 def test_hwaccel_enabled_no_drivers_only_common():
     out = expand_hwaccel({"hardware_acceleration": {"enable": True}, "drivers": []})
     assert out["packages"] == ["libva-utils", "vdpauinfo"]
+
+
+def test_hwaccel_amd_does_not_pull_removed_mesa_vdpau():
+    # mesa-vdpau was removed from the Arch repos (radeonsi VDPAU now ships in
+    # `mesa`). Emitting it made `pacman -S` abort with "target not found",
+    # breaking an AMD hwaccel install. libva-mesa-driver (VA-API) stays.
+    out = expand_hwaccel({
+        "hardware_acceleration": {"enable": True},
+        "drivers": ["amd"],
+    })
+    assert "mesa-vdpau" not in out["packages"]
+    assert "libva-mesa-driver" in out["packages"]

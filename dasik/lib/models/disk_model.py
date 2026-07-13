@@ -75,6 +75,16 @@ class Partition(BaseModel):
         description="Explicit LUKS UUID. If unset a deterministic UUID is used, "
                     "so the disk header and the kernel cmdline always agree."
     )
+    unlock_keyfile: Optional[str] = Field(
+        None,
+        description="Path to a key file added as an extra LUKS key for automatic "
+                    "boot unlock (rd.luks.key). Password unlock still works."
+    )
+    unlock_keydev: Optional[str] = Field(
+        None,
+        description="Filesystem UUID of the device holding unlock_keyfile (e.g. a "
+                    "USB pendrive); appended to rd.luks.key so the initramfs finds it."
+    )
     mount_options: List[str] = Field(
         default_factory=list,
         description="Additional mount options"

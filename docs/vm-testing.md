@@ -154,6 +154,9 @@ KVM-capable host.
      bootloader never converged. Fixed by ordering on path-component depth so
      root mounts first. (This also resolved the earlier "bootloader re-fires"
      observation — it was a symptom of the empty ESP, not the no-UEFI env.)
+- **Btrfs + subvolumes** — verified for real: `config/vm-btrfs.json` (root btrfs
+  with `@`/`@home`/`@snapshots`) installs with correct `subvol=` fstab entries and
+  `rootflags=…,subvol=@` in the boot entry, and the second apply is a no-op.
 - Unit-level guards (driver device allowlist, partition-node naming,
   `_has_partition_table`, mount order, network type, RAM cap, `--dry-run`
   assembly) are **unit-tested**. The safety guards make a mis-pointed run fail

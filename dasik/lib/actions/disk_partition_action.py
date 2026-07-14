@@ -112,9 +112,56 @@ class DiskPartitionAction(AbstractAction):
             if disk.device in targets:
                 self._process_disk(disk)
 
+    def _read_luks_uuid(self, luks_name: str) -> "Optional[str]":
+        """Real LUKS header UUID of the open mapping *luks_name*, or None.
+
+        `cryptsetup status <name>` -> backing device -> `cryptsetup luksUUID`.
+        Best-effort: any failure (not open, cryptsetup missing) yields None.
+        """
+        target = self.context.target if self.context is not None else None
+        try:
+            status = Command.execute("cryptsetup", ["status", luks_name], target=target)
+            out = status.stdout
+            out = out.decode("utf-8", "replace") if isinstance(out, bytes) else (out or "")
+            dev = None
+            for line in out.splitlines():
+                if "device:" in line:
+                    dev = line.split("device:")[1].strip()
+                    break
+            if not dev:
+                return None
+            res = Command.execute("cryptsetup", ["luksUUID", dev], target=target)
+            uuid = res.stdout
+            uuid = uuid.decode("utf-8", "replace") if isinstance(uuid, bytes) else (uuid or "")
+            return uuid.strip() or None
+        except Exception:
+            return None
+
     def import_state(self, managed=None) -> dict:
-        # Disks are user-declared; sync does not rewrite the section.
-        return {}
+        """Reflect the declared disk layout back into the config non-destructively.
+
+        Like nixos-generate-config's hardware-configuration.nix: the captured
+        stanza forces ``format``/``wipe_disk`` OFF (so a synced config can NEVER
+        reformat on re-apply), bakes in the real LUKS header UUID (the unlock fact,
+        read from the running mapping), and drops the plaintext ``luks_password``
+        (a secret is never persisted by sync). No disks declared -> nothing to
+        reflect; sync does not discover a layout from scratch.
+        """
+        if not self.disks:
+            return {}
+        disks_out = []
+        for disk in self.disks:
+            d = disk.model_dump(mode="json")
+            d["wipe_disk"] = False
+            for p in d.get("partitions", []):
+                p["format"] = False
+                p.pop("luks_password", None)
+                if p.get("encrypt") and p.get("luks_name"):
+                    uuid = self._read_luks_uuid(p["luks_name"])
+                    if uuid:
+                        p["luks_uuid"] = uuid
+            disks_out.append(d)
+        return {"disks": {"disks": disks_out}}
 
     # --- legacy executor bridge --------------------------------------- #
 

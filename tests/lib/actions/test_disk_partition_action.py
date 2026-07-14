@@ -103,9 +103,67 @@ def test_managed_keys_lists_converged():
         assert a.managed_keys() == {"disks": ["/dev/vda"]}
 
 
-def test_import_state_empty():
-    a = DiskPartitionAction(_cfg(), _ctx())
+def test_import_state_empty_when_no_disks():
+    # sync does not invent a disk layout from scratch — nothing declared, nothing
+    # captured.
+    a = DiskPartitionAction({}, _ctx())
     assert a.import_state(managed=[]) == {}
+
+
+def test_import_state_reflects_disks_non_destructively():
+    # Capturing the declared layout back into the config (like
+    # nixos-generate-config) must force format/wipe OFF so a synced config can
+    # never reformat on re-apply.
+    a = DiskPartitionAction(_cfg(wipe=True), _ctx("/"))
+    frag = a.import_state(managed=[])
+    disks = frag["disks"]["disks"]
+    assert len(disks) == 1
+    assert disks[0]["wipe_disk"] is False
+    assert all(p["format"] is False for p in disks[0]["partitions"])
+    # round-trips through the model unchanged in shape
+    from dasik.lib.models.disk_model import DiskLayout
+    assert DiskLayout.model_validate(disks[0]).device == "/dev/vda"
+
+
+def _luks_cfg():
+    return {"disks": [{
+        "device": "/dev/vda", "partition_table": "gpt", "wipe_disk": True,
+        "partitions": [
+            {"label": "boot", "size": "512MiB", "filesystem": "fat32",
+             "partition_type": "esp", "mountpoint": "/boot", "format": True},
+            {"label": "root", "size": "rest", "filesystem": "ext4",
+             "partition_type": "linux", "mountpoint": "/", "format": True,
+             "encrypt": True, "luks_name": "cryptroot", "luks_password": "secret"},
+        ],
+    }]}
+
+
+def test_import_state_captures_luks_uuid_and_drops_password():
+    a = DiskPartitionAction(_luks_cfg(), _ctx("/"))
+
+    def fake(cmd, args=None, *rest, **kw):
+        if cmd == "cryptsetup" and args and args[0] == "status":
+            return MagicMock(stdout=b"  device:  /dev/vda2\n", returncode=0)
+        if cmd == "cryptsetup" and args and args[0] == "luksUUID":
+            return MagicMock(stdout=b"12345678-abcd-0000-1111-222233334444\n", returncode=0)
+        return MagicMock(stdout=b"", returncode=0)
+
+    with patch("dasik.lib.actions.disk_partition_action.Command.execute", side_effect=fake):
+        frag = a.import_state(managed=[])
+    root = frag["disks"]["disks"][0]["partitions"][1]
+    assert root["luks_uuid"] == "12345678-abcd-0000-1111-222233334444"
+    assert "luks_password" not in root          # plaintext secret never captured
+    assert root["format"] is False
+
+
+def test_import_state_output_reapplies_as_noop():
+    # The captured stanza, fed back as a config, must plan to nothing on a disk
+    # whose labels already match (the sync -> apply idempotency promise).
+    a = DiskPartitionAction(_cfg(wipe=True), _ctx("/"))
+    frag = a.import_state(managed=[])
+    b = DiskPartitionAction(frag["disks"], _ctx("/"))
+    with patch.object(DiskPartitionAction, "_device_labels", return_value={"boot", "root"}):
+        assert b.plan(managed=["/dev/vda"]) == []
 
 
 def test_device_labels_parses_lsblk():

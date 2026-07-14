@@ -33,7 +33,7 @@ exclude = ["tests*"]
 [project.optional-dependencies]
 # hypothesis powers the property-based idempotency tests (CLAUDE.md § Quality:
 # "highest priority") — see tests/lib/**/test_*_propert*.py and *_roundtrip.py.
-dev = ["pytest", "pytest-cov", "hypothesis"]
+dev = ["pytest", "pytest-cov", "hypothesis", "mypy"]
 # Mutation testing (CLAUDE.md § Quality: highest priority). Kept in its own
 # extra so the `dev` extra / CI test job stay lean — install with
 # `pip install -e .[mut]`. See docs/mutation-testing.md.
@@ -42,6 +42,14 @@ mut = ["mutmut>=3.6,<4"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "--import-mode=importlib"
+
+[tool.mypy]
+# `mypy dasik` should report no errors. Keep it that way. colorama ships no type
+# stubs; that is an upstream-packaging gap, not a bug in our code, so silence the
+# missing-import for it rather than pulling in types-colorama as a hard dep.
+[[tool.mypy.overrides]]
+module = "colorama.*"
+ignore_missing_imports = true
 
 [tool.coverage.run]
 source = ["dasik"]

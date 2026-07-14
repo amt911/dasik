@@ -20,7 +20,7 @@ from __future__ import annotations
 from typing import Any, List
 from .abstract_action import AbstractAction
 from ..command_worker.command_worker import Command
-from ..exceptions.exceptions import ConfigValidationError
+from ..exceptions.exceptions import CommandExecutionError, ConfigValidationError
 import os
 import re
 import subprocess
@@ -411,6 +411,10 @@ class PackagesAction(AbstractAction):
           3. For each pkg: clone + makepkg -sri as the build user.
           4. Remove the temp build user + sudoers fragment.
         """
+        if self.context is None or self.context.target is None:
+            raise CommandExecutionError(
+                "AUR install requires an action context with a target."
+            )
         target = self.context.target
 
         # 1. Prerequisites

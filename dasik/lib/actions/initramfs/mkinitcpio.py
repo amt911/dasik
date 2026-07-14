@@ -45,6 +45,7 @@ class MkinitcpioBackend(InitramfsBackend):
                     new.append(h)
             hooks = new
         if self.root_fs == "btrfs" and "btrfs" not in hooks:
+            insert_after: "str | None"
             if self.has_encryption:
                 insert_after = "systemd"
             else:

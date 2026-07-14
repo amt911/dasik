@@ -14,10 +14,26 @@ import os
 import re
 from typing import Any, Dict, Optional
 from .composite_action import CompositeV3Action
-from ..exceptions.exceptions import NetworkTypeNotFoundException
+from ..exceptions.exceptions import ConfigValidationError, NetworkTypeNotFoundException
 
 _HOSTNAME = "/etc/hostname"
 _HOSTS = "/etc/hosts"
+# RFC-1123 host: dot-separated labels, each starting/ending alphanumeric, <=63.
+# The value is written verbatim to /etc/hostname AND into an /etc/hosts line
+# (`127.0.1.1 <hostname>`), so a space/newline would corrupt those files.
+_HOST_LABEL = r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
+_HOSTNAME_RE = re.compile(rf"{_HOST_LABEL}(?:\.{_HOST_LABEL})*")
+
+
+def _validate_hostname(hostname: str) -> None:
+    # Empty is valid: it means "no hostname configured" (the action no-ops).
+    if not hostname:
+        return
+    if len(hostname) > 253 or not _HOSTNAME_RE.fullmatch(hostname):
+        raise ConfigValidationError(
+            f"Invalid hostname {hostname!r}: must be dot-separated RFC-1123 labels "
+            f"([A-Za-z0-9-], no leading/trailing '-', <=63 each, no spaces/newlines)."
+        )
 
 
 class NetworkAction(CompositeV3Action):
@@ -31,6 +47,7 @@ class NetworkAction(CompositeV3Action):
         net: Dict[str, Any] = cfg.get("network", {}) or {}
         self.type: str = net.get("type", "")
         self.hostname: str = cfg.get("hostname", "")
+        _validate_hostname(self.hostname)
         self.add_default_hosts: bool = net.get("add_default_hosts", False)
 
     @property

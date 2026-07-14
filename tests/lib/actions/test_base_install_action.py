@@ -109,3 +109,51 @@ def test_name_and_optional():
     a = BaseInstallAction({"enable_microcode": False})
     assert a.name == "Base Installation"
     assert a.is_optional is False
+
+
+# --- _install fails loud instead of producing a broken system ------------- #
+from types import SimpleNamespace
+from dasik.lib.exceptions.exceptions import CommandExecutionError
+
+
+def _res(returncode=0, stdout=b""):
+    return SimpleNamespace(returncode=returncode, stdout=stdout)
+
+
+def test_install_aborts_when_pacstrap_fails(tmp_path):
+    a = BaseInstallAction({"enable_microcode": False}, _ctx(tmp_path))
+
+    def fake(cmd, args, **kw):
+        return _res(returncode=1) if cmd == "pacstrap" else _res(0, b"x / ext4 0 1\n")
+
+    with patch("dasik.lib.actions.base_install_action.Command.execute", side_effect=fake):
+        with pytest.raises(CommandExecutionError):
+            a._install()
+    # no partial fstab written
+    assert not (tmp_path / "etc" / "fstab").exists()
+
+
+@pytest.mark.parametrize("gen", [_res(returncode=1, stdout=b""), _res(0, b""), _res(0, b"   \n")])
+def test_install_aborts_when_genfstab_empty_or_failed(tmp_path, gen):
+    a = BaseInstallAction({"enable_microcode": False}, _ctx(tmp_path))
+
+    def fake(cmd, args, **kw):
+        return gen if cmd == "genfstab" else _res(0)
+
+    with patch("dasik.lib.actions.base_install_action.Command.execute", side_effect=fake):
+        with pytest.raises(CommandExecutionError):
+            a._install()
+    assert not (tmp_path / "etc" / "fstab").exists()
+
+
+def test_install_writes_fstab_on_success(tmp_path):
+    (tmp_path / "etc").mkdir(parents=True, exist_ok=True)
+    a = BaseInstallAction({"enable_microcode": False}, _ctx(tmp_path))
+    fstab_line = b"UUID=abc / ext4 rw 0 1\n"
+
+    def fake(cmd, args, **kw):
+        return _res(0, fstab_line) if cmd == "genfstab" else _res(0)
+
+    with patch("dasik.lib.actions.base_install_action.Command.execute", side_effect=fake):
+        a._install()
+    assert (tmp_path / "etc" / "fstab").read_text() == fstab_line.decode()

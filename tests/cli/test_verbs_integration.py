@@ -27,6 +27,11 @@ def _fake_exec(table=None):
         else:                                       # Command.execute("pacman", ["-Qqe"])
             key = (cmd, (args or [""])[0] if args else "")
         out = table.get(key, b"")
+        # A real genfstab always emits fstab content; base install now aborts on
+        # an empty one (a mountless /etc/fstab would be non-bootable), so the fake
+        # must mimic that rather than the impossible empty default.
+        if not out and key[0] == "genfstab":
+            out = b"UUID=test-root / ext4 rw,relatime 0 1\n"
         return MagicMock(stdout=out, stderr=b"", returncode=0)
 
     return run
@@ -126,6 +131,8 @@ def test_apply_expands_bluetooth_toggle_into_packages(tmp_path):
     def run(cmd, args=None, *a, **k):
         if cmd == "pacman" and args and args[0] == "-Qqe":
             return MagicMock(stdout=b"", stderr=b"", returncode=0)
+        if cmd == "genfstab":                       # base install aborts on empty fstab
+            return MagicMock(stdout=b"UUID=t / ext4 rw 0 1\n", stderr=b"", returncode=0)
         if cmd == "pacman" and args and "-S" in args:
             captured["installed"].extend(args)
         return MagicMock(stdout=b"", stderr=b"", returncode=0)

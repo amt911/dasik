@@ -10,6 +10,7 @@ from typing import Any, Dict, List
 from colorama import Fore, Style, init
 from .abstract_action import AbstractAction
 from ..command_worker.command_worker import Command
+from ..exceptions.exceptions import CommandExecutionError
 from ..state.change import Change, Op
 
 _MARKER = "/usr/bin/pacman"
@@ -98,10 +99,30 @@ class BaseInstallAction(AbstractAction):
 
     # --- the destructive bit (mocked in tests) ------------------------ #
 
-    def _install(self) -> None:  # pragma: no cover - destructive: pacstrap/genfstab
+    def _install(self) -> None:
         root = self._target_root()
         Command.execute("pacman", ["--noconfirm", "-Sy", "archlinux-keyring"])
-        Command.execute("pacstrap", ["-K", root] + self.packages)
-        fstab = Command.execute("genfstab", ["-U", root]).stdout.decode()
+        # A failed pacstrap must abort loudly — continuing to genfstab on a
+        # half-installed root silently produces a broken system.
+        pacstrap = Command.execute("pacstrap", ["-K", root] + self.packages)
+        if getattr(pacstrap, "returncode", 0) != 0:
+            raise CommandExecutionError(
+                f"pacstrap failed (rc={getattr(pacstrap, 'returncode', '?')}); "
+                f"base system not installed into {root}."
+            )
+        result = Command.execute("genfstab", ["-U", root])
+        if getattr(result, "returncode", 0) != 0:
+            raise CommandExecutionError(
+                f"genfstab failed (rc={getattr(result, 'returncode', '?')})."
+            )
+        out = result.stdout
+        fstab = out.decode() if isinstance(out, bytes) else (out or "")
+        # An empty fstab is worse than an error: the installed system would boot
+        # with no mounts declared. Refuse to write it.
+        if not fstab.strip():
+            raise CommandExecutionError(
+                "genfstab produced an empty fstab; refusing to write a mountless "
+                "/etc/fstab (the installed system would be non-bootable)."
+            )
         with open(self._p("/etc/fstab"), "a") as f:
             f.write(fstab)

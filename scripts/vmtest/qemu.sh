@@ -315,10 +315,59 @@ cmd_install_driven() {
     return 1
 }
 
+# Day-2 convergence check: boot an ALREADY-INSTALLED image (installed from
+# vm-day2.json, which autologins root on ttyS0 and ships python-pydantic/colorama)
+# with the repo on 9p, and run guest-day2.sh — which re-applies configs against the
+# LIVE host (target /). Proves re-apply is a no-op and a modified config changes
+# only the delta. Usage: qemu.sh day2 <installed-image.qcow2> [--dry-run]
+cmd_day2() {
+    local image="" dry=0
+    for a in "$@"; do case "$a" in --dry-run) dry=1;; *) image="$a";; esac; done
+    [ -n "$image" ] || die "usage: qemu.sh day2 <installed-image> [--dry-run]"
+    [ -f "$image" ] || die "image '$image' does not exist."
+    validate_ram
+    require_cmds qemu-system-x86_64 python3
+
+    local work; work="$(dirname "$image")"
+    local sock="$work/day2.sock"; rm -f "$sock"
+    local ovmf; ovmf="$(_ovmf_args "$work")"
+    if [ -z "$ovmf" ]; then die "day2 needs OVMF to boot the UEFI image."; fi
+
+    local qargs="-enable-kvm -cpu host -m $DASIK_VM_RAM -smp $DASIK_VM_CPUS -display none -monitor none"
+    qargs="$qargs $ovmf -drive file=$image,if=virtio,format=qcow2 -boot c"
+    qargs="$qargs -virtfs local,path=$REPO_ROOT,mount_tag=dasik,security_model=none,readonly=on"
+    qargs="$qargs -netdev user,id=n0 -device virtio-net,netdev=n0"
+    qargs="$qargs -serial unix:$sock,server,nowait -no-reboot"
+
+    log "QEMU day2 command:"; echo "  qemu-system-x86_64 $qargs"
+    [ "$dry" -eq 1 ] && { log "(dry-run) not launching."; return 0; }
+
+    local timeout_s="${DASIK_VM_DAY2_TIMEOUT:-600}"
+    log "Booting installed image and driving day-2 apply against target / …"
+    eval "qemu-system-x86_64 $qargs" >/dev/null 2>&1 &
+    local qpid=$!
+
+    set +e
+    python3 day2_driver.py "$sock" "$timeout_s" | tee "$work/day2.log"
+    local rc=${PIPESTATUS[0]}
+    set -e
+    kill "$qpid" 2>/dev/null; wait 2>/dev/null
+
+    echo; log "Day-2 highlights:"
+    grep -aE "DAY2|No changes|\[files\]|\[packages\]|\[network\]" "$work/day2.log" 2>/dev/null | tail -30
+    if [ "$rc" -eq 0 ] && grep -qa "DAY2-DONE rc=0" "$work/day2.log"; then
+        log "day2 layer PASSED — re-apply/converge on the live host completed."
+        return 0
+    fi
+    warn "day2 did not complete cleanly — see $work/day2.log."
+    return 1
+}
+
 case "${1:-}" in
     run-iso)        shift; cmd_run_iso "$@" ;;
     install)        shift; cmd_install "$@" ;;
     install-driven) shift; cmd_install_driven "$@" ;;
+    day2)           shift; cmd_day2 "$@" ;;
     boot)           shift; cmd_boot "$@" ;;
     -h|--help|"") usage 0 ;;
     *) die "unknown subcommand '$1' (try --help)" ;;

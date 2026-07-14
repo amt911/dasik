@@ -17,6 +17,8 @@
 #                   passphrase over serial, verifying the root unlocks and boots.
 #   day2            boot an already-installed image and re-apply configs against the
 #                   LIVE host (target /) to prove day-2 idempotency.
+#   lifecycle       boot an already-installed image and exercise generations /
+#                   rollback / sync against the LIVE host (target /).
 #
 # Usage:
 #   scripts/vmtest/qemu.sh install [config.json] [--dry-run]
@@ -369,6 +371,54 @@ cmd_day2() {
     return 1
 }
 
+# Generation lifecycle check: boot an already-installed image (from vm-day2.json)
+# and exercise dasik's NixOS-like generation management against the LIVE host
+# (target /): apply → records a generation, `generations` lists them, `rollback`
+# re-converges to a prior generation (removing an owned file), and `sync` captures
+# reality into a config. Usage: qemu.sh lifecycle <installed-image.qcow2> [--dry-run]
+cmd_lifecycle() {
+    local image="" dry=0
+    for a in "$@"; do case "$a" in --dry-run) dry=1;; *) image="$a";; esac; done
+    [ -n "$image" ] || die "usage: qemu.sh lifecycle <installed-image> [--dry-run]"
+    [ -f "$image" ] || die "image '$image' does not exist."
+    validate_ram
+    require_cmds qemu-system-x86_64 python3
+
+    local work; work="$(dirname "$image")"
+    local sock="$work/lifecycle.sock"; rm -f "$sock"
+    local ovmf; ovmf="$(_ovmf_args "$work")"
+    if [ -z "$ovmf" ]; then die "lifecycle needs OVMF to boot the UEFI image."; fi
+
+    local qargs="-enable-kvm -cpu host -m $DASIK_VM_RAM -smp $DASIK_VM_CPUS -display none -monitor none"
+    qargs="$qargs $ovmf -drive file=$image,if=virtio,format=qcow2 -boot c"
+    qargs="$qargs -virtfs local,path=$REPO_ROOT,mount_tag=dasik,security_model=none,readonly=on"
+    qargs="$qargs -netdev user,id=n0 -device virtio-net,netdev=n0"
+    qargs="$qargs -serial unix:$sock,server,nowait -no-reboot"
+
+    log "QEMU lifecycle command:"; echo "  qemu-system-x86_64 $qargs"
+    [ "$dry" -eq 1 ] && { log "(dry-run) not launching."; return 0; }
+
+    local timeout_s="${DASIK_VM_LIFECYCLE_TIMEOUT:-600}"
+    log "Booting installed image and driving generation lifecycle against target / …"
+    eval "qemu-system-x86_64 $qargs" >/dev/null 2>&1 &
+    local qpid=$!
+
+    set +e
+    python3 day2_driver.py "$sock" "$timeout_s" guest-lifecycle.sh LIFE-DONE | tee "$work/lifecycle.log"
+    local rc=${PIPESTATUS[0]}
+    set -e
+    kill "$qpid" 2>/dev/null; wait 2>/dev/null
+
+    echo; log "Lifecycle highlights:"
+    grep -aE "LIFE-|Generation|No changes|Synced|Rolled back" "$work/lifecycle.log" 2>/dev/null | tail -40
+    if [ "$rc" -eq 0 ] && grep -qa "LIFE-DONE rc=0" "$work/lifecycle.log"; then
+        log "lifecycle layer PASSED — generations/rollback/sync work on the live host."
+        return 0
+    fi
+    warn "lifecycle did not complete cleanly — see $work/lifecycle.log."
+    return 1
+}
+
 # LUKS boot-unlock check: boot an ENCRYPTED installed image (from vm-luks.json,
 # which sets console=ttyS0 so the initramfs passphrase prompt lands on serial) and
 # type the LUKS passphrase over serial. Proves the encrypted root unlocks with the
@@ -428,6 +478,7 @@ case "${1:-}" in
     day2)           shift; cmd_day2 "$@" ;;
     boot)           shift; cmd_boot "$@" ;;
     boot-unlock)    shift; cmd_boot_unlock "$@" ;;
+    lifecycle)      shift; cmd_lifecycle "$@" ;;
     -h|--help|"") usage 0 ;;
     *) die "unknown subcommand '$1' (try --help)" ;;
 esac

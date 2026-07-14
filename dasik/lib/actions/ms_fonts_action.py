@@ -87,6 +87,9 @@ class MicrosoftFontsAction(AbstractAction):
             ["arch-chroot", root, "pacman", "--noconfirm", "--needed", "-S", "7zip"],
             check=True,
         )
+        # /tmp here is inside the freshly-installed TARGET chroot during install
+        # (single-user, no other local accounts yet), not the host /tmp — see the
+        # B108 justification in [tool.bandit].
         os.makedirs(self._p("/tmp/ms-fonts-work"), exist_ok=True)
         iso_inner = (
             self.source_iso.replace(root, "", 1)

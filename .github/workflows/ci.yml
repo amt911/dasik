@@ -33,13 +33,13 @@ jobs:
         run: pytest --cov=dasik
 
   type-check:
-    name: mypy (advisory)
+    name: mypy (gate)
     runs-on: ubuntu-latest
-    # Advisory: mypy is a documented practice (CLAUDE.md § Commands) but is not
-    # yet a pinned `dev` extra in pyproject.toml, and the codebase currently has
-    # a handful of known findings (missing colorama stubs, a couple of Optional
-    # narrowing issues in reconciler.py/packages_action.py). Not a merge gate
-    # until those are triaged and mypy is formalized as a dev dependency.
+    # Merge gate: `mypy dasik` is clean (see [tool.mypy] in pyproject.toml, which
+    # silences the colorama missing-stub) and `mypy` is a pinned `dev` extra, so a
+    # new type error should fail CI rather than rot. If a future change needs a
+    # deliberate, reviewed exception, add a scoped `# type: ignore[code]` with a
+    # comment rather than dropping the gate.
     steps:
       - uses: actions/checkout@v4
 
@@ -47,15 +47,10 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install package + mypy
-        run: |
-          pip install -e .
-          pip install mypy
+      - name: Install package (with dev extras)
+        run: pip install -e ".[dev]"
 
-      # continue-on-error at the step (not job) level so this reports green —
-      # it's advisory, not a merge gate; see the note above.
       - name: Run mypy
-        continue-on-error: true
         run: mypy dasik
 
   audit:

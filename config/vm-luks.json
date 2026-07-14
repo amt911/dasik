@@ -22,6 +22,7 @@
   "packages": ["base", "linux", "linux-firmware"],
   "bootloader": "sd-boot",
   "hostname": "dasik-luks",
+  "kernel_cmdline": ["console=ttyS0,115200"],
   "timezone": {"region": "Etc", "city": "UTC"},
   "locales": {
     "selected_locales": ["en_US.UTF-8 UTF-8"],

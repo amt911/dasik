@@ -13,12 +13,18 @@
 #   run-iso         boot the Arch ISO + repo over 9p for a MANUAL in-guest install.
 #   boot            boot an already-installed image headless and verify it reaches
 #                   a login/boot marker within a timeout.
+#   boot-unlock     boot an already-installed ENCRYPTED image and type the LUKS
+#                   passphrase over serial, verifying the root unlocks and boots.
+#   day2            boot an already-installed image and re-apply configs against the
+#                   LIVE host (target /) to prove day-2 idempotency.
 #
 # Usage:
 #   scripts/vmtest/qemu.sh install [config.json] [--dry-run]
 #   scripts/vmtest/qemu.sh install-driven [config.json] [--dry-run]
 #   scripts/vmtest/qemu.sh run-iso [--dry-run]
 #   scripts/vmtest/qemu.sh boot <disk-image> [--dry-run]
+#   scripts/vmtest/qemu.sh boot-unlock <encrypted-image> [passphrase] [--dry-run]
+#   scripts/vmtest/qemu.sh day2 <installed-image> [--dry-run]
 #
 # Knobs (see lib.sh): DASIK_VM_RAM (MiB, default 2048, cap 8192, also refused if
 #   it would exceed host MemAvailable), DASIK_VM_CPUS (2), DASIK_VM_DISK (8G),
@@ -363,12 +369,65 @@ cmd_day2() {
     return 1
 }
 
+# LUKS boot-unlock check: boot an ENCRYPTED installed image (from vm-luks.json,
+# which sets console=ttyS0 so the initramfs passphrase prompt lands on serial) and
+# type the LUKS passphrase over serial. Proves the encrypted root unlocks with the
+# declared passphrase and the system boots to login — the piece a headless VM can't
+# do with the plain `boot` subcommand (which only reads, never types).
+# Usage: qemu.sh boot-unlock <encrypted-image.qcow2> [passphrase] [--dry-run]
+cmd_boot_unlock() {
+    local image="" pass="" dry=0
+    for a in "$@"; do case "$a" in
+        --dry-run) dry=1;;
+        *.qcow2|*.img|*.raw) image="$a";;
+        *) if [ -z "$image" ] && [ -f "$a" ]; then image="$a"; else pass="$a"; fi;;
+    esac; done
+    [ -n "$image" ] || die "usage: qemu.sh boot-unlock <encrypted-image> [passphrase] [--dry-run]"
+    [ -f "$image" ] || die "image '$image' does not exist."
+    pass="${pass:-${DASIK_VM_LUKS_PASSWORD:-dasik-test-pass}}"
+    validate_ram
+    require_cmds qemu-system-x86_64 python3
+
+    local work; work="$(dirname "$image")"
+    local sock="$work/unlock.sock"; rm -f "$sock"
+    local ovmf; ovmf="$(_ovmf_args "$work")"
+    if [ -z "$ovmf" ]; then die "boot-unlock needs OVMF to boot the UEFI image."; fi
+
+    local qargs="-enable-kvm -cpu host -m $DASIK_VM_RAM -smp $DASIK_VM_CPUS -display none -monitor none"
+    qargs="$qargs $ovmf -drive file=$image,if=virtio,format=qcow2 -boot c"
+    qargs="$qargs -serial unix:$sock,server,nowait -no-reboot"
+
+    log "QEMU boot-unlock command:"; echo "  qemu-system-x86_64 $qargs"
+    [ "$dry" -eq 1 ] && { log "(dry-run) not launching."; return 0; }
+
+    local timeout_s="${DASIK_VM_UNLOCK_TIMEOUT:-240}"
+    log "Booting encrypted image and typing the LUKS passphrase over serial …"
+    eval "qemu-system-x86_64 $qargs" >/dev/null 2>&1 &
+    local qpid=$!
+
+    set +e
+    python3 boot_unlock_driver.py "$sock" "$pass" "$timeout_s" | tee "$work/unlock.log"
+    local rc=${PIPESTATUS[0]}
+    set -e
+    kill "$qpid" 2>/dev/null; wait 2>/dev/null
+
+    echo; log "Boot-unlock highlights:"
+    grep -aiE "passphrase|unlock|reached target|login:|PASS|FAIL" "$work/unlock.log" 2>/dev/null | tail -20
+    if [ "$rc" -eq 0 ]; then
+        log "boot-unlock layer PASSED — encrypted root unlocked with the passphrase and the system booted."
+        return 0
+    fi
+    warn "boot-unlock did not complete cleanly — see $work/unlock.log."
+    return 1
+}
+
 case "${1:-}" in
     run-iso)        shift; cmd_run_iso "$@" ;;
     install)        shift; cmd_install "$@" ;;
     install-driven) shift; cmd_install_driven "$@" ;;
     day2)           shift; cmd_day2 "$@" ;;
     boot)           shift; cmd_boot "$@" ;;
+    boot-unlock)    shift; cmd_boot_unlock "$@" ;;
     -h|--help|"") usage 0 ;;
     *) die "unknown subcommand '$1' (try --help)" ;;
 esac

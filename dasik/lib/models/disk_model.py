@@ -8,6 +8,10 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 # (`rd.luks.name=<uuid>=<name>`, `root=/dev/mapper/<name>`). Restrict to a safe
 # identifier so a config value can't inject extra kernel params or break cryptsetup.
 _LUKS_NAME_RE = re.compile(r"[A-Za-z0-9_-]+")
+# Partition/filesystem label: reaches `mkfs -L <label>` and lsblk LABEL matching.
+# Keep it a plain token (no whitespace/newline/slash) within a length most
+# filesystems accept.
+_LABEL_RE = re.compile(r"[A-Za-z0-9_.-]{1,36}")
 
 
 class PartitionTableType(str, Enum):
@@ -111,6 +115,16 @@ class Partition(BaseModel):
         default=True,
         description="Whether to format this partition"
     )
+
+    @field_validator('label')
+    @classmethod
+    def validate_label(cls, v: str) -> str:
+        if not _LABEL_RE.fullmatch(v):
+            raise ValueError(
+                f"Invalid partition label {v!r}: must match [A-Za-z0-9_.-]{{1,36}} "
+                f"(no spaces, newlines, or slashes)."
+            )
+        return v
 
     @field_validator('size')
     @classmethod

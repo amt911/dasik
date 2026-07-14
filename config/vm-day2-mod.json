@@ -1,0 +1,32 @@
+{
+  "metadata": {
+    "note": "vm-day2.json + exactly ONE extra file (the delta). Applying this over a system converged to vm-day2.json must change ONLY that file — the day-2 'modify anything, only that change happens' proof."
+  },
+  "disks": {
+    "disks": [
+      {
+        "device": "/dev/vda",
+        "partition_table": "gpt",
+        "wipe_disk": false,
+        "partitions": [
+          {"label": "ESP", "size": "512MiB", "filesystem": "fat32", "partition_type": "esp", "mountpoint": "/boot", "format": true},
+          {"label": "ROOT", "size": "rest", "filesystem": "ext4", "partition_type": "linux", "mountpoint": "/", "format": true}
+        ]
+      }
+    ]
+  },
+  "bootloader": "sd-boot",
+  "enable_microcode": false,
+  "hostname": "dasik-day2",
+  "kernel_cmdline": ["console=ttyS0,115200"],
+  "timezone": {"region": "Etc", "city": "UTC"},
+  "locales": {"selected_locales": ["en_US.UTF-8 UTF-8"], "desired_locale": "en_US.UTF-8", "desired_tty_layout": "us"},
+  "network": {"type": "systemd-networkd"},
+  "packages": ["base", "linux", "linux-firmware", "python", "python-pydantic", "python-colorama"],
+  "files": [
+    {"path": "/etc/systemd/system/serial-getty@ttyS0.service.d/autologin.conf",
+     "content": "[Service]\nExecStart=\nExecStart=-/sbin/agetty --autologin root --noclear --keep-baud 115200,38400,9600 %I $TERM\n"},
+    {"path": "/etc/dasik-day2-marker.conf",
+     "content": "day2 delta: this file is the only change vs vm-day2.json\n"}
+  ]
+}

@@ -74,6 +74,15 @@ def main() -> int:
             pump(1.0)
         return any(n.encode() in buf for n in needles)
 
+    # Encrypted image: the initramfs asks for the LUKS passphrase on the console
+    # before the root shell exists. Unlock first if DASIK_VM_LUKS_PASSWORD is set.
+    luks_pass = os.environ.get("DASIK_VM_LUKS_PASSWORD")
+    if luks_pass:
+        if wait_for(["passphrase", "Passphrase", "Please enter"], 180):
+            pump(1.0)
+            sk.sendall((luks_pass + "\n").encode())
+            pump(2.0)
+
     # Wait for the autologin root shell (or a login prompt if autologin failed).
     wait_for(["]# ", "login:"], 240)
     mark = len(buf)

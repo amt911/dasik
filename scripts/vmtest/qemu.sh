@@ -19,6 +19,8 @@
 #                   LIVE host (target /) to prove day-2 idempotency.
 #   lifecycle       boot an already-installed image and exercise generations /
 #                   rollback / sync against the LIVE host (target /).
+#   sync-luks       boot an ENCRYPTED image, unlock it, and verify `dasik sync`
+#                   captures the real LUKS layout (luks_uuid, format:false).
 #
 # Usage:
 #   scripts/vmtest/qemu.sh install [config.json] [--dry-run]
@@ -419,6 +421,62 @@ cmd_lifecycle() {
     return 1
 }
 
+# Encrypted-sync check: boot an ENCRYPTED installed image (from vm-day2-luks.json:
+# LUKS + autologin root + python), unlock it over serial, and run guest-sync-luks.sh
+# — which runs `dasik sync` against the live host and asserts the disk/LUKS layout
+# is captured (real luks_uuid, format:false, password dropped). The passphrase is
+# handed to the driver via DASIK_VM_LUKS_PASSWORD.
+# Usage: qemu.sh sync-luks <encrypted-installed-image.qcow2> [passphrase] [--dry-run]
+cmd_sync_luks() {
+    local image="" pass="" dry=0
+    for a in "$@"; do case "$a" in
+        --dry-run) dry=1;;
+        *.qcow2|*.img|*.raw) image="$a";;
+        *) if [ -z "$image" ] && [ -f "$a" ]; then image="$a"; else pass="$a"; fi;;
+    esac; done
+    [ -n "$image" ] || die "usage: qemu.sh sync-luks <encrypted-image> [passphrase] [--dry-run]"
+    [ -f "$image" ] || die "image '$image' does not exist."
+    pass="${pass:-${DASIK_VM_LUKS_PASSWORD:-dasik-test-pass}}"
+    validate_ram
+    require_cmds qemu-system-x86_64 python3
+
+    local work; work="$(dirname "$image")"
+    local sock="$work/syncluks.sock"; rm -f "$sock"
+    local ovmf; ovmf="$(_ovmf_args "$work")"
+    if [ -z "$ovmf" ]; then die "sync-luks needs OVMF to boot the UEFI image."; fi
+
+    local qargs="-enable-kvm -cpu host -m $DASIK_VM_RAM -smp $DASIK_VM_CPUS -display none -monitor none"
+    qargs="$qargs $ovmf -drive file=$image,if=virtio,format=qcow2 -boot c"
+    qargs="$qargs -virtfs local,path=$REPO_ROOT,mount_tag=dasik,security_model=none,readonly=on"
+    qargs="$qargs -netdev user,id=n0 -device virtio-net,netdev=n0"
+    qargs="$qargs -serial unix:$sock,server,nowait -no-reboot"
+
+    log "QEMU sync-luks command:"; echo "  qemu-system-x86_64 $qargs"
+    [ "$dry" -eq 1 ] && { log "(dry-run) not launching."; return 0; }
+
+    local timeout_s="${DASIK_VM_SYNCLUKS_TIMEOUT:-600}"
+    log "Booting encrypted image, unlocking, and driving 'dasik sync' against target / …"
+    eval "qemu-system-x86_64 $qargs" >/dev/null 2>&1 &
+    local qpid=$!
+
+    set +e
+    DASIK_VM_LUKS_PASSWORD="$pass" \
+        python3 day2_driver.py "$sock" "$timeout_s" guest-sync-luks.sh SYNCLUKS-DONE \
+        | tee "$work/syncluks.log"
+    local rc=${PIPESTATUS[0]}
+    set -e
+    kill "$qpid" 2>/dev/null; wait 2>/dev/null
+
+    echo; log "Encrypted-sync highlights:"
+    grep -aE "SYNCLUKS-|luks_uuid" "$work/syncluks.log" 2>/dev/null | tail -20
+    if [ "$rc" -eq 0 ] && grep -qa "SYNCLUKS-DONE rc=0" "$work/syncluks.log"; then
+        log "sync-luks layer PASSED — sync captured the real LUKS layout on the live host."
+        return 0
+    fi
+    warn "sync-luks did not complete cleanly — see $work/syncluks.log."
+    return 1
+}
+
 # LUKS boot-unlock check: boot an ENCRYPTED installed image (from vm-luks.json,
 # which sets console=ttyS0 so the initramfs passphrase prompt lands on serial) and
 # type the LUKS passphrase over serial. Proves the encrypted root unlocks with the
@@ -479,6 +537,7 @@ case "${1:-}" in
     boot)           shift; cmd_boot "$@" ;;
     boot-unlock)    shift; cmd_boot_unlock "$@" ;;
     lifecycle)      shift; cmd_lifecycle "$@" ;;
+    sync-luks)      shift; cmd_sync_luks "$@" ;;
     -h|--help|"") usage 0 ;;
     *) die "unknown subcommand '$1' (try --help)" ;;
 esac

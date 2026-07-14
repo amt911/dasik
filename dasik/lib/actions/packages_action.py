@@ -20,11 +20,33 @@ from __future__ import annotations
 from typing import Any, List
 from .abstract_action import AbstractAction
 from ..command_worker.command_worker import Command
+from ..exceptions.exceptions import ConfigValidationError
 import os
+import re
 import subprocess
 
 
 AUR_PREFIX = "aur-"
+
+# Arch package names allow lowercase alphanumerics plus @ . _ + -, and must not
+# start with - or . (pacman.conf(5) / PKGBUILD(5)). We accept upper-case too (some
+# repos historically used it) but nothing else — anything with a shell metacharacter
+# or a leading dash is refused so a config value can never reach a shell/argv unsafe.
+_VALID_PKG_NAME = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9@._+-]*")
+
+
+def _validate_pkg_name(name: str) -> str:
+    """Return *name* if it is a safe Arch package name, else raise.
+
+    Guards the AUR build path (name interpolated into `su -c "git clone …"`) and
+    pacman's argv (a leading `-` would be parsed as a flag).
+    """
+    if not isinstance(name, str) or not _VALID_PKG_NAME.fullmatch(name):
+        raise ConfigValidationError(
+            f"Invalid package name {name!r}: package names must match "
+            f"[A-Za-z0-9][A-Za-z0-9@._+-]* (no shell metacharacters, no leading '-')."
+        )
+    return name
 
 
 class PackagesAction(AbstractAction):
@@ -42,6 +64,7 @@ class PackagesAction(AbstractAction):
                 name, reason = entry["name"], entry.get("reason", "explicit")
             else:
                 name, reason = entry, "explicit"
+            _validate_pkg_name(name)
             if name.startswith(AUR_PREFIX):
                 self.aur_pkgs.append(name[len(AUR_PREFIX):])   # AUR: reason-exempt
             else:

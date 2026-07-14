@@ -11,3 +11,14 @@ class NetworkTypeNotFoundException(Exception):
 class CommandExecutionError(Exception):
     def __init__(self, message : str = "Error executing command."):
         super().__init__(message)
+
+class ConfigValidationError(Exception):
+    """Raised when a value from the user's config is unsafe or malformed.
+
+    Used to reject untrusted config values before they reach a command line
+    (e.g. a package name with shell metacharacters that would be interpolated
+    into an AUR build's ``su -c`` string, or a name starting with ``-`` that
+    pacman would parse as a flag).
+    """
+    def __init__(self, message : str = "Invalid configuration value."):
+        super().__init__(message)

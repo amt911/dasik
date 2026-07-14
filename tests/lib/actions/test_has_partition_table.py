@@ -14,6 +14,7 @@ from unittest.mock import patch
 import pytest
 
 from dasik.lib.actions.disk_partition_action import DiskPartitionAction
+from dasik.lib.exceptions.exceptions import CommandNotFoundException
 
 _EMPTY = """Model: Loopback device (loopback)
 Disk /dev/loop0: 2147MB
@@ -63,9 +64,20 @@ def test_bytes_stdout_is_handled(action):
         assert action._has_partition_table("/dev/loop0") is True
 
 
-def test_parted_failure_means_no_table(action):
+@pytest.mark.parametrize("exc", [
+    RuntimeError("parted blew up"),
+    CommandNotFoundException("parted"),
+])
+def test_probe_failure_is_fail_safe_assumes_a_table(action, exc):
+    # A genuinely FAILED probe (parted/arch-chroot missing, exec error) is NOT the
+    # same as "parted ran and found no label". We cannot tell if the disk is empty,
+    # so on a destructive tool we must fail SAFE: assume a table exists so plan()
+    # routes to "populated, skipping" instead of scheduling a wipe. Returning False
+    # here would let an unreadable-but-populated disk be repartitioned on a
+    # wipe_disk:false config. (A truly empty disk takes the normal path below, where
+    # parted runs and reports "unknown" -> False -> partitioned as intended.)
     with patch(
         "dasik.lib.actions.disk_partition_action.Command.execute",
-        side_effect=RuntimeError("parted blew up"),
+        side_effect=exc,
     ):
-        assert action._has_partition_table("/dev/loop0") is False
+        assert action._has_partition_table("/dev/loop0") is True

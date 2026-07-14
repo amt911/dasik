@@ -275,7 +275,13 @@ class DiskPartitionAction(AbstractAction):
                 return False
             return m.group(1).strip().lower() not in ("unknown", "loop", "none")
         except Exception:
-            return False
+            # Fail SAFE: a probe that could not RUN (parted/arch-chroot missing,
+            # exec error) is not evidence the disk is empty. On a disk-wiping tool
+            # we must not assume "no table" on uncertainty — that would let a
+            # wipe_disk:false plan repartition an unreadable-but-populated disk.
+            # Assume a table exists so plan() routes to "populated, skipping".
+            # (An empty disk never reaches here: parted runs and reports "unknown".)
+            return True
 
     def _get_existing_partitions(self, device: str) -> List[Dict[str, str]]:
         """Get existing partitions on the device.

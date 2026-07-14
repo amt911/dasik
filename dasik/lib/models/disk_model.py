@@ -1,7 +1,13 @@
 """Models for disk partitioning configuration."""
+import re
 from enum import Enum
 from typing import Optional, List
 from pydantic import BaseModel, Field, field_validator, model_validator
+
+# device-mapper name that is ALSO interpolated into the kernel cmdline
+# (`rd.luks.name=<uuid>=<name>`, `root=/dev/mapper/<name>`). Restrict to a safe
+# identifier so a config value can't inject extra kernel params or break cryptsetup.
+_LUKS_NAME_RE = re.compile(r"[A-Za-z0-9_-]+")
 
 
 class PartitionTableType(str, Enum):
@@ -145,6 +151,12 @@ class Partition(BaseModel):
         """
         if self.encrypt and not self.luks_name:
             raise ValueError("luks_name must be set when encrypt is True")
+        if self.luks_name is not None and not _LUKS_NAME_RE.fullmatch(self.luks_name):
+            raise ValueError(
+                f"luks_name {self.luks_name!r} must match [A-Za-z0-9_-]+ "
+                f"(device-mapper name; no spaces, '=', '/', or shell/cmdline "
+                f"metacharacters — it is interpolated into the kernel cmdline)."
+            )
         return self
 
 

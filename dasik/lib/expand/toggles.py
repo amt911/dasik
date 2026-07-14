@@ -38,7 +38,13 @@ _KVM_PKGS = [
     "qemu-guest-agent", "qemu-user-static",
     "edk2-ovmf", "swtpm", "virt-firmware",
     "libvirt", "virt-manager",
-    "iptables-nft", "dnsmasq", "openbsd-netcat", "dmidecode",
+    # NOTE: no "iptables-nft" here. It CONFLICTS with the `iptables` that base/
+    # systemd already pulls in, and `pacman -S iptables-nft` cannot swap it
+    # non-interactively (the conflict prompt defaults to No under --noconfirm), so
+    # declaring it left the install silently failing and the day-2 plan re-trying
+    # forever. libvirt's iptables dependency is satisfied by the present iptables/
+    # nftables; the NAT network works either way.
+    "dnsmasq", "openbsd-netcat", "dmidecode",
 ]
 
 

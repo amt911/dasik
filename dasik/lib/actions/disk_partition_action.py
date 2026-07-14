@@ -444,9 +444,9 @@ class DiskPartitionAction(AbstractAction):
                         if len(parts) >= 2:
                             size_str = parts[1].strip().split()[0]
                             return float(size_str.replace('MiB', '').replace('MB', ''))
-            except Exception:
+            except Exception:  # unparsable parted output -> large-number default below
                 pass
-        
+
         # If all else fails, return a large number
         return 999999.0
 
@@ -779,10 +779,10 @@ class DiskPartitionAction(AbstractAction):
             
             Command.execute("umount", [temp_mount])
         finally:
-            # Cleanup temp mount point
+            # Cleanup temp mount point (best-effort; a leftover empty dir is benign)
             try:
                 Path(temp_mount).rmdir()
-            except Exception:
+            except Exception:  # best-effort cleanup in a finally block
                 pass
 
     @staticmethod

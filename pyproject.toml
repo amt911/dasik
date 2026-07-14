@@ -33,7 +33,7 @@ exclude = ["tests*"]
 [project.optional-dependencies]
 # hypothesis powers the property-based idempotency tests (CLAUDE.md § Quality:
 # "highest priority") — see tests/lib/**/test_*_propert*.py and *_roundtrip.py.
-dev = ["pytest", "pytest-cov", "hypothesis", "mypy"]
+dev = ["pytest", "pytest-cov", "hypothesis", "mypy", "bandit[toml]"]
 # Mutation testing (CLAUDE.md § Quality: highest priority). Kept in its own
 # extra so the `dev` extra / CI test job stay lean — install with
 # `pip install -e .[mut]`. See docs/mutation-testing.md.
@@ -42,6 +42,22 @@ mut = ["mutmut>=3.6,<4"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "--import-mode=importlib"
+
+[tool.bandit]
+# dasik is a system installer: it shells out to arch-chroot/pacman/sgdisk/etc. by
+# design, so these categories fire on essentially every call and are not defects
+# here. Untrusted config values are validated at the boundary before they reach a
+# command line (package/identifier validation), and Command.execute resolves full
+# binary paths via shutil.which. Specific residual findings (B108 /tmp inside the
+# install chroot, B110 deliberate fallbacks) are annotated inline with `# nosec`.
+#   B404 - importing subprocess
+#   B603 - subprocess call without shell=True (we NEVER use shell=True)
+#   B607 - starting a process with a partial path (PATH is controlled at install)
+#   B108 - /tmp path, but only inside the freshly-installed target chroot during
+#          install (single-user; ms_fonts_action), never the host /tmp
+#   B110 - try/except/pass: a deliberate parse fallback + a best-effort cleanup in
+#          a finally block (disk_partition_action), both annotated inline
+skips = ["B404", "B603", "B607", "B108", "B110"]
 
 [tool.mypy]
 # `mypy dasik` should report no errors. Keep it that way. colorama ships no type

@@ -80,6 +80,7 @@ class Reconciler:
                 continue
 
             config_key = meta["config_key"]
+            action_config: Any
             if config_key == "__root__":
                 action_config = self._config
             else:
@@ -143,7 +144,7 @@ class Reconciler:
         "can't determine ownership → skip safely."
         """
         try:
-            probe = action_cls.__new__(action_cls)
+            probe = action_cls.__new__(action_cls)  # type: ignore[call-overload]
             probe.config = None
             probe.context = None
             keys = probe.managed_keys()
@@ -255,6 +256,7 @@ class Reconciler:
             saw_v3 = True
 
             config_key = meta["config_key"]
+            action_config: Any
             if config_key == "__root__":
                 action_config = self._config
             else:

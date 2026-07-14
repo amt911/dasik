@@ -60,3 +60,13 @@ def test_accepts_valid_aur_names(good):
 def test_accepts_dict_entry_form():
     a = PackagesAction(config=[{"name": "git", "reason": "explicit"}], context=None)
     assert "git" in a.pacman_pkgs
+
+
+def test_aur_install_without_context_raises_clean_error():
+    # A missing context/target must fail with a clear error, not an opaque
+    # AttributeError from dereferencing None mid-way through a root-level build.
+    from dasik.lib.exceptions.exceptions import CommandExecutionError
+
+    a = PackagesAction(config=["aur-downgrade"], context=None)
+    with pytest.raises(CommandExecutionError):
+        a._apply_aur_install(["downgrade"])

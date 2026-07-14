@@ -21,6 +21,8 @@
 #                   rollback / sync against the LIVE host (target /).
 #   sync-luks       boot an ENCRYPTED image, unlock it, and verify `dasik sync`
 #                   captures the real LUKS layout (luks_uuid, format:false).
+#   drive           boot an installed image and run an arbitrary in-guest script
+#                   over serial (unlocks LUKS if DASIK_VM_LUKS_PASSWORD is set).
 #
 # Usage:
 #   scripts/vmtest/qemu.sh install [config.json] [--dry-run]
@@ -529,8 +531,66 @@ cmd_boot_unlock() {
     return 1
 }
 
+# Generic driver: boot an already-installed image (9p repo + serial socket, OVMF,
+# NAT) and run an arbitrary in-guest script over serial via day2_driver.py. Unlocks
+# LUKS first if DASIK_VM_LUKS_PASSWORD is set. This is the reusable building block
+# behind day2/lifecycle/sync-luks for one-off in-guest checks.
+# Usage: qemu.sh drive <installed-image> <guest-script.sh> <DONE-MARKER> [--dry-run]
+cmd_drive() {
+    local image="" guest="" marker="" dry=0
+    for a in "$@"; do case "$a" in
+        --dry-run) dry=1;;
+        *.sh) guest="$a";;
+        *.qcow2|*.img|*.raw) image="$a";;
+        *) if [ -z "$image" ] && [ -f "$a" ]; then image="$a"; else marker="$a"; fi;;
+    esac; done
+    [ -n "$image" ] && [ -n "$guest" ] && [ -n "$marker" ] || \
+        die "usage: qemu.sh drive <image> <guest-script.sh> <DONE-MARKER> [--dry-run]"
+    [ -f "$image" ] || die "image '$image' does not exist."
+    # day2_driver.py runs scripts/vmtest/<guest>; accept a path or a bare name.
+    guest="$(basename "$guest")"
+    [ -f "$REPO_ROOT/scripts/vmtest/$guest" ] || die "guest script '$guest' not found in scripts/vmtest/."
+    validate_ram
+    require_cmds qemu-system-x86_64 python3
+
+    local work; work="$(dirname "$image")"
+    local sock="$work/drive.sock"; rm -f "$sock"
+    local ovmf; ovmf="$(_ovmf_args "$work")"
+    if [ -z "$ovmf" ]; then die "drive needs OVMF to boot the UEFI image."; fi
+
+    local qargs="-enable-kvm -cpu host -m $DASIK_VM_RAM -smp $DASIK_VM_CPUS -display none -monitor none"
+    qargs="$qargs $ovmf -drive file=$image,if=virtio,format=qcow2 -boot c"
+    qargs="$qargs -virtfs local,path=$REPO_ROOT,mount_tag=dasik,security_model=none,readonly=on"
+    qargs="$qargs -netdev user,id=n0 -device virtio-net,netdev=n0"
+    qargs="$qargs -serial unix:$sock,server,nowait -no-reboot"
+
+    log "QEMU drive command ($guest -> $marker):"; echo "  qemu-system-x86_64 $qargs"
+    [ "$dry" -eq 1 ] && { log "(dry-run) not launching."; return 0; }
+
+    local timeout_s="${DASIK_VM_DRIVE_TIMEOUT:-900}"
+    log "Booting installed image and driving $guest against target / …"
+    eval "qemu-system-x86_64 $qargs" >/dev/null 2>&1 &
+    local qpid=$!
+
+    set +e
+    python3 day2_driver.py "$sock" "$timeout_s" "$guest" "$marker" | tee "$work/drive.log"
+    local rc=${PIPESTATUS[0]}
+    set -e
+    kill "$qpid" 2>/dev/null; wait 2>/dev/null
+
+    echo; log "Drive highlights:"
+    grep -aE "OK:|BAD:|$marker|No changes|Rolled back|Synced" "$work/drive.log" 2>/dev/null | tail -40
+    if [ "$rc" -eq 0 ] && grep -qa "$marker rc=0" "$work/drive.log"; then
+        log "drive layer PASSED — $guest completed cleanly."
+        return 0
+    fi
+    warn "drive did not complete cleanly — see $work/drive.log."
+    return 1
+}
+
 case "${1:-}" in
     run-iso)        shift; cmd_run_iso "$@" ;;
+    drive)          shift; cmd_drive "$@" ;;
     install)        shift; cmd_install "$@" ;;
     install-driven) shift; cmd_install_driven "$@" ;;
     day2)           shift; cmd_day2 "$@" ;;

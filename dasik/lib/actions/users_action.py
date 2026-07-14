@@ -7,10 +7,25 @@ against /etc/shadow. actual() is scoped to uid>=1000; root is special-cased.
 Registered with config_key="__root__" so it can read the root-level
 ``remove_home_on_delete`` flag alongside the ``users`` list.
 """
+import re
 from typing import Any, Dict, List
 from .abstract_action import AbstractAction
 from ..command_worker.command_worker import Command
+from ..exceptions.exceptions import ConfigValidationError
 from ..state.change import Change, Op
+
+# Linux useradd NAME_REGEX: lowercase/underscore start, then [a-z0-9_-], optional
+# trailing $. The name reaches `useradd <name>` argv (a leading '-' is a flag) and
+# /etc/passwd/-shadow line parsing (':' is the field separator), so validate it.
+_USERNAME_RE = re.compile(r"[a-z_][a-z0-9_-]*\$?")
+
+
+def _validate_username(name: Any) -> None:
+    if not isinstance(name, str) or not _USERNAME_RE.fullmatch(name):
+        raise ConfigValidationError(
+            f"Invalid username {name!r}: must match [a-z_][a-z0-9_-]*$? "
+            f"(no leading digit/'-', no ':' or whitespace)."
+        )
 
 
 class UsersAction(AbstractAction):
@@ -29,6 +44,8 @@ class UsersAction(AbstractAction):
         else:
             self.users = []
             self.remove_home_on_delete = False
+        for u in self.users:
+            _validate_username(u.get("username") if isinstance(u, dict) else None)
         self._by_name: Dict[str, Dict[str, Any]] = {u["username"]: u for u in self.users}
 
     @property

@@ -78,3 +78,39 @@ def test_timezone_rejects_traversal_or_unsafe(region, city):
 def test_timezone_accepts_valid(region, city):
     a = TimezoneAction(config={"region": region, "city": city}, context=None)
     assert a.region == region and a.city == city
+
+
+# --- hostname (/etc/hostname + /etc/hosts line) --------------------------- #
+
+from dasik.lib.actions.network_action import NetworkAction
+
+
+@pytest.mark.parametrize("bad", [
+    "host name",        # space
+    "host\nname",       # newline -> extra /etc/hosts line
+    "-lead",            # leading dash
+    "trail-",           # trailing dash
+    "a/b", "a;b", "hÖst", "x" * 300,
+])
+def test_hostname_rejects_unsafe(bad):
+    with pytest.raises(ConfigValidationError):
+        NetworkAction(config={"hostname": bad}, context=None)
+
+
+@pytest.mark.parametrize("good", ["dasik-day2", "x", "host1", "my.fqdn.example", ""])
+def test_hostname_accepts_valid_or_empty(good):
+    a = NetworkAction(config={"hostname": good}, context=None)
+    assert a.hostname == good
+
+
+# --- partition label (mkfs -L / lsblk LABEL) ------------------------------ #
+
+@pytest.mark.parametrize("bad", ["", "lab el", "lab\nel", "a/b", "x" * 40])
+def test_partition_label_rejects_unsafe(bad):
+    with pytest.raises(ValidationError):
+        _partition(label=bad)
+
+
+@pytest.mark.parametrize("good", ["ESP", "ROOT", "boot_1", "data-2", "a.b"])
+def test_partition_label_accepts_valid(good):
+    assert _partition(label=good).label == good

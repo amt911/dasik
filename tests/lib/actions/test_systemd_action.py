@@ -216,3 +216,37 @@ def test_import_state_captures_owned_present_undeclared_unit():
     frag = a.import_state(managed=["docker.service"])   # docker owned, not declared
     assert "docker.service" in frag["systemd"]["enable_units"]
     assert "sshd.service" in frag["systemd"]["enable_units"]
+
+
+def test_actual_includes_enabled_template_instance():
+    # `systemctl list-unit-files --state=enabled` OMITS enabled template instances
+    # (e.g. wg-quick@wg0.service — the enablement is a .wants symlink, not a listed
+    # unit file). `is-enabled` resolves them, so actual() must probe declared
+    # instances or the reconciler re-enables them on every apply (non-idempotent).
+    def fake(cmd, args=None, *a, **k):
+        if args and args[0] == "list-unit-files":
+            return MagicMock(stdout=b"sshd.service enabled\n", returncode=0)
+        if args and args[0] == "is-enabled":
+            unit = args[1]
+            ok = unit == "wg-quick@wg0.service"
+            return MagicMock(stdout=(b"enabled\n" if ok else b"disabled\n"), returncode=0)
+        return MagicMock(stdout=b"", returncode=0)
+
+    with patch("dasik.lib.actions.systemd_action.Command.execute", side_effect=fake):
+        a = SystemdAction({"enable_units": ["sshd.service", "wg-quick@wg0.service"]}, _ctx("/"))
+        assert a.actual() == {"sshd.service", "wg-quick@wg0.service"}
+
+
+def test_actual_does_not_probe_non_instance_units():
+    # Only '@' template instances need the is-enabled fallback; a plain unit that
+    # list-unit-files didn't report as enabled stays absent (no false positives).
+    def fake(cmd, args=None, *a, **k):
+        if args and args[0] == "list-unit-files":
+            return MagicMock(stdout=b"sshd.service enabled\n", returncode=0)
+        if args and args[0] == "is-enabled":
+            return MagicMock(stdout=b"enabled\n", returncode=0)
+        return MagicMock(stdout=b"", returncode=0)
+
+    with patch("dasik.lib.actions.systemd_action.Command.execute", side_effect=fake):
+        a = SystemdAction({"enable_units": ["sshd.service", "cups.service"]}, _ctx("/"))
+        assert a.actual() == {"sshd.service"}          # cups.service not probed (no '@')

@@ -39,7 +39,23 @@ class SystemdAction(AbstractAction):
         stdout = getattr(result, "stdout", b"") or b""
         if isinstance(stdout, bytes):
             stdout = stdout.decode("utf-8", errors="replace")
-        return {line.split()[0] for line in stdout.splitlines() if line.split()}
+        enabled = {line.split()[0] for line in stdout.splitlines() if line.split()}
+        # `list-unit-files --state=enabled` OMITS enabled TEMPLATE INSTANCES
+        # (e.g. wg-quick@wg0.service — the enablement is a .wants symlink, not a
+        # listed unit file). `is-enabled` resolves them, so probe each declared
+        # instance; without this the reconciler re-enables it on every apply.
+        for unit in self._d_on():
+            if "@" in unit and unit not in enabled and self._unit_enabled(unit, target):
+                enabled.add(unit)
+        return enabled
+
+    @staticmethod
+    def _unit_enabled(unit: str, target) -> bool:
+        result = Command.execute("systemctl", ["is-enabled", unit], target=target)
+        out = getattr(result, "stdout", b"") or b""
+        if isinstance(out, bytes):
+            out = out.decode("utf-8", errors="replace")
+        return out.strip() == "enabled"
 
     @property
     def name(self) -> str:

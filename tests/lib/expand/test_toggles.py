@@ -48,6 +48,15 @@ def test_kvm_enabled():
     assert "nested=1" in out["modprobe_conf"][0]["content"]
 
 
+def test_kvm_does_not_pull_conflicting_iptables_nft():
+    # iptables-nft conflicts with the base `iptables` and cannot be swapped
+    # non-interactively, so the toggle must not declare it (it made the install
+    # silently fail + the day-2 plan re-try forever). libvirt uses the present
+    # iptables/nftables.
+    out = expand_kvm({"kvm": {"install": True}})
+    assert "iptables-nft" not in out["packages"]
+
+
 def test_wireguard_disabled_empty():
     assert expand_wireguard({}) == {}
     assert expand_wireguard({"wireguard": {"enable": False}}) == {}

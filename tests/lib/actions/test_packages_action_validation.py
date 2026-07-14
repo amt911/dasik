@@ -70,3 +70,50 @@ def test_aur_install_without_context_raises_clean_error():
     a = PackagesAction(config=["aur-downgrade"], context=None)
     with pytest.raises(CommandExecutionError):
         a._apply_aur_install(["downgrade"])
+
+
+# --- defense-in-depth: AUR build never interpolates values into a shell string --- #
+
+def _su_scripts_and_args(calls):
+    """From recorded argv calls, return (script, positional_args) for each `su -c`."""
+    out = []
+    for c in calls:
+        if "su" in c and "-c" in c:
+            i = c.index("-c")
+            out.append((c[i + 1], c[i + 2:]))
+    return out
+
+
+def test_legacy_aur_build_passes_values_as_positional_args(monkeypatch):
+    from unittest.mock import MagicMock
+    calls = []
+    monkeypatch.setattr("dasik.lib.actions.packages_action.subprocess.run",
+                        lambda argv, **k: (calls.append(list(argv)), MagicMock(returncode=0))[1])
+    a = PackagesAction(config=["aur-foo"], context=None)
+    a._install_single_aur_pkg("foo")
+    su = _su_scripts_and_args(calls)
+    assert su, "no `su -c` invocation recorded"
+    for script, args in su:
+        # the shell script is a constant; the pkg / build dir / url are NEVER in it
+        assert "foo" not in script and "aur.archlinux.org" not in script
+        # …they arrive as positional args instead
+        assert any("foo" in x for x in args)
+
+
+def test_v3_aur_build_passes_values_as_positional_args(monkeypatch, tmp_path):
+    from unittest.mock import MagicMock
+    from dasik.lib.actions.action_context import ActionContext
+    from dasik.lib.target.target import Target
+    calls = []
+    monkeypatch.setattr("dasik.lib.actions.packages_action.subprocess.run",
+                        lambda argv, **k: (calls.append(list(argv)), MagicMock(returncode=0))[1])
+    monkeypatch.setattr("dasik.lib.actions.packages_action.Command.execute",
+                        lambda *a, **k: MagicMock(returncode=0, stdout=b""))
+    a = PackagesAction(config=["aur-foo"], context=ActionContext(target=Target(root=str(tmp_path))))
+    (tmp_path / "etc" / "sudoers.d").mkdir(parents=True, exist_ok=True)
+    a._apply_aur_install(["foo"])
+    su = _su_scripts_and_args(calls)
+    assert su, "no `su -c` invocation recorded"
+    for script, args in su:
+        assert "foo" not in script and "aur.archlinux.org" not in script
+        assert any("foo" in x for x in args)

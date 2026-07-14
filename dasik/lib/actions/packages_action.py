@@ -130,24 +130,37 @@ class PackagesAction(AbstractAction):
                 return helper
         return None
 
+    @staticmethod
+    def _su_argv(user: str, script: str, *args: str) -> List[str]:
+        """Argv for ``su - <user> -c <script>`` with values passed as ``$1``..
+        positional parameters, NEVER interpolated into *script*.
+
+        Defense-in-depth on top of the package-name validation: even if a name
+        with shell metacharacters ever slipped past _validate_pkg_name, it would
+        arrive as inert data ($1, $2, …) and could not be executed as code. $0 is
+        a conventional placeholder.
+        """
+        return ["su", "-", user, "-c", script, "sh", *args]
+
     def _install_single_aur_pkg(self, pkg: str) -> None:
         """Clone and build a single AUR package as the build user."""
         build_dir = f"/home/{self._AUR_USER}/{pkg}"
+        url = f"https://aur.archlinux.org/{pkg}.git"
         # Clean previous build
         subprocess.run(
             ["arch-chroot", "/mnt", "rm", "-rf", build_dir],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
-        # Clone
+        # Clone (url + dir are $1/$2, not interpolated into the shell)
         subprocess.run(
-            ["arch-chroot", "/mnt", "su", "-", self._AUR_USER, "-c",
-             f"git clone https://aur.archlinux.org/{pkg}.git {build_dir}"],
+            ["arch-chroot", "/mnt", *self._su_argv(
+                self._AUR_USER, 'git clone "$1" "$2"', url, build_dir)],
             check=True,
         )
-        # Build and install
+        # Build and install ($1 = build dir)
         subprocess.run(
-            ["arch-chroot", "/mnt", "su", "-", self._AUR_USER, "-c",
-             f"cd {build_dir} && makepkg -sri --noconfirm"],
+            ["arch-chroot", "/mnt", *self._su_argv(
+                self._AUR_USER, 'cd "$1" && makepkg -sri --noconfirm', build_dir)],
             check=True,
         )
 
@@ -155,9 +168,11 @@ class PackagesAction(AbstractAction):
         """Use yay/paru inside chroot to install AUR packages."""
         if not pkgs:
             return
+        # `exec "$@"` runs helper + args straight from argv (no shell parsing of pkgs)
         subprocess.run(
-            ["arch-chroot", "/mnt", "su", "-", self._AUR_USER, "-c",
-             f"{helper} -S --noconfirm --needed {' '.join(pkgs)}"],
+            ["arch-chroot", "/mnt", *self._su_argv(
+                self._AUR_USER, 'exec "$@"',
+                helper, "-S", "--noconfirm", "--needed", *pkgs)],
             check=True,
         )
 
@@ -441,26 +456,23 @@ class PackagesAction(AbstractAction):
         with open(sudoers_path, "w") as f:
             f.write(f"{self._AUR_USER} ALL=(ALL) NOPASSWD: ALL\n")
 
-        # 3. Build each
+        # 3. Build each (url + build dir are $1/$2, never in the shell script)
         for pkg in pkgs:
             build_dir = f"/home/{self._AUR_USER}/{pkg}"
+            url = f"https://aur.archlinux.org/{pkg}.git"
             subprocess.run(
                 self._target_argv(target, ["rm", "-rf", build_dir]),
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
             subprocess.run(
-                self._target_argv(target, [
-                    "su", "-", self._AUR_USER, "-c",
-                    f"git clone https://aur.archlinux.org/{pkg}.git {build_dir}",
-                ]),
+                self._target_argv(target, self._su_argv(
+                    self._AUR_USER, 'git clone "$1" "$2"', url, build_dir)),
                 check=True,
             )
             subprocess.run(
-                self._target_argv(target, [
-                    "su", "-", self._AUR_USER, "-c",
-                    f"cd {build_dir} && makepkg -sri --noconfirm",
-                ]),
+                self._target_argv(target, self._su_argv(
+                    self._AUR_USER, 'cd "$1" && makepkg -sri --noconfirm', build_dir)),
                 check=True,
             )
 

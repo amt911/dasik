@@ -261,10 +261,12 @@ def test_apply_aur_install_helper_runs_makepkg_dance():
     ]
     assert len(makepkg_calls) == 1
     assert any("yay" in str(a) for a in makepkg_calls[0].args[0])
-    # git clone invoked for the pkg too
+    # git clone invoked for the pkg too — the pkg/url now arrive as separate argv
+    # elements (positional args), not interpolated into the `git clone` script.
     git_clone_calls = [
         c for c in sp_run.call_args_list
-        if any("git clone" in str(a) and "yay" in str(a) for a in c.args[0])
+        if any("git clone" in str(a) for a in c.args[0])
+        and any("yay" in str(a) for a in c.args[0])
     ]
     assert len(git_clone_calls) == 1
     # sudoers fragment was written

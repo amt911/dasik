@@ -75,3 +75,15 @@ def test_tpm2_and_fido2_combined_options():
 
 def test_no_hardware_no_rd_luks_options():
     assert not any(t.startswith("rd.luks.options=") for t in _cmdline())
+
+
+def test_luks_options_appended_after_auto_options():
+    # e.g. the user's real cmdline: fido2-device=auto,token-timeout=10s
+    u = luks_uuid("cryptroot")
+    line = f"rd.luks.options={u}=fido2-device=auto,token-timeout=10s"
+    assert line in _cmdline(unlock_fido2=True, luks_options=["token-timeout=10s"])
+
+
+def test_luks_options_alone_without_hardware():
+    u = luks_uuid("cryptroot")
+    assert f"rd.luks.options={u}=token-timeout=10s" in _cmdline(luks_options=["token-timeout=10s"])

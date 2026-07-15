@@ -154,9 +154,50 @@ def expand_drivers(config: Dict[str, Any]) -> Dict[str, Any]:
     return {"packages": pkgs} if pkgs else {}
 
 
+_MKINITCPIO_HOOKS = ["90-mkinitcpio-install.hook", "60-mkinitcpio-remove.hook"]
+
+
+def _neutralizer_hook(name: str) -> str:
+    # A same-named hook under /etc/pacman.d/hooks OVERRIDES the one mkinitcpio ships
+    # in /usr/share/libalpm/hooks. This one triggers on a package that never exists
+    # and runs /bin/true, so mkinitcpio never regenerates the initramfs — dracut is
+    # the sole generator. Non-destructive (mkinitcpio stays installed) and reversible.
+    return (
+        "# Managed by dasik: disables mkinitcpio's initramfs regeneration because\n"
+        f"# the 'initramfs' generator is dracut. Overrides /usr/.../{name}.\n"
+        "[Trigger]\n"
+        "Operation = Install\n"
+        "Type = Package\n"
+        "Target = dasik-initramfs-neutralizer-never-matches\n"
+        "[Action]\n"
+        "Description = mkinitcpio disabled by dasik (dracut manages the initramfs)\n"
+        "When = PostTransaction\n"
+        "Exec = /bin/true\n"
+    )
+
+
+def expand_initramfs(config: Dict[str, Any]) -> Dict[str, Any]:
+    """When the initramfs generator is dracut, install it and neutralize mkinitcpio.
+
+    dasik runs `dracut`, so the package must be present; and both generators ship
+    pacman hooks that regenerate the initramfs on kernel/systemd updates, so leaving
+    mkinitcpio's hooks active means BOTH run and clobber each other. We override
+    mkinitcpio's hooks with no-ops rather than removing the package (safe/reversible).
+    """
+    if config.get("initramfs", "mkinitcpio") != "dracut":
+        return {}
+    return {
+        "packages": ["dracut"],
+        "files": [
+            {"path": f"/etc/pacman.d/hooks/{h}", "content": _neutralizer_hook(h)}
+            for h in _MKINITCPIO_HOOKS
+        ],
+    }
+
+
 # Order matters only for deterministic output; aggregation de-dups.
 TOGGLES = [
     expand_bluetooth, expand_cups, expand_trim, expand_kvm,
     expand_wireguard, expand_firewall, expand_hwaccel, expand_snapper,
-    expand_drivers,
+    expand_drivers, expand_initramfs,
 ]

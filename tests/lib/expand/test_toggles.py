@@ -113,3 +113,30 @@ def test_hwaccel_amd_does_not_pull_removed_mesa_vdpau():
     })
     assert "mesa-vdpau" not in out["packages"]
     assert "libva-mesa-driver" in out["packages"]
+
+
+# --- initramfs generator: dracut installs dracut + neutralizes mkinitcpio --- #
+from dasik.lib.expand.toggles import expand_initramfs
+
+
+def test_initramfs_default_mkinitcpio_is_noop():
+    assert expand_initramfs({}) == {}
+    assert expand_initramfs({"initramfs": "mkinitcpio"}) == {}
+
+
+def test_initramfs_dracut_installs_dracut_and_neutralizes_mkinitcpio():
+    out = expand_initramfs({"initramfs": "dracut"})
+    assert "dracut" in out["packages"]
+    paths = [f["path"] for f in out["files"]]
+    assert "/etc/pacman.d/hooks/90-mkinitcpio-install.hook" in paths
+    assert "/etc/pacman.d/hooks/60-mkinitcpio-remove.hook" in paths
+    # each override is a valid no-op hook (Exec = /bin/true), so mkinitcpio never runs
+    for f in out["files"]:
+        assert "Exec = /bin/true" in f["content"]
+
+
+def test_initramfs_dracut_merges_into_config_via_expand():
+    from dasik.lib.expand import expand_config
+    merged = expand_config({"initramfs": "dracut", "packages": ["base"]})
+    assert "dracut" in merged["packages"]
+    assert any("mkinitcpio-install.hook" in f["path"] for f in merged["files"])

@@ -103,6 +103,11 @@ class Partition(BaseModel):
         default=False,
         description="Enroll a FIDO2 token keyslot (needs the physical key at enroll+boot)."
     )
+    luks_options: List[str] = Field(
+        default_factory=list,
+        description="Extra verbatim rd.luks.options tokens appended after the "
+                    "auto-derived tpm2/fido2 ones (e.g. 'token-timeout=10s').",
+    )
     mount_options: List[str] = Field(
         default_factory=list,
         description="Additional mount options"

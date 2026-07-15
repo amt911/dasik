@@ -103,6 +103,8 @@ class KernelCmdlineAction(AbstractAction):
                         opts.append("tpm2-device=auto")
                     if part.get("unlock_fido2"):
                         opts.append("fido2-device=auto")
+                    # Extra verbatim rd.luks.options (e.g. "token-timeout=10s").
+                    opts.extend(part.get("luks_options", []) or [])
                     if opts:
                         params.append(f"rd.luks.options={uuid}={','.join(opts)}")
 

@@ -11,9 +11,14 @@ def _ctx(root: str = "/") -> ActionContext:
 
 
 def _fake_command_run(stdout: bytes = b"", returncode: int = 0):
-    mock = MagicMock()
-    mock.return_value = MagicMock(stdout=stdout, stderr=b"", returncode=returncode)
-    return mock
+    # Dispatch by pacman flag: -Qqe/-Qq return the given list; -Qqm (foreign/AUR)
+    # returns nothing by default, so these tests keep their "no AUR" assumption
+    # (the aur- prefixing is covered by the dedicated foreign tests below).
+    def fake(cmd, args=None, *a, **kw):
+        flag = (args or [None])[0]
+        out = b"" if flag == "-Qqm" else stdout
+        return MagicMock(stdout=out, stderr=b"", returncode=returncode)
+    return MagicMock(side_effect=fake)
 
 
 def test_packages_action_is_v3_after_migration():
@@ -466,3 +471,65 @@ def test_import_state_keeps_aur_verbatim():
         a = PackagesAction(config=["git", "aur-yay"], context=_ctx("/"))
         frag = a.import_state(managed=["git", "yay"])
     assert frag == {"packages": ["git", "aur-yay"]}
+
+
+# --- import_state: foreign (AUR) packages get the aur- prefix ------------- #
+
+def _pacman_dispatch(qqe=b"", qq=b"", qqm=b""):
+    """Fake Command.execute dispatching by the pacman query flag."""
+    def fake(cmd, args=None, *a, **kw):
+        flag = (args or [None])[0]
+        out = {"-Qqe": qqe, "-Qq": qq, "-Qqm": qqm}.get(flag, b"")
+        return MagicMock(stdout=out, stderr=b"", returncode=0)
+    return fake
+
+
+def test_import_state_prefixes_undeclared_foreign_with_aur():
+    fake = _pacman_dispatch(
+        qqe=b"firefox\nyay\nclaude-code\n",
+        qq=b"firefox\nyay\nclaude-code\n",
+        qqm=b"yay\nclaude-code\n")            # foreign = AUR
+    with patch("dasik.lib.actions.packages_action.Command.execute", fake):
+        a = PackagesAction(config=[], context=_ctx("/"))
+        pkgs = a.import_state()["packages"]
+    assert "aur-yay" in pkgs and "aur-claude-code" in pkgs
+    assert "firefox" in pkgs
+    assert "yay" not in pkgs and "claude-code" not in pkgs
+
+
+def test_import_state_corrects_declared_plain_foreign_to_aur():
+    fake = _pacman_dispatch(qqe=b"yay\n", qq=b"yay\n", qqm=b"yay\n")
+    with patch("dasik.lib.actions.packages_action.Command.execute", fake):
+        a = PackagesAction(config=["yay"], context=_ctx("/"))   # declared PLAIN
+        pkgs = a.import_state()["packages"]
+    assert "aur-yay" in pkgs and "yay" not in pkgs
+
+
+def test_import_state_keeps_aur_prefixed_verbatim_no_double_prefix():
+    fake = _pacman_dispatch(qqe=b"yay\n", qq=b"yay\n", qqm=b"yay\n")
+    with patch("dasik.lib.actions.packages_action.Command.execute", fake):
+        a = PackagesAction(config=["aur-yay"], context=_ctx("/"))
+        pkgs = a.import_state()["packages"]
+    assert pkgs.count("aur-yay") == 1
+    assert "aur-aur-yay" not in pkgs
+
+
+def test_import_state_repo_dep_still_plain_dict():
+    # a repo (non-foreign) dep-installed package stays {name, reason: dep}
+    fake = _pacman_dispatch(qqe=b"", qq=b"linux-headers\n", qqm=b"")
+    with patch("dasik.lib.actions.packages_action.Command.execute", fake):
+        a = PackagesAction(config=["linux-headers"], context=_ctx("/"))
+        pkgs = a.import_state()["packages"]
+    assert {"name": "linux-headers", "reason": "dep"} in pkgs
+
+
+def test_import_state_foreign_probe_failure_falls_back_to_plain():
+    def fake(cmd, args=None, *a, **kw):
+        flag = (args or [None])[0]
+        if flag == "-Qqm":
+            return MagicMock(stdout=b"", stderr=b"err", returncode=1)   # probe fails
+        return MagicMock(stdout=b"yay\n", stderr=b"", returncode=0)
+    with patch("dasik.lib.actions.packages_action.Command.execute", fake):
+        a = PackagesAction(config=[], context=_ctx("/"))
+        pkgs = a.import_state()["packages"]
+    assert "yay" in pkgs           # can't tell it's foreign -> plain, don't crash

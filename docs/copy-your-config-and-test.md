@@ -111,12 +111,13 @@ seed is written next to it.
   same `firewall-cmd` syntax dasik consumes). Read via `firewall-offline-cmd`
   (reads `/etc/firewalld` directly — no running daemon needed, and it works
   against a `/mnt` install target), which needs root; `sync` runs as root.
-- **WireGuard** — every `/etc/wireguard/*.conf` (wg-quick interfaces) is captured
-  into `files`, so a VPN round-trips. ⚠️ a wg conf contains the interface
-  **PrivateKey**; sync writes it verbatim into the JSON (as the `wireguard`
-  config block already does) — **keep synced configs private**. If your VPN is a
-  *NetworkManager* connection instead (`/etc/NetworkManager/system-connections/`),
-  it is not captured here — that is a separate path.
+- **WireGuard** — captured into `files` with `mode: "0600"`, from **both**
+  `/etc/wireguard/*.conf` (wg-quick) **and** `/etc/NetworkManager/system-connections/
+  *.nmconnection` whose `type=wireguard` (NetworkManager VPNs; wifi/ethernet
+  connections are left alone). So a VPN round-trips whichever stack you use. ⚠️
+  these hold the interface **PrivateKey** (and PSKs); sync writes them verbatim
+  into the JSON — **keep synced configs private**. Reading the NM keyfiles needs
+  root (`sudo dasik sync`).
 - **the initramfs generator** — `"initramfs": "dracut"` (or `"mkinitcpio"`),
   detected from which one is installed.
 - **`unlock_fido2` / `unlock_tpm2`** — read from the LUKS header's enrolled tokens

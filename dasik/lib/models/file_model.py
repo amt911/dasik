@@ -1,4 +1,5 @@
 """Model for a single declarative dropped file."""
+from typing import Optional
 from pydantic import BaseModel, Field, field_validator
 
 
@@ -19,10 +20,26 @@ class EtcFile(BaseModel):
     """An arbitrary managed file by absolute path."""
     path: str = Field(..., description="Absolute target path")
     content: str = Field(..., description="Verbatim file content")
+    mode: Optional[str] = Field(
+        None,
+        description="Octal file mode, e.g. '0600' (for secret files such as "
+                    "wireguard/NetworkManager keyfiles). Default: umask.",
+    )
 
     @field_validator("path")
     @classmethod
     def _abs_no_traversal(cls, v: str) -> str:
         if not v.startswith("/") or ".." in v.split("/"):
             raise ValueError("path must be absolute and contain no '..' segment")
+        return v
+
+    @field_validator("mode")
+    @classmethod
+    def _valid_mode(cls, v: "Optional[str]") -> "Optional[str]":
+        if v is None:
+            return v
+        try:
+            int(v, 8)
+        except (ValueError, TypeError):
+            raise ValueError("mode must be an octal string, e.g. '0600'")
         return v

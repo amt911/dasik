@@ -140,3 +140,22 @@ def test_initramfs_dracut_merges_into_config_via_expand():
     merged = expand_config({"initramfs": "dracut", "packages": ["base"]})
     assert "dracut" in merged["packages"]
     assert any("mkinitcpio-install.hook" in f["path"] for f in merged["files"])
+
+
+from dasik.lib.expand.toggles import expand_zram
+
+
+def test_zram_absent_empty():
+    assert expand_zram({}) == {}
+    assert expand_zram({"zram": {}}) == {}
+
+
+def test_zram_present_installs_generator():
+    out = expand_zram({"zram": {"zram0": {"zram-size": "ram / 2"}}})
+    assert out == {"packages": ["zram-generator"]}
+
+
+def test_zram_merges_into_config_via_expand():
+    from dasik.lib.expand import expand_config
+    merged = expand_config({"zram": {"zram0": {"zram-size": "ram / 2"}}, "packages": ["base"]})
+    assert "zram-generator" in merged["packages"]

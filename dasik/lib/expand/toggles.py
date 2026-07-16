@@ -195,9 +195,17 @@ def expand_initramfs(config: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def expand_zram(config: Dict[str, Any]) -> Dict[str, Any]:
+    # A declared `zram` section needs the generator that reads
+    # /etc/systemd/zram-generator.conf. ZramAction writes the file.
+    if not (config.get("zram") or {}):
+        return {}
+    return {"packages": ["zram-generator"]}
+
+
 # Order matters only for deterministic output; aggregation de-dups.
 TOGGLES = [
     expand_bluetooth, expand_cups, expand_trim, expand_kvm,
     expand_wireguard, expand_firewall, expand_hwaccel, expand_snapper,
-    expand_drivers, expand_initramfs,
+    expand_drivers, expand_initramfs, expand_zram,
 ]

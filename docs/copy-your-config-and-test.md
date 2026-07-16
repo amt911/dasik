@@ -73,11 +73,35 @@ seed is written next to it.
 
 - `packages` (explicitly-installed), `locales`, `timezone`, `network` + `hostname`,
   `users`, arbitrary `/etc` `files`, `kernel_cmdline`.
-- **`disks`** — the partition layout is captured **non-destructively**: every
-  partition comes back with `format: false` and `wipe_disk: false`, and an
-  encrypted root gets its real `luks_uuid` baked in (the plaintext `luks_password`
-  is *dropped* — a secret is never written back). So re-applying a synced config
-  can never reformat.
+- **`disks`** — the partition layout is captured **non-destructively**. If the seed
+  already **declares** disks, those are reflected back; if it declares **none**,
+  `sync` now **discovers the live layout from scratch** (via `lsblk`/`findmnt`/
+  `cryptsetup`) — all disks, best-effort. Every partition comes back with
+  `format: false` and `wipe_disk: false`, an encrypted partition gets its real
+  `luks_uuid` + enrolled `unlock_fido2`/`unlock_tpm2` baked in (the plaintext
+  `luks_password` is *dropped* — a secret is never written back), and a btrfs root
+  gets its mounted `btrfs_subvolumes` (`@`, `@home`, …). So re-applying a synced
+  config can never reformat.
+  - **Inventory, not a lossy guess.** Partitions whose filesystem dasik cannot
+    represent (`ntfs`, unformatted, a *locked* LUKS) are **skipped**; a disk with no
+    representable partitions is **omitted**; a btrfs spanning several devices shows
+    each encrypted member disk (dasik's model has no multi-device btrfs). Every
+    emitted disk is validated through the model, so the captured stanza always
+    round-trips.
+- **`zram`** — `/etc/systemd/zram-generator.conf` is captured verbatim as a
+  `zram` mapping (`{device: {option: value}}`), so a zram-swap host round-trips.
+  Applying it re-writes the same conf and pulls in `zram-generator`.
+- **local `/etc` snippets** — `sync` discovers the files you (not a package) put
+  under `/etc/modprobe.d` (`modprobe_conf`), `/etc/modules-load.d`
+  (`modules_load`), `/etc/sysctl.d` (`sysctl_d`), `/etc/tmpfiles.d` (`tmpfiles_d`),
+  `/etc/sddm.conf.d` (`sddm_conf_d`), `/etc/udev/rules.d` (`udev_rules`) and
+  `/etc/profile.d` (`profile_d`). It **skips package-owned files** (`pacman -Qo`)
+  and symlinks — those are distro defaults that come back with their package — so
+  you only capture your own modprobe options/blacklists, module-load lists,
+  sysctl tunables, udev rules and display-manager settings.
+- **`/etc/crypttab`** — captured verbatim into `files` when it has any real
+  (non-comment) entry, e.g. an encrypted random-key swap the `disks` layout does
+  not otherwise describe. An empty/comment-only crypttab is left out.
 - **the initramfs generator** — `"initramfs": "dracut"` (or `"mkinitcpio"`),
   detected from which one is installed.
 - **`unlock_fido2` / `unlock_tpm2`** — read from the LUKS header's enrolled tokens

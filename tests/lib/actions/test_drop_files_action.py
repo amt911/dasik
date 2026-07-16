@@ -103,6 +103,10 @@ def _v3(cfg, actual, ondisk=None):
     a = DropFilesAction(cfg, _ctx("/"))
     a.actual = lambda: set(actual)
     a._read = lambda p: (ondisk or {}).get(p, "")
+    # These import_state tests exercise the declared-refresh path only; disable
+    # live directory/crypttab discovery so they don't read the real /etc.
+    a._discover_section = lambda directory: []
+    a._discover_crypttab = lambda: None
     return a
 
 

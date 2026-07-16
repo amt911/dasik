@@ -97,6 +97,41 @@ def test_apply_noop_when_no_changes():
     proc.assert_not_called()
 
 
+def _cfg_format_false():
+    # A synced-style layout: every partition format:false / wipe_disk:false, yet
+    # applied to a FRESH disk (no partition table) so plan() -> INSTALL and
+    # _process_disk (re)creates every partition empty.
+    return {"disks": [{
+        "device": "/dev/vda", "partition_table": "gpt", "wipe_disk": False,
+        "partitions": [
+            {"label": "boot", "size": "512MiB", "filesystem": "fat32",
+             "partition_type": "esp", "mountpoint": "/boot", "format": False},
+            {"label": "root", "size": "rest", "filesystem": "ext4",
+             "partition_type": "linux", "mountpoint": "/", "format": False},
+        ],
+    }]}
+
+
+def test_process_disk_formats_every_freshly_created_partition_even_format_false():
+    # Regression: a freshly-created partition must be formatted even when
+    # format:false — reaching _process_disk means the disk was (re)partitioned,
+    # so every partition is new/empty. Leaving one raw made /boot unmountable and
+    # genfstab produced an empty fstab.
+    a = DiskPartitionAction(_cfg_format_false(), _ctx())
+    disk = a.disks[0]
+    with patch("dasik.lib.actions.disk_partition_action.Path.exists", return_value=True), \
+         patch.object(DiskPartitionAction, "_validate_sizes"), \
+         patch.object(DiskPartitionAction, "_has_partition_table", return_value=False), \
+         patch.object(DiskPartitionAction, "_create_partition_table"), \
+         patch.object(DiskPartitionAction, "_create_partitions"), \
+         patch.object(DiskPartitionAction, "_refresh_partition_table"), \
+         patch.object(DiskPartitionAction, "_mount_partitions"), \
+         patch.object(DiskPartitionAction, "_format_partition") as fmt:
+        a._process_disk(disk)
+    formatted = {call.args[1].label for call in fmt.call_args_list}
+    assert formatted == {"boot", "root"}      # BOTH formatted, not just format:true ones
+
+
 def test_managed_keys_lists_converged():
     a = DiskPartitionAction(_cfg(), _ctx())
     with patch.object(DiskPartitionAction, "_device_labels", return_value={"boot", "root"}):

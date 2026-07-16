@@ -36,7 +36,10 @@ report_survivors() {
   echo
   echo ">> Survivors:"
   local survivors real=0
-  survivors="$(mutmut results | grep ': survived' | sed 's/: survived.*//; s/^[[:space:]]*//')"
+  # `|| true`: with `set -euo pipefail`, a `grep` that matches NOTHING (the good
+  # case: every mutant killed) exits 1 and would abort the whole script here,
+  # falsely failing a mutation-clean run. Swallow that so 0 survivors -> empty.
+  survivors="$(mutmut results | grep ': survived' | sed 's/: survived.*//; s/^[[:space:]]*//' || true)"
   if [ -z "$survivors" ]; then
     echo "   none -- the mutated code is mutation-clean."
     return 0

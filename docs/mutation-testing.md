@@ -98,7 +98,22 @@ Current equivalents (both in `scalar_action.py`):
 
 ## CI
 
-The `mutation` job in `.github/workflows/ci.yml` runs tier 1 on every PR and is
-**advisory** (never blocks merge) — the pytest coverage gate stays the hard
-gate. It surfaces survivors as a signal to strengthen tests, matching the
-existing advisory-job pattern (mypy, pip-audit).
+The `mutation` job in `.github/workflows/ci.yml` runs tier 1 on every PR and is a
+**merge gate**: a real (non-equivalent) surviving mutant fails CI, alongside the
+pytest coverage gate, mypy and bandit. `scripts/mutation.sh` exits non-zero only
+on a real survivor and 0 on a mutation-clean run (equivalents are reported but
+don't fail).
+
+## Pre-push hook
+
+`.githooks/pre-push` runs the same gates locally **before** a push — pytest +
+coverage, mypy, bandit, and the set_math mutation tier — so a push can't land
+something CI would reject. Enable it once per clone:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+It uses the repo `.venv` if present. Bypass in an emergency with
+`git push --no-verify` (discouraged — CI still gates). If a tool is missing it
+tells you which extra to install (`pip install -e '.[dev,mut]'`).

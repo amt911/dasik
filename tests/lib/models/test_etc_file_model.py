@@ -35,3 +35,23 @@ def test_json_model_files_defaults_empty_and_accepts_entries():
     assert _base().files == []
     m = _base(files=[{"path": "/etc/samba/smb.conf", "content": "[global]\n"}])
     assert m.files[0].path == "/etc/samba/smb.conf"
+
+
+# --- optional mode -------------------------------------------------------- #
+
+def test_etc_file_mode_octal_accepted():
+    from dasik.lib.models.file_model import EtcFile
+    assert EtcFile(path="/etc/wireguard/wg0.conf", content="x", mode="0600").mode == "0600"
+
+
+def test_etc_file_mode_optional_defaults_none():
+    from dasik.lib.models.file_model import EtcFile
+    assert EtcFile(path="/etc/x", content="x").mode is None
+
+
+def test_etc_file_mode_invalid_rejected():
+    import pytest
+    from pydantic import ValidationError
+    from dasik.lib.models.file_model import EtcFile
+    with pytest.raises(ValidationError):
+        EtcFile(path="/etc/x", content="x", mode="notoctal")

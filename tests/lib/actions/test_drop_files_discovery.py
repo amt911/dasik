@@ -143,3 +143,58 @@ def test_discovered_config_reapplies_as_noop(tmp_path):
     cfg = {k: frag[k] for k in ("udev_rules", "modprobe_conf", "modules_load", "profile_d")}
     b = DropFilesAction(cfg, _ctx(str(tmp_path)))
     assert b.plan(managed=b.managed_keys()["files"]) == []
+
+
+# --- NetworkManager WireGuard + file mode --------------------------------- #
+
+import os as _os
+import stat as _stat
+
+
+def test_discovers_nm_wireguard_connection(tmp_path):
+    d = tmp_path / "etc/NetworkManager/system-connections"
+    d.mkdir(parents=True)
+    (d / "wg-home.nmconnection").write_text(
+        "[connection]\nid=wg-home\ntype=wireguard\n\n"
+        "[wireguard]\nprivate-key=SECRETKEY=\n")
+    (d / "MyWifi.nmconnection").write_text(
+        "[connection]\nid=MyWifi\ntype=wifi\n\n[wifi-security]\npsk=hunter2\n")
+    frag = _discover(tmp_path)
+    wg = {f["path"]: f for f in frag["files"] if "system-connections" in f["path"]}
+    assert list(wg) == ["/etc/NetworkManager/system-connections/wg-home.nmconnection"]
+    entry = wg["/etc/NetworkManager/system-connections/wg-home.nmconnection"]
+    assert entry["mode"] == "0600"
+    assert "private-key=SECRETKEY=" in entry["content"]      # secret captured verbatim
+
+
+def test_nm_wireguard_absent_dir_no_crash(tmp_path):
+    (tmp_path / "etc").mkdir(parents=True)
+    frag = _discover(tmp_path)
+    assert all("system-connections" not in f["path"] for f in frag["files"])
+
+
+def test_wireguard_conf_gets_0600_mode(tmp_path):
+    (tmp_path / "etc/wireguard").mkdir(parents=True)
+    (tmp_path / "etc/wireguard/wg0.conf").write_text("[Interface]\nPrivateKey = K=\n")
+    frag = _discover(tmp_path)
+    wg = next(f for f in frag["files"] if f["path"] == "/etc/wireguard/wg0.conf")
+    assert wg["mode"] == "0600"
+
+
+def test_apply_chmods_file_with_mode(tmp_path):
+    from dasik.lib.state.change import Change, Op
+    cfg = {"files": [{"path": "/etc/wireguard/wg0.conf",
+                      "content": "[Interface]\nPrivateKey = K=\n", "mode": "0600"}]}
+    a = DropFilesAction(cfg, _ctx(str(tmp_path)))
+    a.apply([Change("files", Op.CREATE, "/etc/wireguard/wg0.conf")])
+    p = tmp_path / "etc/wireguard/wg0.conf"
+    assert _stat.S_IMODE(_os.stat(p).st_mode) == 0o600
+
+
+def test_apply_no_chmod_when_no_mode(tmp_path):
+    from dasik.lib.state.change import Change, Op
+    cfg = {"files": [{"path": "/etc/foo.conf", "content": "x\n"}]}
+    a = DropFilesAction(cfg, _ctx(str(tmp_path)))
+    a.apply([Change("files", Op.CREATE, "/etc/foo.conf")])
+    # written with the default umask (no explicit chmod) — just assert it exists
+    assert (tmp_path / "etc/foo.conf").exists()

@@ -99,6 +99,14 @@ class BootloaderAction(AbstractAction):
             self._install()
 
     def import_state(self, managed=None) -> dict:
+        """Capture which bootloader is actually installed, by its on-disk marker
+        (independent of the seed's `bootloader` value). systemd-boot's EFI stub or
+        GRUB's grub.cfg — so a synced config keeps the right bootloader instead of
+        defaulting to grub."""
+        if os.path.exists(self._p(_SDBOOT_MARKER)):
+            return {"bootloader": "sd-boot"}
+        if os.path.exists(self._p(_GRUB_MARKER)):
+            return {"bootloader": "grub"}
         return {}
 
     # --- legacy executor bridge --------------------------------------- #

@@ -83,7 +83,27 @@ class BaseInstallAction(AbstractAction):
         if changes:
             self._install()
 
+    def _microcode_installed(self) -> bool:
+        """True if a CPU microcode package (amd-ucode or intel-ucode) is installed
+        in the target. Best-effort via `pacman -Qq`."""
+        for pkg in ("amd-ucode", "intel-ucode"):
+            # Best-effort probe: a pacman failure just means "try the next pkg".
+            try:
+                res = Command.execute("pacman", ["-Qq", pkg], target=self._target())
+                if getattr(res, "returncode", 1) == 0:
+                    return True
+            except Exception:  # nosec B112
+                continue
+        return False
+
     def import_state(self, managed=None) -> dict:
+        """Capture ``enable_microcode``. It is a bool (the intel-vs-amd package is
+        auto-detected at apply from /proc/cpuinfo), so capturing the flag when a
+        ucode package is present keeps the microcode initrd on the boot entry after
+        a sync — the `amd-ucode`/`intel-ucode` package itself round-trips via
+        `packages`, but the flag is what wires it into the bootloader."""
+        if self._microcode_installed():
+            return {"enable_microcode": True}
         return {}
 
     # --- legacy executor bridge --------------------------------------- #

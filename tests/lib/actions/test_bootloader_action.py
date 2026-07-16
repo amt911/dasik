@@ -111,3 +111,23 @@ def test_name_and_optional():
     a = BootloaderAction(_cfg())
     assert a.name == "Bootloader"
     assert a.is_optional is False
+
+
+# --- import_state (sync capture) ----------------------------------------- #
+
+def test_import_state_detects_sdboot(tmp_path):
+    _mark_sdboot(tmp_path)
+    # seed says grub, but the installed marker is systemd-boot -> capture sd-boot
+    a = BootloaderAction({"bootloader": "grub"}, _ctx(tmp_path))
+    assert a.import_state(managed=[]) == {"bootloader": "sd-boot"}
+
+
+def test_import_state_detects_grub(tmp_path):
+    _mark_grub(tmp_path)
+    a = BootloaderAction({"bootloader": "sd-boot"}, _ctx(tmp_path))
+    assert a.import_state(managed=[]) == {"bootloader": "grub"}
+
+
+def test_import_state_empty_when_no_bootloader(tmp_path):
+    a = BootloaderAction({"bootloader": "grub"}, _ctx(tmp_path))
+    assert a.import_state(managed=[]) == {}

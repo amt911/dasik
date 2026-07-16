@@ -157,3 +157,35 @@ def test_install_writes_fstab_on_success(tmp_path):
     with patch("dasik.lib.actions.base_install_action.Command.execute", side_effect=fake):
         a._install()
     assert (tmp_path / "etc" / "fstab").read_text() == fstab_line.decode()
+
+
+# --- import_state: capture enable_microcode ------------------------------- #
+
+def _pacman_has(installed):
+    def fake(cmd, args=None, *rest, **kw):
+        from unittest.mock import MagicMock
+        if cmd == "pacman" and args and args[0] == "-Qq":
+            return MagicMock(returncode=0 if args[1] in installed else 1)
+        return MagicMock(returncode=1)
+    return fake
+
+
+def test_import_state_captures_microcode_when_amd_installed():
+    a = BaseInstallAction({}, _ctx("/"))
+    with patch("dasik.lib.actions.base_install_action.Command.execute",
+               side_effect=_pacman_has({"amd-ucode"})):
+        assert a.import_state(managed=[]) == {"enable_microcode": True}
+
+
+def test_import_state_captures_microcode_when_intel_installed():
+    a = BaseInstallAction({}, _ctx("/"))
+    with patch("dasik.lib.actions.base_install_action.Command.execute",
+               side_effect=_pacman_has({"intel-ucode"})):
+        assert a.import_state(managed=[]) == {"enable_microcode": True}
+
+
+def test_import_state_empty_when_no_microcode():
+    a = BaseInstallAction({}, _ctx("/"))
+    with patch("dasik.lib.actions.base_install_action.Command.execute",
+               side_effect=_pacman_has(set())):
+        assert a.import_state(managed=[]) == {}

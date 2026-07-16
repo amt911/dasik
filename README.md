@@ -13,6 +13,7 @@ pip install .
 dasik is verb-based (`dasik <verb> <config>`):
 
 ```bash
+dasik check  config.json            # validate the config (JSON + schema), read-only
 dasik plan   config.json            # show what would change (read-only)
 dasik apply  config.json --target /mnt --yes   # converge (DESTRUCTIVE on install)
 dasik sync   config.json --target /  # capture the running system back into the config

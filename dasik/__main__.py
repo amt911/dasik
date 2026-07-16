@@ -12,6 +12,8 @@ Verbs (slice 1 of declarative-convergence):
     current one. **Read-only.**
   * ``rollback [N] [--target /] [--yes]`` — restore generation N's config and
     re-apply it (DESTRUCTIVE; defaults N to the generation before current).
+  * ``check <config>`` — validate the config (JSON syntax + schema) without
+    touching the system. **Read-only.**
 
 The old no-verb ``dasik <config>`` form (the legacy ``ActionsHandler`` install
 path) has been REMOVED — it is now rejected with a message pointing at
@@ -138,6 +140,13 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Skip the destructive-change confirmation prompt.",
     )
 
+    check_p = sub.add_parser(
+        "check",
+        help="Validate a config file (JSON syntax + schema) without touching the "
+             "system. Read-only; no --target.",
+    )
+    check_p.add_argument("config", help="Path to the JSON configuration file")
+
     sub.add_parser(
         "hash-password",
         help="Prompt for a password (twice) and print its sha512crypt hash "
@@ -147,7 +156,8 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-_KNOWN_VERBS = {"plan", "apply", "sync", "generations", "rollback", "hash-password"}
+_KNOWN_VERBS = {"plan", "apply", "sync", "generations", "rollback", "check",
+                "hash-password"}
 
 
 def _is_legacy_invocation(raw: list[str]) -> Optional[str]:
@@ -359,6 +369,30 @@ def _reject_no_verb(config_path_str: str) -> int:
     return 2
 
 
+def _cmd_check(config_path: Path) -> int:
+    """Validate a config: JSON syntax + the pydantic schema. Read-only, no target.
+    Exit 0 when valid, 1 with a readable error otherwise."""
+    try:
+        raw = config_path.read_text()
+    except OSError as e:
+        print(f"Error reading {config_path}: {e}", file=sys.stderr)
+        return 1
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as e:
+        print(f"Invalid JSON in {config_path}: {e}", file=sys.stderr)
+        return 1
+    from pydantic import ValidationError
+    from dasik.lib.models.json_model import JsonModel
+    try:
+        JsonModel.model_validate(data)
+    except ValidationError as e:
+        print(f"Config {config_path} is invalid:\n{e}", file=sys.stderr)
+        return 1
+    print(f"{config_path}: OK — valid dasik config.")
+    return 0
+
+
 def _cmd_hash_password() -> int:
     """Prompt for a password twice and print its sha512crypt hash.
 
@@ -421,6 +455,12 @@ def main(argv: Optional[list[str]] = None) -> int:
 
         if args.verb == "rollback":
             return _cmd_rollback(args.target, args.generation, args.yes)
+
+        if args.verb == "check":
+            path = _validate_config_file(args.config)
+            if path is None:
+                return 1
+            return _cmd_check(path)
 
         if args.verb == "hash-password":
             return _cmd_hash_password()

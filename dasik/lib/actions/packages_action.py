@@ -271,6 +271,26 @@ class PackagesAction(AbstractAction):
             stdout = stdout.decode("utf-8", errors="replace")
         return {line.strip() for line in stdout.splitlines() if line.strip()}
 
+    def _foreign(self) -> set[str]:
+        """Foreign (non-repo, i.e. AUR) installed packages: ``pacman -Qqm``. These
+        must be captured with the ``aur-`` prefix — a plain name goes into the
+        single ``pacman -S`` transaction, which aborts on the first
+        ``target not found`` and installs nothing. Best-effort: no target / probe
+        failure -> empty set (fall back to plain, don't crash)."""
+        target = getattr(self.context, "target", None) if self.context else None
+        if target is None:
+            return set()
+        try:
+            result = Command.execute("pacman", ["-Qqm"], target=target)
+        except Exception:
+            return set()
+        if getattr(result, "returncode", 1) != 0:
+            return set()
+        stdout = getattr(result, "stdout", b"") or b""
+        if isinstance(stdout, bytes):
+            stdout = stdout.decode("utf-8", errors="replace")
+        return {line.strip() for line in stdout.splitlines() if line.strip()}
+
     def _reason_of(self, pkg: str) -> str:
         """Install reason of an installed package: explicit if in -Qqe else dep."""
         return "explicit" if pkg in self.actual() else "dep"
@@ -321,6 +341,7 @@ class PackagesAction(AbstractAction):
         """
         explicit = self.actual()
         installed = self._installed_all()
+        foreign = self._foreign()                         # AUR (pacman -Qqm)
 
         def _strip(name: str) -> str:
             return name[len(AUR_PREFIX):] if name.startswith(AUR_PREFIX) else name
@@ -329,16 +350,19 @@ class PackagesAction(AbstractAction):
         declared_stripped: set = set()
         for entry in self._original:
             name = entry["name"] if isinstance(entry, dict) else entry
-            declared_stripped.add(_strip(name))
+            bare = _strip(name)
+            declared_stripped.add(bare)
             if name.startswith(AUR_PREFIX):
                 result.append(name)                       # AUR verbatim
+            elif bare in foreign:
+                result.append(f"{AUR_PREFIX}{bare}")      # foreign -> needs aur-
             elif name in installed and name not in explicit:
                 result.append({"name": name, "reason": "dep"})
             else:
                 result.append(name)                       # explicit / intent (not installed)
 
-        extra = sorted(explicit - declared_stripped)      # new explicit packages
-        result.extend(extra)
+        for name in sorted(explicit - declared_stripped):  # new explicit packages
+            result.append(f"{AUR_PREFIX}{name}" if name in foreign else name)
         return {self._PACMAN_DOMAIN: result}
 
     # ------------------------------------------------------------------ #

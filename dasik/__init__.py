@@ -16,7 +16,6 @@ __author__ = "Andres"
 from .lib.actions import (
     setup_actions,
     execute_installation,
-    ActionsHandler,
     AbstractAction,
     register_action
 )
@@ -24,7 +23,6 @@ from .lib.actions import (
 __all__ = [
     'setup_actions',
     'execute_installation',
-    'ActionsHandler',
     'AbstractAction',
     'register_action',
 ]

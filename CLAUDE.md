@@ -97,22 +97,21 @@ A pytest suite **does** exist (`tests/` mirrors `dasik/lib/`, configured in `pyp
 config.json
   → JsonParser            (dasik/lib/json_parser/) — opens file, validates with pydantic JsonModel,
                            returns a plain dict via .debug()
-  → ActionsHandler        (dispatches each config section to an Action)
-  → Action.is_needed()    idempotency check: inspect current system state
-  → Action.execute()      apply changes (only if needed)
-  → Action.verify()       confirm the change landed
+  → Reconciler            (dasik/lib/reconciler/) — walks the setup_actions() registry
+  → Action.plan()         idempotency check: inspect current system state, diff vs config
+  → Action.apply()        apply changes (only what plan() found)
+  → Action.import_state() sync: capture system reality back into config
 ```
 
-Every change runs against the **mounted install target at `/mnt`**, typically via `arch-chroot /mnt`. Actions read `/mnt/etc/...` to decide `is_needed()`. This is install-from-live-ISO tooling, not a config manager for the running host.
+Every change runs against the **mounted install target at `/mnt`**, typically via `arch-chroot /mnt`. Actions read `/mnt/etc/...` to decide `plan()`. This is install-from-live-ISO tooling, not a config manager for the running host.
 
-### Two handlers exist — know which is which
+### One handler — the v3 registry
 
 | File | Style | Idempotent? | Actions covered |
 | --- | --- | --- | --- |
-| `actions_handler.py` | Legacy, monolithic; one hard-coded `_handle_*` method per section, calls `action.do_action()` | **No** | disks, base install, timezone, locale, network |
-| `actions_handler_v2.py` | Registry + `ActionExecutor`; calls `is_needed()/execute()/verify()` | **Yes** | all ~20 actions (`setup_actions()`) |
+| `actions_handler_v2.py` | Registry + `ActionExecutor` / `Reconciler`; calls `plan()/apply()/import_state()` (and the `is_needed()/execute()/verify()` shims) | **Yes** | all ~20 actions (`setup_actions()`) |
 
-✅ **`dasik/__main__.py` now drives the v3 idempotent architecture.** The real verbs — `plan`, `apply`, `sync`, `generations`, `rollback` — go through `Reconciler` (`setup_actions()` registry). The legacy `ActionsHandler` survives *only* as the fallback for the **deprecated, no-verb `dasik <config>` form** (`_cmd_legacy`), which is slated for removal. New work targets the verb/reconciler path; don't add behavior to the legacy handler.
+✅ **`dasik/__main__.py` drives the v3 idempotent architecture.** The verbs — `plan`, `apply`, `sync`, `generations`, `rollback` — go through `Reconciler` (`setup_actions()` registry). The old monolithic `actions_handler.py` (`ActionsHandler`) and its no-verb `dasik <config>` fallback were **removed** (PR #151); a bare `dasik <config>` now errors and points at `dasik plan` / `dasik apply`. (`actions_handler_v2.py` still *defines* a class named `ActionsHandler`, exported as `ActionsHandlerV2` — that is the v3 one, unrelated to the deleted legacy handler.)
 
 ### The Action model (v2 — the target architecture)
 
@@ -123,7 +122,7 @@ Every change runs against the **mounted install target at `/mnt`**, typically vi
 - `execute() -> None` — apply changes; only called when `is_needed()` is `True`.
 - `verify() -> bool` — optional post-check (default `True`).
 
-`do_action()` and the `_before_check`/`after_check`/`KEY_NAME` members are **deprecated** shims for the legacy handler. New code uses `is_needed()/execute()/verify()`.
+`do_action()` and the `_before_check`/`after_check`/`KEY_NAME` members are **vestigial** shims (the legacy handler that used them is gone — PR #151); a couple of actions still carry them but nothing calls them. New code uses `plan()/apply()/import_state()` (and the `is_needed()/execute()/verify()` executor shims).
 
 Actions are registered in `actions_handler_v2.setup_actions()` with `register_action(action_class, config_key, is_optional, required_fields, depends_on)`. `config_key='__root__'` means the action reads root-level config fields (e.g. `DropFilesAction`, `MkinitcpioAction`). `ActionExecutor` walks the registry in order; ordering matters (disk/base first, boot last).
 
@@ -253,8 +252,8 @@ that crashes before it ever reaches `is_needed()`.
 - **Don't lower the coverage gate** — exclude untestable modules in config with a written justification instead.
 - **Preserve idempotency** — any new action must implement a real `is_needed()` that reads system state. A re-run of the same JSON must be a no-op.
 - **Keep sections optional** — config has many optional blocks (disks, kvm, cups, wireguard, …), not just disks. New top-level fields should be `Optional`/defaulted in `JsonModel`.
-- **Don't expand the legacy handler** — put new behavior in the v2 registry/action path, not in `actions_handler.py`'s `_handle_*` methods.
-- **Entry point is on v3** — `__main__`'s verbs (`plan`/`apply`/`sync`/`generations`/`rollback`) use the reconciler; the legacy handler is only the deprecated no-verb fallback (`_cmd_legacy`). Don't route new behavior through it.
+- **The legacy handler is gone** — the monolithic `actions_handler.py` and the no-verb `dasik <config>` fallback were removed (PR #151). Put all behavior in the v2/v3 registry/action path (`setup_actions()` + `plan()/apply()/import_state()`).
+- **Entry point is on v3** — `__main__`'s verbs (`plan`/`apply`/`sync`/`generations`/`rollback`) use the reconciler. A bare `dasik <config>` (no verb) is rejected with a pointer to `plan`/`apply`.
 - **Never run `execute()` against real hardware** — partitioning/`pacman`/`arch-chroot` are destructive. Mock `Command.execute` in tests.
 
 ## Git & GitHub

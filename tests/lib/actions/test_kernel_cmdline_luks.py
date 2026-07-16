@@ -50,3 +50,32 @@ def test_resolve_luks_uuid_reads_header_not_blkid():
     assert uuid == _UUID
     assert ("cryptsetup", ("luksUUID",)) in calls   # header read, not blkid
     assert all(c[0] != "blkid" for c in calls)
+
+
+# --- subvol-mounted root (partition mountpoint null) ----------------------- #
+
+def _subvol_root_action():
+    from types import SimpleNamespace
+    cfg = {"disks": {"disks": [{"device": "/dev/vda", "partitions": [
+        {"label": "esp", "mountpoint": "/boot", "filesystem": "fat32"},
+        {"label": "root", "filesystem": "btrfs", "encrypt": True,
+         "luks_name": "cryptroot", "mount_options": ["compress-force=zstd:3"],
+         "btrfs_subvolumes": [
+             {"name": "@", "mountpoint": "/", "mount_options": []},
+             {"name": "@home", "mountpoint": "/home", "mount_options": []},
+         ]}]}]}}
+    return KernelCmdlineAction(
+        cfg, context=SimpleNamespace(target=SimpleNamespace(is_chroot=False, root="/")))
+
+
+def test_derive_finds_subvol_mounted_encrypted_root():
+    from dasik.lib.actions.luks_uuid import luks_uuid
+    derived = _subvol_root_action()._derive_from_disks()
+    assert f"rd.luks.name={luks_uuid('cryptroot')}=cryptroot" in derived
+    assert "root=/dev/mapper/cryptroot rw" in derived
+
+
+def test_derive_subvol_root_rootflags_include_partition_options():
+    derived = _subvol_root_action()._derive_from_disks()
+    rf = next(p for p in derived if p.startswith("rootflags="))
+    assert "compress-force=zstd:3" in rf and "subvol=@" in rf

@@ -167,3 +167,24 @@ def test_ucode_initrds_empty_when_no_image_present(tmp_path):
     # reference a file that isn't there).
     a = BootloaderAction({"bootloader": "sd-boot", "enable_microcode": True}, _ctx(tmp_path))
     assert a._ucode_initrds() == []
+
+
+# --- subvol-mounted root (partition mountpoint null) ----------------------- #
+
+def _subvol_root_cfg():
+    return {"bootloader": "sd-boot", "disks": {"disks": [{
+        "device": "/dev/vda", "partitions": [
+            {"label": "esp", "mountpoint": "/boot", "filesystem": "fat32"},
+            {"label": "root", "filesystem": "btrfs", "encrypt": True,
+             "luks_name": "cryptroot",
+             "btrfs_subvolumes": [{"name": "@", "mountpoint": "/"}]}]}]}}
+
+
+def test_root_param_finds_subvol_mounted_encrypted_root():
+    a = BootloaderAction(_subvol_root_cfg())
+    assert a._root_param() == "root=/dev/mapper/cryptroot"
+
+
+def test_root_label_finds_subvol_mounted_root():
+    a = BootloaderAction(_subvol_root_cfg())
+    assert a._root_label() == "root"

@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 from typing import Any, Dict, List
 from .abstract_action import AbstractAction
+from .partition_utils import mounts_root
 from ..command_worker.command_worker import Command
 from ..state.change import Change, Op
 
@@ -52,7 +53,7 @@ class BootloaderAction(AbstractAction):
         disks = self._cfg.get("disks") or {}
         for disk in disks.get("disks", []):
             for part in disk.get("partitions", []):
-                if part.get("mountpoint") == "/":
+                if mounts_root(part):
                     return part.get("label", "root")
         return "root"
 
@@ -68,7 +69,7 @@ class BootloaderAction(AbstractAction):
         disks = self._cfg.get("disks") or {}
         for disk in disks.get("disks", []):
             for part in disk.get("partitions", []):
-                if part.get("mountpoint") == "/":
+                if mounts_root(part):
                     if part.get("encrypt"):
                         return f"root=/dev/mapper/{part.get('luks_name', 'cryptroot')}"
                     return f"root=LABEL={part.get('label', 'root')}"

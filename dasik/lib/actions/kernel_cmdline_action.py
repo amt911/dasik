@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+from .partition_utils import mounts_root
 from typing import Any, Dict, List, Optional
 from .abstract_action import AbstractAction
 from ..command_worker.command_worker import Command
@@ -78,7 +79,7 @@ class KernelCmdlineAction(AbstractAction):
 
         for disk in disks.get("disks", []):
             for part in disk.get("partitions", []):
-                if part.get("mountpoint") != "/":
+                if not mounts_root(part):
                     continue
                 if part.get("encrypt"):
                     from dasik.lib.actions.luks_uuid import luks_uuid
@@ -113,7 +114,14 @@ class KernelCmdlineAction(AbstractAction):
                     subvols = part.get("btrfs_subvolumes", [])
                     root_sv = next((s for s in subvols if s.get("mountpoint") == "/"), None)
                     sv_name = root_sv["name"] if root_sv else "@"
-                    options = root_sv.get("mount_options", ["compress-force=zstd"]) if root_sv else ["compress-force=zstd"]
+                    # Partition-level mount_options are the base (a shared option
+                    # like compress-force is hoisted there and the subvol's own
+                    # list may be empty); the subvol's own options add on top.
+                    base = list(part.get("mount_options", []) or [])
+                    sv_opts = root_sv.get("mount_options", []) if root_sv else []
+                    options = base + [o for o in sv_opts if o not in base]
+                    if not options:
+                        options = ["compress-force=zstd"]
                     opts_str = ",".join(options + [f"subvol={sv_name}"])
                     params.append(f"rootflags={opts_str}")
         return params

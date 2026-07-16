@@ -142,6 +142,28 @@ class DiskPartitionAction(AbstractAction):
         except Exception:
             return None
 
+    def _kernel_cmdline_text(self) -> str:
+        """The target's kernel cmdline (from /proc/cmdline on the live host). Empty
+        if unreadable — sync only recovers extra luks options on the running system."""
+        target = self._target()
+        path = target.path("/proc/cmdline") if target is not None else "/proc/cmdline"
+        try:
+            with open(path, "r") as f:
+                return f.read()
+        except Exception:
+            return ""
+
+    def _read_luks_options(self, uuid: str) -> "List[str]":
+        """Extra rd.luks.options tokens for <uuid> beyond the auto-derived
+        fido2-device=auto / tpm2-device=auto (e.g. token-timeout=10s), so sync
+        recovers luks_options from the live kernel cmdline."""
+        auto = {"fido2-device=auto", "tpm2-device=auto"}
+        for tok in self._kernel_cmdline_text().split():
+            if tok.startswith(f"rd.luks.options={uuid}="):
+                opts = tok.split("=", 2)[2].split(",")
+                return [o for o in opts if o and o not in auto]
+        return []
+
     def _read_luks_tokens(self, luks_name: str) -> set:
         """Which hardware-token unlock methods are enrolled in the LUKS header:
         {"fido2", "tpm2"} from the `cryptsetup luksDump` Tokens section. Lets sync
@@ -189,6 +211,10 @@ class DiskPartitionAction(AbstractAction):
                         p["unlock_fido2"] = True
                     if "tpm2" in tokens:
                         p["unlock_tpm2"] = True
+                    if uuid:
+                        extra = self._read_luks_options(uuid)
+                        if extra:
+                            p["luks_options"] = extra
             disks_out.append(d)
         return {"disks": {"disks": disks_out}}
 

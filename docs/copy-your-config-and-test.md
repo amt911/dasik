@@ -215,6 +215,20 @@ Requirements on the host: KVM (`/dev/kvm`), OVMF
 > drops to an emergency shell and **leaves QEMU alive** (it never powers off),
 > holding the disk-image lock — subsequent runs then read stale state and mislead you.
 
+> ⚠️ **Out of space in the live ISO?** The Arch ISO root is a **tmpfs in RAM**
+> (the "cowspace"), so a `pip install .` / AUR build can fill it and then fail with
+> odd errors — a truncated file, or a `TOMLDecodeError` while reading a half-written
+> `pyproject.toml`. Grow the tmpfs in place (no reboot, needs no disk):
+>
+> ```bash
+> mount -o remount,size=75% /run/archiso/cowspace   # up to 75% of RAM
+> df -h /run/archiso/cowspace && free -h            # check it grew / RAM is free
+> ```
+>
+> If RAM itself is full, free some (`rm -rf /var/cache/pacman/pkg/* /tmp/*`) or give
+> the guest more RAM (`DASIK_VM_RAM`, and raise `cow_spacesize` in `qemu.sh`). See
+> [vm-testing.md](vm-testing.md#out-of-space-in-the-live-iso-airootfs--cowspace).
+
 ### 3a. Smoke test with a passphrase (no FIDO2 key needed)
 
 FIDO2 needs the physical key; start with the passphrase path. The tracked

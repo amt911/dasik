@@ -196,9 +196,12 @@ into the matching directory. `sync` discovers the files **you** created there
 Plus:
 
 - **`etc_environment`** *(sync ✓)* — `list[str]`, lines written to `/etc/environment`.
-- **`files`** *(sync ✓ for known ones)* — `list` of `{"path": "/etc/...", "content": "..."}`,
-  arbitrary absolute-path files written verbatim (e.g. `/etc/crypttab`,
-  `/etc/wireguard/wg0.conf`).
+- **`files`** *(sync ✓ for known ones)* — `list` of `{"path": "/etc/...",
+  "content": "...", "mode": "0600"?}`, arbitrary absolute-path files written
+  verbatim (e.g. `/etc/crypttab`, `/etc/wireguard/wg0.conf`, NetworkManager
+  `*.nmconnection`). Optional `mode` is an octal string applied via `chmod` after
+  writing — needed for secret keyfiles (wireguard / NetworkManager refuse a
+  world-readable one); sync sets `"0600"` on the files it discovers there.
 
 ---
 

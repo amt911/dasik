@@ -8,6 +8,7 @@ exist (no directory glob). Registered config_key="__root__".
 from __future__ import annotations
 import hashlib
 import os
+import re
 from typing import Any, Dict, List, Optional
 from .abstract_action import AbstractAction
 from ..command_worker.command_worker import Command
@@ -72,10 +73,10 @@ class DropFilesAction(AbstractAction):
 
     @staticmethod
     def _path_fields(entry: Any) -> tuple:
-        """Accept a dict or an EtcFile-like object (arbitrary /etc path)."""
+        """Accept a dict or an EtcFile-like object -> (path, content, mode|None)."""
         if isinstance(entry, dict):
-            return entry["path"], entry["content"]
-        return entry.path, entry.content
+            return entry["path"], entry["content"], entry.get("mode")
+        return entry.path, entry.content, getattr(entry, "mode", None)
 
     def _desired(self) -> Dict[str, str]:
         """Canonical absolute path -> verbatim content."""
@@ -87,9 +88,20 @@ class DropFilesAction(AbstractAction):
         if self.etc_env_lines:
             desired[_ENV_PATH] = "\n".join(self.etc_env_lines) + "\n"
         for entry in self._etc_files:
-            path, content = self._path_fields(entry)
+            path, content, _mode = self._path_fields(entry)
             desired[path] = content
         return desired
+
+    def _file_modes(self) -> "Dict[str, int]":
+        """Canonical path -> numeric mode, for `files` entries that request one
+        (e.g. 0600 for wireguard / NetworkManager keyfiles, which the tools refuse
+        to load when world-readable)."""
+        modes: Dict[str, int] = {}
+        for entry in self._etc_files:
+            path, _content, mode = self._path_fields(entry)
+            if mode:
+                modes[path] = int(mode, 8)
+        return modes
 
     def _read(self, canonical: str) -> str:
         with open(self._abs(canonical), "r") as f:
@@ -189,9 +201,40 @@ class DropFilesAction(AbstractAction):
                 continue
             try:
                 with open(abs_p, "r") as f:
-                    out.append({"path": f"/etc/wireguard/{name}", "content": f.read()})
+                    out.append({"path": f"/etc/wireguard/{name}", "content": f.read(),
+                                "mode": "0600"})   # wg-quick refuses world-readable
             except OSError:
                 continue
+        return out
+
+    def _discover_nm_wireguard(self) -> "List[dict]":
+        """NetworkManager WireGuard connections
+        (/etc/NetworkManager/system-connections/*.nmconnection with
+        `type=wireguard`) as {path, content, mode}. Only wireguard-type keyfiles
+        are captured — not wifi/ethernet. NOTE: these hold the interface
+        PrivateKey (and PSKs) in cleartext — keep synced configs private. NM
+        IGNORES a keyfile that isn't 0600, hence the mode."""
+        base = self._abs("/etc/NetworkManager/system-connections")
+        out: List[dict] = []
+        try:
+            names = sorted(os.listdir(base))
+        except OSError:
+            return out
+        for name in names:
+            if not name.endswith(".nmconnection"):
+                continue
+            abs_p = os.path.join(base, name)
+            if os.path.islink(abs_p) or not os.path.isfile(abs_p):
+                continue
+            try:
+                with open(abs_p, "r") as f:
+                    content = f.read()
+            except OSError:
+                continue
+            if re.search(r"^\s*type\s*=\s*wireguard\s*$", content, re.MULTILINE):
+                out.append({
+                    "path": f"/etc/NetworkManager/system-connections/{name}",
+                    "content": content, "mode": "0600"})
         return out
 
     def _discover_crypttab(self) -> "Optional[str]":
@@ -240,13 +283,16 @@ class DropFilesAction(AbstractAction):
         files_out = []
         seen_paths = set()
         for entry in self._etc_files:
-            path, content = self._path_fields(entry)
+            path, content, mode = self._path_fields(entry)
             if path in actual:
                 content = self._read(path)
-            files_out.append({"path": path, "content": content})
+            out_entry: Dict[str, Any] = {"path": path, "content": content}
+            if mode:
+                out_entry["mode"] = mode
+            files_out.append(out_entry)
             seen_paths.add(path)
         if discover:
-            for wg in self._discover_wireguard():
+            for wg in self._discover_wireguard() + self._discover_nm_wireguard():
                 if wg["path"] not in seen_paths:
                     files_out.append(wg)
                     seen_paths.add(wg["path"])
@@ -261,6 +307,7 @@ class DropFilesAction(AbstractAction):
         if self._target() is None:
             return
         desired = self._desired()
+        modes = self._file_modes()
         writes = [c.item for c in changes if c.op in (Op.CREATE, Op.MODIFY)]
         deletes = [c.item for c in changes if c.op is Op.DELETE]
 
@@ -269,6 +316,8 @@ class DropFilesAction(AbstractAction):
             os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(path, "w") as f:
                 f.write(desired.get(canonical, ""))
+            if canonical in modes:                  # restrict secret files (0600)
+                os.chmod(path, modes[canonical])
 
         for canonical in deletes:
             path = self._abs(canonical)
@@ -281,12 +330,15 @@ class DropFilesAction(AbstractAction):
         return any(self._needs_write(p, c) for p, c in self._desired().items())
 
     def execute(self) -> None:
+        modes = self._file_modes()
         for canonical, content in self._desired().items():
             if self._needs_write(canonical, content):
                 path = self._abs(canonical)
                 os.makedirs(os.path.dirname(path), exist_ok=True)
                 with open(path, "w") as f:
                     f.write(content)
+                if canonical in modes:
+                    os.chmod(path, modes[canonical])
                 print(f"  Wrote {path}")
 
     def verify(self) -> bool:

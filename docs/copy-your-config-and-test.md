@@ -132,6 +132,57 @@ annotated reference of all these fields.
 
 ---
 
+## 1b. Make the captured `disks` generic before installing elsewhere
+
+A synced config is an **inventory** — its `disks` block mirrors *your* machine
+exactly (every disk you have, exact sizes, device-specific names, `format:false`).
+That is right for a day-2 re-apply on the same host, but to install it onto a
+**fresh disk** (a VM, a new SSD) you must generalize the `disks` block or it fails
+the way it did before (`Device /dev/sdX does not exist`, a partition too big for a
+smaller disk, or an unformatted `/boot`). The rest of the config (packages,
+services, `files`, `firewall`, …) is already portable — only `disks` needs this.
+
+| In the sync output | Make it generic |
+| --- | --- |
+| every disk, incl. data disks (`sdb`, `sdd`, …) | keep **only the system disk**; delete the others (they won't exist on the target) |
+| `"device": "/dev/nvme0n1"` etc. | set to the **target** disk — a KVM guest is almost always `/dev/vda`. dasik needs this; there is no auto-detect |
+| `"wipe_disk": false`, `"format": false` | **`true`** for a fresh install (a brand-new partition has no filesystem to preserve) |
+| exact `"size": "3610645MiB"` | modest fixed sizes for ESP/boot (`1GiB`), and **`"rest"`** on the last partition so it fills any disk |
+| device-name labels (`vda5`) / `luks_name: "vda7"` | role labels (`esp`, `boot`, `root`) and a generic `luks_name` like **`cryptroot`** (sync already produces role labels since the role-label change) |
+| baked `luks_uuid`, `unlock_fido2: true` | **drop `luks_uuid`** (dasik derives a deterministic one) and, where the FIDO2 key isn't present at install/boot (any VM), drop `unlock_fido2` and set **`luks_password`** instead |
+| two ESPs (one unmounted) | keep **one ESP** mounted at `/boot` |
+
+Minimal, portable single-disk template (encrypted btrfs + subvolumes):
+
+```json
+"disks": {
+  "disks": [
+    {
+      "device": "/dev/vda",
+      "partition_table": "gpt",
+      "wipe_disk": true,
+      "partitions": [
+        { "label": "esp", "size": "1GiB", "filesystem": "fat32",
+          "partition_type": "esp", "mountpoint": "/boot", "format": true },
+        { "label": "root", "size": "rest", "filesystem": "btrfs",
+          "partition_type": "linux", "format": true,
+          "encrypt": true, "luks_name": "cryptroot", "luks_password": "CHANGE_ME",
+          "btrfs_subvolumes": [
+            { "name": "@",     "mountpoint": "/",     "mount_options": ["compress-force=zstd:3"] },
+            { "name": "@home", "mountpoint": "/home", "mount_options": ["compress-force=zstd:3"] }
+          ]}
+      ]
+    }
+  ]
+}
+```
+
+> **Rule of thumb:** one disk, `device` = the target, `wipe_disk:true` +
+> `format:true`, last partition `"rest"`, generic `luks_name`, no `luks_uuid`, no
+> data disks. That installs on any disk without failing. dasik keys everything
+> off the partition **labels**, never the partition number, so nothing breaks
+> when `/dev/vda2` on the target held a different role on the source.
+
 ## 2. Sanity-check the config
 
 ```bash

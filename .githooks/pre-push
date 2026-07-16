@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# Pre-push gate — refuse to push unless the same checks CI enforces pass locally:
+#   1. pytest + coverage gate (>=80%, via [tool.coverage.report] fail_under)
+#   2. mypy (typing gate)
+#   3. bandit (SAST gate)
+#   4. mutation testing — set_math tier (idempotency-core backstop)
+#
+# Enable once per clone:   git config core.hooksPath .githooks
+# Skip in an emergency:    git push --no-verify   (discouraged — CI still gates)
+#
+# See docs/mutation-testing.md and .github/workflows/ci.yml (the gates mirror CI).
+set -euo pipefail
+
+cd "$(git rev-parse --show-toplevel)"
+
+# Prefer the repo venv's tools if present (so `pytest`/`mypy`/`mutmut` resolve).
+if [ -f .venv/bin/activate ]; then
+  # shellcheck disable=SC1091
+  . .venv/bin/activate
+fi
+
+fail() { echo "pre-push: $1" >&2; exit 1; }
+
+command -v pytest  >/dev/null 2>&1 || fail "pytest not found — pip install -e '.[dev]'"
+command -v mypy    >/dev/null 2>&1 || fail "mypy not found — pip install -e '.[dev]'"
+command -v bandit  >/dev/null 2>&1 || fail "bandit not found — pip install -e '.[dev]'"
+command -v mutmut  >/dev/null 2>&1 || fail "mutmut not found — pip install -e '.[dev,mut]'"
+
+echo "==> pre-push 1/4: pytest + coverage gate"
+pytest --cov=dasik -q
+
+echo "==> pre-push 2/4: mypy"
+mypy dasik
+
+echo "==> pre-push 3/4: bandit"
+bandit -c pyproject.toml -r dasik -q
+
+echo "==> pre-push 4/4: mutation testing (set_math tier)"
+scripts/mutation.sh >/dev/null
+
+echo "pre-push: all gates passed — pushing."

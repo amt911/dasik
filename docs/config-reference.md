@@ -291,6 +291,97 @@ Pulls in `zram-generator`.
 
 ---
 
+## Complete example (every field)
+
+One config exercising every section — validate a copy with `dasik check`
+(this one passes). Sections are independent; delete the ones you don't want.
+
+```json
+{
+  "timezone": { "region": "Europe", "city": "Madrid" },
+  "locales": {
+    "selected_locales": ["en_US.UTF-8 UTF-8", "es_ES.UTF-8 UTF-8"],
+    "desired_locale": "en_US.UTF-8",
+    "desired_tty_layout": "us"
+  },
+  "network": { "type": "NetworkManager", "add_default_hosts": true },
+  "hostname": "archbox",
+  "users": [
+    { "username": "andres", "hashed_password": "$6$salt$hash",
+      "shell": "/bin/zsh", "groups": ["wheel", "docker"] }
+  ],
+  "packages": [
+    "base-devel",
+    "firefox",
+    { "name": "linux-headers", "reason": "dep" },
+    "aur-yay"
+  ],
+  "drivers": ["nvidia"],
+  "bootloader": "sd-boot",
+  "initramfs": "dracut",
+  "kernel_cmdline": ["intel_iommu=on", "quiet"],
+  "enable_microcode": true,
+  "enable_trim": true,
+  "remove_home_on_delete": false,
+  "systemd": {
+    "enable_units": ["sshd.service", "fstrim.timer"],
+    "enable_sockets": ["cups.socket"],
+    "disable_units": ["systemd-networkd.service"]
+  },
+  "pacman": {
+    "options": { "Parallel": true, "Color": true, "VerbosePkgLists": false },
+    "multilib": true
+  },
+  "disks": { "disks": [
+    { "device": "/dev/vda", "partition_table": "gpt", "wipe_disk": true,
+      "partitions": [
+        { "label": "esp", "size": "1GiB", "filesystem": "fat32",
+          "partition_type": "esp", "mountpoint": "/boot", "format": true },
+        { "label": "swap", "size": "4GiB", "filesystem": "swap",
+          "partition_type": "linux-swap", "format": true },
+        { "label": "root", "size": "rest", "filesystem": "btrfs",
+          "partition_type": "linux", "mountpoint": "/", "format": true,
+          "encrypt": true, "luks_name": "cryptroot", "luks_password": "CHANGE_ME",
+          "unlock_tpm2": false, "unlock_fido2": false,
+          "luks_options": ["token-timeout=10s"],
+          "mount_options": ["compress-force=zstd:3"],
+          "btrfs_subvolumes": [
+            { "name": "@",     "mountpoint": "/" },
+            { "name": "@home", "mountpoint": "/home" }
+          ] }
+      ] }
+  ] },
+  "udev_rules":    [{ "name": "99-mydev.rules",    "content": "SUBSYSTEM==\"usb\", MODE=\"0660\"\n" }],
+  "modprobe_conf": [{ "name": "nvidia.conf",       "content": "options nvidia_drm modeset=1\n" }],
+  "modules_load":  [{ "name": "virtio.conf",       "content": "virtio\nvirtio_pci\n" }],
+  "sysctl_d":      [{ "name": "99-swappiness.conf","content": "vm.swappiness=10\n" }],
+  "tmpfiles_d":    [{ "name": "mytmp.conf",        "content": "d /run/mytmp 0755 root root\n" }],
+  "sddm_conf_d":   [{ "name": "autologin.conf",    "content": "[Autologin]\nUser=andres\nSession=plasma\n" }],
+  "profile_d":     [{ "name": "editor.sh",         "content": "export EDITOR=nvim\n" }],
+  "etc_environment": ["EDITOR=nvim", "MOZ_ENABLE_WAYLAND=1"],
+  "files": [{ "path": "/etc/crypttab", "content": "swap LABEL=cryptswap /dev/urandom swap,cipher=aes-xts-plain64\n" }],
+  "zram": { "zram0": { "zram-size": "min(ram / 2, 8192)", "swap-priority": 100 } },
+  "bluetooth": { "enable": true, "package": "bluez", "in_initramfs": true },
+  "hardware_acceleration": { "enable": true, "install_codecs": true },
+  "kvm": { "install": true },
+  "cups": { "install": true },
+  "microsoft_fonts": { "install": false, "source_iso": null },
+  "firewall": {
+    "enable": true,
+    "allowed_services": ["syncthing", "samba"],
+    "remove_services": ["ssh"],
+    "rich_rules": ["rule family=\"ipv4\" source address=\"192.168.1.0/24\" accept"]
+  },
+  "wireguard": { "enable": true, "interface_name": "wg0",
+    "config_content": "[Interface]\nPrivateKey = ...\nAddress = 10.0.0.2/32\n[Peer]\nPublicKey = ...\nEndpoint = vpn.example:51820\n" },
+  "snapper": { "enable": true, "configs": [{ "name": "root", "subvolume": "/" }] },
+  "metadata": { "author": "andres", "created": "2026-07" },
+  "notes": "Free-form notes; not applied."
+}
+```
+
+---
+
 ## See also
 
 - [copy-your-config-and-test.md](copy-your-config-and-test.md) — capturing a running

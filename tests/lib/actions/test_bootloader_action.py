@@ -131,3 +131,39 @@ def test_import_state_detects_grub(tmp_path):
 def test_import_state_empty_when_no_bootloader(tmp_path):
     a = BootloaderAction({"bootloader": "grub"}, _ctx(tmp_path))
     assert a.import_state(managed=[]) == {}
+
+
+# --- microcode initrd: only list the image that actually exists ----------- #
+
+def _mark_ucode(tmp_path, name):
+    b = tmp_path / "boot"
+    b.mkdir(parents=True, exist_ok=True)
+    (b / name).write_text("")
+
+
+def test_ucode_initrds_only_lists_installed_image(tmp_path):
+    # AMD host: only /boot/amd-ucode.img exists. The boot entry must NOT list
+    # /intel-ucode.img — systemd-boot errors "preparing initrd: Not found" on a
+    # missing initrd.
+    _mark_ucode(tmp_path, "amd-ucode.img")
+    a = BootloaderAction({"bootloader": "sd-boot", "enable_microcode": True}, _ctx(tmp_path))
+    assert a._ucode_initrds() == ["/amd-ucode.img"]
+
+
+def test_ucode_initrds_intel_only(tmp_path):
+    _mark_ucode(tmp_path, "intel-ucode.img")
+    a = BootloaderAction({"bootloader": "sd-boot", "enable_microcode": True}, _ctx(tmp_path))
+    assert a._ucode_initrds() == ["/intel-ucode.img"]
+
+
+def test_ucode_initrds_none_when_disabled(tmp_path):
+    _mark_ucode(tmp_path, "amd-ucode.img")
+    a = BootloaderAction({"bootloader": "sd-boot", "enable_microcode": False}, _ctx(tmp_path))
+    assert a._ucode_initrds() == []
+
+
+def test_ucode_initrds_empty_when_no_image_present(tmp_path):
+    # microcode enabled but no ucode img on the ESP -> list nothing (don't
+    # reference a file that isn't there).
+    a = BootloaderAction({"bootloader": "sd-boot", "enable_microcode": True}, _ctx(tmp_path))
+    assert a._ucode_initrds() == []

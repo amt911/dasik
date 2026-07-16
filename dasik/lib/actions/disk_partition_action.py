@@ -112,30 +112,54 @@ class DiskPartitionAction(AbstractAction):
             if disk.device in targets:
                 self._process_disk(disk)
 
-    def _read_luks_uuid(self, luks_name: str) -> "Optional[str]":
-        """Real LUKS header UUID of the open mapping *luks_name*, or None.
+    def _target(self):
+        return self.context.target if self.context is not None else None
 
-        `cryptsetup status <name>` -> backing device -> `cryptsetup luksUUID`.
-        Best-effort: any failure (not open, cryptsetup missing) yields None.
-        """
-        target = self.context.target if self.context is not None else None
+    @staticmethod
+    def _decode(out) -> str:
+        return out.decode("utf-8", "replace") if isinstance(out, bytes) else (out or "")
+
+    def _luks_backing_device(self, luks_name: str) -> "Optional[str]":
+        """Backing device of the open mapping (via `cryptsetup status`), or None."""
         try:
-            status = Command.execute("cryptsetup", ["status", luks_name], target=target)
-            out = status.stdout
-            out = out.decode("utf-8", "replace") if isinstance(out, bytes) else (out or "")
-            dev = None
-            for line in out.splitlines():
+            status = Command.execute("cryptsetup", ["status", luks_name], target=self._target())
+            for line in self._decode(status.stdout).splitlines():
                 if "device:" in line:
-                    dev = line.split("device:")[1].strip()
-                    break
-            if not dev:
-                return None
-            res = Command.execute("cryptsetup", ["luksUUID", dev], target=target)
-            uuid = res.stdout
-            uuid = uuid.decode("utf-8", "replace") if isinstance(uuid, bytes) else (uuid or "")
-            return uuid.strip() or None
+                    return line.split("device:")[1].strip()
         except Exception:
             return None
+        return None
+
+    def _read_luks_uuid(self, luks_name: str) -> "Optional[str]":
+        """Real LUKS header UUID of the open mapping *luks_name*, or None.
+        Best-effort: any failure (not open, cryptsetup missing) yields None."""
+        dev = self._luks_backing_device(luks_name)
+        if not dev:
+            return None
+        try:
+            res = Command.execute("cryptsetup", ["luksUUID", dev], target=self._target())
+            return self._decode(res.stdout).strip() or None
+        except Exception:
+            return None
+
+    def _read_luks_tokens(self, luks_name: str) -> set:
+        """Which hardware-token unlock methods are enrolled in the LUKS header:
+        {"fido2", "tpm2"} from the `cryptsetup luksDump` Tokens section. Lets sync
+        recover unlock_fido2/unlock_tpm2 from a live system. Best-effort."""
+        dev = self._luks_backing_device(luks_name)
+        if not dev:
+            return set()
+        try:
+            dump = self._decode(
+                Command.execute("cryptsetup", ["luksDump", dev], target=self._target()).stdout)
+        except Exception:
+            return set()
+        tokens = set()
+        if "systemd-fido2" in dump:
+            tokens.add("fido2")
+        if "systemd-tpm2" in dump:
+            tokens.add("tpm2")
+        return tokens
 
     def import_state(self, managed=None) -> dict:
         """Reflect the declared disk layout back into the config non-destructively.
@@ -160,6 +184,11 @@ class DiskPartitionAction(AbstractAction):
                     uuid = self._read_luks_uuid(p["luks_name"])
                     if uuid:
                         p["luks_uuid"] = uuid
+                    tokens = self._read_luks_tokens(p["luks_name"])
+                    if "fido2" in tokens:
+                        p["unlock_fido2"] = True
+                    if "tpm2" in tokens:
+                        p["unlock_tpm2"] = True
             disks_out.append(d)
         return {"disks": {"disks": disks_out}}
 

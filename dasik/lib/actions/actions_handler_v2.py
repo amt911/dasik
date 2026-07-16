@@ -53,6 +53,7 @@ def setup_actions() -> None:
     from .kernel_cmdline_action import KernelCmdlineAction
     from .bootloader_action import BootloaderAction
     from .ms_fonts_action import MicrosoftFontsAction
+    from .zram_action import ZramAction
 
     # === Phase 1: disk & base install =====================================
     register_action(
@@ -137,6 +138,11 @@ def setup_actions() -> None:
     register_action(
         action_class=MicrosoftFontsAction,
         config_key='microsoft_fonts',
+        is_optional=True,
+    )
+    register_action(
+        action_class=ZramAction,
+        config_key='__root__',  # reads root-level `zram` mapping
         is_optional=True,
     )
 

@@ -1,4 +1,6 @@
 """Disk partitioning action."""
+import json
+import re
 from pathlib import Path
 from typing import Dict, List, Optional
 from dasik.lib.actions.abstract_action import AbstractAction
@@ -12,6 +14,15 @@ from dasik.lib.models.disk_model import (
 from dasik.lib.command_worker.command_worker import Command
 from dasik.lib.exceptions.exceptions import CommandExecutionError
 from dasik.lib.state.change import Change, Op
+
+# lsblk FSTYPE -> dasik filesystem. Anything absent (ntfs, None, crypto_LUKS
+# handled separately, …) is UNREPRESENTABLE and its partition is skipped during
+# discovery — sync captures an inventory, not a lossy guess.
+_DISCOVER_FS = {
+    "ext4": "ext4", "btrfs": "btrfs", "xfs": "xfs",
+    "vfat": "fat32", "fat32": "fat32", "swap": "swap",
+}
+_LABEL_OK = re.compile(r"[A-Za-z0-9_.-]{1,36}")
 
 
 class DiskPartitionAction(AbstractAction):
@@ -190,11 +201,13 @@ class DiskPartitionAction(AbstractAction):
         stanza forces ``format``/``wipe_disk`` OFF (so a synced config can NEVER
         reformat on re-apply), bakes in the real LUKS header UUID (the unlock fact,
         read from the running mapping), and drops the plaintext ``luks_password``
-        (a secret is never persisted by sync). No disks declared -> nothing to
-        reflect; sync does not discover a layout from scratch.
+        (a secret is never persisted by sync). No disks declared -> discover the
+        live layout from scratch (``_discover_disks``), best-effort and equally
+        non-destructive.
         """
         if not self.disks:
-            return {}
+            discovered = self._discover_disks()
+            return {"disks": {"disks": discovered}} if discovered else {}
         disks_out = []
         for disk in self.disks:
             d = disk.model_dump(mode="json")
@@ -217,6 +230,193 @@ class DiskPartitionAction(AbstractAction):
                             p["luks_options"] = extra
             disks_out.append(d)
         return {"disks": {"disks": disks_out}}
+
+    # --- live layout discovery (sync from an empty seed) -------------- #
+
+    @staticmethod
+    def _map_fs(fstype: "Optional[str]") -> "Optional[str]":
+        """dasik filesystem for an lsblk FSTYPE, or None if unrepresentable."""
+        return _DISCOVER_FS.get((fstype or "").strip().lower())
+
+    @staticmethod
+    def _map_ptype(parttypename: "Optional[str]") -> str:
+        """Map a GPT partition-type name to dasik's coarse partition_type."""
+        name = (parttypename or "").lower()
+        if "efi system" in name:
+            return "esp"
+        if "swap" in name:
+            return "linux-swap"
+        return "linux"
+
+    @staticmethod
+    def _bytes_to_size(n: int) -> str:
+        """Render a byte count as a model-valid size string (whole MiB)."""
+        return f"{max(1, round(n / (1024 * 1024)))}MiB"
+
+    @staticmethod
+    def _safe_label(candidates: "List[Optional[str]]", fallback: str,
+                    used: set) -> str:
+        """First candidate that is a valid, unused label; else the sanitized
+        device name, de-duplicated with a numeric suffix. Labels must be unique
+        per disk and match the model's charset — real disks have blank or
+        space-bearing labels, so discovery always synthesizes a safe one."""
+        for c in candidates:
+            if c and _LABEL_OK.fullmatch(c) and c not in used:
+                return c
+        base = re.sub(r"[^A-Za-z0-9_.-]", "", fallback)[:36] or "part"
+        label, i = base, 1
+        while label in used:
+            suffix = f"_{i}"
+            label = base[: 36 - len(suffix)] + suffix
+            i += 1
+        return label
+
+    def _lsblk_tree(self) -> list:
+        """Top-level block devices as lsblk's JSON tree (best-effort, [] on error)."""
+        try:
+            res = Command.execute(
+                "lsblk",
+                ["-J", "-b", "-o",
+                 "NAME,PATH,TYPE,FSTYPE,LABEL,PARTLABEL,PARTTYPENAME,SIZE,MOUNTPOINT,PTTYPE"],
+                target=self._target())
+            data = json.loads(self._decode(res.stdout) or "{}")
+            return data.get("blockdevices", []) or []
+        except Exception:
+            return []
+
+    def _findmnt_btrfs_rows(self) -> "List[tuple]":
+        """(target, source, options) for every mounted btrfs (for subvolumes)."""
+        try:
+            res = Command.execute(
+                "findmnt", ["-rn", "-t", "btrfs", "-o", "TARGET,SOURCE,OPTIONS"],
+                target=self._target())
+        except Exception:
+            return []
+        rows = []
+        for line in self._decode(res.stdout).splitlines():
+            cols = line.split(None, 2)
+            if len(cols) == 3:
+                rows.append((cols[0], cols[1], cols[2]))
+        return rows
+
+    def _btrfs_subvols(self, node: dict) -> "List[dict]":
+        """Mounted subvolumes of the btrfs on *node*, from findmnt. Best-effort;
+        maps each `subvol=/@x` mount to a BtrfsSubvolume {name, mountpoint}."""
+        source = node.get("path")
+        if not source:
+            return []
+        subs, seen = [], set()
+        for target, src, opts in self._findmnt_btrfs_rows():
+            if src.split("[")[0] != source:      # findmnt shows /dev/x[/@sub]
+                continue
+            subvol = next((o.split("=", 1)[1] for o in opts.split(",")
+                           if o.startswith("subvol=")), None)
+            if not subvol:
+                continue
+            name = subvol.rstrip("/").split("/")[-1]
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            mopts = [o for o in opts.split(",") if o.startswith("compress")]
+            subs.append({"name": name, "mountpoint": target,
+                         "mount_options": mopts or ["compress-force=zstd"]})
+        return subs
+
+    def _partition_from_node(self, node: dict, used: set) -> "Optional[dict]":
+        """Build a partition dict from an lsblk `part` node, or None to skip it
+        (unrepresentable filesystem / closed LUKS)."""
+        fstype = node.get("fstype")
+        encrypt, luks_name, luks_uuid = False, None, None
+        inner = node
+        if (fstype or "").lower() == "crypto_luks":
+            kids = [c for c in node.get("children", []) if c.get("type") == "crypt"]
+            if not kids:
+                return None                      # locked: inner fs unknown -> skip
+            inner = kids[0]
+            luks_name = inner.get("name")
+            fs = self._map_fs(inner.get("fstype"))
+            if not fs or not luks_name:
+                return None
+            encrypt = True
+            luks_uuid = self._read_luks_uuid(luks_name)
+        else:
+            fs = self._map_fs(fstype)
+            if not fs:
+                return None
+        label = self._safe_label(
+            [node.get("partlabel"), inner.get("label"), node.get("label")],
+            node.get("name", "part"), used)
+        used.add(label)
+        part: Dict = {
+            "label": label,
+            "size": self._bytes_to_size(int(node.get("size") or 0)),
+            "filesystem": fs,
+            "partition_type": self._map_ptype(node.get("parttypename")),
+            "format": False,
+        }
+        subs = self._btrfs_subvols(inner) if fs == "btrfs" else []
+        if subs:
+            part["btrfs_subvolumes"] = subs
+        # A btrfs with subvolumes carries mountpoints on the SUBVOLUMES; lsblk
+        # leaks one arbitrary subvol mount up to the partition (e.g. /var/tmp),
+        # which is misleading — so only set a partition mountpoint when there are
+        # no subvolumes.
+        if not subs:
+            mnt = inner.get("mountpoint") or node.get("mountpoint")
+            if mnt:
+                part["mountpoint"] = mnt
+        if encrypt and luks_name:
+            part["encrypt"] = True
+            part["luks_name"] = luks_name
+            if luks_uuid:
+                part["luks_uuid"] = luks_uuid
+            tokens = self._read_luks_tokens(luks_name)
+            if "fido2" in tokens:
+                part["unlock_fido2"] = True
+            if "tpm2" in tokens:
+                part["unlock_tpm2"] = True
+            if luks_uuid:
+                extra = self._read_luks_options(luks_uuid)
+                if extra:
+                    part["luks_options"] = extra
+        return part
+
+    def _discover_disks(self) -> "List[dict]":
+        """Discover the live disk layout as an inventory of dasik disk stanzas.
+
+        Non-destructive by construction: every disk comes back with
+        ``wipe_disk: false`` and every partition with ``format: false``, so a
+        synced config can never repartition. Partitions whose filesystem dasik
+        cannot represent (ntfs, unformatted, locked LUKS) are skipped; a disk
+        with no representable partitions is omitted. Each disk is validated
+        through the model and dropped if it does not (never emit an invalid disk).
+        """
+        out: List[dict] = []
+        for dev in self._lsblk_tree():
+            if dev.get("type") != "disk":
+                continue
+            used: set = set()
+            parts = []
+            for child in dev.get("children", []) or []:
+                if child.get("type") != "part":
+                    continue
+                p = self._partition_from_node(child, used)
+                if p:
+                    parts.append(p)
+            if not parts:
+                continue
+            disk = {
+                "device": dev.get("path") or f"/dev/{dev.get('name')}",
+                "partition_table": "msdos" if dev.get("pttype") == "dos" else "gpt",
+                "wipe_disk": False,
+                "partitions": parts,
+            }
+            try:
+                DiskLayout.model_validate(disk)
+            except Exception:                    # nosec B112 - deliberate: never
+                continue                         # emit a disk that won't validate
+            out.append(disk)
+        return out
 
     # --- legacy executor bridge --------------------------------------- #
 

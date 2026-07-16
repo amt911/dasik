@@ -1,4 +1,4 @@
-from typing import Optional, List, Union
+from typing import Optional, List, Union, Dict, Any
 from pydantic import BaseModel, Field
 
 from .locale_model import LocaleModel
@@ -73,3 +73,5 @@ class JsonModel(BaseModel):
     firewall: Optional[FirewallModel] = None
     wireguard: Optional[WireguardModel] = None
     snapper: Optional[SnapperModel] = None
+    # zram-generator: {device: {option: value}} mirroring zram-generator.conf ini.
+    zram: Optional[Dict[str, Dict[str, Any]]] = None

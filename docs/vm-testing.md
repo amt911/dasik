@@ -94,6 +94,48 @@ extracted kernel live under `~/.cache/dasik-vmtest/` (a real disk — **not**
 > bootloader step can't complete (everything else is still verified);
 > `qemu.sh boot` (also OVMF-aware) then boots the installed image.
 
+### Out of space in the live ISO (airootfs / cowspace)
+
+The Arch ISO root is a **read-only squashfs** plus a writable overlay called the
+**cowspace** — a **tmpfs in RAM**, sized by the kernel `cow_spacesize` parameter.
+The harness pins it at `cow_spacesize=2G` (in `qemu.sh`'s `-append`), so a run
+that writes a lot to the *live* root (AUR builds under `makepkg`, the pacman
+download cache, `/tmp`) can hit **"No space left on device"** even though the
+guest disk is fine. (A normal `dasik apply` writes into `/mnt` on the guest disk,
+**not** the cowspace — so this bites AUR/interactive work, not the pacstrap.)
+
+**Unblock right now, without rebooting** — the cowspace is already a tmpfs, so
+just grow it in place (needs no disk space):
+
+```bash
+mount -o remount,size=75% /run/archiso/cowspace   # up to 75% of RAM
+df -h /run/archiso/cowspace     # Size grew?
+free -h                         # RAM actually free?
+```
+
+If `free -h` shows free RAM, that remount unblocks you immediately. If RAM itself
+is exhausted (the tmpfs can't grow past RAM), free some instead:
+
+```bash
+rm -rf /var/cache/pacman/pkg/*   # downloaded package cache
+rm -rf /tmp/*
+```
+
+…or move the heavy writes onto the **guest disk** (not RAM) — e.g. point the
+pacman cache / AUR build dir at a directory under `/mnt`.
+
+**Raise it for the whole run** — bump both `cow_spacesize` occurrences and give
+the guest RAM to hold it (the cow lives in RAM, so `cow_spacesize` < `DASIK_VM_RAM`):
+
+```bash
+sed -i 's/cow_spacesize=2G/cow_spacesize=6G/' scripts/vmtest/qemu.sh
+DASIK_VM_RAM=8192 scripts/vmtest/qemu.sh install config/vm-minimal.json
+```
+
+Outside this harness (booting a real ISO): add `cow_spacesize=6G` on the kernel
+line from the boot menu (`e`/`Tab`), or `mount -o remount,size=6G /run/archiso/cowspace`
+once booted.
+
 ### Manual (`run-iso` + `boot`)
 
 ```bash

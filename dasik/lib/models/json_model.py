@@ -1,4 +1,4 @@
-from typing import Optional, List, Union
+from typing import Optional, List, Union, Dict, Any
 from pydantic import BaseModel, Field
 
 from .locale_model import LocaleModel
@@ -52,6 +52,10 @@ class JsonModel(BaseModel):
     # Files / lines to drop on the target system
     udev_rules: List[FileEntry] = Field(default_factory=list)
     modprobe_conf: List[FileEntry] = Field(default_factory=list)
+    modules_load: List[FileEntry] = Field(default_factory=list)
+    sysctl_d: List[FileEntry] = Field(default_factory=list)
+    tmpfiles_d: List[FileEntry] = Field(default_factory=list)
+    sddm_conf_d: List[FileEntry] = Field(default_factory=list)
     profile_d: List[FileEntry] = Field(default_factory=list)
     etc_environment: List[str] = Field(default_factory=list)
     files: List[EtcFile] = Field(default_factory=list)
@@ -73,3 +77,5 @@ class JsonModel(BaseModel):
     firewall: Optional[FirewallModel] = None
     wireguard: Optional[WireguardModel] = None
     snapper: Optional[SnapperModel] = None
+    # zram-generator: {device: {option: value}} mirroring zram-generator.conf ini.
+    zram: Optional[Dict[str, Dict[str, Any]]] = None

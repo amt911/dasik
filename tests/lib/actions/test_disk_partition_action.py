@@ -103,11 +103,11 @@ def test_managed_keys_lists_converged():
         assert a.managed_keys() == {"disks": ["/dev/vda"]}
 
 
-def test_import_state_empty_when_no_disks():
-    # sync does not invent a disk layout from scratch — nothing declared, nothing
-    # captured.
+def test_import_state_empty_when_no_disks_and_nothing_discoverable():
+    # Nothing declared AND nothing discoverable (no block devices) -> empty.
     a = DiskPartitionAction({}, _ctx())
-    assert a.import_state(managed=[]) == {}
+    with patch.object(DiskPartitionAction, "_lsblk_tree", return_value=[]):
+        assert a.import_state(managed=[]) == {}
 
 
 def test_import_state_reflects_disks_non_destructively():

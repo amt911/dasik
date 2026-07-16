@@ -530,10 +530,16 @@ class DiskPartitionAction(AbstractAction):
         # Refresh partition table
         self._refresh_partition_table(disk.device)
         
-        # Format partitions
+        # Format partitions. Reaching _process_disk means plan() decided to
+        # (re)partition this disk — which only happens on a fresh/empty or wiped
+        # disk (a populated disk without wipe_disk is refused by plan()). So every
+        # partition here was just created EMPTY and MUST be formatted; the
+        # `format` flag is NOT a gate here. (`format: false`, which sync writes for
+        # day-2 idempotency, is honored by plan() skipping a converged disk
+        # entirely, so this loop is never reached in that case.) Skipping mkfs on a
+        # freshly-created partition left /boot raw -> unmountable -> empty fstab.
         for partition in disk.partitions:
-            if partition.format:
-                self._format_partition(disk.device, partition)
+            self._format_partition(disk.device, partition)
         
         # Mount partitions
         self._mount_partitions(disk)

@@ -112,6 +112,25 @@ def test_crypttab_absent_no_entry(tmp_path):
     assert all(f["path"] != "/etc/crypttab" for f in frag["files"])
 
 
+def test_discovers_wireguard_confs_into_files(tmp_path):
+    (tmp_path / "etc/wireguard").mkdir(parents=True)
+    (tmp_path / "etc/wireguard/wg0.conf").write_text(
+        "[Interface]\nPrivateKey = SECRET=\nAddress = 10.0.0.2/32\n"
+        "[Peer]\nPublicKey = PUB=\nEndpoint = vpn.example:51820\n")
+    (tmp_path / "etc/wireguard/wg1.conf").write_text("[Interface]\nPrivateKey = K2=\n")
+    (tmp_path / "etc/wireguard/README").write_text("not a conf")  # ignored (no .conf)
+    frag = _discover(tmp_path)
+    wg = {f["path"]: f["content"] for f in frag["files"] if "/etc/wireguard/" in f["path"]}
+    assert set(wg) == {"/etc/wireguard/wg0.conf", "/etc/wireguard/wg1.conf"}
+    assert "PrivateKey = SECRET=" in wg["/etc/wireguard/wg0.conf"]
+
+
+def test_wireguard_absent_no_files(tmp_path):
+    (tmp_path / "etc").mkdir(parents=True)
+    frag = _discover(tmp_path)
+    assert all("/etc/wireguard/" not in f["path"] for f in frag["files"])
+
+
 def test_no_discovery_without_target():
     a = DropFilesAction({}, None)
     frag = a.import_state(managed=[])

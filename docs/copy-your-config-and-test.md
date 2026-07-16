@@ -82,19 +82,17 @@ seed is written next to it.
   detected from which one is installed.
 - **`unlock_fido2` / `unlock_tpm2`** — read from the LUKS header's enrolled tokens
   (`cryptsetup luksDump`), so a FIDO2/TPM2-unlocked root round-trips.
+- **`bluetooth.in_initramfs`** — detected from the `bluetooth` module in
+  `/etc/dracut.conf.d/*.conf` (a BT keyboard at the early prompt).
+- **`luks_options`** — extra `rd.luks.options` tokens (e.g. `token-timeout=10s`)
+  read from the live kernel cmdline, minus the auto-derived fido2/tpm2 ones.
 
-### What `sync` does NOT capture — add these by hand
-
-Two declaration-only settings can't be introspected reliably; copy them from
-[`config/example-dracut-fido2.json`](../config/example-dracut-fido2.json):
-
-| Your setup | Add to the config |
-| --- | --- |
-| `add_dracutmodules+=" bluetooth "` (BT keyboard early) | `"bluetooth": {"enable": true, "in_initramfs": true}` |
-| `token-timeout=10s` in `rd.luks.options` | `"luks_options": ["token-timeout=10s"]` on the partition |
-
-From those, dasik regenerates the equivalent `/etc/dracut.conf.d/dasik.conf`,
-neutralizes mkinitcpio's pacman hooks, and derives the `rd.luks.*` cmdline for you.
+A dracut + LUKS + FIDO2 + bluetooth host now round-trips through `sync` with no
+manual edits. From the captured config, dasik regenerates the equivalent
+`/etc/dracut.conf.d/dasik.conf`, neutralizes mkinitcpio's pacman hooks, and derives
+the `rd.luks.*` cmdline for you.
+[`config/example-dracut-fido2.json`](../config/example-dracut-fido2.json) is an
+annotated reference of all these fields.
 
 ---
 

@@ -212,3 +212,38 @@ def test_import_state_no_tokens_leaves_unlock_flags_false():
         frag = a.import_state(managed=[])
     root = frag["disks"]["disks"][0]["partitions"][1]
     assert root.get("unlock_fido2") is False and root.get("unlock_tpm2") is False
+
+
+def test_import_state_recovers_luks_options_from_cmdline():
+    a = DiskPartitionAction(_luks_cfg(), _ctx("/"))
+
+    def fake(cmd, args=None, *rest, **kw):
+        if cmd == "cryptsetup" and args and args[0] == "status":
+            return MagicMock(stdout=b"  device:  /dev/vda2\n", returncode=0)
+        if cmd == "cryptsetup" and args and args[0] == "luksUUID":
+            return MagicMock(stdout=b"THEUUID\n", returncode=0)
+        return MagicMock(stdout=b"Tokens:\n", returncode=0)
+
+    cmdline = "BOOT_IMAGE=/vmlinuz rd.luks.options=THEUUID=fido2-device=auto,token-timeout=10s rw"
+    with patch("dasik.lib.actions.disk_partition_action.Command.execute", side_effect=fake), \
+         patch.object(DiskPartitionAction, "_kernel_cmdline_text", return_value=cmdline):
+        frag = a.import_state(managed=[])
+    root = frag["disks"]["disks"][0]["partitions"][1]
+    assert root["luks_options"] == ["token-timeout=10s"]   # auto fido2 token dropped
+
+
+def test_import_state_no_luks_options_when_only_auto():
+    a = DiskPartitionAction(_luks_cfg(), _ctx("/"))
+
+    def fake(cmd, args=None, *rest, **kw):
+        if cmd == "cryptsetup" and args and args[0] == "status":
+            return MagicMock(stdout=b"  device:  /dev/vda2\n", returncode=0)
+        if cmd == "cryptsetup" and args and args[0] == "luksUUID":
+            return MagicMock(stdout=b"THEUUID\n", returncode=0)
+        return MagicMock(stdout=b"", returncode=0)
+
+    with patch("dasik.lib.actions.disk_partition_action.Command.execute", side_effect=fake), \
+         patch.object(DiskPartitionAction, "_kernel_cmdline_text",
+                      return_value="rd.luks.options=THEUUID=fido2-device=auto"):
+        frag = a.import_state(managed=[])
+    assert frag["disks"]["disks"][0]["partitions"][1]["luks_options"] == []

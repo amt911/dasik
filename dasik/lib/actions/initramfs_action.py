@@ -4,6 +4,9 @@ Scalar v3 domain "initramfs": the desired config is a single derived value.
 The generator (mkinitcpio | dracut | …) is chosen by the root `initramfs`
 config field. Registered config_key="__root__" (reads disks + selector).
 """
+import glob
+import os
+import re
 from typing import Any, Dict, Optional
 from .scalar_action import ScalarV3Action
 from .initramfs import make_backend
@@ -59,11 +62,35 @@ class InitramfsAction(ScalarV3Action):
             return "dracut"
         return "mkinitcpio"
 
+    def _dracut_bluetooth_in_initramfs(self) -> bool:
+        """True if any /etc/dracut.conf.d/*.conf pulls the `bluetooth` module into
+        the initramfs (a BT keyboard at the LUKS/FIDO2 prompt)."""
+        target = getattr(self.context, "target", None) if self.context else None
+        if target is None:
+            return False
+        conf_d = target.path("/etc/dracut.conf.d")
+        rx = re.compile(r"add_dracutmodules\+?=.*\bbluetooth\b")
+        try:
+            for conf in glob.glob(os.path.join(conf_d, "*.conf")):
+                with open(conf, "r") as f:
+                    if rx.search(f.read()):
+                        return True
+        except OSError:
+            return False
+        return False
+
     def import_state(self, managed=None) -> dict:
         # sync captures the ACTIVE generator so a dracut host round-trips as
         # `"initramfs": "dracut"` instead of being silently dropped.
         gen = self._detect_generator()
-        return {"initramfs": gen} if gen else {}
+        frag: Dict[str, Any] = {}
+        if gen:
+            frag["initramfs"] = gen
+        # A BT keyboard in the initramfs isn't otherwise captured (bluez/service are,
+        # via packages/systemd, but the initramfs module is only in dracut.conf.d).
+        if self._dracut_bluetooth_in_initramfs():
+            frag["bluetooth"] = {"enable": True, "in_initramfs": True}
+        return frag
 
     def _import_fragment(self, value) -> dict:
         return {}

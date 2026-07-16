@@ -73,16 +73,39 @@ def test_import_state_detects_dracut():
     with patch("dasik.lib.actions.initramfs_action.Command.execute",
                side_effect=_pkg_fake({"dracut"})):
         a = InitramfsAction({"initramfs": "dracut"}, _ctx("/"))
-        assert a.import_state() == {"initramfs": "dracut"}
+        assert a.import_state()["initramfs"] == "dracut"
 
 
 def test_import_state_detects_mkinitcpio_when_present():
     with patch("dasik.lib.actions.initramfs_action.Command.execute",
                side_effect=_pkg_fake({"dracut", "mkinitcpio"})):
         a = InitramfsAction({}, _ctx("/"))
-        assert a.import_state() == {"initramfs": "mkinitcpio"}
+        assert a.import_state()["initramfs"] == "mkinitcpio"
 
 
 def test_import_state_empty_without_target():
     a = InitramfsAction({}, context=None)
     assert a.import_state() == {}
+
+
+def test_import_state_detects_bluetooth_in_initramfs(tmp_path):
+    d = tmp_path / "etc" / "dracut.conf.d"
+    d.mkdir(parents=True)
+    (d / "myflags.conf").write_text('add_dracutmodules+=" bluetooth "\n')
+    with patch("dasik.lib.actions.initramfs_action.Command.execute",
+               side_effect=_pkg_fake({"dracut"})):
+        a = InitramfsAction({}, _ctx(str(tmp_path)))
+        frag = a.import_state()
+    assert frag["initramfs"] == "dracut"
+    assert frag["bluetooth"] == {"enable": True, "in_initramfs": True}
+
+
+def test_import_state_no_bluetooth_when_module_absent(tmp_path):
+    d = tmp_path / "etc" / "dracut.conf.d"
+    d.mkdir(parents=True)
+    (d / "x.conf").write_text('add_dracutmodules+=" crypt btrfs "\n')
+    with patch("dasik.lib.actions.initramfs_action.Command.execute",
+               side_effect=_pkg_fake({"dracut"})):
+        a = InitramfsAction({}, _ctx(str(tmp_path)))
+        frag = a.import_state()
+    assert "bluetooth" not in frag

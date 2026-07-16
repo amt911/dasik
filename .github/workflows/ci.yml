@@ -113,12 +113,13 @@ jobs:
         run: bandit -c pyproject.toml -r dasik
 
   mutation:
-    name: Mutation testing — set_math (advisory)
+    name: Mutation testing — set_math (gate)
     runs-on: ubuntu-latest
-    # Advisory: mutation testing is the CLAUDE.md § Quality "highest priority"
-    # backstop against covered-but-unverified idempotency logic, but the pytest
-    # coverage gate stays the hard merge gate. Tier 1 only (set_math.py) — fast
-    # and deterministic (~48 mutants, <1s). The reconciler tier is a slower,
+    # Merge GATE: mutation testing is the CLAUDE.md § Quality "highest priority"
+    # backstop against covered-but-unverified idempotency logic. Tier 1
+    # (set_math.py) is fast and deterministic (~48 mutants, <1s) and currently
+    # mutation-clean, so a NEW surviving mutant (covered but not verified) now
+    # fails CI instead of only being surfaced. The reconciler tier is a slower,
     # on-demand local run: `scripts/mutation.sh --reconciler`. Details in
     # docs/mutation-testing.md.
     steps:
@@ -131,10 +132,10 @@ jobs:
       - name: Install package (dev + mut extras)
         run: pip install -e ".[dev,mut]"
 
-      # continue-on-error at the step level so a surviving mutant is surfaced in
-      # the log without blocking merge — advisory, like mypy/pip-audit above.
+      # No continue-on-error: a real surviving mutant fails the job.
+      # scripts/mutation.sh exits non-zero only on a real (non-equivalent)
+      # survivor, and 0 on a mutation-clean run.
       - name: Run mutation testing (tier 1)
-        continue-on-error: true
         run: scripts/mutation.sh
 
   vm-harness-lint:

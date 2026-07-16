@@ -411,10 +411,11 @@ class DiskPartitionAction(AbstractAction):
                 "wipe_disk": False,
                 "partitions": parts,
             }
+            # Deliberate skip: never emit a disk that won't validate.
             try:
                 DiskLayout.model_validate(disk)
-            except Exception:                    # nosec B112 - deliberate: never
-                continue                         # emit a disk that won't validate
+            except Exception:  # nosec B112
+                continue
             out.append(disk)
         return out
 

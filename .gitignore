@@ -32,3 +32,8 @@ htmlcov/
 # mutmut mutation-testing working dir
 /mutants/
 .mutmut-cache
+
+# Local sync captures (user system inventory — never commit)
+config/mysystem.json
+config/mysystem.json.bak
+config/test.json

@@ -92,11 +92,12 @@ def test_plan_verb_missing_config_exits_nonzero(tmp_path, capsys):
     assert "does not exist" in capsys.readouterr().err
 
 
-def test_no_verb_form_still_works_with_deprecation_warning(tmp_path, capsys):
+def test_no_verb_form_is_rejected_with_pointer_to_verbs(tmp_path, capsys):
+    # The legacy no-verb `dasik <config>` install path was removed; it must now
+    # fail with a message pointing at the plan/apply verbs (not silently run).
     cfg = _write_config(tmp_path, {"packages": []})
-    with patch("dasik.__main__.ActionsHandler") as handler:
-        rc = cli.main([str(cfg)])
-    assert rc == 0
+    rc = cli.main([str(cfg)])
+    assert rc != 0
     err = capsys.readouterr().err
-    assert "deprecated" in err.lower()
-    handler.assert_called_once_with(str(cfg))
+    assert "no longer supported" in err.lower()
+    assert "dasik apply" in err and "dasik plan" in err

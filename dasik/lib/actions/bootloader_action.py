@@ -123,10 +123,16 @@ class BootloaderAction(AbstractAction):
     # --- destructive install (mocked in tests) ------------------------ #
 
     def _ucode_initrds(self) -> List[str]:
+        # Only reference a ucode image that ACTUALLY EXISTS on the ESP. Listing
+        # both /intel-ucode.img and /amd-ucode.img unconditionally makes
+        # systemd-boot fail at boot with "Error preparing initrd: Not found" on
+        # the one that isn't installed (only amd-ucode OR intel-ucode is present,
+        # per the CPU). By install time the ucode package's .img is already in
+        # /boot, so an existence check picks exactly the right one.
         if not self.enable_microcode:
             return []
-        # both are harmless if absent; the present one is used
-        return ["/intel-ucode.img", "/amd-ucode.img"]
+        return [img for img in ("/intel-ucode.img", "/amd-ucode.img")
+                if os.path.exists(self._p("/boot" + img))]
 
     def _install(self) -> None:  # pragma: no cover - shells out to bootctl/grub
         t = self._target()

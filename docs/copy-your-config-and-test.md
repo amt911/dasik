@@ -78,21 +78,23 @@ seed is written next to it.
   encrypted root gets its real `luks_uuid` baked in (the plaintext `luks_password`
   is *dropped* — a secret is never written back). So re-applying a synced config
   can never reformat.
+- **the initramfs generator** — `"initramfs": "dracut"` (or `"mkinitcpio"`),
+  detected from which one is installed.
+- **`unlock_fido2` / `unlock_tpm2`** — read from the LUKS header's enrolled tokens
+  (`cryptsetup luksDump`), so a FIDO2/TPM2-unlocked root round-trips.
 
 ### What `sync` does NOT capture — add these by hand
 
-These are declaration-only and can't be introspected from the running system, so
-copy them from [`config/example-dracut-fido2.json`](../config/example-dracut-fido2.json):
+Two declaration-only settings can't be introspected reliably; copy them from
+[`config/example-dracut-fido2.json`](../config/example-dracut-fido2.json):
 
 | Your setup | Add to the config |
 | --- | --- |
-| dracut generator (mkinitcpio removed) | `"initramfs": "dracut"` |
-| `force_add_dracutmodules+=" systemd fido2 "` | `"unlock_fido2": true` on the encrypted partition |
 | `add_dracutmodules+=" bluetooth "` (BT keyboard early) | `"bluetooth": {"enable": true, "in_initramfs": true}` |
 | `token-timeout=10s` in `rd.luks.options` | `"luks_options": ["token-timeout=10s"]` on the partition |
 
-dasik then regenerates the equivalent `/etc/dracut.conf.d/dasik.conf`, neutralizes
-mkinitcpio's pacman hooks, and derives the `rd.luks.*` cmdline for you.
+From those, dasik regenerates the equivalent `/etc/dracut.conf.d/dasik.conf`,
+neutralizes mkinitcpio's pacman hooks, and derives the `rd.luks.*` cmdline for you.
 
 ---
 

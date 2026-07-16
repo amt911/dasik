@@ -102,6 +102,18 @@ seed is written next to it.
 - **`/etc/crypttab`** — captured verbatim into `files` when it has any real
   (non-comment) entry, e.g. an encrypted random-key swap the `disks` layout does
   not otherwise describe. An empty/comment-only crypttab is left out.
+- **firewall** — the live firewalld **permanent** `public` zone is captured into
+  a `firewall` block: `allowed_services` / `remove_services` (the diff against
+  firewalld's upstream defaults) and `rich_rules` verbatim (they come back in the
+  same `firewall-cmd` syntax dasik consumes). Read via `firewall-offline-cmd`
+  (reads `/etc/firewalld` directly — no running daemon needed, and it works
+  against a `/mnt` install target), which needs root; `sync` runs as root.
+- **WireGuard** — every `/etc/wireguard/*.conf` (wg-quick interfaces) is captured
+  into `files`, so a VPN round-trips. ⚠️ a wg conf contains the interface
+  **PrivateKey**; sync writes it verbatim into the JSON (as the `wireguard`
+  config block already does) — **keep synced configs private**. If your VPN is a
+  *NetworkManager* connection instead (`/etc/NetworkManager/system-connections/`),
+  it is not captured here — that is a separate path.
 - **the initramfs generator** — `"initramfs": "dracut"` (or `"mkinitcpio"`),
   detected from which one is installed.
 - **`unlock_fido2` / `unlock_tpm2`** — read from the LUKS header's enrolled tokens

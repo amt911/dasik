@@ -177,3 +177,38 @@ def test_name_and_optional():
     a = DiskPartitionAction({})
     assert a.name == "Disk Partitioning"
     assert a.is_optional is True
+
+
+def test_import_state_recovers_fido2_tpm2_from_luks_header():
+    a = DiskPartitionAction(_luks_cfg(), _ctx("/"))
+
+    def fake(cmd, args=None, *rest, **kw):
+        if cmd == "cryptsetup" and args and args[0] == "status":
+            return MagicMock(stdout=b"  device:  /dev/vda2\n", returncode=0)
+        if cmd == "cryptsetup" and args and args[0] == "luksUUID":
+            return MagicMock(stdout=b"12345678-abcd-0000-1111-222233334444\n", returncode=0)
+        if cmd == "cryptsetup" and args and args[0] == "luksDump":
+            return MagicMock(stdout=b"Tokens:\n  0: systemd-fido2\n  1: systemd-tpm2\n", returncode=0)
+        return MagicMock(stdout=b"", returncode=0)
+
+    with patch("dasik.lib.actions.disk_partition_action.Command.execute", side_effect=fake):
+        frag = a.import_state(managed=[])
+    root = frag["disks"]["disks"][0]["partitions"][1]
+    assert root["unlock_fido2"] is True
+    assert root["unlock_tpm2"] is True
+
+
+def test_import_state_no_tokens_leaves_unlock_flags_false():
+    a = DiskPartitionAction(_luks_cfg(), _ctx("/"))
+
+    def fake(cmd, args=None, *rest, **kw):
+        if cmd == "cryptsetup" and args and args[0] == "status":
+            return MagicMock(stdout=b"  device:  /dev/vda2\n", returncode=0)
+        if cmd == "cryptsetup" and args and args[0] == "luksDump":
+            return MagicMock(stdout=b"Tokens:\n  (none)\n", returncode=0)
+        return MagicMock(stdout=b"uuid\n", returncode=0)
+
+    with patch("dasik.lib.actions.disk_partition_action.Command.execute", side_effect=fake):
+        frag = a.import_state(managed=[])
+    root = frag["disks"]["disks"][0]["partitions"][1]
+    assert root.get("unlock_fido2") is False and root.get("unlock_tpm2") is False

@@ -4,9 +4,18 @@ Scalar v3 domain "initramfs": the desired config is a single derived value.
 The generator (mkinitcpio | dracut | …) is chosen by the root `initramfs`
 config field. Registered config_key="__root__" (reads disks + selector).
 """
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 from .scalar_action import ScalarV3Action
 from .initramfs import make_backend
+from ..command_worker.command_worker import Command
+
+
+def _pkg_installed(pkg: str, target) -> bool:
+    try:
+        result = Command.execute("pacman", ["-Qq", pkg], target=target)
+        return getattr(result, "returncode", 1) == 0
+    except Exception:
+        return False
 
 
 class InitramfsAction(ScalarV3Action):
@@ -36,6 +45,25 @@ class InitramfsAction(ScalarV3Action):
 
     def _set_value(self) -> None:
         self._backend.apply()
+
+    def _detect_generator(self) -> Optional[str]:
+        """Which initramfs generator the target actually uses. dracut iff it is
+        installed and mkinitcpio is not (mkinitcpio is removed when you switch to
+        dracut); mkinitcpio otherwise (the Arch default)."""
+        target = getattr(self.context, "target", None) if self.context else None
+        if target is None:
+            return None
+        dracut = _pkg_installed("dracut", target)
+        mkinitcpio = _pkg_installed("mkinitcpio", target)
+        if dracut and not mkinitcpio:
+            return "dracut"
+        return "mkinitcpio"
+
+    def import_state(self, managed=None) -> dict:
+        # sync captures the ACTIVE generator so a dracut host round-trips as
+        # `"initramfs": "dracut"` instead of being silently dropped.
+        gen = self._detect_generator()
+        return {"initramfs": gen} if gen else {}
 
     def _import_fragment(self, value) -> dict:
         return {}

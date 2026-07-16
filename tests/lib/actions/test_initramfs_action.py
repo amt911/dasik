@@ -57,3 +57,32 @@ def test_managed_keys_domain_is_initramfs():
     a = InitramfsAction({}, _ctx("/"))
     with patch.object(a._backend, "desired_value", return_value="X"):
         assert a.managed_keys() == {"initramfs": ["X"]}
+
+
+from unittest.mock import MagicMock
+
+
+def _pkg_fake(installed):
+    def run(cmd, args=None, *a, **k):
+        pkg = args[1] if args and len(args) > 1 else ""
+        return MagicMock(returncode=0 if pkg in installed else 1, stdout=b"")
+    return run
+
+
+def test_import_state_detects_dracut():
+    with patch("dasik.lib.actions.initramfs_action.Command.execute",
+               side_effect=_pkg_fake({"dracut"})):
+        a = InitramfsAction({"initramfs": "dracut"}, _ctx("/"))
+        assert a.import_state() == {"initramfs": "dracut"}
+
+
+def test_import_state_detects_mkinitcpio_when_present():
+    with patch("dasik.lib.actions.initramfs_action.Command.execute",
+               side_effect=_pkg_fake({"dracut", "mkinitcpio"})):
+        a = InitramfsAction({}, _ctx("/"))
+        assert a.import_state() == {"initramfs": "mkinitcpio"}
+
+
+def test_import_state_empty_without_target():
+    a = InitramfsAction({}, context=None)
+    assert a.import_state() == {}

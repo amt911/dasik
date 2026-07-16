@@ -12,8 +12,10 @@ Verbs (slice 1 of declarative-convergence):
     current one. **Read-only.**
   * ``rollback [N] [--target /] [--yes]`` — restore generation N's config and
     re-apply it (DESTRUCTIVE; defaults N to the generation before current).
-  * (no verb) ``dasik <config>`` — DEPRECATED. Falls back to the legacy
-    install path (``ActionsHandler``). Will be removed once ``apply`` lands.
+
+The old no-verb ``dasik <config>`` form (the legacy ``ActionsHandler`` install
+path) has been REMOVED — it is now rejected with a message pointing at
+``dasik apply`` / ``dasik plan``.
 """
 from __future__ import annotations
 
@@ -25,7 +27,6 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from dasik.lib.actions.actions_handler import ActionsHandler
 from dasik.lib.actions.actions_handler_v2 import setup_actions
 from dasik.lib.actions.action_registry import get_default_registry
 from dasik.lib.reconciler.reconciler import Reconciler
@@ -346,15 +347,16 @@ def _cmd_rollback(target_root: str, number: Optional[int], assume_yes: bool) -> 
     return 0
 
 
-def _cmd_legacy(config_path_str: str) -> int:
-    """Deprecated no-verb form. Delegates to the legacy install handler."""
+def _reject_no_verb(config_path_str: str) -> int:
+    """The removed no-verb ``dasik <config>`` form. Point at the verbs."""
     print(
-        "Warning: invoking `dasik <config>` without a verb is deprecated. "
-        "Use `dasik plan <config>` or (Plan 4) `dasik apply <config>`.",
+        f"Error: `dasik {config_path_str}` (no verb) is no longer supported — "
+        "the legacy install path was removed. Use a verb:\n"
+        f"  dasik plan  {config_path_str}    # preview changes (read-only)\n"
+        f"  dasik apply {config_path_str}    # converge the system (destructive)",
         file=sys.stderr,
     )
-    ActionsHandler(config_path_str)
-    return 0
+    return 2
 
 
 def _cmd_hash_password() -> int:
@@ -391,10 +393,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     try:
         legacy_arg = _is_legacy_invocation(raw)
         if legacy_arg is not None:
-            path = _validate_config_file(legacy_arg)
-            if path is None:
-                return 1
-            return _cmd_legacy(str(path))
+            return _reject_no_verb(legacy_arg)
 
         parser = _build_parser()
         args = parser.parse_args(raw)

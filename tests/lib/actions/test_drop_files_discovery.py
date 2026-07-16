@@ -1,7 +1,6 @@
 """Live discovery of local /etc snippet files for `sync` from an empty seed:
 modprobe.d, modules-load.d, udev/rules.d, profile.d (skip symlinks + pacman-owned)
 plus /etc/crypttab when it has real entries."""
-import os
 from unittest.mock import patch, MagicMock
 
 from dasik.lib.actions.drop_files_action import DropFilesAction
@@ -57,6 +56,19 @@ def test_discovers_local_files_skips_owned_and_symlinks(tmp_path):
     assert {e["name"] for e in frag["udev_rules"]} == {"1-qudelix.rules"}
     # profile.d: cuda.sh owned, link.sh is a symlink -> nothing captured
     assert frag["profile_d"] == []
+
+
+def test_discovers_sysctl_tmpfiles_sddm(tmp_path):
+    (tmp_path / "etc/sysctl.d").mkdir(parents=True)
+    (tmp_path / "etc/sysctl.d/99-swappiness.conf").write_text("vm.swappiness=10\n")
+    (tmp_path / "etc/tmpfiles.d").mkdir(parents=True)
+    (tmp_path / "etc/tmpfiles.d/mything.conf").write_text("d /run/x 0755 root root\n")
+    (tmp_path / "etc/sddm.conf.d").mkdir(parents=True)
+    (tmp_path / "etc/sddm.conf.d/rootless-x11.conf").write_text("[General]\n")
+    frag = _discover(tmp_path)
+    assert {e["name"] for e in frag["sysctl_d"]} == {"99-swappiness.conf"}
+    assert {e["name"] for e in frag["tmpfiles_d"]} == {"mything.conf"}
+    assert {e["name"] for e in frag["sddm_conf_d"]} == {"rootless-x11.conf"}
 
 
 def test_discovered_content_is_verbatim(tmp_path):

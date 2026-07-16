@@ -26,6 +26,9 @@ _SECTIONS = [
     ("udev_rules", "/etc/udev/rules.d"),
     ("modprobe_conf", "/etc/modprobe.d"),
     ("modules_load", "/etc/modules-load.d"),
+    ("sysctl_d", "/etc/sysctl.d"),
+    ("tmpfiles_d", "/etc/tmpfiles.d"),
+    ("sddm_conf_d", "/etc/sddm.conf.d"),
     ("profile_d", "/etc/profile.d"),
 ]
 _ENV_PATH = "/etc/environment"

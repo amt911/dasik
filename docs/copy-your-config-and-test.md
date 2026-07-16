@@ -4,6 +4,9 @@ This guide covers the exact workflow — and the papercuts — for using dasik t
 **capture your existing Arch system into a declarative config**, complete it for
 a dracut + LUKS + FIDO2 + bluetooth setup, and test it in a KVM before trusting it.
 
+> 📖 For the full list of config fields, see
+> [config-reference.md](config-reference.md).
+
 > **Mental model.** dasik has two directions:
 > - **`sync`** — *system → config* (read-only to the system; writes the JSON). This
 >   is "copy my config".

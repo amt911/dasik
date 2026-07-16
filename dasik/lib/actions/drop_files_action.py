@@ -8,8 +8,9 @@ exist (no directory glob). Registered config_key="__root__".
 from __future__ import annotations
 import hashlib
 import os
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 from .abstract_action import AbstractAction
+from ..command_worker.command_worker import Command
 from ..state.change import Change, Op
 
 
@@ -17,13 +18,18 @@ def _sha256(text: str) -> str:
     return hashlib.sha256(text.encode()).hexdigest()
 
 
-# (config key, target directory) for the per-file sections.
+# (config key, target directory) for the per-file sections. These /etc/*.d dirs
+# are the LOCAL admin layer (package defaults live under /usr/lib/*), so sync
+# discovers user-created files here — modprobe options/blacklists, udev rules,
+# modules-load lists, profile.d snippets.
 _SECTIONS = [
     ("udev_rules", "/etc/udev/rules.d"),
     ("modprobe_conf", "/etc/modprobe.d"),
+    ("modules_load", "/etc/modules-load.d"),
     ("profile_d", "/etc/profile.d"),
 ]
 _ENV_PATH = "/etc/environment"
+_CRYPTTAB_PATH = "/etc/crypttab"
 _FILES_DOMAIN = "files"
 
 
@@ -122,18 +128,80 @@ class DropFilesAction(AbstractAction):
     def managed_keys(self) -> dict:
         return {_FILES_DOMAIN: sorted(self._desired().keys())}
 
+    # -- discovery (sync from an empty seed) --------------------------- #
+
+    def _pkg_owned(self, canonical: str) -> bool:
+        """True if a pacman package owns <canonical> (a package default, not
+        local admin config). Best-effort: no pacman / not owned -> False, so a
+        genuinely local file is never dropped. The canonical path is passed
+        verbatim — Command.execute handles the chroot, and pacman sees the same
+        /etc/... path inside the target."""
+        try:
+            res = Command.execute("pacman", ["-Qo", canonical], target=self._target())
+            return getattr(res, "returncode", 1) == 0
+        except Exception:
+            return False
+
+    def _discover_section(self, directory: str) -> "List[dict]":
+        """User-created files in <directory>: {name, content} for every regular
+        file that is not a symlink and not owned by a package. Symlinks and
+        package-owned files are the distro's own defaults — capturing them would
+        re-encode what a package already provides."""
+        base = self._abs(directory)
+        out: List[dict] = []
+        try:
+            names = sorted(os.listdir(base))
+        except OSError:
+            return out
+        for name in names:
+            abs_p = os.path.join(base, name)
+            if os.path.islink(abs_p) or not os.path.isfile(abs_p):
+                continue
+            if self._pkg_owned(f"{directory}/{name}"):
+                continue
+            try:
+                with open(abs_p, "r") as f:
+                    out.append({"name": name, "content": f.read()})
+            except OSError:
+                continue
+        return out
+
+    def _discover_crypttab(self) -> "Optional[str]":
+        """The verbatim /etc/crypttab if it has any real (non-comment, non-blank)
+        entry — e.g. an encrypted random-key swap that the disks/LUKS config does
+        not otherwise describe. None when absent or only comments."""
+        try:
+            with open(self._abs(_CRYPTTAB_PATH), "r") as f:
+                text = f.read()
+        except OSError:
+            return None
+        real = [ln for ln in text.splitlines()
+                if ln.strip() and not ln.lstrip().startswith("#")]
+        return text if real else None
+
     def import_state(self, managed=None) -> dict:
         actual = self.actual()
+        discover = self._target() is not None
         result: Dict[str, Any] = {}
         for key, directory in _SECTIONS:
-            entries = []
+            by_name: Dict[str, str] = {}
+            order: List[str] = []
+            # declared entries first (refresh manual edits) ...
             for entry in self._sections.get(key, []):
                 name, content = self._entry_fields(entry)
                 canonical = f"{directory}/{name}"
                 if canonical in actual:
-                    content = self._read(canonical)     # refresh manual edits
-                entries.append({"name": name, "content": content})
-            result[key] = entries
+                    content = self._read(canonical)
+                if name not in by_name:
+                    order.append(name)
+                by_name[name] = content
+            # ... then discovered local files not already declared.
+            if discover:
+                for d in self._discover_section(directory):
+                    if d["name"] not in by_name:
+                        order.append(d["name"])
+                        by_name[d["name"]] = d["content"]
+            result[key] = [{"name": n, "content": by_name[n]} for n in order]
 
         if _ENV_PATH in actual:
             text = self._read(_ENV_PATH)
@@ -142,11 +210,17 @@ class DropFilesAction(AbstractAction):
             result["etc_environment"] = list(self.etc_env_lines)
 
         files_out = []
+        seen_paths = set()
         for entry in self._etc_files:
             path, content = self._path_fields(entry)
             if path in actual:
                 content = self._read(path)
             files_out.append({"path": path, "content": content})
+            seen_paths.add(path)
+        if discover and _CRYPTTAB_PATH not in seen_paths:
+            crypttab = self._discover_crypttab()
+            if crypttab is not None:
+                files_out.append({"path": _CRYPTTAB_PATH, "content": crypttab})
         result["files"] = files_out
         return result
 

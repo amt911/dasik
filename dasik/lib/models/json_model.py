@@ -52,6 +52,7 @@ class JsonModel(BaseModel):
     # Files / lines to drop on the target system
     udev_rules: List[FileEntry] = Field(default_factory=list)
     modprobe_conf: List[FileEntry] = Field(default_factory=list)
+    modules_load: List[FileEntry] = Field(default_factory=list)
     profile_d: List[FileEntry] = Field(default_factory=list)
     etc_environment: List[str] = Field(default_factory=list)
     files: List[EtcFile] = Field(default_factory=list)

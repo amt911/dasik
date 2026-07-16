@@ -91,6 +91,15 @@ seed is written next to it.
 - **`zram`** — `/etc/systemd/zram-generator.conf` is captured verbatim as a
   `zram` mapping (`{device: {option: value}}`), so a zram-swap host round-trips.
   Applying it re-writes the same conf and pulls in `zram-generator`.
+- **local `/etc` snippets** — `sync` discovers the files you (not a package) put
+  under `/etc/modprobe.d` (`modprobe_conf`), `/etc/modules-load.d`
+  (`modules_load`), `/etc/udev/rules.d` (`udev_rules`) and `/etc/profile.d`
+  (`profile_d`). It **skips package-owned files** (`pacman -Qo`) and symlinks —
+  those are distro defaults that come back with their package — so you only
+  capture your own modprobe options/blacklists, module-load lists and udev rules.
+- **`/etc/crypttab`** — captured verbatim into `files` when it has any real
+  (non-comment) entry, e.g. an encrypted random-key swap the `disks` layout does
+  not otherwise describe. An empty/comment-only crypttab is left out.
 - **the initramfs generator** — `"initramfs": "dracut"` (or `"mkinitcpio"`),
   detected from which one is installed.
 - **`unlock_fido2` / `unlock_tpm2`** — read from the LUKS header's enrolled tokens

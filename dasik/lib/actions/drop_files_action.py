@@ -169,6 +169,31 @@ class DropFilesAction(AbstractAction):
                 continue
         return out
 
+    def _discover_wireguard(self) -> "List[dict]":
+        """Every /etc/wireguard/*.conf as {path, content} (wg-quick interfaces).
+        These are always local (wireguard-tools ships no confs there), so no
+        pacman-owned filter. NOTE: a wg conf holds the interface PrivateKey — sync
+        captures it verbatim (as the `wireguard` config block already does), so the
+        secret lands in the JSON; keep synced configs private."""
+        base = self._abs("/etc/wireguard")
+        out: List[dict] = []
+        try:
+            names = sorted(os.listdir(base))
+        except OSError:
+            return out
+        for name in names:
+            if not name.endswith(".conf"):
+                continue
+            abs_p = os.path.join(base, name)
+            if os.path.islink(abs_p) or not os.path.isfile(abs_p):
+                continue
+            try:
+                with open(abs_p, "r") as f:
+                    out.append({"path": f"/etc/wireguard/{name}", "content": f.read()})
+            except OSError:
+                continue
+        return out
+
     def _discover_crypttab(self) -> "Optional[str]":
         """The verbatim /etc/crypttab if it has any real (non-comment, non-blank)
         entry — e.g. an encrypted random-key swap that the disks/LUKS config does
@@ -220,10 +245,15 @@ class DropFilesAction(AbstractAction):
                 content = self._read(path)
             files_out.append({"path": path, "content": content})
             seen_paths.add(path)
-        if discover and _CRYPTTAB_PATH not in seen_paths:
-            crypttab = self._discover_crypttab()
-            if crypttab is not None:
-                files_out.append({"path": _CRYPTTAB_PATH, "content": crypttab})
+        if discover:
+            for wg in self._discover_wireguard():
+                if wg["path"] not in seen_paths:
+                    files_out.append(wg)
+                    seen_paths.add(wg["path"])
+            if _CRYPTTAB_PATH not in seen_paths:
+                crypttab = self._discover_crypttab()
+                if crypttab is not None:
+                    files_out.append({"path": _CRYPTTAB_PATH, "content": crypttab})
         result["files"] = files_out
         return result
 

@@ -17,7 +17,7 @@ import re
 from typing import Any, List
 
 from .abstract_action import AbstractAction
-from ..command_worker.command_worker import Command  # noqa: F401 (kept for parity)
+from ..command_worker.command_worker import Command
 from ..state.change import Change, Op
 
 _ZONE_PATH = "/etc/firewalld/zones/public.xml"
@@ -130,8 +130,47 @@ class FirewallAction(AbstractAction):
     def managed_keys(self) -> dict:
         return {self._DOMAIN: ["public"] if self.enable else []}
 
+    @staticmethod
+    def _decode(out) -> str:
+        return out.decode("utf-8", "replace") if isinstance(out, bytes) else (out or "")
+
+    def _fw_query(self, *args) -> "Any":
+        """Run `firewall-offline-cmd <args>` against the target; return its stdout
+        text, or None if it fails (best-effort). Offline (not `firewall-cmd`) on
+        purpose: it reads /etc/firewalld directly, so it needs no running daemon /
+        D-Bus session — the reliable path for sync (root) and for a /mnt install
+        target reached via arch-chroot. It DOES require root, which sync has."""
+        try:
+            res = Command.execute("firewall-offline-cmd", list(args), target=self._target())
+        except Exception:
+            return None
+        if getattr(res, "returncode", 1) != 0:
+            return None
+        return self._decode(res.stdout)
+
     def import_state(self, managed=None) -> dict:
-        return {}
+        """Capture the live firewalld permanent public zone back into a `firewall`
+        block. `--list-rich-rules` returns rules in the same syntax `rich_rules`
+        expects, so they round-trip; allowed/removed services are the diff against
+        firewalld's upstream `public` defaults. Nothing captured when
+        firewall-offline-cmd is unavailable (sync leaves the section untouched)."""
+        services_txt = self._fw_query("--zone=public", "--list-services")
+        if services_txt is None:
+            return {}
+        services = set(services_txt.split())
+        rich_txt = self._fw_query("--zone=public", "--list-rich-rules") or ""
+        rich = [ln.strip() for ln in rich_txt.splitlines() if ln.strip()]
+
+        frag: dict = {"enable": True}
+        allowed = sorted(services - set(_DEFAULT_SERVICES))
+        removed = sorted(set(_DEFAULT_SERVICES) - services)
+        if allowed:
+            frag["allowed_services"] = allowed
+        if removed:
+            frag["remove_services"] = removed
+        if rich:
+            frag["rich_rules"] = rich
+        return {"firewall": frag}
 
     def is_needed(self) -> bool:
         return bool(self.plan(managed=[]))

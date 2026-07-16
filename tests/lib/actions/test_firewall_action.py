@@ -82,3 +82,68 @@ def test_apply_writes_zone_file(tmp_path):
     # second apply is a no-op (content already matches)
     a._current_xml = lambda: written
     assert a.plan([]) == []
+
+
+# --- import_state (sync capture) ----------------------------------------- #
+
+from unittest.mock import patch
+
+
+def _fw_live(outputs):
+    a = FirewallAction({}, context=SimpleNamespace(target=object()))
+
+    def fake(cmd, args=None, *rest, **kw):
+        key = tuple(args or [])
+        if cmd == "firewall-offline-cmd" and key in outputs:
+            return SimpleNamespace(stdout=outputs[key], returncode=0)
+        return SimpleNamespace(stdout=b"", returncode=1)
+
+    return a, fake
+
+
+def test_import_state_reconstructs_from_live_firewalld():
+    a, fake = _fw_live({
+        ("--zone=public", "--list-services"): b"dhcpv6-client samba syncthing\n",
+        ("--zone=public", "--list-rich-rules"):
+            b'rule family="ipv4" source address="10.0.0.0/8" accept\n',
+    })
+    with patch("dasik.lib.actions.firewall_action.Command.execute", side_effect=fake):
+        frag = a.import_state(managed=[])
+    fw = frag["firewall"]
+    assert fw["enable"] is True
+    assert fw["allowed_services"] == ["samba", "syncthing"]   # dhcpv6-client is a default
+    assert fw["remove_services"] == ["ssh"]                   # ssh default not present -> removed
+    assert fw["rich_rules"] == ['rule family="ipv4" source address="10.0.0.0/8" accept']
+
+
+def test_import_state_empty_when_firewalld_unavailable():
+    a, fake = _fw_live({})            # every firewall-cmd returns rc=1
+    with patch("dasik.lib.actions.firewall_action.Command.execute", side_effect=fake):
+        assert a.import_state(managed=[]) == {}
+
+
+def test_import_state_no_extra_keys_when_defaults_only():
+    a, fake = _fw_live({
+        ("--zone=public", "--list-services"): b"dhcpv6-client ssh\n",
+        ("--zone=public", "--list-rich-rules"): b"\n",
+    })
+    with patch("dasik.lib.actions.firewall_action.Command.execute", side_effect=fake):
+        frag = a.import_state(managed=[])
+    # exactly the upstream defaults -> nothing added/removed, no rich rules
+    assert frag["firewall"] == {"enable": True}
+
+
+def test_import_state_roundtrips_to_noop():
+    # capture from live -> feed the block back -> desired xml equals the live one
+    a, fake = _fw_live({
+        ("--zone=public", "--list-services"): b"dhcpv6-client samba\n",
+        ("--zone=public", "--list-rich-rules"): b"",
+    })
+    with patch("dasik.lib.actions.firewall_action.Command.execute", side_effect=fake):
+        captured = a.import_state(managed=[])["firewall"]
+    b = FirewallAction(captured, context=SimpleNamespace(target=object()))
+    # desired for {defaults - {ssh}} | {samba} = dhcpv6-client, samba
+    xml = b._desired_xml()
+    assert '<service name="samba"/>' in xml
+    assert '<service name="dhcpv6-client"/>' in xml
+    assert '<service name="ssh"/>' not in xml

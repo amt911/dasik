@@ -168,6 +168,58 @@ def test_discovery_captures_luks_uuid_and_tokens():
     assert root["unlock_fido2"] is True
 
 
+def test_hoist_common_mount_options():
+    subs = [
+        {"name": "@", "mountpoint": "/", "mount_options": ["compress-force=zstd:3"]},
+        {"name": "@home", "mountpoint": "/home",
+         "mount_options": ["compress-force=zstd:3", "noatime"]},
+    ]
+    common = DiskPartitionAction._hoist_common_mount_options(subs)
+    assert common == ["compress-force=zstd:3"]              # shared -> hoisted
+    assert subs[0]["mount_options"] == []                    # removed from each
+    assert subs[1]["mount_options"] == ["noatime"]           # non-shared kept
+
+
+def test_hoist_nothing_when_no_shared_option():
+    subs = [
+        {"name": "@", "mountpoint": "/", "mount_options": ["compress=zstd"]},
+        {"name": "@home", "mountpoint": "/home", "mount_options": ["noatime"]},
+    ]
+    assert DiskPartitionAction._hoist_common_mount_options(subs) == []
+    assert subs[0]["mount_options"] == ["compress=zstd"]     # untouched
+
+
+def test_subvol_mount_options_merges_partition_base():
+    from types import SimpleNamespace
+    part = SimpleNamespace(mount_options=["compress-force=zstd:3"])
+    sub = SimpleNamespace(mount_options=["noatime"], name="@home")
+    assert DiskPartitionAction._subvol_mount_options(part, sub) == \
+        ["compress-force=zstd:3", "noatime", "subvol=@home"]
+
+
+def test_subvol_mount_options_dedups_partition_and_subvol():
+    from types import SimpleNamespace
+    part = SimpleNamespace(mount_options=["compress-force=zstd:3"])
+    sub = SimpleNamespace(mount_options=["compress-force=zstd:3"], name="@")
+    assert DiskPartitionAction._subvol_mount_options(part, sub) == \
+        ["compress-force=zstd:3", "subvol=@"]
+
+
+def test_discovery_sets_root_partition_mountpoint_and_hoists_opts():
+    # a btrfs root with subvolumes: partition mountpoint comes from the @->/ subvol
+    # (so it's mounted), and the shared compress option is hoisted to the partition.
+    findmnt = [
+        ("/", "/dev/mapper/cryptroot[/@]", "rw,compress-force=zstd,subvol=/@"),
+        ("/home", "/dev/mapper/cryptroot[/@home]", "rw,compress-force=zstd,subvol=/@home"),
+    ]
+    frag = _discover(_tree(), findmnt=findmnt)
+    nvme = next(d for d in frag["disks"]["disks"] if d["device"] == "/dev/nvme0n1")
+    root = next(p for p in nvme["partitions"] if p.get("encrypt"))
+    assert root["mountpoint"] == "/"                          # not null -> mountable
+    assert root["mount_options"] == ["compress-force=zstd"]   # hoisted once
+    assert all(s["mount_options"] == [] for s in root["btrfs_subvolumes"])
+
+
 def test_discovery_captures_btrfs_subvolumes():
     findmnt = [
         ("/", "/dev/mapper/cryptroot[/@]", "rw,compress-force=zstd,subvol=/@"),
@@ -180,7 +232,8 @@ def test_discovery_captures_btrfs_subvolumes():
     assert names == {"@", "@home"}
     home = next(s for s in root["btrfs_subvolumes"] if s["name"] == "@home")
     assert home["mountpoint"] == "/home"
-    assert "compress-force=zstd" in home["mount_options"]
+    # compress-force is shared by all subvolumes -> hoisted to the partition
+    assert "compress-force=zstd" in root["mount_options"]
 
 
 def test_discovery_omits_disk_with_no_representable_partitions():

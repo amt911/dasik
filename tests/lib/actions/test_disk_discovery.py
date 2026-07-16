@@ -43,6 +43,32 @@ def test_safe_label_rejects_spaces_falls_back_to_devname():
     assert DiskPartitionAction._safe_label(["Disco 1TB WD"], "sda2", set()) == "sda2"
 
 
+def test_role_label_by_mount_and_type():
+    rl = DiskPartitionAction._role_label
+    assert rl("linux", ["/"], "btrfs") == "root"
+    assert rl("esp", ["/boot"], "fat32") == "boot"
+    assert rl("linux", ["/home"], "ext4") == "home"
+    assert rl("esp", [None], "fat32") == "esp"           # ESP, no mountpoint
+    assert rl("linux-swap", [None], "swap") == "swap"
+    assert rl("linux", [None], "ext4") == "part"         # nothing to go on
+
+
+def test_discovery_synthesizes_role_labels_not_device_names():
+    # Two unlabeled ESPs (one at /boot) + an unlabeled btrfs root with subvols:
+    # labels come out role-based, not 'nvme0n1p1'/'nvme0n1p5'.
+    tree = [{"name": "nvme0n1", "path": "/dev/nvme0n1", "type": "disk", "pttype": "gpt",
+             "children": [
+                 {"name": "nvme0n1p1", "path": "/dev/nvme0n1p1", "type": "part",
+                  "fstype": "vfat", "size": 200 * 1024**2, "parttypename": "EFI System"},
+                 {"name": "nvme0n1p5", "path": "/dev/nvme0n1p5", "type": "part",
+                  "fstype": "vfat", "size": 1024 * 1024**2, "parttypename": "EFI System",
+                  "mountpoint": "/boot"},
+             ]}]
+    frag = _discover(tree)
+    labels = [p["label"] for p in frag["disks"]["disks"][0]["partitions"]]
+    assert labels == ["esp", "boot"]      # not nvme0n1p1 / nvme0n1p5
+
+
 def test_safe_label_dedups():
     used = {"root"}
     got = DiskPartitionAction._safe_label(["root"], "root", used)

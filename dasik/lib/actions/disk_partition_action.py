@@ -254,6 +254,26 @@ class DiskPartitionAction(AbstractAction):
         return f"{max(1, round(n / (1024 * 1024)))}MiB"
 
     @staticmethod
+    def _role_label(ptype: str, mountpoints: "List[Optional[str]]",
+                    fs: "Optional[str]") -> str:
+        """A portable, role-based label for a partition that has no filesystem
+        label of its own: root / <mount basename> / esp / swap. Used so a captured
+        layout carries meaningful, disk-independent labels instead of the source
+        device name (e.g. 'vda5')."""
+        mps = [m for m in mountpoints if m]
+        if "/" in mps:
+            return "root"
+        for m in mps:
+            base = re.sub(r"[^A-Za-z0-9_.-]", "", m.rstrip("/").split("/")[-1])
+            if base:
+                return base            # /boot -> boot, /home -> home, /srv -> srv
+        if ptype == "esp":
+            return "esp"
+        if fs == "swap":
+            return "swap"
+        return "part"
+
+    @staticmethod
     def _safe_label(candidates: "List[Optional[str]]", fallback: str,
                     used: set) -> str:
         """First candidate that is a valid, unused label; else the sanitized
@@ -343,28 +363,33 @@ class DiskPartitionAction(AbstractAction):
             fs = self._map_fs(fstype)
             if not fs:
                 return None
+        ptype = self._map_ptype(node.get("parttypename"))
+        subs = self._btrfs_subvols(inner) if fs == "btrfs" else []
+        # A btrfs with subvolumes carries mountpoints on the SUBVOLUMES; lsblk
+        # leaks one arbitrary subvol mount up to the partition (e.g. /var/tmp),
+        # which is misleading — so only set a partition mountpoint when there are
+        # no subvolumes.
+        mnt = None if subs else (inner.get("mountpoint") or node.get("mountpoint"))
+        # Synthesized labels are ROLE-based (root/boot/home/esp/swap), not the
+        # source device name — a captured layout is portable to a differently-named
+        # disk, and the number in "vda5" was meaningless on the target.
+        mount_hints = [mnt] + [s["mountpoint"] for s in subs]
+        role = self._role_label(ptype, mount_hints, fs)
         label = self._safe_label(
             [node.get("partlabel"), inner.get("label"), node.get("label")],
-            node.get("name", "part"), used)
+            role, used)
         used.add(label)
         part: Dict = {
             "label": label,
             "size": self._bytes_to_size(int(node.get("size") or 0)),
             "filesystem": fs,
-            "partition_type": self._map_ptype(node.get("parttypename")),
+            "partition_type": ptype,
             "format": False,
         }
-        subs = self._btrfs_subvols(inner) if fs == "btrfs" else []
         if subs:
             part["btrfs_subvolumes"] = subs
-        # A btrfs with subvolumes carries mountpoints on the SUBVOLUMES; lsblk
-        # leaks one arbitrary subvol mount up to the partition (e.g. /var/tmp),
-        # which is misleading — so only set a partition mountpoint when there are
-        # no subvolumes.
-        if not subs:
-            mnt = inner.get("mountpoint") or node.get("mountpoint")
-            if mnt:
-                part["mountpoint"] = mnt
+        if mnt:
+            part["mountpoint"] = mnt
         if encrypt and luks_name:
             part["encrypt"] = True
             part["luks_name"] = luks_name

@@ -249,6 +249,33 @@ class DiskPartitionAction(AbstractAction):
         return "linux"
 
     @staticmethod
+    def _hoist_common_mount_options(subs: "List[dict]") -> "List[str]":
+        """Options present on EVERY subvolume are moved up to the partition and
+        removed from each subvolume (mutates *subs*). Returns the hoisted options."""
+        if not subs:
+            return []
+        common = set(subs[0].get("mount_options", []))
+        for s in subs[1:]:
+            common &= set(s.get("mount_options", []))
+        if not common:
+            return []
+        for s in subs:
+            s["mount_options"] = [o for o in s.get("mount_options", []) if o not in common]
+        return sorted(common)
+
+    @staticmethod
+    def _subvol_mount_options(partition, subvol) -> "List[str]":
+        """Effective mount options for a subvolume: the partition's mount_options
+        as a base (so a hoisted `compress-force=…` applies), plus the subvolume's
+        own (de-duplicated), plus `subvol=<name>`."""
+        merged = list(partition.mount_options)
+        for o in subvol.mount_options:
+            if o not in merged:
+                merged.append(o)
+        merged.append(f"subvol={subvol.name}")
+        return merged
+
+    @staticmethod
     def _bytes_to_size(n: int) -> str:
         """Render a byte count as a model-valid size string (whole MiB)."""
         return f"{max(1, round(n / (1024 * 1024)))}MiB"
@@ -365,11 +392,15 @@ class DiskPartitionAction(AbstractAction):
                 return None
         ptype = self._map_ptype(node.get("parttypename"))
         subs = self._btrfs_subvols(inner) if fs == "btrfs" else []
-        # A btrfs with subvolumes carries mountpoints on the SUBVOLUMES; lsblk
-        # leaks one arbitrary subvol mount up to the partition (e.g. /var/tmp),
-        # which is misleading — so only set a partition mountpoint when there are
-        # no subvolumes.
-        mnt = None if subs else (inner.get("mountpoint") or node.get("mountpoint"))
+        # A btrfs with subvolumes mounts the PARTITION at the root ("/") subvol's
+        # mountpoint — the convention _mount_partitions needs to include it in the
+        # mount pass — and the subvolumes carry the rest. Take it from the subvols
+        # (not lsblk, which leaks one arbitrary subvol mount like /var/tmp up to the
+        # partition). Without subvolumes, use the fs mountpoint.
+        if subs:
+            mnt = next((s["mountpoint"] for s in subs if s["mountpoint"] == "/"), None)
+        else:
+            mnt = inner.get("mountpoint") or node.get("mountpoint")
         # Synthesized labels are ROLE-based (root/boot/home/esp/swap), not the
         # source device name — a captured layout is portable to a differently-named
         # disk, and the number in "vda5" was meaningless on the target.
@@ -387,6 +418,12 @@ class DiskPartitionAction(AbstractAction):
             "format": False,
         }
         if subs:
+            # DRY: a mount option shared by ALL subvolumes (e.g. compress-force=zstd)
+            # is hoisted to the partition once; the mount pass re-applies it to each
+            # subvolume mount. Avoids repeating it on every subvolume.
+            common = self._hoist_common_mount_options(subs)
+            if common:
+                part["mount_options"] = common
             part["btrfs_subvolumes"] = subs
         if mnt:
             part["mountpoint"] = mnt
@@ -1094,13 +1131,24 @@ class DiskPartitionAction(AbstractAction):
         # crucially, root ("/") must mount FIRST, else mounting it at /mnt
         # shadows an already-mounted child (e.g. the ESP at /mnt/boot), leaving
         # the child empty and the install non-bootable.
+        # A btrfs with subvolumes must be mounted even if the PARTITION has no
+        # mountpoint of its own (the subvolumes carry the mountpoints) — else the
+        # root subvolumes never mount and genfstab is empty. Order by the effective
+        # mountpoint (partition's, or the shallowest subvolume's), so "/" mounts
+        # first and doesn't shadow a child like /boot.
+        def _effective(p):
+            if p.mountpoint:
+                return p.mountpoint
+            if p.filesystem == FileSystemType.BTRFS and p.btrfs_subvolumes:
+                return min((s.mountpoint for s in p.btrfs_subvolumes),
+                           key=self._mount_depth)
+            return None
+
         partitions_to_mount = [
             p for p in disk.partitions
-            if p.mountpoint and p.filesystem != FileSystemType.SWAP
+            if _effective(p) is not None and p.filesystem != FileSystemType.SWAP
         ]
-        partitions_to_mount.sort(
-            key=lambda p: self._mount_depth(p.mountpoint) if p.mountpoint else 0
-        )
+        partitions_to_mount.sort(key=lambda p: self._mount_depth(_effective(p)))
         
         for partition in partitions_to_mount:
             if partition.filesystem == FileSystemType.BTRFS and partition.btrfs_subvolumes:
@@ -1148,10 +1196,9 @@ class DiskPartitionAction(AbstractAction):
             mountpoint = f"/mnt{subvol.mountpoint}"
             Path(mountpoint).mkdir(parents=True, exist_ok=True)
             
-            # Build mount options
-            options = list(subvol.mount_options)
-            options.append(f"subvol={subvol.name}")
-            
+            # Partition-level mount_options apply to every subvolume (+ its own).
+            options = self._subvol_mount_options(partition, subvol)
+
             mount_cmd = ["mount", "-o", ",".join(options), device, mountpoint]
             
             print(f"Mounting subvolume {subvol.name} at {mountpoint}")

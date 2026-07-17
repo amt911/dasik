@@ -26,17 +26,52 @@ import getpass
 import json
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 from dasik.lib.actions.actions_handler_v2 import setup_actions
 from dasik.lib.actions.action_registry import get_default_registry
+from dasik.lib.logging import run_logger
 from dasik.lib.reconciler.reconciler import Reconciler
 from dasik.lib.state.config_writer import ConfigWriter
 from dasik.lib.state.generation_store import GenerationStore
 from dasik.lib.state.state_store import StateStore
 from dasik.lib.target.target import Target
 from dasik.lib.expand import expand_config, subtract_contributions
+
+
+# Verbs that shell out to real commands and therefore benefit from an install
+# log. Read-only/trivial verbs (check, hash-password) write no log by default.
+_LOGGED_VERBS = {"plan", "apply", "sync", "rollback", "generations"}
+
+
+def _default_log_path(verb: str) -> Path:
+    """``./dasik-<verb>-<YYYYmmdd-HHMMSS>.log`` in the current directory."""
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    return Path.cwd() / f"dasik-{verb}-{stamp}.log"
+
+
+def _configure_logging(args: argparse.Namespace) -> None:
+    """Install the process-wide RunLogger from parsed CLI args.
+
+    ``--no-log`` disables the file; ``--log PATH`` overrides the location;
+    otherwise a logged verb gets ``./dasik-<verb>-<date>.log``. ``--verbose``
+    additionally echoes the live command stream to the console.
+    """
+    verbose = bool(getattr(args, "verbose", False))
+    verb = getattr(args, "verb", None) or "dasik"
+
+    if getattr(args, "no_log", False):
+        log_path: Optional[Path] = None
+    elif getattr(args, "log", None):
+        log_path = Path(args.log)
+    elif verb in _LOGGED_VERBS:
+        log_path = _default_log_path(verb)
+    else:
+        log_path = None
+
+    run_logger.configure(log_path=log_path, verbose=verbose)
 
 
 def _validate_config_file(config_path: str) -> Optional[Path]:
@@ -62,12 +97,28 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--version", action="version", version="%(prog)s 0.1.0")
     parser.add_argument("-v", "--verbose", action="store_true",
-                        help="Enable verbose output")
+                        help="Echo the live command stream and show errors in red")
+    parser.add_argument("--log", default=None,
+                        help="Write the run log to this path (default: "
+                             "./dasik-<verb>-<date>.log for command verbs)")
+    parser.add_argument("--no-log", action="store_true",
+                        help="Do not write a run log file")
+
+    # Shared parent so --verbose/--log/--no-log also work AFTER the verb
+    # (dasik apply config.json -v). SUPPRESS defaults keep a pre-verb -v from
+    # being clobbered by the subparser copy when it is omitted post-verb.
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("-v", "--verbose", action="store_true",
+                        default=argparse.SUPPRESS)
+    common.add_argument("--log", default=argparse.SUPPRESS)
+    common.add_argument("--no-log", action="store_true",
+                        default=argparse.SUPPRESS)
 
     sub = parser.add_subparsers(dest="verb")
 
     plan_p = sub.add_parser(
         "plan",
+        parents=[common],
         help="Show what would change to converge the system to the config",
     )
     plan_p.add_argument("config", help="Path to the JSON configuration file")
@@ -79,6 +130,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     apply_p = sub.add_parser(
         "apply",
+        parents=[common],
         help="Converge the system to the config (DESTRUCTIVE)",
     )
     apply_p.add_argument("config", help="Path to the JSON configuration file")
@@ -96,6 +148,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     sync_p = sub.add_parser(
         "sync",
+        parents=[common],
         help="Capture system reality back into the config file (non-destructive)",
     )
     sync_p.add_argument("config", help="Path to the JSON configuration file")
@@ -108,6 +161,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     gens_p = sub.add_parser(
         "generations",
+        parents=[common],
         help="List recorded generations",
     )
     gens_p.add_argument(
@@ -118,6 +172,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     rollback_p = sub.add_parser(
         "rollback",
+        parents=[common],
         help="Restore a generation's config and re-apply it (DESTRUCTIVE)",
     )
     rollback_p.add_argument(
@@ -142,6 +197,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     check_p = sub.add_parser(
         "check",
+        parents=[common],
         help="Validate a config file (JSON syntax + schema) without touching the "
              "system. Read-only; no --target.",
     )
@@ -432,6 +488,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         parser = _build_parser()
         args = parser.parse_args(raw)
 
+        _configure_logging(args)
+
         if args.verb == "plan":
             path = _validate_config_file(args.config)
             if path is None:
@@ -472,11 +530,16 @@ def main(argv: Optional[list[str]] = None) -> int:
         print("\nOperation cancelled by user.", file=sys.stderr)
         return 130
     except Exception as e:
-        print(f"Error: {e}", file=sys.stderr)
+        # Surface the failure in red (and to the log file) via the run logger,
+        # so a crash during a run is as visible as an in-band command failure.
+        detail = ""
         if args is not None and getattr(args, "verbose", False):
             import traceback
-            traceback.print_exc()
+            detail = traceback.format_exc()
+        run_logger.get().error(str(e), detail=detail)
         return 1
+    finally:
+        run_logger.reset()
 
 
 if __name__ == "__main__":

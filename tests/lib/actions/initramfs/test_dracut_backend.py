@@ -69,8 +69,9 @@ def test_desired_is_deterministic_and_has_no_duplicate_modules():
 
 
 def test_actual_value_reads_conf():
-    with patch("builtins.open", mock_open(read_data="add_dracutmodules+=\" crypt \"\n")):
-        assert _b(_cfg(encrypt=True)).actual_value() == "add_dracutmodules+=\" crypt \"\n"
+    # non-encrypted: no crypttab, so actual_value is a plain dasik.conf read.
+    with patch("builtins.open", mock_open(read_data="add_dracutmodules+=\" btrfs \"\n")):
+        assert _b(_cfg(fs="btrfs")).actual_value() == "add_dracutmodules+=\" btrfs \"\n"
 
 
 def test_actual_value_none_when_absent():
@@ -78,21 +79,42 @@ def test_actual_value_none_when_absent():
         assert _b(_cfg(encrypt=True)).actual_value() is None
 
 
-def test_apply_writes_conf_and_regenerates_with_fstab():
+def test_apply_regenerates_named_image_for_each_target_kernel():
+    # dracut --regenerate-all names images by kver (initramfs-<kver>.img), but the
+    # bootloader entry loads /initramfs-<pkgbase>.img. We must write THAT name,
+    # using the TARGET's kver (not the chroot host's uname -r), or the boot loads
+    # the stale mkinitcpio image and the encrypted root hangs.
     a = _b(_cfg(encrypt=True), root="/")
     m = mock_open()
     with patch("builtins.open", m), \
          patch("dasik.lib.actions.initramfs.dracut.os.makedirs"), \
          patch("dasik.lib.actions.initramfs.dracut.os.path.exists", return_value=True), \
+         patch.object(type(a), "_target_kernels",
+                      return_value=[("6.12.1-arch1-1", "linux")]), \
          patch("dasik.lib.actions.initramfs.dracut.Command.execute") as run:
         a.apply()
-    assert m.call_args_list[0].args[0] == "/etc/dracut.conf.d/dasik.conf"
     body = "".join(c.args[0] for c in m().write.call_args_list)
     assert "systemd" in body
     assert run.call_args.args[0] == "dracut"
-    assert run.call_args.args[1] == ["--regenerate-all", "--force", "--fstab"]
+    assert run.call_args.args[1] == [
+        "--force", "--fstab", "/boot/initramfs-linux.img", "6.12.1-arch1-1"]
     assert run.call_args.kwargs["target"].root == "/"
     assert run.call_args.kwargs.get("check") is True
+
+
+def test_apply_regenerates_for_every_kernel():
+    a = _b(_cfg(encrypt=True), root="/")
+    m = mock_open()
+    with patch("builtins.open", m), \
+         patch("dasik.lib.actions.initramfs.dracut.os.makedirs"), \
+         patch("dasik.lib.actions.initramfs.dracut.os.path.exists", return_value=True), \
+         patch.object(type(a), "_target_kernels",
+                      return_value=[("6.12-arch1", "linux"), ("6.6-lts", "linux-lts")]), \
+         patch("dasik.lib.actions.initramfs.dracut.Command.execute") as run:
+        a.apply()
+    outs = [c.args[1][2] for c in run.call_args_list if c.args[0] == "dracut"]
+    assert "/boot/initramfs-linux.img" in outs
+    assert "/boot/initramfs-linux-lts.img" in outs
 
 
 def test_apply_aborts_when_no_fstab_in_target():
@@ -107,6 +129,21 @@ def test_apply_aborts_when_no_fstab_in_target():
         with pytest.raises(CommandExecutionError):
             a.apply()
     run.assert_not_called()   # never regenerate an initramfs from a bad target
+
+
+def test_apply_aborts_when_no_target_kernel_found():
+    from dasik.lib.exceptions.exceptions import CommandExecutionError
+    a = _b(_cfg(encrypt=True), root="/")
+    m = mock_open()
+    with patch("builtins.open", m), \
+         patch("dasik.lib.actions.initramfs.dracut.os.makedirs"), \
+         patch("dasik.lib.actions.initramfs.dracut.os.path.exists", return_value=True), \
+         patch.object(type(a), "_target_kernels", return_value=[]), \
+         patch("dasik.lib.actions.initramfs.dracut.Command.execute") as run:
+        import pytest
+        with pytest.raises(CommandExecutionError):
+            a.apply()
+    run.assert_not_called()
 
 
 # --- FIDO2 / TPM2 / bluetooth-in-initramfs (mirrors a real dracut setup) --- #
@@ -204,6 +241,100 @@ def test_crypttab_non_root_encrypted_data_disk_has_no_x_initrd_attach():
 
 def test_no_crypttab_without_encryption():
     assert _b(_cfg_unlock(encrypt=False)).crypttab() == ""
+
+
+# --- crypttab single-owner: dracut composes root (derived) + non-root (captured) --
+
+_SWAP_LINE = "swap LABEL=cryptswap /dev/urandom swap,cipher=aes-xts-plain64,size=512"
+
+
+def _cfg_with_captured_crypttab(captured, encrypt=True):
+    cfg = _cfg_unlock(encrypt=encrypt)
+    cfg["initramfs"] = "dracut"
+    cfg["files"] = [{"path": "/etc/crypttab", "content": captured}]
+    return cfg
+
+
+def test_crypttab_composes_derived_root_and_captured_swap():
+    captured = (
+        "# Configuration for encrypted block devices.\n"
+        "# NOTE: Do not list your root here.\n"
+        f"{_SWAP_LINE}\n"
+    )
+    ct = _b(_cfg_with_captured_crypttab(captured)).crypttab()
+    assert f"cryptroot UUID={luks_uuid('cryptroot')} none luks,x-initrd.attach" in ct
+    assert "cryptswap" in ct                     # swap preserved
+    assert ct.count("cryptroot") == 1            # root exactly once
+
+
+def test_crypttab_derived_root_replaces_stale_captured_root_line():
+    captured = (
+        "cryptroot UUID=00000000-0000-0000-0000-000000000000 none luks\n"
+        f"{_SWAP_LINE}\n"
+    )
+    ct = _b(_cfg_with_captured_crypttab(captured)).crypttab()
+    # the stale UUID is gone; the derived one (with x-initrd.attach) wins, once
+    assert "00000000-0000-0000-0000-000000000000" not in ct
+    assert ct.count("cryptroot") == 1
+    assert f"cryptroot UUID={luks_uuid('cryptroot')} none luks,x-initrd.attach" in ct
+    assert "cryptswap" in ct
+
+
+def test_crypttab_drops_comments_and_blank_lines_from_captured():
+    captured = "# just a comment\n\n   \n" + _SWAP_LINE + "\n"
+    ct = _b(_cfg_with_captured_crypttab(captured)).crypttab()
+    assert "# just a comment" not in ct.split("# Managed by dasik")[-1]
+    assert "cryptswap" in ct
+
+
+# --- InitramfsAction drift: a crypttab change must trigger regeneration ---- #
+
+def test_actual_value_returns_none_when_crypttab_drifts():
+    b = _b(_cfg_unlock(encrypt=True), root="/")
+    desired_conf = b.desired_value()
+
+    def fake_open(path, *a, **k):
+        from unittest.mock import mock_open
+        if path.endswith("dasik.conf"):
+            return mock_open(read_data=desired_conf)()
+        # crypttab on disk differs from what the backend would compose
+        return mock_open(read_data="cryptroot UUID=stale none luks\n")()
+
+    with patch("builtins.open", side_effect=fake_open):
+        assert b.actual_value() is None   # drift -> force MODIFY/regen
+
+
+def test_target_kernels_reads_pkgbase_from_modules(tmp_path):
+    # /usr/lib/modules/<kver>/pkgbase carries the image basename (Arch convention)
+    mods = tmp_path / "usr/lib/modules/6.12.1-arch1-1"
+    mods.mkdir(parents=True)
+    (mods / "pkgbase").write_text("linux\n")
+    b = _b(_cfg(encrypt=True), root=str(tmp_path))
+    assert b._target_kernels() == [("6.12.1-arch1-1", "linux")]
+
+
+def test_target_kernels_skips_dirs_without_pkgbase(tmp_path):
+    (tmp_path / "usr/lib/modules/orphan").mkdir(parents=True)
+    good = tmp_path / "usr/lib/modules/6.12-arch1"
+    good.mkdir(parents=True)
+    (good / "pkgbase").write_text("linux")
+    b = _b(_cfg(encrypt=True), root=str(tmp_path))
+    assert b._target_kernels() == [("6.12-arch1", "linux")]
+
+
+def test_actual_value_returns_conf_when_crypttab_matches():
+    b = _b(_cfg_unlock(encrypt=True), root="/")
+    desired_conf = b.desired_value()
+    desired_ct = b.crypttab()
+
+    def fake_open(path, *a, **k):
+        from unittest.mock import mock_open
+        if path.endswith("dasik.conf"):
+            return mock_open(read_data=desired_conf)()
+        return mock_open(read_data=desired_ct)()
+
+    with patch("builtins.open", side_effect=fake_open):
+        assert b.actual_value() == desired_conf
 
 
 def test_subvol_root_detects_btrfs_and_forces_it():

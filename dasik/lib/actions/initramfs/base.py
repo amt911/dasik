@@ -2,6 +2,8 @@
 from __future__ import annotations
 from typing import Any, Dict, Optional
 
+from ..partition_utils import mounts_root
+
 
 def detect_encryption(cfg: Dict[str, Any]) -> bool:
     disks = cfg.get("disks", {})
@@ -14,11 +16,17 @@ def detect_encryption(cfg: Dict[str, Any]) -> bool:
 
 
 def detect_root_fs(cfg: Dict[str, Any]) -> Optional[str]:
+    """Filesystem of the partition that provides ``/``.
+
+    Uses the shared ``mounts_root`` predicate so a synced btrfs root — with
+    ``mountpoint: null`` and ``/`` living on the ``@`` subvolume — is recognized;
+    otherwise the backend never forces btrfs into the initramfs and the encrypted
+    root fails to mount."""
     disks = cfg.get("disks", {})
     if isinstance(disks, dict):
         for disk in disks.get("disks", []):
             for part in disk.get("partitions", []):
-                if part.get("mountpoint") == "/":
+                if mounts_root(part):
                     return part.get("filesystem")
     return None
 

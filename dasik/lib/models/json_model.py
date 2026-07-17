@@ -1,5 +1,6 @@
+import re
 from typing import Optional, List, Union, Dict, Any
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from .locale_model import LocaleModel
 from .timezone_model import TimezoneModel
@@ -7,7 +8,7 @@ from .network_model import NetworkModel
 from .disk_model import DisksConfiguration
 from .user_model import UserModel
 from .file_model import FileEntry, EtcFile
-from .package_model import PackageSpec
+from .package_model import PackageSpec, PackagePolicyModel, GitPackageSourceModel
 from .pacman_model import PacmanModel
 from .systemd_model import SystemdModel
 from .bluetooth_model import BluetoothModel
@@ -46,7 +47,14 @@ class JsonModel(BaseModel):
     drivers: List[str] = Field(default_factory=list, description="GPU driver selection")
     packages: List[Union[str, PackageSpec]] = Field(
         default_factory=list,
-        description="Packages (str=explicit, {name,reason} for deps; aur- prefix for AUR)")
+        description="Packages by real name (str=explicit, {name,reason} for deps). "
+                    "Source (repo/group/AUR/package_sources) is auto-resolved — no aur- prefix.")
+    # Unknown-package policy + explicit Git PKGBUILD sources (PLAN v3).
+    package_policy: PackagePolicyModel = Field(default_factory=PackagePolicyModel)
+    package_sources: Dict[str, GitPackageSourceModel] = Field(
+        default_factory=dict,
+        description="Map of package name -> Git PKGBUILD source for packages not in "
+                    "any pacman repo/group or the AUR.")
     bootloader: str = Field(default="grub", description="grub | sd-boot")
 
     # Files / lines to drop on the target system
@@ -79,3 +87,31 @@ class JsonModel(BaseModel):
     snapper: Optional[SnapperModel] = None
     # zram-generator: {device: {option: value}} mirroring zram-generator.conf ini.
     zram: Optional[Dict[str, Dict[str, Any]]] = None
+
+    @model_validator(mode="after")
+    def _validate_package_sources(self) -> "JsonModel":
+        """Each package_sources key must be a valid Arch name AND appear in
+        ``packages`` (normalizing the ``{name, reason}`` form). A source for a
+        package nobody declares would never be installed — reject it early."""
+        if not self.package_sources:
+            return self
+        declared = {
+            (p.name if isinstance(p, PackageSpec) else p) for p in self.packages
+        }
+        for key in self.package_sources:
+            if not _JM_VALID_PKG_NAME.fullmatch(key):
+                raise ValueError(
+                    f"package_sources key {key!r} is not a valid package name "
+                    "([A-Za-z0-9][A-Za-z0-9@._+-]*, no leading '-')."
+                )
+            if key not in declared:
+                raise ValueError(
+                    f"package_sources key {key!r} is not declared in 'packages'; "
+                    "add it to packages or remove the source."
+                )
+        return self
+
+
+# Shared with the resolver/action grammar; a leading '-' or shell metacharacter
+# is refused so a source key can never reach pacman argv or a shell unsafely.
+_JM_VALID_PKG_NAME = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9@._+-]*")

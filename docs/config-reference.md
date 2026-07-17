@@ -25,7 +25,9 @@ present), and whether `sync` captures it.
 | `network` | object | NetworkManager / systemd-networkd + `/etc/hosts` |
 | `hostname` | string | `/etc/hostname` |
 | `users` | list | User accounts + groups + shell |
-| `packages` | list | pacman + AUR packages |
+| `packages` | list | pacman + AUR + Git-source packages (real names) |
+| `package_policy` | object | What to do with an unknown package (`warn-and-skip` \| `error`) |
+| `package_sources` | object | Git PKGBUILD source per package (outside repo/AUR) |
 | `drivers` | list | GPU driver selection |
 | `bootloader` | string | GRUB or systemd-boot |
 | `initramfs` | string | mkinitcpio or dracut |
@@ -135,13 +137,60 @@ List of accounts:
 A list; each item is either a **string** (explicitly installed) or an object
 `{"name": "...", "reason": "explicit" | "dep"}`. Use the **real package name only**
 — dasik resolves each name's origin automatically at apply time (configured repo →
-pacman group → AUR), so `firefox`, `yay` and `claude-desktop-bin` all just work;
-the same name keeps working if a package later moves from the AUR into a repo. A
-name found in no repo, group or the AUR aborts the apply with the offending names
-listed (a typo or a purely-local package), before anything is installed.
+pacman group → `package_sources` → AUR), so `firefox`, `yay` and
+`claude-desktop-bin` all just work; the same name keeps working if a package later
+moves from the AUR into a repo. Names never encode the origin — no `aur-` prefix,
+no URLs.
+
+A name found in **no** repo, group, `package_sources` or the AUR is, by default,
+**skipped with a visible warning** (yellow console + `[WARNING]` in the log); the
+rest install and `apply` exits 0. The skipped name is not recorded as managed and
+is retried on the next apply. Set `package_policy.unknown = "error"` to restore a
+hard abort instead (useful in CI). A source that could not be *reached* (the AUR
+was unreachable) is **always** a blocking error, whatever the policy — dasik does
+not know whether the package exists, so it refuses rather than skip.
 
 > The deprecated `aur-<name>` prefix is still accepted (with a warning) for
 > configs produced by older syncs; `sync` rewrites it back to the plain name.
+
+### `package_policy`
+
+`{"unknown": "warn-and-skip" | "error"}` — how to treat a declared package that
+resolves to no known source. `warn-and-skip` (default) skips it with a warning and
+continues; `error` aborts the whole apply before installing anything.
+
+### `package_sources`  *(sync ✓ — preserved)*
+
+A map of **package name → Git PKGBUILD source**, for packages that live in no
+pacman repo/group and no AUR (e.g. your own public GitHub repo). Only needed for
+such packages; everything else resolves automatically.
+
+```json
+"packages": ["firefox", "config-saver"],
+"package_sources": {
+  "config-saver": {
+    "type": "pkgbuild-git",
+    "url": "https://github.com/amt911/config-saver-aur.git",
+    "ref": "a520605367e13ec25db4c3c7e1c4bf46175ba8cd"
+  }
+}
+```
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `type` | `"pkgbuild-git"` | Only value for now. |
+| `url` | string | HTTPS `github.com` URL ending in `.git` (first version limits host). |
+| `ref` | string | **Full 40-char commit SHA** — pins the build for reproducibility. Change it deliberately to update. |
+| `subdir` | string | Optional; PKGBUILD subdirectory (default `.`). Must stay inside the clone (no `..`). |
+
+Each key must also appear in `packages`. dasik clones the URL, checks out the
+exact `ref` (refusing any other commit), builds the PKGBUILD as an **unprivileged**
+user, and verifies the built package's `pkgname` matches the declared name
+**before** installing. The applied SHA is tracked, so an unchanged `ref` is a
+no-op on re-apply and a **changed `ref` triggers a rebuild** even when the name is
+already installed. `sync` keeps `packages` as real names and preserves this map
+untouched — it never infers a Git source from a package's metadata. A pinned SHA
+protects reproducibility, but a PKGBUILD is still third-party code you must trust.
 
 ### `drivers`
 
@@ -324,8 +373,17 @@ One config exercising every section — validate a copy with `dasik check`
     "base-devel",
     "firefox",
     { "name": "linux-headers", "reason": "dep" },
-    "yay"
+    "yay",
+    "config-saver"
   ],
+  "package_policy": { "unknown": "warn-and-skip" },
+  "package_sources": {
+    "config-saver": {
+      "type": "pkgbuild-git",
+      "url": "https://github.com/amt911/config-saver-aur.git",
+      "ref": "a520605367e13ec25db4c3c7e1c4bf46175ba8cd"
+    }
+  },
   "drivers": ["nvidia"],
   "bootloader": "sd-boot",
   "initramfs": "dracut",

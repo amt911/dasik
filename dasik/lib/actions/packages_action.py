@@ -32,6 +32,7 @@ from .package_resolver import (
 )
 from ..command_worker.command_worker import Command
 from ..exceptions.exceptions import CommandExecutionError, ConfigValidationError
+from ..logging import run_logger
 import os
 import re
 import subprocess
@@ -66,9 +67,24 @@ class PackagesAction(AbstractAction):
 
     def __init__(self, config: Any, context=None):
         super().__init__(config, context)
-        raw: List[Any] = config if isinstance(config, list) else []
+        # Registered as ``__root__`` so it can read the sibling ``package_sources``
+        # and ``package_policy`` maps. A plain list is still accepted (existing
+        # unit tests / internal call-sites) and means "no sources, default policy".
+        if isinstance(config, dict):
+            raw: List[Any] = config.get("packages", []) or []
+            self.package_sources: dict[str, Any] = config.get("package_sources", {}) or {}
+            policy = config.get("package_policy", {}) or {}
+            self.unknown_policy: str = policy.get("unknown", "warn-and-skip")
+        else:
+            raw = config if isinstance(config, list) else []
+            self.package_sources = {}
+            self.unknown_policy = "warn-and-skip"
         self._original = raw
         self._resolver = PackageResolver()
+        # Names dropped by warn-and-skip during apply() (confirmed to exist in no
+        # repo/group/AUR/source). Excluded from managed_keys() so the manifest
+        # never claims dasik installed them; retried on the next apply.
+        self._skipped_unknown: List[str] = []
 
         # desired: bare real names in declared order (deduped).
         # pacman_pkgs / aur_pkgs: informational split — aur_pkgs holds only names
@@ -110,6 +126,12 @@ class PackagesAction(AbstractAction):
             else:
                 self.pacman_pkgs.append(bare)
                 self._reason[bare] = reason
+
+    @classmethod
+    def empty_config(cls) -> Any:
+        """Dict shape now that the action reads root config; ``__init__`` reads
+        ``config['packages']`` so an empty dict means "no packages, default policy"."""
+        return {}
 
     @property
     def name(self) -> str:
@@ -330,14 +352,55 @@ class PackagesAction(AbstractAction):
                 if current != self._reason.get(name, "explicit"):
                     changes.append(Change(self._PACMAN_DOMAIN, Op.MODIFY, name,
                                           reason="install reason"))
+        # Git source ref drift: an already-installed package whose declared
+        # package_sources ref differs from the applied one (or was never
+        # recorded) must be rebuilt at the pinned commit, name unchanged.
+        applied_refs = self._applied_refs()
+        for name in sorted(self.package_sources):
+            if name in installed and applied_refs.get(name) != self.package_sources[name].get("ref"):
+                changes.append(Change(self._PACMAN_DOMAIN, Op.MODIFY, name,
+                                      reason=self._REF_CHANGED))
         for name in sorted(set(managed) - set(desired)):
             changes.append(Change(self._PACMAN_DOMAIN, Op.REMOVE, name,
                                   reason="no longer declared"))
         return changes
 
+    _REF_CHANGED = "source ref changed"
+
+    def state_metadata(self) -> dict:
+        """Per-action state for the manifest: the applied Git SHA of every
+        declared ``package_sources`` package that is installed (PLAN v3 §10).
+
+        Iterating only the current sources drops refs for packages no longer
+        declared or no longer Git-sourced. Returns ``{}`` when there is nothing
+        to record so the reconciler merge stays clean."""
+        installed = self._installed_all()
+        refs = {
+            name: src["ref"]
+            for name, src in self.package_sources.items()
+            if name in installed and isinstance(src, dict) and src.get("ref")
+        }
+        if not refs:
+            return {}
+        return {self._PACMAN_DOMAIN: {"source_refs": refs}}
+
+    def _applied_refs(self) -> dict:
+        """{name: applied_sha} recorded by the last apply, from the manifest."""
+        manifest = getattr(self.context, "manifest", None) if self.context else None
+        if not isinstance(manifest, dict):
+            return {}
+        return (manifest.get("action_state", {})
+                        .get(self._PACMAN_DOMAIN, {})
+                        .get("source_refs", {}))
+
     def managed_keys(self) -> dict:
-        """The full set of packages this action owns after apply (bare names)."""
-        return {self._PACMAN_DOMAIN: list(self.desired)}
+        """Packages this action owns after apply (bare names).
+
+        Excludes names dropped by warn-and-skip (``_skipped_unknown``) so the
+        manifest never claims dasik installed a package it never could. Before
+        apply, ``_skipped_unknown`` is empty and this is the full desired set."""
+        skipped = set(self._skipped_unknown)
+        return {self._PACMAN_DOMAIN: [n for n in self.desired if n not in skipped]}
 
     def import_state(self, managed: "list[str] | None" = None) -> dict:
         """Capture reality into the config fragment (sync) as **real names**.
@@ -381,7 +444,8 @@ class PackagesAction(AbstractAction):
         are forced onto the AUR path; every other name is classified live."""
         to_resolve = [n for n in names if n not in self._legacy_aur]
         if to_resolve:
-            resolution = self._resolver.resolve(to_resolve, target)
+            resolution = self._resolver.resolve(
+                to_resolve, target, sources=self.package_sources)
         else:
             resolution = PackageResolution()
         for name in names:
@@ -390,20 +454,40 @@ class PackagesAction(AbstractAction):
         return resolution
 
     @staticmethod
-    def _abort_unresolved(resolution: PackageResolution) -> None:
-        parts: list[str] = []
-        if resolution.unknown:
-            parts.append(
-                "unknown (not found in any configured repo, group or the AUR): "
-                + ", ".join(resolution.unknown)
-            )
-        if resolution.unavailable:
-            parts.append(
-                "source unavailable (AUR could not be queried — retry): "
-                + ", ".join(resolution.unavailable)
-            )
+    def _abort_unavailable(resolution: PackageResolution) -> None:
+        """Abort because a source could not be *reached* (AUR unavailable).
+
+        Always blocking, regardless of package_policy: we do not know whether the
+        package exists, so skipping would be wrong. Retry once the source is back.
+        """
         raise CommandExecutionError(
-            "Refusing to install — " + "; ".join(parts)
+            "Refusing to install — source unavailable (existence could not be "
+            "checked, retry): " + ", ".join(sorted(resolution.unavailable))
+        )
+
+    @staticmethod
+    def _abort_unknown(resolution: PackageResolution) -> None:
+        """Abort on a confirmed-unknown name under the strict ``error`` policy."""
+        raise CommandExecutionError(
+            "Refusing to install — unknown (not found in any configured repo, "
+            "group, package_sources or the AUR): "
+            + ", ".join(sorted(resolution.unknown))
+        )
+
+    def _handle_unknown(self, resolution: PackageResolution) -> None:
+        """Apply ``package_policy.unknown`` to confirmed-unknown names.
+
+        ``error`` aborts before any mutation; ``warn-and-skip`` records them,
+        warns once (visible + logged), and lets the resolvable names install."""
+        if not resolution.unknown:
+            return
+        if self.unknown_policy == "error":
+            self._abort_unknown(resolution)
+        skipped = sorted(resolution.unknown)
+        self._skipped_unknown = skipped
+        run_logger.get().warning(
+            "packages skipped because no source was found: " + ", ".join(skipped),
+            detail="They were not installed; dasik will retry them on the next apply.",
         )
 
     def apply(self, changes) -> None:
@@ -421,17 +505,28 @@ class PackagesAction(AbstractAction):
             return
 
         install_names = [c.item for c in changes if c.op is Op.INSTALL]
-        modifies = [c.item for c in changes if c.op is Op.MODIFY]
+        # Two kinds of MODIFY: a Git source-ref change (rebuild) vs an install-
+        # reason change (pacman -D). Keep them apart — a rebuild is not a -D.
+        ref_modifies = [c.item for c in changes
+                        if c.op is Op.MODIFY and c.reason == self._REF_CHANGED]
+        modifies = [c.item for c in changes
+                    if c.op is Op.MODIFY and c.reason != self._REF_CHANGED]
         removes = [c.item for c in changes if c.op is Op.REMOVE]
 
         repo_installs: list[str] = []
         aur_installs: list[str] = []
+        git_installs: list = []
+        self._skipped_unknown = []
         if install_names:
             resolution = self._resolve_sources(install_names, target)
-            if not resolution.ok:
-                self._abort_unresolved(resolution)   # raises before any mutation
+            # unavailable is ALWAYS blocking; unknown follows package_policy.
+            # Both are decided before the first mutation.
+            if resolution.unavailable:
+                self._abort_unavailable(resolution)
+            self._handle_unknown(resolution)
             repo_installs = resolution.repo + resolution.groups
             aur_installs = resolution.aur
+            git_installs = resolution.git
 
         if repo_installs:
             Command.execute(
@@ -440,6 +535,15 @@ class PackagesAction(AbstractAction):
                 target=target,
                 check=True,
             )
+
+        # Git builds: fresh installs (resolution.git) + ref-change rebuilds. The
+        # rebuild sources come from package_sources by name.
+        from .package_resolver import ResolvedGitPackage
+        rebuilds = [ResolvedGitPackage(name=n, source=self.package_sources[n])
+                    for n in ref_modifies if n in self.package_sources]
+        all_git = list(git_installs) + rebuilds
+        if all_git:
+            self._apply_git_install(all_git)
 
         if aur_installs:
             self._apply_aur_install(aur_installs)
@@ -461,6 +565,16 @@ class PackagesAction(AbstractAction):
                 target=target,
                 check=True,
             )
+
+    def _apply_git_install(self, git_pkgs: list) -> None:
+        """Build+install ``package_sources`` (pkgbuild-git) packages via the
+        dedicated installer (pinned checkout, identity check, unprivileged build)."""
+        if self.context is None or self.context.target is None:
+            raise CommandExecutionError(
+                "Git package install requires an action context with a target."
+            )
+        from .pkgbuild_git_installer import PkgbuildGitInstaller
+        PkgbuildGitInstaller(self.context.target).install(git_pkgs)
 
     def _apply_aur_install(self, pkgs: list[str]) -> None:
         """Install AUR packages via the makepkg dance (target-aware).

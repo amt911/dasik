@@ -67,6 +67,9 @@ class RunLogger:
     def _red(self, s: str) -> str:
         return f"{Fore.RED}{s}{Style.RESET_ALL}" if self.color else s
 
+    def _yellow(self, s: str) -> str:
+        return f"{Fore.YELLOW}{s}{Style.RESET_ALL}" if self.color else s
+
     def _dim(self, s: str) -> str:
         return f"{Style.DIM}{s}{Style.RESET_ALL}" if self.color else s
 
@@ -113,6 +116,20 @@ class RunLogger:
         self._console(self._red(f"error: {message}"))
         if detail:
             self._console(self._red(detail.rstrip("\n")))
+
+    def warning(self, message: str, detail: str = "") -> None:
+        """Print a warning in yellow on the console (always, even without
+        ``--verbose``) and plainly to the file with a ``[WARNING]`` prefix.
+
+        Used for non-fatal notices the user must still see — e.g. a declared
+        package skipped because no source was found."""
+        self._write_file(f"[WARNING] {message}\n")
+        if detail:
+            self._write_file(detail if detail.endswith("\n") else detail + "\n")
+
+        self._console(self._yellow(f"warning: {message}"))
+        if detail:
+            self._console(self._yellow(detail.rstrip("\n")))
 
     def close(self) -> None:
         if self._fh is not None:

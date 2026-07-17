@@ -136,6 +136,27 @@ Outside this harness (booting a real ISO): add `cow_spacesize=6G` on the kernel
 line from the boot menu (`e`/`Tab`), or `mount -o remount,size=6G /run/archiso/cowspace`
 once booted.
 
+### Scenario — `package_sources` (Git PKGBUILD) + `warn-and-skip`
+
+`config/vm-unknown-git.json` exercises PLAN v3: an official package (`htop`), one
+package built from a **public GitHub PKGBUILD pinned by SHA** (`config-saver`), and
+an **impossible** name that must be skipped without aborting. On a clean Arch VM:
+
+```bash
+dasik -v apply config/vm-unknown-git.json --yes
+pacman -Q htop                                   # installed
+pacman -Q config-saver                           # built from the Git source
+pacman -Q dasik-package-does-not-exist-12345     # MUST fail: skipped, not installed
+dasik plan config/vm-unknown-git.json            # 2nd run: no rebuild of config-saver
+```
+
+Expected: `apply` exits `0`, the two resolvable packages are installed, the
+impossible name appears in a yellow `warning:` line (and `[WARNING]` in the log),
+and the second run recompiles nothing (the applied ref is tracked in the state
+manifest). Changing `config-saver`'s `ref` and re-applying rebuilds it. Needs
+network in the guest (clones from GitHub + the AUR RPC); the makepkg build runs as
+the unprivileged `_aurbuilder` user, never root.
+
 ### Manual (`run-iso` + `boot`)
 
 ```bash

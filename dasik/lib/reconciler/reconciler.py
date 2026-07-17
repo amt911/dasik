@@ -247,6 +247,11 @@ class Reconciler:
 
         fragments: dict[str, Any] = {}
         new_managed: dict[str, Any] = {}
+        # sync preserves the applied per-action state (e.g. packages.source_refs)
+        # verbatim — it does NOT fabricate a SHA it never applied (PLAN v3 §10.7).
+        # Stale entries for undeclared packages are pruned by apply's
+        # state_metadata(), which only lists currently-declared sources.
+        action_state: dict[str, Any] = dict((self._manifest or {}).get("action_state", {}))
         saw_v3 = False
 
         for meta in self._metas:
@@ -306,6 +311,7 @@ class Reconciler:
             applied_at=datetime.now(timezone.utc).isoformat(),
             config_hash=config_hash,
             managed=new_managed,
+            action_state=action_state,
         )
 
         if self._state_store is not None:
@@ -317,6 +323,7 @@ class Reconciler:
         self, results: list[ActionPlanResult]
     ) -> Manifest:
         managed: dict[str, Any] = {}
+        action_state: dict[str, Any] = {}
         for result in results:
             keys = result.action.managed_keys()
             if not isinstance(keys, dict):
@@ -325,6 +332,9 @@ class Reconciler:
                     f"must return a dict, got {type(keys).__name__}"
                 )
             managed.update(keys)
+            state = result.action.state_metadata()
+            if isinstance(state, dict):
+                action_state.update(state)
 
         prev_generation = 0
         if isinstance(self._manifest, dict):
@@ -339,4 +349,5 @@ class Reconciler:
             applied_at=datetime.now(timezone.utc).isoformat(),
             config_hash=config_hash,
             managed=managed,
+            action_state=action_state,
         )

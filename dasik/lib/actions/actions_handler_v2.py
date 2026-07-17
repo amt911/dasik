@@ -105,7 +105,9 @@ def setup_actions() -> None:
     # === Phase 3: package installation ====================================
     register_action(
         action_class=PackagesAction,
-        config_key='packages',
+        # __root__: reads the packages list plus the sibling package_sources /
+        # package_policy maps (PLAN v3 §5).
+        config_key='__root__',
         is_optional=True,
     )
 

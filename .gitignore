@@ -37,3 +37,8 @@ htmlcov/
 config/mysystem.json
 config/mysystem.json.bak
 config/test.json
+config/test-config.json
+config/test-config.json.bak
+
+# dasik run logs (./dasik-<verb>-<date>.log) — local diagnostics, never commit
+dasik-*.log

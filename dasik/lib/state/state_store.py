@@ -5,18 +5,24 @@ from typing import Any
 
 from ..target.target import Target
 
-STATE_VERSION = 1
+STATE_VERSION = 2
 
 
 @dataclass
 class Manifest:
-    """What dasik manages/owns on the target (the active generation's record)."""
+    """What dasik manages/owns on the target (the active generation's record).
+
+    ``action_state`` (schema v2) holds per-action free-form state keyed by domain,
+    e.g. ``{"packages": {"source_refs": {name: applied_sha}}}`` — this lets a
+    changed Git ref be detected even when the package name is already installed.
+    """
 
     version: int = STATE_VERSION
     generation: int = 0
     applied_at: str | None = None
     config_hash: str | None = None
     managed: dict[str, Any] = field(default_factory=dict)
+    action_state: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -29,6 +35,8 @@ class Manifest:
             applied_at=data.get("applied_at"),
             config_hash=data.get("config_hash"),
             managed=data.get("managed", {}),
+            # Absent in pre-v2 manifests — default to empty so old state loads.
+            action_state=data.get("action_state", {}),
         )
 
 

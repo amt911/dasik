@@ -25,7 +25,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
-from typing import Callable, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence
 
 from ..command_worker.command_worker import Command
 from ..exceptions.exceptions import ConfigValidationError
@@ -50,12 +50,24 @@ class AurUnavailableError(Exception):
     proof of a typo."""
 
 
+@dataclass(frozen=True)
+class ResolvedGitPackage:
+    """A name resolved to an explicit ``package_sources`` Git PKGBUILD.
+
+    ``source`` is the validated source mapping (``type``/``url``/``ref``/``subdir``)
+    carried through so the installer is self-contained."""
+
+    name: str
+    source: Mapping[str, Any]
+
+
 @dataclass
 class PackageResolution:
     """Where each declared name resolved. ``ok`` gates installation."""
 
     repo: List[str] = field(default_factory=list)
     groups: List[str] = field(default_factory=list)
+    git: List[ResolvedGitPackage] = field(default_factory=list)
     aur: List[str] = field(default_factory=list)
     unknown: List[str] = field(default_factory=list)
     unavailable: List[str] = field(default_factory=list)
@@ -147,12 +159,23 @@ class PackageResolver:
 
     # -- resolution --------------------------------------------------------
 
-    def resolve(self, names: Sequence[str], target) -> PackageResolution:
-        """Classify *names* into repo/group/AUR/unknown/unavailable.
+    def resolve(
+        self,
+        names: Sequence[str],
+        target,
+        sources: Optional[Mapping[str, Mapping[str, Any]]] = None,
+    ) -> PackageResolution:
+        """Classify *names* into repo/group/git/AUR/unknown/unavailable.
+
+        Precedence: **configured repo > pacman group > ``package_sources`` (git)
+        > AUR > unknown**. A name with an explicit Git source is never sent to the
+        AUR RPC — the user's declared source wins over a same-named AUR package.
 
         Deduplicates while preserving declared order so the resulting plan is
-        stable. Only names that miss both the repo and group DBs are looked up in
-        the AUR, in a single batched round."""
+        stable. Only names that miss repo, group and any Git source are looked up
+        in the AUR, in a single batched round. *sources* is the already-validated
+        ``package_sources`` map (name -> source); ``None`` ≡ no Git sources."""
+        git_sources: Dict[str, Mapping[str, Any]] = dict(sources or {})
         ordered = [_validate(n) for n in dict.fromkeys(names)]
         repo = self.repo_names(target)
         groups = self.repo_groups(target)
@@ -164,6 +187,8 @@ class PackageResolver:
                 res.repo.append(name)
             elif name in groups:
                 res.groups.append(name)
+            elif name in git_sources:
+                res.git.append(ResolvedGitPackage(name=name, source=git_sources[name]))
             else:
                 aur_candidates.append(name)
 

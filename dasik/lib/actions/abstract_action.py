@@ -164,6 +164,16 @@ class AbstractAction(ABC):
         """
         return {}
 
+    def state_metadata(self) -> Dict[str, Any]:
+        """Per-action free-form state merged into ``Manifest.action_state``
+        (spec/PLAN v3 §10) — e.g. ``{"packages": {"source_refs": {...}}}``.
+
+        Keyed by domain so actions don't clobber each other. The Reconciler
+        collects this after apply (and during sync) to build the new manifest.
+        The default returns ``{}`` so most actions contribute nothing.
+        """
+        return {}
+
     @classmethod
     def empty_config(cls) -> Any:
         """The empty config of this action's shape, for sync/plan bootstrap.

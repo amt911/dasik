@@ -1,29 +1,41 @@
 """Action: install packages (pacman + AUR via makepkg in chroot).
 
-The package list mixes normal pacman packages with AUR ones.
-AUR packages are identified by the ``aur-`` prefix; the prefix is
-stripped before installation.
+The user declares **real package names only** — ``firefox``, ``yay``,
+``claude-desktop-bin``. dasik resolves each name's origin (official repo,
+pacman group, or AUR) at apply time via :class:`PackageResolver`; the config
+never encodes the source. The same name keeps working if a package moves from
+AUR into a repo (repo wins on the next apply).
 
-AUR strategy **from inside arch-chroot**:
-  1. Ensure ``base-devel git`` are installed.
-  2. Create a temporary build user (``_aurbuilder``) with passwordless sudo.
-  3. For each AUR package, clone the PKGBUILD and run ``makepkg -sri``
-     as that user.  Dependencies that are themselves AUR are resolved
-     recursively by sorting the list so that deps come first (or by
-     installing paru/yay first if it is in the list).
-  4. Remove the temp user at the end.
+Install routing at ``apply()``:
+  1. Resolve the INSTALL set against the target's pacman sync DBs + the AUR RPC.
+  2. **Abort before touching the target** if any name is unknown (a typo / a
+     removed or purely-local package) or its source was unavailable (AUR
+     unreachable — retryable). This is what stops a single bad name from aborting
+     the whole ``pacman -S`` transaction and installing nothing.
+  3. Install repo packages + groups in one ``pacman -S`` (``check=True`` so a
+     real pacman failure surfaces in red and aborts instead of silently
+     "succeeding").
+  4. Install AUR packages via the makepkg dance (temp build user).
 
-Idempotent: a package is skipped if ``pacman -Qi <pkg>`` inside the
-chroot already shows it installed.
+Legacy compatibility: an ``aur-<name>`` entry (the format written by pre-#161
+syncs) is still accepted with a deprecation warning — normalized to ``<name>``
+and forced to the AUR path for that read. ``sync`` re-emits it as the plain name.
+
+Idempotent: a package already installed is not reinstalled.
 """
 from __future__ import annotations
 from typing import Any, List
 from .abstract_action import AbstractAction
+from .package_resolver import (
+    PackageResolution,
+    PackageResolver,
+)
 from ..command_worker.command_worker import Command
 from ..exceptions.exceptions import CommandExecutionError, ConfigValidationError
 import os
 import re
 import subprocess
+import warnings
 
 
 AUR_PREFIX = "aur-"
@@ -50,26 +62,54 @@ def _validate_pkg_name(name: str) -> str:
 
 
 class PackagesAction(AbstractAction):
-    """Install pacman and AUR packages declaratively."""
+    """Install pacman and AUR packages declaratively (source auto-resolved)."""
 
     def __init__(self, config: Any, context=None):
         super().__init__(config, context)
         raw: List[Any] = config if isinstance(config, list) else []
         self._original = raw
+        self._resolver = PackageResolver()
+
+        # desired: bare real names in declared order (deduped).
+        # pacman_pkgs / aur_pkgs: informational split — aur_pkgs holds only names
+        #   declared with the deprecated aur- prefix (legacy configs). New plain
+        #   names all land in pacman_pkgs; their true origin is resolved at apply.
+        self.desired: List[str] = []
         self.pacman_pkgs: List[str] = []
         self.aur_pkgs: List[str] = []
-        self._reason: dict[str, str] = {}   # pacman name -> "explicit"|"dep"
+        self._reason: dict[str, str] = {}   # bare name -> "explicit"|"dep"
+        self._legacy_aur: set[str] = set()  # names to force onto the AUR path
+        seen: set[str] = set()
+
         for entry in raw:
             if isinstance(entry, dict):
                 name, reason = entry["name"], entry.get("reason", "explicit")
             else:
                 name, reason = entry, "explicit"
             _validate_pkg_name(name)
-            if name.startswith(AUR_PREFIX):
-                self.aur_pkgs.append(name[len(AUR_PREFIX):])   # AUR: reason-exempt
+
+            is_legacy = name.startswith(AUR_PREFIX)
+            bare = name[len(AUR_PREFIX):] if is_legacy else name
+            if is_legacy:
+                _validate_pkg_name(bare)
+                warnings.warn(
+                    f"The 'aur-' package prefix is deprecated ({name!r}); declare "
+                    f"the plain name {bare!r} — dasik resolves the AUR source "
+                    "automatically. sync will rewrite it without the prefix.",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
+                self._legacy_aur.add(bare)
+
+            if bare in seen:
+                continue
+            seen.add(bare)
+            self.desired.append(bare)
+            if is_legacy:
+                self.aur_pkgs.append(bare)   # AUR: reason-exempt
             else:
-                self.pacman_pkgs.append(name)
-                self._reason[name] = reason
+                self.pacman_pkgs.append(bare)
+                self._reason[bare] = reason
 
     @property
     def name(self) -> str:
@@ -85,7 +125,7 @@ class PackagesAction(AbstractAction):
 
     @staticmethod
     def _is_installed(pkg: str) -> bool:
-        """Check if *pkg* is installed inside the chroot."""
+        """Check if *pkg* is installed inside the chroot (legacy /mnt path)."""
         result = subprocess.run(
             ["arch-chroot", "/mnt", "pacman", "-Qi", pkg],
             stdout=subprocess.DEVNULL,
@@ -97,7 +137,7 @@ class PackagesAction(AbstractAction):
         return [p for p in pkgs if not self._is_installed(p)]
 
     # ------------------------------------------------------------------ #
-    #  AUR helpers
+    #  AUR helpers (legacy execute path)
     # ------------------------------------------------------------------ #
 
     _AUR_USER = "_aurbuilder"
@@ -188,18 +228,14 @@ class PackagesAction(AbstractAction):
             os.remove(sudoers_path)
 
     # ------------------------------------------------------------------ #
-    #  idempotency
+    #  idempotency (legacy v2 shims)
     # ------------------------------------------------------------------ #
 
     def is_needed(self) -> bool:
-        if self._missing(self.pacman_pkgs):
-            return True
-        if self._missing(self.aur_pkgs):
-            return True
-        return False
+        return bool(self._missing(self.desired))
 
     # ------------------------------------------------------------------ #
-    #  execute
+    #  execute (legacy v2 path)
     # ------------------------------------------------------------------ #
 
     def execute(self) -> None:
@@ -236,21 +272,16 @@ class PackagesAction(AbstractAction):
         self._cleanup_aur_user()
 
     def verify(self) -> bool:
-        return not self._missing(self.pacman_pkgs + self.aur_pkgs)
+        return not self._missing(self.desired)
 
     # ------------------------------------------------------------------ #
-    #  v3 interface (read-only; apply() lands in Plan 4 with AUR support) #
+    #  v3 interface                                                       #
     # ------------------------------------------------------------------ #
 
     _PACMAN_DOMAIN = "packages"
 
     def actual(self) -> set[str]:
-        """Set of explicitly-installed packages on the target.
-
-        Runs ``pacman -Qqe`` via ``Command.execute`` against
-        ``self.context.target``. Returns an empty set if the context or
-        target is missing (legacy call-sites).
-        """
+        """Set of explicitly-installed packages on the target (``pacman -Qqe``)."""
         target = getattr(self.context, "target", None) if self.context else None
         if target is None:
             return set()
@@ -271,49 +302,29 @@ class PackagesAction(AbstractAction):
             stdout = stdout.decode("utf-8", errors="replace")
         return {line.strip() for line in stdout.splitlines() if line.strip()}
 
-    def _foreign(self) -> set[str]:
-        """Foreign (non-repo, i.e. AUR) installed packages: ``pacman -Qqm``. These
-        must be captured with the ``aur-`` prefix — a plain name goes into the
-        single ``pacman -S`` transaction, which aborts on the first
-        ``target not found`` and installs nothing. Best-effort: no target / probe
-        failure -> empty set (fall back to plain, don't crash)."""
-        target = getattr(self.context, "target", None) if self.context else None
-        if target is None:
-            return set()
-        try:
-            result = Command.execute("pacman", ["-Qqm"], target=target)
-        except Exception:
-            return set()
-        if getattr(result, "returncode", 1) != 0:
-            return set()
-        stdout = getattr(result, "stdout", b"") or b""
-        if isinstance(stdout, bytes):
-            stdout = stdout.decode("utf-8", errors="replace")
-        return {line.strip() for line in stdout.splitlines() if line.strip()}
-
     def _reason_of(self, pkg: str) -> str:
         """Install reason of an installed package: explicit if in -Qqe else dep."""
         return "explicit" if pkg in self.actual() else "dep"
 
     def plan(self, managed):
-        """Compute INSTALL/REMOVE for both pacman and AUR packages.
+        """Compute INSTALL/REMOVE/MODIFY over the desired (bare) package set.
 
-        Both kinds land in the pacman DB once installed, so ``pacman -Qqe``
-        (which ``actual()`` parses) sees them together. The action carries
-        the original split via ``self.pacman_pkgs`` / ``self.aur_pkgs`` so
-        ``apply()`` can route INSTALLs to the right tool.
+        Source-agnostic: the plan lists names to install/remove; ``apply()``
+        resolves each name's origin. ``pacman -Qqe`` sees repo and AUR packages
+        alike once installed, so the installed check is uniform.
         """
         from ..state.change import Change, Op
 
-        desired = list(self.pacman_pkgs) + list(self.aur_pkgs)
+        desired = list(self.desired)
         installed = self._installed_all()
         explicit = self.actual()
 
         changes: list = []
         for name in sorted(n for n in desired if n not in installed):
             changes.append(Change(self._PACMAN_DOMAIN, Op.INSTALL, name))
-        # reason MODIFY: pacman packages only, installed, reason drifted (AUR exempt)
-        for name in sorted(self.pacman_pkgs):
+        # reason MODIFY: names carrying a declared reason (never the legacy AUR
+        # ones), installed, whose reason drifted.
+        for name in sorted(self._reason):
             if name in installed:
                 current = "explicit" if name in explicit else "dep"
                 if current != self._reason.get(name, "explicit"):
@@ -325,120 +336,130 @@ class PackagesAction(AbstractAction):
         return changes
 
     def managed_keys(self) -> dict:
-        """The full set of packages this action owns after apply
-        (pacman + AUR, both under the ``packages`` domain).
-        """
-        return {self._PACMAN_DOMAIN: list(self.pacman_pkgs) + list(self.aur_pkgs)}
+        """The full set of packages this action owns after apply (bare names)."""
+        return {self._PACMAN_DOMAIN: list(self.desired)}
 
     def import_state(self, managed: "list[str] | None" = None) -> dict:
-        """Capture reality into the config fragment (sync), annotating install reason.
+        """Capture reality into the config fragment (sync) as **real names**.
 
-        Declared entries are kept (intent). A pacman package that is installed is
-        emitted as ``{name, reason}`` when it is a dependency, else a plain string.
-        AUR entries are kept verbatim (``aur-…``). Undeclared explicit packages
-        (``pacman -Qqe`` \\ declared) are appended as plain strings. Transitive
-        dependencies are never captured. Independent of the manifest M.
+        Declared entries are kept as intent (a declared ``aur-`` prefix is dropped
+        — the plain name is re-emitted). A repo package installed as a dependency
+        becomes ``{name, reason: "dep"}``; everything else is a plain string.
+        Undeclared explicit packages (``pacman -Qqe`` \\ declared, incl. AUR) are
+        appended as plain names — no ``aur-`` prefix, because ``apply`` now
+        resolves the source. Transitive dependencies are never captured.
         """
         explicit = self.actual()
         installed = self._installed_all()
-        foreign = self._foreign()                         # AUR (pacman -Qqm)
 
-        def _strip(name: str) -> str:
+        def _bare(name: str) -> str:
             return name[len(AUR_PREFIX):] if name.startswith(AUR_PREFIX) else name
 
         result: list = []
-        declared_stripped: set = set()
+        declared: set = set()
         for entry in self._original:
-            name = entry["name"] if isinstance(entry, dict) else entry
-            bare = _strip(name)
-            declared_stripped.add(bare)
-            if name.startswith(AUR_PREFIX):
-                result.append(name)                       # AUR verbatim
-            elif bare in foreign:
-                result.append(f"{AUR_PREFIX}{bare}")      # foreign -> needs aur-
-            elif name in installed and name not in explicit:
-                result.append({"name": name, "reason": "dep"})
+            raw_name = entry["name"] if isinstance(entry, dict) else entry
+            bare = _bare(raw_name)
+            declared.add(bare)
+            if bare in installed and bare not in explicit:
+                result.append({"name": bare, "reason": "dep"})
             else:
-                result.append(name)                       # explicit / intent (not installed)
+                result.append(bare)   # explicit / intent (not installed)
 
-        for name in sorted(explicit - declared_stripped):  # new explicit packages
-            result.append(f"{AUR_PREFIX}{name}" if name in foreign else name)
+        for name in sorted(explicit - declared):   # new explicit packages
+            result.append(name)
         return {self._PACMAN_DOMAIN: result}
 
     # ------------------------------------------------------------------ #
-    #  v3 apply() — destructive (Plan 4)                                 #
+    #  v3 apply() — destructive                                          #
     # ------------------------------------------------------------------ #
+
+    def _resolve_sources(self, names: List[str], target) -> PackageResolution:
+        """Resolve INSTALL *names* into repo/group/AUR/unknown/unavailable.
+
+        Names declared with the deprecated ``aur-`` prefix bypass the resolver and
+        are forced onto the AUR path; every other name is classified live."""
+        to_resolve = [n for n in names if n not in self._legacy_aur]
+        if to_resolve:
+            resolution = self._resolver.resolve(to_resolve, target)
+        else:
+            resolution = PackageResolution()
+        for name in names:
+            if name in self._legacy_aur and name not in resolution.aur:
+                resolution.aur.append(name)
+        return resolution
+
+    @staticmethod
+    def _abort_unresolved(resolution: PackageResolution) -> None:
+        parts: list[str] = []
+        if resolution.unknown:
+            parts.append(
+                "unknown (not found in any configured repo, group or the AUR): "
+                + ", ".join(resolution.unknown)
+            )
+        if resolution.unavailable:
+            parts.append(
+                "source unavailable (AUR could not be queried — retry): "
+                + ", ".join(resolution.unavailable)
+            )
+        raise CommandExecutionError(
+            "Refusing to install — " + "; ".join(parts)
+        )
 
     def apply(self, changes) -> None:
         """Execute a list of ``Change`` objects against the target.
 
-        Routing rules:
-        - ``Op.INSTALL`` and item in ``self.pacman_pkgs`` → ``pacman -S``.
-        - ``Op.INSTALL`` and item in ``self.aur_pkgs``    → ``_apply_aur_install``.
-        - ``Op.REMOVE`` → ``pacman -Rns`` (handles both pacman + AUR pkgs).
-
-        Installs (pacman, then AUR) run before removals — additive steps
-        first keep the system in a working state if a destructive step
-        fails midway.
+        Installs (repo first, then AUR) run before removals so an additive step
+        keeps the system working if a destructive step fails midway. The INSTALL
+        set is resolved and validated *before* any mutation: an unknown or
+        unavailable name aborts the whole apply with nothing installed.
         """
         from ..state.change import Op
 
         target = getattr(self.context, "target", None) if self.context else None
-        if target is None:
+        if target is None or not changes:
             return
 
-        if not changes:
-            return
+        install_names = [c.item for c in changes if c.op is Op.INSTALL]
+        modifies = [c.item for c in changes if c.op is Op.MODIFY]
+        removes = [c.item for c in changes if c.op is Op.REMOVE]
 
-        pacman_installs: list[str] = []
+        repo_installs: list[str] = []
         aur_installs: list[str] = []
-        removes: list[str] = []
-        modifies: list[str] = []
-        aur_set = set(self.aur_pkgs)
-        pacman_set = set(self.pacman_pkgs)
+        if install_names:
+            resolution = self._resolve_sources(install_names, target)
+            if not resolution.ok:
+                self._abort_unresolved(resolution)   # raises before any mutation
+            repo_installs = resolution.repo + resolution.groups
+            aur_installs = resolution.aur
 
-        for change in changes:
-            if change.op is Op.INSTALL:
-                if change.item in pacman_set:
-                    pacman_installs.append(change.item)
-                elif change.item in aur_set:
-                    aur_installs.append(change.item)
-                else:
-                    raise ValueError(
-                        f"apply() received INSTALL for unknown package "
-                        f"{change.item!r}: not in pacman_pkgs or aur_pkgs"
-                    )
-            elif change.op is Op.MODIFY:
-                modifies.append(change.item)
-            elif change.op is Op.REMOVE:
-                removes.append(change.item)
-
-        if pacman_installs:
+        if repo_installs:
             Command.execute(
                 "pacman",
-                ["--noconfirm", "--needed", "-S", *pacman_installs],
+                ["--noconfirm", "--needed", "-S", *repo_installs],
                 target=target,
+                check=True,
             )
 
         if aur_installs:
             self._apply_aur_install(aur_installs)
 
-        # Enforce install reason (pacman only). -S marks explicit by default, so a
-        # fresh explicit install needs no -D; a dep install does. A MODIFY sets
-        # whichever reason the config declares.
-        to_dep = [p for p in pacman_installs if self._reason.get(p, "explicit") == "dep"]
+        # Enforce install reason (repo packages only). -S marks explicit by
+        # default, so a fresh explicit install needs no -D; a dep install does.
+        to_dep = [p for p in repo_installs if self._reason.get(p, "explicit") == "dep"]
         to_dep += [p for p in modifies if self._reason.get(p, "explicit") == "dep"]
         to_explicit = [p for p in modifies if self._reason.get(p, "explicit") == "explicit"]
         if to_dep:
-            Command.execute("pacman", ["-D", "--asdeps", *to_dep], target=target)
+            Command.execute("pacman", ["-D", "--asdeps", *to_dep], target=target, check=True)
         if to_explicit:
-            Command.execute("pacman", ["-D", "--asexplicit", *to_explicit], target=target)
+            Command.execute("pacman", ["-D", "--asexplicit", *to_explicit], target=target, check=True)
 
         if removes:
             Command.execute(
                 "pacman",
                 ["--noconfirm", "-Rns", *removes],
                 target=target,
+                check=True,
             )
 
     def _apply_aur_install(self, pkgs: list[str]) -> None:

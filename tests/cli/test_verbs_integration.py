@@ -14,6 +14,13 @@ from unittest.mock import MagicMock, patch
 from dasik.__main__ import main
 
 
+# PackagesAction now resolves each declared name's origin against the target's
+# pacman sync DBs (pacman -Slq). These flow tests keep `packages` mocked, so the
+# fake repo DB just needs to list the names they install so resolution classifies
+# them as repo (not unknown → which would abort apply before touching state).
+_REPO_DB = b"git\nhtop\nbluez\nbluez-utils\n"
+
+
 def _fake_exec(table=None):
     """Command.execute / subprocess.run replacement.
 
@@ -32,6 +39,10 @@ def _fake_exec(table=None):
         # must mimic that rather than the impossible empty default.
         if not out and key[0] == "genfstab":
             out = b"UUID=test-root / ext4 rw,relatime 0 1\n"
+        # Default the package-resolver's repo-DB read so declared packages resolve
+        # as repo (tests may override via `table`).
+        if not out and key == ("pacman", "-Slq"):
+            out = _REPO_DB
         return MagicMock(stdout=out, stderr=b"", returncode=0)
 
     return run
@@ -131,6 +142,8 @@ def test_apply_expands_bluetooth_toggle_into_packages(tmp_path):
     def run(cmd, args=None, *a, **k):
         if cmd == "pacman" and args and args[0] == "-Qqe":
             return MagicMock(stdout=b"", stderr=b"", returncode=0)
+        if cmd == "pacman" and args and args[0] == "-Slq":   # resolver repo DB
+            return MagicMock(stdout=_REPO_DB, stderr=b"", returncode=0)
         if cmd == "genfstab":                       # base install aborts on empty fstab
             return MagicMock(stdout=b"UUID=t / ext4 rw 0 1\n", stderr=b"", returncode=0)
         if cmd == "pacman" and args and "-S" in args:

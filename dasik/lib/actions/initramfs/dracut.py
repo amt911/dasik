@@ -82,16 +82,34 @@ class DracutBackend(InitramfsBackend):
             lines.append(f'add_dracutmodules+=" {" ".join(add_mods)} "')
         return "\n".join(lines) + "\n"
 
-    def crypttab(self) -> str:
-        """`/etc/crypttab` content for the encrypted volume(s).
+    def _captured_crypttab(self) -> str:
+        """The verbatim /etc/crypttab captured in the config's ``files`` (if any).
 
-        The volume that provides `/` gets `luks,x-initrd.attach` so dracut/systemd
-        include and attach it at initrd time even when hostonly detection is unsure
-        (crypttab(5) recommends x-initrd.attach for the device holding `/`). A
-        non-root encrypted data volume stays plain `luks` — it is opened after
-        pivot, not in the initramfs. The UUID matches the deterministic one
-        DiskPartitionAction passes to `cryptsetup luksFormat --uuid`."""
-        lines: List[str] = []
+        dracut is the sole writer of /etc/crypttab, but a synced config may carry
+        non-root entries here (e.g. an encrypted swap) that must be preserved.
+        DropFilesAction yields writing the file; the content still flows through
+        here as the source of those non-root lines."""
+        for entry in self.config.get("files", []) or []:
+            if isinstance(entry, dict):
+                path, content = entry.get("path"), entry.get("content", "")
+            else:
+                path, content = getattr(entry, "path", None), getattr(entry, "content", "")
+            if path == _CRYPTTAB:
+                return content or ""
+        return ""
+
+    def crypttab(self) -> str:
+        """Composed ``/etc/crypttab`` — dracut is its single owner.
+
+        Derived root entries (from ``disks``) plus any non-root lines captured in
+        the config's ``files`` (e.g. an encrypted swap), deduplicated by mapper
+        name with the derived entry winning. The volume that provides ``/`` gets
+        ``luks,x-initrd.attach`` so dracut/systemd include and attach it at initrd
+        time even when hostonly detection is unsure (crypttab(5) recommends it for
+        the device holding ``/``); a non-root encrypted data volume stays plain
+        ``luks``. The UUID matches the deterministic one DiskPartitionAction passes
+        to ``cryptsetup luksFormat --uuid``."""
+        derived: "dict[str, str]" = {}   # mapper -> line (insertion-ordered)
         disks = self.config.get("disks", {})
         if isinstance(disks, dict):
             for disk in disks.get("disks", []):
@@ -101,15 +119,45 @@ class DracutBackend(InitramfsBackend):
                     name = part.get("luks_name", "cryptroot")
                     uuid = luks_uuid(name, part.get("luks_uuid"))
                     options = "luks,x-initrd.attach" if mounts_root(part) else "luks"
-                    lines.append(f"{name} UUID={uuid} none {options}")
+                    derived[name] = f"{name} UUID={uuid} none {options}"
+
+        # Non-root captured lines (swap etc.); skip any whose mapper is a derived
+        # root name — the derived (correct) entry wins over a stale captured one.
+        extra: List[str] = []
+        for raw in self._captured_crypttab().splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            mapper = line.split()[0]
+            if mapper in derived:
+                continue
+            extra.append(line)
+
+        lines = list(derived.values()) + extra
         return ("# Managed by dasik\n" + "\n".join(lines) + "\n") if lines else ""
 
     def actual_value(self) -> Optional[str]:
+        """Return the on-disk dasik.conf, but ONLY when the on-disk /etc/crypttab
+        also matches what we would compose. If the crypttab is missing or drifted,
+        return None so InitramfsAction plans a MODIFY and dracut regenerates —
+        without this, a crypttab change (dasik.conf unchanged) would be invisible
+        and the initramfs would keep a stale crypt setup."""
         try:
-            with open(self._path(_CONF), "r") as f:
-                return f.read()
+            with open(self._path(_CONF), "r", encoding="utf-8") as f:
+                conf = f.read()
         except FileNotFoundError:
             return None
+
+        desired_ct = self.crypttab()
+        if desired_ct:
+            try:
+                with open(self._path(_CRYPTTAB), "r", encoding="utf-8") as f:
+                    actual_ct = f.read()
+            except FileNotFoundError:
+                actual_ct = ""
+            if actual_ct != desired_ct:
+                return None
+        return conf
 
     def apply(self) -> None:
         desired = self.desired_value()
@@ -127,22 +175,55 @@ class DracutBackend(InitramfsBackend):
         # must read /etc/fstab (--fstab) instead of /proc/self/mountinfo, or it
         # derives the wrong root and builds a non-booting image. Refuse to
         # regenerate without one (BaseInstallAction/genfstab writes it first).
-        if self.target is not None:
-            if not os.path.exists(self._path(_FSTAB)):
-                raise CommandExecutionError(
-                    f"Refusing to run dracut: no {_FSTAB} in the target "
-                    f"({self._path(_FSTAB)}). Base install must create it first."
-                )
-            Command.execute(
-                "dracut", ["--regenerate-all", "--force", "--fstab"],
-                target=self.target, check=True,
+        fstab_abs = self._path(_FSTAB) if self.target is not None else "/mnt" + _FSTAB
+        if not os.path.exists(fstab_abs):
+            raise CommandExecutionError(
+                f"Refusing to run dracut: no {_FSTAB} in the target ({fstab_abs}). "
+                "Base install must create it first."
             )
-        else:
-            if not os.path.exists("/mnt" + _FSTAB):
-                raise CommandExecutionError(
-                    f"Refusing to run dracut: no /mnt{_FSTAB}."
-                )
-            Command.execute(
-                "dracut", ["--regenerate-all", "--force", "--fstab"],
-                run_as_chroot=True, check=True,
+
+        # `dracut --regenerate-all` names images /boot/initramfs-<kver>.img, but
+        # the bootloader entry loads /initramfs-<pkgbase>.img (e.g.
+        # initramfs-linux.img). If we used --regenerate-all the boot would keep
+        # loading the STALE mkinitcpio image pacstrap left at that name — with no
+        # crypt/systemd-cryptsetup — and the encrypted root would hang. So write
+        # the pkgbase-named image explicitly, once per target kernel, passing the
+        # TARGET's kver (never the chroot host's uname -r).
+        kernels = self._target_kernels()
+        if not kernels:
+            raise CommandExecutionError(
+                "Refusing to run dracut: no kernel found under "
+                f"{self._path('/usr/lib/modules') if self.target else '/mnt/usr/lib/modules'}."
             )
+        for kver, pkgbase in kernels:
+            out = f"/boot/initramfs-{pkgbase}.img"
+            args = ["--force", "--fstab", out, kver]
+            if self.target is not None:
+                Command.execute("dracut", args, target=self.target, check=True)
+            else:
+                Command.execute("dracut", args, run_as_chroot=True, check=True)
+
+    def _target_kernels(self) -> "list[tuple[str, str]]":
+        """``(kver, pkgbase)`` for every kernel in the target's
+        ``/usr/lib/modules``. ``pkgbase`` (an Arch convention: the file
+        ``/usr/lib/modules/<kver>/pkgbase``) is the image basename the bootloader
+        entry references, so ``initramfs-<pkgbase>.img`` lines up with it. A
+        modules dir without a ``pkgbase`` file is skipped (not a bootable Arch
+        kernel)."""
+        base = self._path("/usr/lib/modules") if self.target is not None \
+            else "/mnt/usr/lib/modules"
+        kernels: "list[tuple[str, str]]" = []
+        try:
+            names = sorted(os.listdir(base))
+        except OSError:
+            return kernels
+        for kver in names:
+            pkgbase_file = os.path.join(base, kver, "pkgbase")
+            try:
+                with open(pkgbase_file, "r", encoding="utf-8") as f:
+                    pkgbase = f.read().strip()
+            except OSError:
+                continue
+            if pkgbase:
+                kernels.append((kver, pkgbase))
+        return kernels

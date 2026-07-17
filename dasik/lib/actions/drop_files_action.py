@@ -11,6 +11,7 @@ import os
 import re
 from typing import Any, Dict, List, Optional
 from .abstract_action import AbstractAction
+from .initramfs.base import detect_encryption
 from ..command_worker.command_worker import Command
 from ..state.change import Change, Op
 
@@ -46,6 +47,13 @@ class DropFilesAction(AbstractAction):
         self._sections = {key: cfg.get(key, []) for key, _ in _SECTIONS}
         self.etc_env_lines: List[str] = cfg.get("etc_environment", [])
         self._etc_files: List[Any] = cfg.get("files", [])
+        # When dracut is the generator and encryption is declared, DracutBackend
+        # is the SOLE owner of /etc/crypttab (it composes the derived root entry +
+        # captured non-root lines). DropFiles must yield it, or the two actions
+        # rewrite the file on alternating applies (a non-idempotent oscillation).
+        self._dracut_owns_crypttab = (
+            cfg.get("initramfs") == "dracut" and detect_encryption(cfg)
+        )
 
     @property
     def name(self) -> str:
@@ -89,6 +97,8 @@ class DropFilesAction(AbstractAction):
             desired[_ENV_PATH] = "\n".join(self.etc_env_lines) + "\n"
         for entry in self._etc_files:
             path, content, _mode = self._path_fields(entry)
+            if path == _CRYPTTAB_PATH and self._dracut_owns_crypttab:
+                continue   # dracut composes/writes /etc/crypttab; yield ownership
             desired[path] = content
         return desired
 

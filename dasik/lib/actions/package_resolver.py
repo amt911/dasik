@@ -184,9 +184,14 @@ class PackageResolver:
 def _default_http_get(url: str) -> bytes:
     """GET *url* with a timeout and response-size cap. Raises on any failure so
     the caller maps it to ``AurUnavailableError``."""
+    # Defense-in-depth: the only caller builds this from the hardcoded
+    # _AUR_RPC_INFO_URL (https), but refuse anything else so a file://custom
+    # scheme can never reach urlopen.
+    if not url.startswith("https://"):
+        raise AurUnavailableError(f"refusing non-https AUR URL: {url!r}")
     req = urllib.request.Request(url, headers={"User-Agent": "dasik"})
     try:
-        with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as resp:  # noqa: S310 - https only
+        with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as resp:  # nosec B310 - https-only, guarded above
             return resp.read(_MAX_RESPONSE_BYTES + 1)[:_MAX_RESPONSE_BYTES]
     except urllib.error.URLError as e:
         raise AurUnavailableError(str(e)) from e

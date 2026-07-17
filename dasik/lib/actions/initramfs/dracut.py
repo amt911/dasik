@@ -4,50 +4,65 @@ import os
 from typing import List, Optional
 from .base import InitramfsBackend
 from ...command_worker.command_worker import Command
+from ...exceptions.exceptions import CommandExecutionError
 from ..luks_uuid import luks_uuid
+from ..partition_utils import mounts_root
 
 _CONF = "/etc/dracut.conf.d/dasik.conf"
 _CRYPTTAB = "/etc/crypttab"
+_FSTAB = "/etc/fstab"
 
 
 class DracutBackend(InitramfsBackend):
 
     def _add_modules(self) -> List[str]:
-        """dracut modules included via add_dracutmodules.
+        """dracut modules included via add_dracutmodules (non-forced).
 
-        In hostonly mode (which we use for encryption) dracut AUTO-detects the
-        crypt + filesystem modules from the running root, so listing `crypt`/`btrfs`
-        explicitly is unnecessary and — for `crypt` — actively harmful: it pulls
-        dracut's non-systemd crypt handler, which competes with the systemd module's
-        systemd-cryptsetup and leaves rd.luks.name unparsed (boot hangs waiting for
-        /dev/mapper/<name>). So we mirror a real dracut setup: only `bluetooth` here,
-        plus `btrfs` for the rare non-hostonly (unencrypted) btrfs root."""
+        Only `bluetooth` (so a paired BT keyboard works at the passphrase / FIDO2
+        prompt) and `btrfs` for a non-encrypted btrfs root. The encrypted case
+        forces btrfs instead (see _force_modules), because hostonly detection from
+        a chroot cannot be trusted to add it."""
         mods: List[str] = []
         if self.root_fs == "btrfs" and not self.has_encryption:
             mods.append("btrfs")
         if self.bluetooth_in_initramfs:
-            # dracut ships a `bluetooth` module so a paired BT keyboard works at the
-            # LUKS passphrase / FIDO2 prompt (mirrors a real add_dracutmodules setup).
             mods.append("bluetooth")
         return mods
 
     def _force_modules(self) -> List[str]:
-        """Modules that must be FORCED into the initramfs.
+        """Modules FORCED into the initramfs (bypassing each module's check()).
 
-        `systemd` is required for ANY encrypted root: dasik's kernel cmdline uses
-        the systemd-cryptsetup convention (rd.luks.name=<uuid>=<name> +
-        rd.luks.options=...), which only the systemd module's cryptsetup generator
-        parses. Without it dracut's plain `crypt` module never opens the device and
-        the boot hangs waiting for /dev/mapper/<name> → emergency mode. fido2/tpm2
-        add their token backends on top (and also need systemd)."""
+        Forcing matters because dasik runs `dracut` inside `arch-chroot /mnt` at
+        install time. There, dracut's hostonly filesystem detection does NOT see
+        the target's LUKS root in `host_fs_types[]`, so 71systemd-cryptsetup's
+        check() returns non-zero and the module — the systemd-cryptsetup-generator
+        + binary that actually opens the device from rd.luks.name / crypttab — is
+        silently omitted, and the boot hangs on /dev/mapper/<name>.
+
+        Empirically on dracut 111: `systemd-cryptsetup` declares
+        `depends() { deps="crypt systemd-ask-password" ... }`, i.e. `crypt` is a
+        DEPENDENCY of the systemd LUKS path, not a competitor. So an encrypted root
+        forces `crypt systemd systemd-cryptsetup`; a btrfs-on-LUKS root also forces
+        `btrfs`; fido2/tpm2 add their token backends. Order-preserving dedupe."""
         mods: List[str] = []
-        if self.has_encryption or self.has_fido2 or self.has_tpm2:
+        if self.has_encryption:
+            mods += ["crypt", "systemd", "systemd-cryptsetup"]
+            if self.root_fs == "btrfs":
+                mods.append("btrfs")
+        elif self.has_fido2 or self.has_tpm2:
             mods.append("systemd")
         if self.has_fido2:
             mods.append("fido2")
         if self.has_tpm2:
             mods.append("tpm2-tss")
-        return mods
+        # dedupe, preserve order
+        seen: set = set()
+        deduped: List[str] = []
+        for m in mods:
+            if m not in seen:
+                seen.add(m)
+                deduped.append(m)
+        return deduped
 
     def desired_value(self) -> str:
         add_mods = self._add_modules()
@@ -55,12 +70,12 @@ class DracutBackend(InitramfsBackend):
         if not add_mods and not force_mods:
             return ""
         lines = ["# Managed by dasik"]
-        # hostonly bakes the detected crypt device into the initramfs so
-        # systemd-cryptsetup knows what to open (and prompts) at boot; without it a
-        # dracut encrypted root hangs waiting for /dev/mapper/<name>. Required for
-        # ANY encryption (matches a real dracut LUKS setup).
         if self.has_encryption:
+            # hostonly bakes the crypt device in; hostonly_cmdline="no" stops
+            # dracut copying the live ISO's kernel cmdline into the image — the
+            # bootloader entry dasik writes is the single source of truth.
             lines.append('hostonly="yes"')
+            lines.append('hostonly_cmdline="no"')
         if force_mods:
             lines.append(f'force_add_dracutmodules+=" {" ".join(force_mods)} "')
         if add_mods:
@@ -68,13 +83,14 @@ class DracutBackend(InitramfsBackend):
         return "\n".join(lines) + "\n"
 
     def crypttab(self) -> str:
-        """`/etc/crypttab` content for the encrypted root(s).
+        """`/etc/crypttab` content for the encrypted volume(s).
 
-        dracut regenerates the initramfs inside arch-chroot at install time, where
-        hostonly detection of the live crypt device is unreliable. An explicit
-        crypttab entry (name UUID=<uuid> none luks) gives systemd-cryptsetup the
-        info to bake the crypt-open into the initramfs, so the boot actually asks
-        for the passphrase instead of hanging on /dev/mapper/<name>."""
+        The volume that provides `/` gets `luks,x-initrd.attach` so dracut/systemd
+        include and attach it at initrd time even when hostonly detection is unsure
+        (crypttab(5) recommends x-initrd.attach for the device holding `/`). A
+        non-root encrypted data volume stays plain `luks` — it is opened after
+        pivot, not in the initramfs. The UUID matches the deterministic one
+        DiskPartitionAction passes to `cryptsetup luksFormat --uuid`."""
         lines: List[str] = []
         disks = self.config.get("disks", {})
         if isinstance(disks, dict):
@@ -84,7 +100,8 @@ class DracutBackend(InitramfsBackend):
                         continue
                     name = part.get("luks_name", "cryptroot")
                     uuid = luks_uuid(name, part.get("luks_uuid"))
-                    lines.append(f"{name} UUID={uuid} none luks")
+                    options = "luks,x-initrd.attach" if mounts_root(part) else "luks"
+                    lines.append(f"{name} UUID={uuid} none {options}")
         return ("# Managed by dasik\n" + "\n".join(lines) + "\n") if lines else ""
 
     def actual_value(self) -> Optional[str]:
@@ -105,7 +122,27 @@ class DracutBackend(InitramfsBackend):
         if crypttab:
             with open(self._path(_CRYPTTAB), "w") as f:
                 f.write(crypttab)
+
+        # dracut runs from a chroot whose root != the kernel's real root, so it
+        # must read /etc/fstab (--fstab) instead of /proc/self/mountinfo, or it
+        # derives the wrong root and builds a non-booting image. Refuse to
+        # regenerate without one (BaseInstallAction/genfstab writes it first).
         if self.target is not None:
-            Command.execute("dracut", ["--regenerate-all", "--force"], target=self.target)
+            if not os.path.exists(self._path(_FSTAB)):
+                raise CommandExecutionError(
+                    f"Refusing to run dracut: no {_FSTAB} in the target "
+                    f"({self._path(_FSTAB)}). Base install must create it first."
+                )
+            Command.execute(
+                "dracut", ["--regenerate-all", "--force", "--fstab"],
+                target=self.target, check=True,
+            )
         else:
-            Command.execute("dracut", ["--regenerate-all", "--force"], True)
+            if not os.path.exists("/mnt" + _FSTAB):
+                raise CommandExecutionError(
+                    f"Refusing to run dracut: no /mnt{_FSTAB}."
+                )
+            Command.execute(
+                "dracut", ["--regenerate-all", "--force", "--fstab"],
+                run_as_chroot=True, check=True,
+            )

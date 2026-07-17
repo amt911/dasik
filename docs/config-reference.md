@@ -133,8 +133,15 @@ List of accounts:
 ### `packages`  *(sync ✓)*
 
 A list; each item is either a **string** (explicitly installed) or an object
-`{"name": "...", "reason": "explicit" | "dep"}`. Prefix a name with `aur-` to build
-it from the AUR.
+`{"name": "...", "reason": "explicit" | "dep"}`. Use the **real package name only**
+— dasik resolves each name's origin automatically at apply time (configured repo →
+pacman group → AUR), so `firefox`, `yay` and `claude-desktop-bin` all just work;
+the same name keeps working if a package later moves from the AUR into a repo. A
+name found in no repo, group or the AUR aborts the apply with the offending names
+listed (a typo or a purely-local package), before anything is installed.
+
+> The deprecated `aur-<name>` prefix is still accepted (with a warning) for
+> configs produced by older syncs; `sync` rewrites it back to the plain name.
 
 ### `drivers`
 
@@ -317,7 +324,7 @@ One config exercising every section — validate a copy with `dasik check`
     "base-devel",
     "firefox",
     { "name": "linux-headers", "reason": "dep" },
-    "aur-yay"
+    "yay"
   ],
   "drivers": ["nvidia"],
   "bootloader": "sd-boot",

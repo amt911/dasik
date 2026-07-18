@@ -579,76 +579,16 @@ class PackagesAction(AbstractAction):
         PkgbuildGitInstaller(self.context.target).install(git_pkgs)
 
     def _apply_aur_install(self, pkgs: list[str]) -> None:
-        """Install AUR packages via the makepkg dance (target-aware).
+        """Install ``resolution.aur`` via the hybrid :class:`AurInstaller`.
 
-        Steps:
-          1. Ensure base-devel + git installed on the target.
-          2. Ensure the temp build user exists (passwordless sudo via sudoers.d).
-          3. For each pkg: clone + makepkg -sri as the build user.
-          4. Remove the temp build user + sudoers fragment.
+        The installer picks a declared helper (yay/paru) or resolves transitive
+        AUR deps itself; it builds unprivileged, streams makepkg output, and always
+        cleans up the temp build user + sudoers on the way out. The heavy logic
+        lives there so this action stays a thin router (see ``aur_installer.py``).
         """
         if self.context is None or self.context.target is None:
             raise CommandExecutionError(
                 "AUR install requires an action context with a target."
             )
-        target = self.context.target
-
-        # 1. Prerequisites
-        Command.execute(
-            "pacman",
-            ["--noconfirm", "--needed", "-S", "base-devel", "git"],
-            target=target,
-        )
-
-        # 2. Build user
-        id_check = subprocess.run(
-            self._target_argv(target, ["id", self._AUR_USER]),
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        if id_check.returncode != 0:
-            Command.execute(
-                "useradd",
-                ["-m", "-r", "-s", "/bin/bash", self._AUR_USER],
-                target=target,
-            )
-
-        sudoers_path = target.path(f"/etc/sudoers.d/{self._AUR_USER}")
-        with open(sudoers_path, "w") as f:
-            f.write(f"{self._AUR_USER} ALL=(ALL) NOPASSWD: ALL\n")
-
-        # 3. Build each (url + build dir are $1/$2, never in the shell script)
-        for pkg in pkgs:
-            build_dir = f"/home/{self._AUR_USER}/{pkg}"
-            url = f"https://aur.archlinux.org/{pkg}.git"
-            subprocess.run(
-                self._target_argv(target, ["rm", "-rf", build_dir]),
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            subprocess.run(
-                self._target_argv(target, self._su_argv(
-                    self._AUR_USER, 'git clone "$1" "$2"', url, build_dir)),
-                check=True,
-            )
-            subprocess.run(
-                self._target_argv(target, self._su_argv(
-                    self._AUR_USER, 'cd "$1" && makepkg -sri --noconfirm', build_dir)),
-                check=True,
-            )
-
-        # 4. Cleanup
-        subprocess.run(
-            self._target_argv(target, ["userdel", "-r", self._AUR_USER]),
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        if os.path.exists(sudoers_path):
-            os.remove(sudoers_path)
-
-    @staticmethod
-    def _target_argv(target, cmd: list[str]) -> list[str]:
-        """Prefix ``arch-chroot <root>`` when target is a chroot, else passthrough."""
-        if target.is_chroot:
-            return ["arch-chroot", target.root, *cmd]
-        return list(cmd)
+        from .aur_installer import AurInstaller
+        AurInstaller(self.context.target, resolver=self._resolver).install(pkgs)

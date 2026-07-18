@@ -1,8 +1,11 @@
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from dasik.lib.actions.action_context import ActionContext
 from dasik.lib.actions.packages_action import PackagesAction
 from dasik.lib.actions.package_resolver import PackageResolution
+from dasik.lib.exceptions.exceptions import CommandExecutionError
 from dasik.lib.state.change import Change, Op
 from dasik.lib.target.target import Target
 
@@ -259,48 +262,25 @@ def test_apply_skips_when_context_target_missing():
     run.assert_not_called()
 
 
-def test_apply_aur_install_helper_runs_makepkg_dance():
-    """The private _apply_aur_install helper: prerequisites + per-pkg makepkg."""
-    from unittest.mock import mock_open
-
+def test_apply_aur_install_delegates_to_aur_installer():
+    """_apply_aur_install builds the hybrid AurInstaller with the action's target
+    and resolver, and hands it resolution.aur."""
     a = PackagesAction(config=["aur-yay"], context=_ctx("/"))
-    m_open = mock_open()
-    with patch("dasik.lib.actions.packages_action.Command.execute") as run, \
-         patch("dasik.lib.actions.packages_action.subprocess.run") as sp_run, \
-         patch("dasik.lib.actions.packages_action.os.path.exists", return_value=False), \
-         patch("builtins.open", m_open):
-        sp_run.return_value = MagicMock(returncode=1, stdout=b"", stderr=b"")
+    with patch("dasik.lib.actions.aur_installer.AurInstaller") as Installer:
         a._apply_aur_install(["yay"])
+    # constructed with (target, resolver=self._resolver)
+    Installer.assert_called_once()
+    call = Installer.call_args
+    assert call.args[0] is a.context.target
+    assert call.kwargs.get("resolver") is a._resolver
+    # and driven with the AUR package list
+    Installer.return_value.install.assert_called_once_with(["yay"])
 
-    # Prerequisites: pacman -S base-devel git via Command.execute
-    pacman_calls = [c for c in run.call_args_list if c.args[0] == "pacman"]
-    assert any(
-        "base-devel" in c.args[1] and "git" in c.args[1]
-        for c in pacman_calls
-    )
-    # Build user creation: useradd was called via Command.execute
-    useradd_calls = [c for c in run.call_args_list if c.args[0] == "useradd"]
-    assert len(useradd_calls) == 1
-    # makepkg invoked for each pkg: assert a subprocess.run call's argv
-    # contains a 'makepkg -sri' segment for yay.
-    makepkg_calls = [
-        c for c in sp_run.call_args_list
-        if any("makepkg -sri" in str(a) for a in c.args[0])
-    ]
-    assert len(makepkg_calls) == 1
-    assert any("yay" in str(a) for a in makepkg_calls[0].args[0])
-    # git clone invoked for the pkg too — the pkg/url now arrive as separate argv
-    # elements (positional args), not interpolated into the `git clone` script.
-    git_clone_calls = [
-        c for c in sp_run.call_args_list
-        if any("git clone" in str(a) for a in c.args[0])
-        and any("yay" in str(a) for a in c.args[0])
-    ]
-    assert len(git_clone_calls) == 1
-    # sudoers fragment was written
-    m_open.assert_called_once()
-    sudoers_arg = m_open.call_args.args[0]
-    assert "sudoers.d/_aurbuilder" in str(sudoers_arg)
+
+def test_apply_aur_install_requires_target():
+    a = PackagesAction(config=["aur-yay"], context=None)
+    with pytest.raises(CommandExecutionError):
+        a._apply_aur_install(["yay"])
 
 
 # ---------------------------------------------------------------------- #

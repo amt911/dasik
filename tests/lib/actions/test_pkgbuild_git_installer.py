@@ -58,8 +58,9 @@ def test_parse_pkgnames_ignores_pkgbase_and_deps():
 # --- orchestration (fully mocked) ----------------------------------------
 
 class _Harness:
-    """Drives install() with all shell-outs mocked. ``head_sha`` is what
-    ``git rev-parse HEAD`` returns; ``srcinfo`` what printsrcinfo returns."""
+    """Drives install() with ALL shell-outs mocked through a single patch target
+    (``Command.execute``; the installer no longer uses raw subprocess). ``head_sha``
+    is what ``git rev-parse HEAD`` returns; ``srcinfo`` what printsrcinfo returns."""
 
     def __init__(self, head_sha=_SHA, srcinfo=SRCINFO, installed=True, user_exists=False):
         self.head_sha = head_sha
@@ -68,35 +69,27 @@ class _Harness:
         self.user_exists = user_exists
         self.runs = []
 
-    def subprocess_run(self, argv, *a, **kw):
-        self.runs.append(argv)
-        joined = " ".join(argv)
-        rc = 0
-        out = b""
-        if "id" in argv and self.user_exists is False:
-            rc = 1  # user does not exist
-        if "rev-parse" in joined:
-            out = (self.head_sha + "\n").encode()
-        if "--printsrcinfo" in joined:
-            out = self.srcinfo.encode()
-        if argv[:1] == ["arch-chroot"] or True:
-            pass
-        return MagicMock(returncode=rc, stdout=out, stderr=b"")
-
     def command_execute(self, cmd, args=None, *a, **kw):
-        self.runs.append([cmd, *(args or [])])
+        args = list(args or [])
+        self.runs.append([cmd, *args])
         rc = 0
         out = b""
-        if cmd == "pacman" and args and args[0] == "-Q":
+        if cmd == "id":
+            rc = 0 if self.user_exists else 1
+        elif cmd == "pacman" and args and args[0] == "-Q":
             rc = 0 if self.installed else 1
+        elif cmd == "su":
+            script = args[3] if len(args) > 3 else ""
+            if "rev-parse" in script:
+                out = (self.head_sha + "\n").encode()
+            elif "--printsrcinfo" in script:
+                out = self.srcinfo.encode()
         return MagicMock(returncode=rc, stdout=out, stderr=b"")
 
 
 def _install(harness, pkg=None, srcinfo_on_disk=False):
     inst = PkgbuildGitInstaller(Target(root="/"))
-    with patch("dasik.lib.actions.pkgbuild_git_installer.subprocess.run",
-               side_effect=harness.subprocess_run), \
-         patch("dasik.lib.actions.pkgbuild_git_installer.Command.execute",
+    with patch("dasik.lib.actions.pkgbuild_git_installer.Command.execute",
                side_effect=harness.command_execute), \
          patch("dasik.lib.actions.pkgbuild_git_installer.os.path.exists",
                return_value=srcinfo_on_disk), \
@@ -151,9 +144,7 @@ def test_uses_committed_srcinfo_when_present():
     h = _Harness(srcinfo="SHOULD NOT BE USED")
     # committed .SRCINFO on disk is read instead of printsrcinfo
     inst = PkgbuildGitInstaller(Target(root="/"))
-    with patch("dasik.lib.actions.pkgbuild_git_installer.subprocess.run",
-               side_effect=h.subprocess_run), \
-         patch("dasik.lib.actions.pkgbuild_git_installer.Command.execute",
+    with patch("dasik.lib.actions.pkgbuild_git_installer.Command.execute",
                side_effect=h.command_execute), \
          patch("dasik.lib.actions.pkgbuild_git_installer.os.path.exists", return_value=True), \
          patch("dasik.lib.actions.pkgbuild_git_installer.os.remove"), \
@@ -174,9 +165,7 @@ def test_cleanup_runs_on_build_failure():
 
     inst = PkgbuildGitInstaller(Target(root="/"))
     removed = MagicMock()
-    with patch("dasik.lib.actions.pkgbuild_git_installer.subprocess.run",
-               side_effect=h.subprocess_run), \
-         patch("dasik.lib.actions.pkgbuild_git_installer.Command.execute",
+    with patch("dasik.lib.actions.pkgbuild_git_installer.Command.execute",
                side_effect=boom), \
          patch("dasik.lib.actions.pkgbuild_git_installer.os.path.exists", return_value=False), \
          patch("dasik.lib.actions.pkgbuild_git_installer.os.remove", removed), \

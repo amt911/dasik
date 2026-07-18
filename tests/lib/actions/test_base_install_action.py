@@ -189,3 +189,22 @@ def test_import_state_empty_when_no_microcode():
     with patch("dasik.lib.actions.base_install_action.Command.execute",
                side_effect=_pacman_has(set())):
         assert a.import_state(managed=[]) == {}
+
+
+# --- T2: long installers stream live output ------------------------------- #
+
+def test_install_streams_keyring_and_pacstrap(tmp_path):
+    (tmp_path / "etc").mkdir(parents=True, exist_ok=True)
+    a = BaseInstallAction({"enable_microcode": False}, _ctx(tmp_path))
+    seen = {}
+
+    def fake(cmd, args, **kw):
+        seen[cmd] = kw
+        return _res(0, b"UUID=abc / ext4 rw 0 1\n") if cmd == "genfstab" else _res(0)
+
+    with patch("dasik.lib.actions.base_install_action.Command.execute", side_effect=fake):
+        a._install()
+
+    # pacman -Sy archlinux-keyring and pacstrap both stream (long output)
+    assert seen["pacman"].get("stream") is True
+    assert seen["pacstrap"].get("stream") is True

@@ -174,6 +174,7 @@ def test_apply_install_routes_pacman_pkgs_through_pacman_S():
     assert "git" in pacman_args
     assert "htop" in pacman_args
     assert args.kwargs["target"].root == "/"
+    assert args.kwargs.get("stream") is True   # long install streams live
 
 
 def test_apply_remove_routes_through_pacman_Rns():
@@ -189,6 +190,7 @@ def test_apply_remove_routes_through_pacman_Rns():
     assert "-Rns" in pacman_args
     assert "--noconfirm" in pacman_args
     assert "vim" in pacman_args
+    assert args.kwargs.get("stream") is True   # long removal streams live
 
 
 def test_apply_mixes_install_and_remove_in_correct_order():

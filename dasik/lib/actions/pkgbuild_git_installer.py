@@ -9,6 +9,9 @@ installing, and installs the artifacts with pacman. A ``finally`` block always
 removes the temp build dir, the sudoers fragment, and the build user if this run
 created it.
 
+Every shell-out goes through :class:`Command` (so the whole build lands in the
+run log and streams live under ``-v``); the module uses no raw subprocess.
+
 Security: the URL / SHA / build-dir / package name are passed to the build user's
 shell as positional parameters (``$1``, ``$2``, …), never interpolated into a
 shell string — a value can only ever be inert data, never code. First version
@@ -17,11 +20,11 @@ accepts only ``https://github.com/….git`` URLs (enforced by the config model).
 from __future__ import annotations
 
 import os
-import subprocess
 from pathlib import Path
 from posixpath import normpath
 from typing import Iterable, List, Set
 
+from . import srcinfo
 from .package_resolver import ResolvedGitPackage
 from ..command_worker.command_worker import Command
 from ..exceptions.exceptions import CommandExecutionError
@@ -43,24 +46,13 @@ class PkgbuildGitInstaller:
     def __init__(self, target):
         self._target = target
 
-    # -- argv / chroot ----------------------------------------------------
+    # -- run --------------------------------------------------------------
 
-    def _argv(self, cmd: List[str]) -> List[str]:
-        """Prefix ``arch-chroot <root>`` when the target is a chroot."""
-        if self._target.is_chroot:
-            return ["arch-chroot", self._target.root, *cmd]
-        return list(cmd)
-
-    def _run(self, cmd: List[str], check: bool = True) -> "subprocess.CompletedProcess":
-        result = subprocess.run(self._argv(cmd), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        if check and getattr(result, "returncode", 0) != 0:
-            stderr = getattr(result, "stderr", b"") or b""
-            if isinstance(stderr, bytes):
-                stderr = stderr.decode("utf-8", errors="replace")
-            raise CommandExecutionError(
-                f"command failed (exit {result.returncode}): {' '.join(cmd)}\n{stderr.strip()[-2000:]}"
-            )
-        return result
+    def _run(self, cmd: List[str], check: bool = True, stream: bool = False):
+        """Run *cmd* on the target via :class:`Command` (arch-chroot handled by the
+        target). ``stream=True`` for the long steps (clone/checkout/makepkg)."""
+        return Command.execute(cmd[0], cmd[1:], target=self._target,
+                               check=check, stream=stream)
 
     @staticmethod
     def _text(data: "bytes | str | None") -> str:
@@ -91,18 +83,15 @@ class PkgbuildGitInstaller:
             "pacman", ["--noconfirm", "--needed", "-S", "base-devel", "git"],
             target=self._target,
         )
-        id_check = subprocess.run(
-            self._argv(["id", self.BUILD_USER]),
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        )
-        created = id_check.returncode != 0
+        id_check = self._run(["id", self.BUILD_USER], check=False)
+        created = getattr(id_check, "returncode", 0) != 0
         if created:
             Command.execute(
                 "useradd", ["-m", "-r", "-s", "/bin/bash", self.BUILD_USER],
                 target=self._target,
             )
         sudoers_path = self._target.path(f"/etc/sudoers.d/{self.BUILD_USER}")
-        with open(sudoers_path, "w") as f:
+        with open(sudoers_path, "w", encoding="utf-8") as f:
             f.write(f"{self.BUILD_USER} ALL=(ALL) NOPASSWD: ALL\n")
         return created
 
@@ -122,9 +111,11 @@ class PkgbuildGitInstaller:
         # Clean any previous build, clone, and checkout the EXACT commit. url/dir/
         # ref are $1/$2 positional args — never spliced into the shell string.
         self._run(["rm", "-rf", build_dir], check=False)
-        self._run(_su_argv(self.BUILD_USER, 'git clone "$1" "$2"', url, build_dir))
+        self._run(_su_argv(self.BUILD_USER, 'git clone "$1" "$2"', url, build_dir),
+                  stream=True)
         self._run(_su_argv(
-            self.BUILD_USER, 'cd "$1" && git checkout --detach "$2"', build_dir, ref))
+            self.BUILD_USER, 'cd "$1" && git checkout --detach "$2"', build_dir, ref),
+            stream=True)
 
         head = self._text(self._run(_su_argv(
             self.BUILD_USER, 'cd "$1" && git rev-parse HEAD', build_dir)).stdout).strip()
@@ -146,7 +137,8 @@ class PkgbuildGitInstaller:
         # Build + install as the unprivileged user (makepkg -s syncs deps via the
         # build user's passwordless sudo; -i installs; never runs as root).
         self._run(_su_argv(
-            self.BUILD_USER, 'cd "$1" && makepkg -sri --noconfirm', pkg_dir))
+            self.BUILD_USER, 'cd "$1" && makepkg -sri --noconfirm', pkg_dir),
+            stream=True)
 
         verify = Command.execute("pacman", ["-Q", name], target=self._target)
         if getattr(verify, "returncode", 0) != 0:
@@ -167,27 +159,14 @@ class PkgbuildGitInstaller:
         return self._parse_pkgnames(out)
 
     @staticmethod
-    def _parse_pkgnames(srcinfo: str) -> Set[str]:
-        """Extract ``pkgname`` values from .SRCINFO / printsrcinfo text.
-
-        Only exact ``pkgname = X`` keys count — ``pkgbase`` and ``depends`` are
-        ignored — so a split-package PKGBUILD yields all its subpackage names."""
-        names: Set[str] = set()
-        for line in srcinfo.splitlines():
-            key, sep, value = line.partition("=")
-            if sep and key.strip() == "pkgname":
-                v = value.strip()
-                if v:
-                    names.add(v)
-        return names
+    def _parse_pkgnames(text: str) -> Set[str]:
+        """Extract ``pkgname`` values from .SRCINFO text (delegates to srcinfo)."""
+        return srcinfo.parse_pkgnames(text)
 
     def _cleanup(self, created_user: bool, sudoers_path: str) -> None:
         """Remove the sudoers fragment always; remove the build user only if THIS
         run created it (a pre-existing/AUR-shared user is left intact)."""
         if created_user:
-            subprocess.run(
-                self._argv(["userdel", "-r", self.BUILD_USER]),
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            )
+            self._run(["userdel", "-r", self.BUILD_USER], check=False)
         if os.path.exists(sudoers_path):
             os.remove(sudoers_path)

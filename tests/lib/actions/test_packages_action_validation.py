@@ -100,20 +100,8 @@ def test_legacy_aur_build_passes_values_as_positional_args(monkeypatch):
         assert any("foo" in x for x in args)
 
 
-def test_v3_aur_build_passes_values_as_positional_args(monkeypatch, tmp_path):
-    from unittest.mock import MagicMock
-    from dasik.lib.actions.action_context import ActionContext
-    from dasik.lib.target.target import Target
-    calls = []
-    monkeypatch.setattr("dasik.lib.actions.packages_action.subprocess.run",
-                        lambda argv, **k: (calls.append(list(argv)), MagicMock(returncode=0))[1])
-    monkeypatch.setattr("dasik.lib.actions.packages_action.Command.execute",
-                        lambda *a, **k: MagicMock(returncode=0, stdout=b""))
-    a = PackagesAction(config=["aur-foo"], context=ActionContext(target=Target(root=str(tmp_path))))
-    (tmp_path / "etc" / "sudoers.d").mkdir(parents=True, exist_ok=True)
-    a._apply_aur_install(["foo"])
-    su = _su_scripts_and_args(calls)
-    assert su, "no `su -c` invocation recorded"
-    for script, args in su:
-        assert "foo" not in script and "aur.archlinux.org" not in script
-        assert any("foo" in x for x in args)
+# NOTE: the v3 AUR build path moved to aur_installer.AurInstaller (delegated from
+# _apply_aur_install). Its safe-argv guarantee is covered by
+# tests/lib/actions/test_aur_installer.py::test_helper_invocation_safe_argv and
+# ::test_malicious_dep_name_rejected_before_argv; the delegation itself by
+# test_packages_action_v3.py::test_apply_aur_install_delegates_to_aur_installer.

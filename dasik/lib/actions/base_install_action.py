@@ -121,10 +121,11 @@ class BaseInstallAction(AbstractAction):
 
     def _install(self) -> None:
         root = self._target_root()
-        Command.execute("pacman", ["--noconfirm", "-Sy", "archlinux-keyring"])
+        Command.execute("pacman", ["--noconfirm", "-Sy", "archlinux-keyring"], stream=True)
         # A failed pacstrap must abort loudly — continuing to genfstab on a
-        # half-installed root silently produces a broken system.
-        pacstrap = Command.execute("pacstrap", ["-K", root] + self.packages)
+        # half-installed root silently produces a broken system. It keeps its own
+        # rc check below (stream=True doesn't change the returncode contract).
+        pacstrap = Command.execute("pacstrap", ["-K", root] + self.packages, stream=True)
         if getattr(pacstrap, "returncode", 0) != 0:
             raise CommandExecutionError(
                 f"pacstrap failed (rc={getattr(pacstrap, 'returncode', '?')}); "

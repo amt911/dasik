@@ -88,3 +88,63 @@ def test_get_without_configure_returns_a_quiet_noop_logger():
     assert logger.log_path is None
     # record on the default logger must not raise even with no file/stream set up
     logger.record(["true"], returncode=0)
+
+
+# ---------------------------------------------------------------------- #
+#  T2: streaming — record(echoed=…) + stream_start/stream_line            #
+# ---------------------------------------------------------------------- #
+
+
+def test_record_echoed_skips_console_but_writes_file(tmp_path):
+    # stream=True already echoed the output live; record(echoed=True) must not
+    # double it on the console, but the file still gets the full block.
+    stream = io.StringIO()
+    log = tmp_path / "run.log"
+    logger = rl.RunLogger(log_path=log, verbose=True, color=False, stream=stream)
+
+    logger.record(["makepkg", "-si"], returncode=0, stdout=b"done\n", stderr=b"",
+                  echoed=True)
+    logger.close()
+
+    assert stream.getvalue() == ""          # not echoed again
+    text = log.read_text()
+    assert "makepkg -si" in text
+    assert "done" in text
+    assert "[exit 0]" in text
+
+
+def test_record_not_echoed_still_echoes_when_verbose(tmp_path):
+    stream = io.StringIO()
+    logger = rl.RunLogger(log_path=None, verbose=True, color=False, stream=stream)
+
+    logger.record(["pacman", "-Q"], returncode=0, stdout=b"ok\n", stderr=b"")
+
+    assert "pacman -Q" in stream.getvalue()   # default echoed=False unchanged
+
+
+def test_stream_line_silent_without_verbose(tmp_path):
+    stream = io.StringIO()
+    log = tmp_path / "run.log"
+    logger = rl.RunLogger(log_path=log, verbose=False, color=False, stream=stream)
+
+    logger.stream_start(["makepkg", "-si"])
+    logger.stream_line("building foo")
+    logger.close()
+
+    assert stream.getvalue() == ""            # console silent (not verbose)
+    assert log.read_text() == ""              # stream_* never writes the file
+
+
+def test_stream_line_echoes_on_console_when_verbose(tmp_path):
+    stream = io.StringIO()
+    log = tmp_path / "run.log"
+    logger = rl.RunLogger(log_path=log, verbose=True, color=False, stream=stream)
+
+    logger.stream_start(["makepkg", "-si"])
+    logger.stream_line("building foo")
+    logger.close()
+
+    out = stream.getvalue()
+    assert "makepkg -si" in out
+    assert "building foo" in out
+    assert log.read_text() == ""              # file untouched by stream_*

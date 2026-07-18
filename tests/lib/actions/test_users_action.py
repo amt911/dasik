@@ -1,10 +1,13 @@
 from unittest.mock import mock_open, patch
 from unittest.mock import patch as _patch
 
+import pytest
+
 from dasik.lib.actions.users_action import UsersAction
 from dasik.lib.actions.action_context import ActionContext
 from dasik.lib.target.target import Target
 from dasik.lib.state.change import Change, Op
+from dasik.lib.exceptions.exceptions import CommandExecutionError
 
 
 _PASSWD_UIDS = (
@@ -369,3 +372,63 @@ def test_import_state_captures_owned_present_undeclared_user():
     frag = a.import_state(managed=["carol"])   # carol owned, not declared
     names = [u["username"] for u in frag["users"]]
     assert "carol" in names and "alice" in names
+
+
+# ---------------------------------------------------------------------- #
+#  T1: mutations must run with check=True (fail loud, never masquerade)   #
+# ---------------------------------------------------------------------- #
+
+
+def test_apply_mutations_pass_check_true():
+    # CREATE + MODIFY + DELETE in one apply: every mutating Command.execute call
+    # must carry check=True so a failed useradd/usermod/userdel aborts loudly.
+    a = UsersAction(
+        {"users": [
+            {"username": "new", "hashed_password": "$6$n$h",
+             "shell": "/bin/zsh", "groups": ["wheel"]},
+            {"username": "mod", "hashed_password": "$6$m$h",
+             "shell": "/bin/bash", "groups": ["docker"]},
+        ], "remove_home_on_delete": True},
+        _ctx("/"),
+    )
+    changes = [
+        Change("users", Op.CREATE, "new"),
+        Change("users", Op.MODIFY, "mod"),
+        Change("users", Op.DELETE, "old"),
+    ]
+    with patch("dasik.lib.actions.users_action.Command.execute") as run:
+        a.apply(changes)
+    assert run.call_count >= 6
+    for c in run.call_args_list:
+        assert c.kwargs.get("check") is True, f"missing check=True: {c.args[:2]}"
+
+
+def test_apply_useradd_failure_aborts_before_password():
+    a = UsersAction(
+        [{"username": "andres", "hashed_password": "$6$a$h",
+          "shell": "/bin/zsh", "groups": ["docker", "libvirt", "wheel"]}],
+        _ctx("/"),
+    )
+
+    def boom(cmd, args, **kwargs):
+        if cmd == "useradd":
+            raise CommandExecutionError("useradd failed (exit 6)")
+
+    with patch("dasik.lib.actions.users_action.Command.execute", side_effect=boom) as run:
+        with pytest.raises(CommandExecutionError):
+            a.apply([Change("users", Op.CREATE, "andres")])
+    # the password (usermod -p) must never run after a failed useradd
+    called = [(c.args[0], c.args[1]) for c in run.call_args_list]
+    assert not any(cmd == "usermod" and "-p" in args for cmd, args in called)
+
+
+def test_apply_userdel_failure_propagates():
+    a = UsersAction([], _ctx("/"))
+
+    def boom(cmd, args, **kwargs):
+        if cmd == "userdel":
+            raise CommandExecutionError("userdel failed (exit 8)")
+
+    with patch("dasik.lib.actions.users_action.Command.execute", side_effect=boom):
+        with pytest.raises(CommandExecutionError):
+            a.apply([Change("users", Op.DELETE, "old")])

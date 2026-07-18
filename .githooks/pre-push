@@ -8,6 +8,14 @@
 # Enable once per clone:   git config core.hooksPath .githooks
 # Skip in an emergency:    git push --no-verify   (discouraged — CI still gates)
 #
+# Each gate's output is captured to a temp file and shown ONLY on failure, so the
+# hook itself writes just a few short progress lines to stdout. That is deliberate:
+# git may hand the hook a NON-BLOCKING stdout pipe, and streaming a large
+# pytest/coverage report straight to it made Python's flush hit EAGAIN
+# (`BlockingIOError: [Errno 11] write could not complete without blocking`),
+# aborting an otherwise-green push. Writing gate output to a regular file (which
+# can never EAGAIN) removes that failure mode entirely.
+#
 # See docs/mutation-testing.md and .github/workflows/ci.yml (the gates mirror CI).
 set -euo pipefail
 
@@ -26,16 +34,25 @@ command -v mypy    >/dev/null 2>&1 || fail "mypy not found — pip install -e '.
 command -v bandit  >/dev/null 2>&1 || fail "bandit not found — pip install -e '.[dev]'"
 command -v mutmut  >/dev/null 2>&1 || fail "mutmut not found — pip install -e '.[dev,mut]'"
 
-echo "==> pre-push 1/4: pytest + coverage gate"
-pytest --cov=dasik -q
+GATE_LOG="$(mktemp "${TMPDIR:-/tmp}/dasik-prepush.XXXXXX.log")"
+trap 'rm -f "$GATE_LOG"' EXIT
 
-echo "==> pre-push 2/4: mypy"
-mypy dasik
+# run_gate <label> <cmd...> — run a gate quietly; on failure dump its captured
+# output (tail) and abort. Output goes to a file, never to the hook's stdout pipe.
+run_gate() {
+  local label="$1"; shift
+  echo "==> pre-push: $label"
+  if ! "$@" >"$GATE_LOG" 2>&1; then
+    echo "pre-push: FAILED — $label" >&2
+    echo "----- last 60 lines of gate output -----" >&2
+    tail -n 60 "$GATE_LOG" >&2
+    exit 1
+  fi
+}
 
-echo "==> pre-push 3/4: bandit"
-bandit -c pyproject.toml -r dasik -q
-
-echo "==> pre-push 4/4: mutation testing (set_math tier)"
-scripts/mutation.sh >/dev/null
+run_gate "1/4 pytest + coverage gate"   pytest --cov=dasik -q
+run_gate "2/4 mypy"                      mypy dasik
+run_gate "3/4 bandit"                    bandit -c pyproject.toml -r dasik -q
+run_gate "4/4 mutation (set_math tier)"  scripts/mutation.sh
 
 echo "pre-push: all gates passed — pushing."

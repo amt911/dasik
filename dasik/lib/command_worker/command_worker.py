@@ -20,7 +20,8 @@ class Command:
     @staticmethod
     def execute(cmd: str, args: list[str], run_as_chroot: bool = False,
                 target: "Target | None" = None, input: "bytes | None" = None,
-                env: "dict[str, str] | None" = None, check: bool = False):
+                env: "dict[str, str] | None" = None, check: bool = False,
+                stream: bool = False):
         """Run *cmd* with *args*, optionally inside ``arch-chroot <root>``.
 
         Chroot root resolution:
@@ -37,7 +38,18 @@ class Command:
         success. The default (``check=False``) preserves the historical contract:
         return the ``CompletedProcess`` and let the caller inspect ``returncode``
         (benign probes such as ``pacman -Qi <missing>`` rely on this).
+
+        When *stream* is True the command runs under ``Popen`` and its output is
+        echoed line by line as it arrives (console, ``--verbose`` only) — used for
+        long installers (``pacman``, ``pacstrap``, ``makepkg``) that otherwise
+        stay silent until they finish. stderr is **merged into stdout** to keep
+        the temporal order intact, so the log file's stderr section is empty for a
+        streamed command; the full output is still written to the file once. It is
+        incompatible with *input* (``ValueError``).
         """
+        if stream and input is not None:
+            raise ValueError("stream=True does not support input=")
+
         chroot_cmd: list[str] = []
         if target is not None:
             if target.is_chroot:
@@ -56,6 +68,12 @@ class Command:
         # runs the caller must rely on argv, not env — used here only for host-run
         # systemd-cryptenroll ($PASSWORD).
         full_env = {**os.environ, **env} if env else None
+
+        logger = run_logger.get()
+
+        if stream:
+            return Command._run_streaming(cmd, argv, full_env, check, logger)
+
         result = subprocess.run(
             argv,
             input=input,
@@ -64,7 +82,6 @@ class Command:
             stderr=subprocess.PIPE,
         )
 
-        logger = run_logger.get()
         logger.record(
             argv,
             getattr(result, "returncode", 0),
@@ -84,5 +101,41 @@ class Command:
             raise CommandExecutionError(
                 f"{cmd} failed (exit {rc}): {stderr.strip()[-2000:]}"
             )
+
+        return result
+
+    @staticmethod
+    def _run_streaming(cmd, argv, full_env, check, logger):
+        """Run *argv* under Popen, echoing each output line live and recording
+        the full output to the log file once. Returns a ``CompletedProcess`` with
+        the captured stdout (stderr merged into it), preserving execute()'s
+        return contract."""
+        proc = subprocess.Popen(
+            argv,
+            env=full_env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        )
+        logger.stream_start(argv)
+        chunks: list[bytes] = []
+        if proc.stdout is not None:
+            for raw in proc.stdout:
+                chunks.append(raw)
+                logger.stream_line(raw.decode("utf-8", errors="replace").rstrip("\n"))
+        rc = proc.wait()
+        buf = b"".join(chunks)
+
+        # The file gets the whole block once; echoed=True suppresses the
+        # duplicate console echo (already printed live above).
+        logger.record(argv, rc, buf, b"", echoed=True)
+        result = subprocess.CompletedProcess(argv, rc, stdout=buf, stderr=b"")
+
+        if check and rc != 0:
+            tail = buf.decode("utf-8", errors="replace").strip()[-2000:]
+            logger.error(
+                f"command failed (exit {rc}): {' '.join(argv)}",
+                detail=tail,
+            )
+            raise CommandExecutionError(f"{cmd} failed (exit {rc}): {tail}")
 
         return result

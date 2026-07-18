@@ -534,6 +534,7 @@ class PackagesAction(AbstractAction):
                 ["--noconfirm", "--needed", "-S", *repo_installs],
                 target=target,
                 check=True,
+                stream=True,
             )
 
         # Git builds: fresh installs (resolution.git) + ref-change rebuilds. The
@@ -564,6 +565,7 @@ class PackagesAction(AbstractAction):
                 ["--noconfirm", "-Rns", *removes],
                 target=target,
                 check=True,
+                stream=True,
             )
 
     def _apply_git_install(self, git_pkgs: list) -> None:

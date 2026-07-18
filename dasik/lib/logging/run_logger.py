@@ -81,11 +81,17 @@ class RunLogger:
         returncode: int,
         stdout: "bytes | str | None" = b"",
         stderr: "bytes | str | None" = b"",
+        echoed: bool = False,
     ) -> None:
         """Record one command run: to the file always; to the console when
         verbose. Never raises on a non-zero exit — surfacing a failure as an
         error is the caller's decision (``Command.execute(check=True)``), because
-        many non-zero exits are benign probes."""
+        many non-zero exits are benign probes.
+
+        ``echoed=True`` means the output already went to the console live (a
+        ``stream=True`` run echoed each line via :meth:`stream_line`): the file
+        still gets the full block, but the console echo is suppressed here to
+        avoid printing everything twice."""
         cmd = " ".join(argv)
         out = _to_text(stdout)
         err = _to_text(stderr)
@@ -97,12 +103,26 @@ class RunLogger:
             self._write_file(err if err.endswith("\n") else err + "\n")
         self._write_file(f"[exit {returncode}]\n\n")
 
-        if self.verbose:
+        if self.verbose and not echoed:
             self._console(self._dim(f"$ {cmd}"))
             if out:
                 self._console(out.rstrip("\n"))
             if err:
                 self._console(err.rstrip("\n"))
+
+    def stream_start(self, argv: List[str]) -> None:
+        """Announce a streaming command on the console (verbose only).
+
+        Console-only: the file record is written once, at the end, by
+        :meth:`record` — ``stream_start``/``stream_line`` never touch the file."""
+        if self.verbose:
+            self._console(self._dim(f"$ {' '.join(argv)}"))
+
+    def stream_line(self, line: str) -> None:
+        """Echo one live output line on the console (verbose only). Never writes
+        to the file (see :meth:`stream_start`)."""
+        if self.verbose:
+            self._console(line)
 
     def error(self, message: str, detail: str = "") -> None:
         """Print an error in red on the console (always) and plainly to the file.

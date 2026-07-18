@@ -94,19 +94,23 @@ def setup_actions() -> None:
         config_key='pacman',
         is_optional=True,
     )
-    register_action(
-        action_class=UsersAction,
-        # __root__: needs the root-level remove_home_on_delete flag alongside
-        # the users list (issue: per-user delete flag is unreadable at delete).
-        config_key='__root__',
-        is_optional=True,
-    )
 
     # === Phase 3: package installation ====================================
     register_action(
         action_class=PackagesAction,
         # __root__: reads the packages list plus the sibling package_sources /
         # package_policy maps (PLAN v3 §5).
+        config_key='__root__',
+        is_optional=True,
+    )
+    # Users MUST come after Packages: `useradd -s /bin/zsh -G docker,libvirt`
+    # references shells (zsh) and groups (docker, libvirt) that the packages
+    # create when installed — before Packages, useradd fails (exit 6) because
+    # those don't exist yet. No action after Packages needs the user to exist.
+    register_action(
+        action_class=UsersAction,
+        # __root__: needs the root-level remove_home_on_delete flag alongside
+        # the users list (issue: per-user delete flag is unreadable at delete).
         config_key='__root__',
         is_optional=True,
     )

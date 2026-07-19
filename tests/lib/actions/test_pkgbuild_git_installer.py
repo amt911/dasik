@@ -8,7 +8,10 @@ from unittest.mock import MagicMock, patch, call
 
 import pytest
 
-from dasik.lib.actions.pkgbuild_git_installer import PkgbuildGitInstaller
+from dasik.lib.actions.pkgbuild_git_installer import (
+    PkgbuildGitInstaller,
+    _su_argv,
+)
 from dasik.lib.actions.package_resolver import ResolvedGitPackage
 from dasik.lib.exceptions.exceptions import CommandExecutionError
 from dasik.lib.target.target import Target
@@ -182,3 +185,20 @@ def test_existing_user_not_removed():
     _install(h)
     assert not any(r and r[0] == "userdel" for r in h.runs)
     assert not any(r and r[0] == "useradd" for r in h.runs)
+
+
+def test_su_argv_terminates_options_before_dash_prefixed_payload():
+    assert _su_argv(
+        "_aurbuilder", 'exec "$@"', "yay", "-S", "asunder"
+    ) == [
+        "su",
+        "-",
+        "_aurbuilder",
+        "-c",
+        'exec "$@"',
+        "--",
+        "sh",
+        "yay",
+        "-S",
+        "asunder",
+    ]

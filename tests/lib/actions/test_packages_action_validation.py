@@ -105,3 +105,29 @@ def test_legacy_aur_build_passes_values_as_positional_args(monkeypatch):
 # tests/lib/actions/test_aur_installer.py::test_helper_invocation_safe_argv and
 # ::test_malicious_dep_name_rejected_before_argv; the delegation itself by
 # test_packages_action_v3.py::test_apply_aur_install_delegates_to_aur_installer.
+
+
+def test_su_argv_terminates_options_before_dash_prefixed_payload():
+    argv = PackagesAction._su_argv(
+        "_aurbuilder",
+        'exec "$@"',
+        "yay",
+        "-S",
+        "--noconfirm",
+        "--needed",
+        "asunder",
+    )
+    assert argv == [
+        "su",
+        "-",
+        "_aurbuilder",
+        "-c",
+        'exec "$@"',
+        "--",
+        "sh",
+        "yay",
+        "-S",
+        "--noconfirm",
+        "--needed",
+        "asunder",
+    ]

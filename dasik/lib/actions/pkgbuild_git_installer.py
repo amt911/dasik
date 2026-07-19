@@ -31,10 +31,12 @@ from ..exceptions.exceptions import CommandExecutionError
 
 
 def _su_argv(user: str, script: str, *args: str) -> List[str]:
-    """Argv for ``su - <user> -c <script>`` with values passed as ``$1``..
+    """Argv for ``su - <user> -c <script> -- sh`` with values passed as ``$1``..
     positional parameters, NEVER interpolated into *script*. ``$0`` is a
-    conventional placeholder. Mirrors PackagesAction._su_argv."""
-    return ["su", "-", user, "-c", script, "sh", *args]
+    conventional placeholder. The ``--`` option terminator ensures a later
+    dash-prefixed value belongs to the child shell rather than util-linux ``su``.
+    Mirrors PackagesAction._su_argv."""
+    return ["su", "-", user, "-c", script, "--", "sh", *args]
 
 
 class PkgbuildGitInstaller:

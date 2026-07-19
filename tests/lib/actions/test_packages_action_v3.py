@@ -303,11 +303,15 @@ def test_apply_excludes_helper_skipped_as_unknown():
         Change("packages", Op.INSTALL, "yay"),
         Change("packages", Op.INSTALL, "asunder"),
     ]
+    # warn-and-skip logs through the process-wide run_logger; stub it so the test
+    # never writes to a capture stream another test already closed.
     with patch.object(
         action,
         "_resolve_sources",
         return_value=_resolution(aur=["asunder"], unknown=["yay"]),
-    ), patch.object(action, "_apply_aur_install") as aur_install:
+    ), patch("dasik.lib.actions.packages_action.run_logger.get",
+             return_value=MagicMock()), \
+            patch.object(action, "_apply_aur_install") as aur_install:
         action.apply(changes)
     aur_install.assert_called_once_with(["asunder"], helper=None)
 
@@ -323,7 +327,9 @@ def test_apply_uses_next_eligible_helper_when_first_is_skipped():
         action,
         "_resolve_sources",
         return_value=_resolution(aur=["paru", "asunder"], unknown=["yay"]),
-    ), patch.object(action, "_apply_aur_install") as aur_install:
+    ), patch("dasik.lib.actions.packages_action.run_logger.get",
+             return_value=MagicMock()), \
+            patch.object(action, "_apply_aur_install") as aur_install:
         action.apply(changes)
     aur_install.assert_called_once_with(["paru", "asunder"], helper="paru")
 

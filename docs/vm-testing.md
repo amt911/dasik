@@ -157,6 +157,48 @@ manifest). Changing `config-saver`'s `ref` and re-applying rebuilds it. Needs
 network in the guest (clones from GitHub + the AUR RPC); the makepkg build runs as
 the unprivileged `_aurbuilder` user, never root.
 
+### Scenario — AUR helper partial retry
+
+Regression for the two bugs behind a failed `apply`: util-linux `su` consuming the
+helper's own `-S` (`su: invalid option -- 'S'`) and a retry that no longer sees an
+already-installed `yay` in the delta and therefore stops using it as the helper.
+
+`config/vm-aur-helper-retry.json` declares `aur-yay` + `aur-downgrade`; the guest
+script first derives a **bootstrap** config without `aur-downgrade`, applies it
+(so only `yay` gets installed — the partial-apply state), then applies the full
+config. `DASIK_VM_ISO` must already point to an existing Arch ISO.
+
+```bash
+DASIK_AUR_VM_DIR="$(mktemp -d /var/tmp/dasik-aur-retry.XXXXXX)"
+
+DASIK_VM_WORKDIR="$DASIK_AUR_VM_DIR" \
+DASIK_VM_RAM=4096 \
+DASIK_VM_DISK=12G \
+scripts/vmtest/qemu.sh install config/vm-day2.json
+
+DASIK_VM_WORKDIR="$DASIK_AUR_VM_DIR" \
+DASIK_VM_RAM=4096 \
+DASIK_VM_DRIVE_TIMEOUT=1200 \
+scripts/vmtest/qemu.sh drive \
+  "$DASIK_AUR_VM_DIR/vda.qcow2" \
+  guest-aur-helper-retry.sh \
+  AUR-RETRY-DONE
+```
+
+Expected final evidence:
+
+```text
+AUR-RETRY-DONE rc=0
+```
+
+The retry log (`/root/aur-retry.log` in the guest) must contain `-- sh yay -S`,
+must **not** contain a `yay.git` clone (it reuses the installed helper instead of
+rebuilding it), and must contain no `su: invalid option`. `_aurbuilder` and
+`/etc/sudoers.d/_aurbuilder` must be gone afterwards, and the third apply must
+print `No changes`. The image is built from `config/vm-day2.json`, whose `disks`
+block is identical, so the already-installed disk stays converged and is never
+reformatted.
+
 ### Manual (`run-iso` + `boot`)
 
 ```bash

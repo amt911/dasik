@@ -43,8 +43,8 @@ echo "DASIK-VM: plan"
 /root/venv/bin/dasik plan "$CONFIG" --target /mnt
 echo "DASIK-VM: apply (destructive, guest /dev/vda only)"
 /root/venv/bin/dasik apply "$CONFIG" --target /mnt --yes
-rc=$?
-echo "DASIK-VM: dasik apply exit=$rc"
+first_rc=$?
+echo "DASIK-VM: dasik apply exit=$first_rc"
 
 # 5. Evidence for the host to grep.
 echo "DASIK-VM: /mnt ->"; ls -A /mnt 2>&1 | tr '\n' ' '; echo
@@ -53,11 +53,24 @@ echo "DASIK-VM: kernel present ->"; ls /mnt/boot/vmlinuz-* 2>/dev/null && echo y
 echo "DASIK-VM: pacman db ->"; ls -d /mnt/var/lib/pacman 2>/dev/null && echo yes || echo no
 
 # 6. Idempotency check in a REAL Arch environment: a second apply must be a no-op.
-echo "DASIK-VM: second apply (expect no-op)"
-/root/venv/bin/dasik apply "$CONFIG" --target /mnt --yes
-echo "DASIK-VM: second apply exit=$?"
+#    A failing second apply is a real regression, so it must reach the marker too
+#    (it used to be reported and then discarded).
+second_rc=0
+if [ "$first_rc" -eq 0 ]; then
+    echo "DASIK-VM: second apply (expect no-op)"
+    /root/venv/bin/dasik apply "$CONFIG" --target /mnt --yes
+    second_rc=$?
+    echo "DASIK-VM: second apply exit=$second_rc"
+else
+    echo "DASIK-VM: second apply skipped because first apply failed"
+fi
 
-echo "DASIK-VM-DONE rc=$rc"
+final_rc=$first_rc
+if [ "$final_rc" -eq 0 ] && [ "$second_rc" -ne 0 ]; then
+    final_rc=$second_rc
+fi
+
+echo "DASIK-VM-DONE rc=$final_rc"
 sync
 sleep 3
 [ -n "$DASIK_VM_NOPOWEROFF" ] || poweroff -f

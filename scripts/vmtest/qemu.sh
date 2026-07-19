@@ -237,7 +237,11 @@ cmd_install() {
         grep -qa "DASIK-VM-DONE" "$work/serial.log" 2>/dev/null && break
         sleep 5
     done
-    kill "$qpid" 2>/dev/null; kill "$http_pid" 2>/dev/null; _stop_tpm; wait 2>/dev/null
+    # `|| true`: the guest powers itself off, so by now qemu/http are usually
+    # already gone and a failing kill would abort the run under `set -e` —
+    # turning a SUCCESSFUL install into rc=1 before the verdict is printed.
+    kill "$qpid" 2>/dev/null || true; kill "$http_pid" 2>/dev/null || true
+    _stop_tpm; wait 2>/dev/null || true
 
     echo; log "Install serial highlights:"
     grep -a "DASIK-VM" "$work/serial.log" 2>/dev/null | tail -25
@@ -315,7 +319,11 @@ cmd_install_driven() {
     local rc=${PIPESTATUS[0]}
     set -e
 
-    kill "$qpid" 2>/dev/null; kill "$http_pid" 2>/dev/null; _stop_tpm; wait 2>/dev/null
+    # `|| true`: the guest powers itself off, so by now qemu/http are usually
+    # already gone and a failing kill would abort the run under `set -e` —
+    # turning a SUCCESSFUL install into rc=1 before the verdict is printed.
+    kill "$qpid" 2>/dev/null || true; kill "$http_pid" 2>/dev/null || true
+    _stop_tpm; wait 2>/dev/null || true
 
     echo; log "Install serial highlights:"
     grep -a "DASIK-VM" "$work/serial.log" 2>/dev/null | tail -25
@@ -363,7 +371,7 @@ cmd_day2() {
     python3 day2_driver.py "$sock" "$timeout_s" | tee "$work/day2.log"
     local rc=${PIPESTATUS[0]}
     set -e
-    kill "$qpid" 2>/dev/null; wait 2>/dev/null
+    kill "$qpid" 2>/dev/null || true; wait 2>/dev/null || true
 
     echo; log "Day-2 highlights:"
     grep -aE "DAY2|No changes|\[files\]|\[packages\]|\[network\]" "$work/day2.log" 2>/dev/null | tail -30
@@ -411,7 +419,7 @@ cmd_lifecycle() {
     python3 day2_driver.py "$sock" "$timeout_s" guest-lifecycle.sh LIFE-DONE | tee "$work/lifecycle.log"
     local rc=${PIPESTATUS[0]}
     set -e
-    kill "$qpid" 2>/dev/null; wait 2>/dev/null
+    kill "$qpid" 2>/dev/null || true; wait 2>/dev/null || true
 
     echo; log "Lifecycle highlights:"
     grep -aE "LIFE-|Generation|No changes|Synced|Rolled back" "$work/lifecycle.log" 2>/dev/null | tail -40
@@ -467,7 +475,7 @@ cmd_sync_luks() {
         | tee "$work/syncluks.log"
     local rc=${PIPESTATUS[0]}
     set -e
-    kill "$qpid" 2>/dev/null; wait 2>/dev/null
+    kill "$qpid" 2>/dev/null || true; wait 2>/dev/null || true
 
     echo; log "Encrypted-sync highlights:"
     grep -aE "SYNCLUKS-|luks_uuid" "$work/syncluks.log" 2>/dev/null | tail -20
@@ -519,7 +527,7 @@ cmd_boot_unlock() {
     python3 boot_unlock_driver.py "$sock" "$pass" "$timeout_s" | tee "$work/unlock.log"
     local rc=${PIPESTATUS[0]}
     set -e
-    kill "$qpid" 2>/dev/null; wait 2>/dev/null
+    kill "$qpid" 2>/dev/null || true; wait 2>/dev/null || true
 
     echo; log "Boot-unlock highlights:"
     grep -aiE "passphrase|unlock|reached target|login:|PASS|FAIL" "$work/unlock.log" 2>/dev/null | tail -20
@@ -576,7 +584,7 @@ cmd_drive() {
     python3 day2_driver.py "$sock" "$timeout_s" "$guest" "$marker" | tee "$work/drive.log"
     local rc=${PIPESTATUS[0]}
     set -e
-    kill "$qpid" 2>/dev/null; wait 2>/dev/null
+    kill "$qpid" 2>/dev/null || true; wait 2>/dev/null || true
 
     echo; log "Drive highlights:"
     grep -aE "OK:|BAD:|$marker|No changes|Rolled back|Synced" "$work/drive.log" 2>/dev/null | tail -40

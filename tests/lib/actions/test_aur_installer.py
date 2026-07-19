@@ -18,6 +18,18 @@ from dasik.lib.target.target import Target
 BUILD_ROOT = AurInstaller.BUILD_ROOT
 
 
+def _su_script_and_payload(args):
+    """Return the fixed shell script and the values that become $1 onward.
+
+    Models the real util-linux boundary: everything up to and including ``--``
+    belongs to ``su``; ``sh`` is the child shell's $0; the rest is its argv.
+    """
+    command_index = args.index("-c")
+    script = args[command_index + 1]
+    assert args[command_index + 2:command_index + 4] == ["--", "sh"]
+    return script, args[command_index + 4:]
+
+
 def _srcinfo(name, depends=()):
     lines = [f"pkgname = {name}"]
     lines += [f"\tdepends = {d}" for d in depends]
@@ -81,9 +93,8 @@ class _Harness:
         return MagicMock(returncode=rc, stdout=out, stderr=b"")
 
     def _su(self, args):
-        # ["-", user, "-c", script, "sh", *tail]
-        script = args[3] if len(args) > 3 else ""
-        tail = args[5:] if len(args) > 5 else []
+        # ["-", user, "-c", script, "--", "sh", *tail]
+        script, tail = _su_script_and_payload(args)
         if "--printsrcinfo" in script:
             pkg = self._pkg(tail[0]) if tail else ""
             deps = self.srcinfo.get(pkg, set())
@@ -111,14 +122,15 @@ class _Harness:
         return [f"{c} {' '.join(a)}" for c, a in self.runs]
 
 
-def _install(pkgs, harness, resolver, exists=lambda p: "sudoers" in str(p)):
+def _install(pkgs, harness, resolver, exists=lambda p: "sudoers" in str(p),
+             helper=None):
     inst = AurInstaller(Target(root="/"), resolver=resolver)
     with patch("dasik.lib.actions.aur_installer.Command.execute",
                side_effect=harness.command_execute), \
          patch("dasik.lib.actions.aur_installer.os.path.exists", side_effect=exists), \
          patch("dasik.lib.actions.aur_installer.os.remove"), \
          patch("builtins.open", MagicMock()):
-        inst.install(pkgs)
+        inst.install(pkgs, helper=helper)
     return inst
 
 
@@ -126,17 +138,35 @@ def _makepkgs(harness):
     """The package names built via `makepkg -sri`, in run order."""
     out = []
     for cmd, args in harness.runs:
-        if cmd == "su" and len(args) > 5 and "makepkg -sri" in args[3]:
-            out.append(_Harness._pkg(args[5]))
+        if cmd != "su":
+            continue
+        script, payload = _su_script_and_payload(args)
+        if "makepkg -sri" in script:
+            out.append(_Harness._pkg(payload[0]))
+    return out
+
+
+def _helper_payloads(harness):
+    """The `$1..` payloads of every `exec "$@"` helper invocation, in run order."""
+    out = []
+    for cmd, args in harness.runs:
+        if cmd != "su":
+            continue
+        script, payload = _su_script_and_payload(args)
+        if script == 'exec "$@"':
+            out.append(payload)
     return out
 
 
 def _clones(harness):
     out = []
     for cmd, args in harness.runs:
-        if cmd == "su" and len(args) > 5 and "git clone" in args[3]:
-            # git clone "$1" "$2" -> tail = [url, build_dir]
-            out.append(_Harness._pkg(args[6]))
+        if cmd != "su":
+            continue
+        script, payload = _su_script_and_payload(args)
+        if "git clone" in script:
+            # git clone "$1" "$2" -> payload = [url, build_dir]
+            out.append(_Harness._pkg(payload[1]))
     return out
 
 
@@ -226,20 +256,19 @@ def test_helper_built_via_makepkg_then_rest_via_helper():
     _install(["yay", "asunder"], h, r)
     # yay built from source; asunder installed via `yay -S`
     assert _makepkgs(h) == ["yay"]
-    helper_runs = [a for c, a in h.runs
-                   if c == "su" and len(a) > 5 and a[3] == 'exec "$@"']
-    assert helper_runs, h.joined()
-    tail = helper_runs[0][5:]
+    payloads = _helper_payloads(h)
+    assert payloads, h.joined()
+    tail = payloads[0]
     assert tail[0] == "yay" and "asunder" in tail
+    # the helper's own flags must survive su's option parsing
+    assert "-S" in tail
 
 
 def test_helper_not_passed_to_itself():
     h = _Harness(srcinfo={"yay": set(), "asunder": set()})
     r = _StubResolver(repo=[], aur=["yay", "asunder"])
     _install(["yay", "asunder"], h, r)
-    helper_runs = [a for c, a in h.runs
-                   if c == "su" and len(a) > 5 and a[3] == 'exec "$@"']
-    tail = helper_runs[0][5:]
+    tail = _helper_payloads(h)[0]
     assert tail.count("yay") == 1        # yay is the helper, not in its own -S list
 
 
@@ -248,7 +277,7 @@ def test_only_helper_declared_skips_helper_invocation():
     r = _StubResolver(repo=[], aur=["yay"])
     _install(["yay"], h, r)
     assert _makepkgs(h) == ["yay"]
-    assert not any(c == "su" and len(a) > 5 and a[3] == 'exec "$@"' for c, a in h.runs)
+    assert _helper_payloads(h) == []
 
 
 def test_helper_invocation_safe_argv():
@@ -256,11 +285,50 @@ def test_helper_invocation_safe_argv():
     r = _StubResolver(repo=[], aur=["yay", "asunder"])
     _install(["yay", "asunder"], h, r)
     helper = [a for c, a in h.runs
-              if c == "su" and len(a) > 5 and a[3] == 'exec "$@"'][0]
+              if c == "su" and _su_script_and_payload(a)[0] == 'exec "$@"'][0]
+    script, payload = _su_script_and_payload(helper)
     # the script token is a fixed `exec "$@"`; package names are positional args
-    assert helper[3] == 'exec "$@"'
-    assert "asunder" in helper[5:]
-    assert not any("asunder" in tok for tok in helper[:5])
+    assert script == 'exec "$@"'
+    assert "asunder" in payload
+    head = helper[:helper.index("-c") + 4]      # everything su itself consumes
+    assert not any("asunder" in tok for tok in head)
+
+
+def test_preinstalled_declared_helper_is_reused_without_rebuild():
+    """Retry after a partial apply: yay is already installed and not in the delta,
+    so it must be reused as the helper — never cloned or rebuilt."""
+    harness = _Harness(installed=["yay"])
+    resolver = _StubResolver(repo=[], aur=["asunder"])
+    _install(["asunder"], harness, resolver, helper="yay")
+
+    assert _makepkgs(harness) == []
+    assert _clones(harness) == []
+    assert _helper_payloads(harness) == [
+        ["yay", "-S", "--noconfirm", "--needed", "asunder"]
+    ]
+    assert ("pacman", ["-Q", "yay"]) in harness.runs
+    assert ("pacman", ["-Q", "asunder"]) in harness.runs
+
+
+def test_selected_retry_helper_must_already_be_installed():
+    """A declared helper that is neither in the delta nor installed aborts loudly
+    instead of silently falling back to another strategy."""
+    harness = _Harness(installed=[])
+    resolver = _StubResolver(repo=[], aur=["asunder"])
+    with pytest.raises(
+        CommandExecutionError,
+        match="declared AUR helper 'yay' is not installed",
+    ):
+        _install(["asunder"], harness, resolver, helper="yay")
+
+    assert _helper_payloads(harness) == []
+
+
+def test_unsupported_explicit_helper_rejected():
+    harness = _Harness()
+    resolver = _StubResolver(repo=[], aur=["asunder"])
+    with pytest.raises(CommandExecutionError, match="Unsupported AUR helper"):
+        _install(["asunder"], harness, resolver, helper="pacaur")
 
 
 # --- cleanup / prerequisites --------------------------------------------- #

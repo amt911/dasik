@@ -166,7 +166,10 @@ already-installed `yay` in the delta and therefore stops using it as the helper.
 `config/vm-aur-helper-retry.json` declares `aur-yay` + `aur-downgrade`; the guest
 script first derives a **bootstrap** config without `aur-downgrade`, applies it
 (so only `yay` gets installed — the partial-apply state), then applies the full
-config. `DASIK_VM_ISO` must already point to an existing Arch ISO.
+config. `DASIK_VM_ISO` must already point to an existing Arch ISO. Build the image
+with `install-driven`, not `install`: on ISOs 2025.12+ the `script=` hook never
+runs (no ttyS0 autologin), so plain `install` sits at `archiso login:` until the
+timeout and exits 1 with an empty disk.
 
 ```bash
 DASIK_AUR_VM_DIR="$(mktemp -d /var/tmp/dasik-aur-retry.XXXXXX)"
@@ -174,7 +177,7 @@ DASIK_AUR_VM_DIR="$(mktemp -d /var/tmp/dasik-aur-retry.XXXXXX)"
 DASIK_VM_WORKDIR="$DASIK_AUR_VM_DIR" \
 DASIK_VM_RAM=4096 \
 DASIK_VM_DISK=12G \
-scripts/vmtest/qemu.sh install config/vm-day2.json
+scripts/vmtest/qemu.sh install-driven config/vm-day2.json
 
 DASIK_VM_WORKDIR="$DASIK_AUR_VM_DIR" \
 DASIK_VM_RAM=4096 \

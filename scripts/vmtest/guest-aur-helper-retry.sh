@@ -26,6 +26,24 @@ fail() {
     rc=1
 }
 
+# The installed guest has NO network configuration (dasik's network action only
+# writes hostname/hosts), but the AUR path needs the pacman mirrors and
+# aur.archlinux.org. Configure QEMU's user-net by hand: 10.0.2.15/24, gateway
+# 10.0.2.2, DNS 10.0.2.3.
+iface=""
+for link in /sys/class/net/*; do
+    case "${link##*/}" in lo) continue;; *) iface="${link##*/}"; break;; esac
+done
+ip link set "$iface" up
+ip addr add 10.0.2.15/24 dev "$iface" 2>/dev/null
+ip route add default via 10.0.2.2 2>/dev/null
+rm -f /etc/resolv.conf
+printf 'nameserver 10.0.2.3\n' > /etc/resolv.conf
+if ! getent hosts aur.archlinux.org >/dev/null 2>&1; then
+    echo "AUR-RETRY-DONE rc=92 (no DNS in guest: $iface)"
+    [ -n "${DASIK_VM_NOPOWEROFF:-}" ] || poweroff -f
+fi
+
 # The bootstrap config is the full one minus aur-downgrade: it leaves yay
 # installed and downgrade pending, i.e. exactly the partial-apply state.
 python - "$FULL" "$BOOTSTRAP" <<'PY'

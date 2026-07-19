@@ -552,7 +552,17 @@ class PackagesAction(AbstractAction):
             self._apply_git_install(all_git)
 
         if aur_installs:
-            self._apply_aur_install(aur_installs)
+            # The helper is chosen from the full DESIRED set, not from the delta:
+            # a previous failed apply may already have installed it, in which case
+            # it is not an INSTALL change but must still drive the rest.
+            from .aur_installer import AurInstaller
+            skipped = set(self._skipped_unknown)
+            helper = next(
+                (name for name in AurInstaller.HELPERS
+                 if name in self.desired and name not in skipped),
+                None,
+            )
+            self._apply_aur_install(aur_installs, helper=helper)
 
         # Enforce install reason (repo packages only). -S marks explicit by
         # default, so a fresh explicit install needs no -D; a dep install does.
@@ -583,17 +593,21 @@ class PackagesAction(AbstractAction):
         from .pkgbuild_git_installer import PkgbuildGitInstaller
         PkgbuildGitInstaller(self.context.target).install(git_pkgs)
 
-    def _apply_aur_install(self, pkgs: list[str]) -> None:
+    def _apply_aur_install(self, pkgs: list[str], *,
+                           helper: "str | None" = None) -> None:
         """Install ``resolution.aur`` via the hybrid :class:`AurInstaller`.
 
-        The installer picks a declared helper (yay/paru) or resolves transitive
-        AUR deps itself; it builds unprivileged, streams makepkg output, and always
-        cleans up the temp build user + sudoers on the way out. The heavy logic
-        lives there so this action stays a thin router (see ``aur_installer.py``).
+        *helper* is the declared yay/paru chosen from the full desired set (it may
+        already be installed from an earlier partial apply); ``None`` means the
+        installer resolves transitive AUR deps itself. It builds unprivileged,
+        streams makepkg output, and always cleans up the temp build user + sudoers
+        on the way out. The heavy logic lives there so this action stays a thin
+        router (see ``aur_installer.py``).
         """
         if self.context is None or self.context.target is None:
             raise CommandExecutionError(
                 "AUR install requires an action context with a target."
             )
         from .aur_installer import AurInstaller
-        AurInstaller(self.context.target, resolver=self._resolver).install(pkgs)
+        AurInstaller(self.context.target, resolver=self._resolver).install(
+            pkgs, helper=helper)

@@ -71,19 +71,25 @@ class AurInstaller:
 
     # -- entry point ------------------------------------------------------
 
-    def install(self, pkgs: List[str]) -> None:
+    def install(self, pkgs: List[str], *, helper: "str | None" = None) -> None:
+        """Install *pkgs*. *helper* is a declared yay/paru chosen by the caller
+        from the full desired set — it may be pending in *pkgs* (build it) or
+        already installed by an earlier partial apply (reuse it). ``None`` falls
+        back to a helper found inside *pkgs*, else own resolution."""
         pkgs = list(dict.fromkeys(pkgs))          # dedup, keep declared order
         if not pkgs:
             return
         for p in pkgs:
             _validate_pkg_name(p)
 
-        helper = next((h for h in self.HELPERS if h in pkgs), None)
+        if helper is not None and helper not in self.HELPERS:
+            raise CommandExecutionError(f"Unsupported AUR helper {helper!r}")
+        selected = helper or next((h for h in self.HELPERS if h in pkgs), None)
         created = self._ensure_prerequisites()
         sudoers_path = self._target.path(f"/etc/sudoers.d/{self.BUILD_USER}")
         try:
-            if helper is not None:
-                self._install_with_helper(helper, pkgs)
+            if selected is not None:
+                self._install_with_helper(selected, pkgs)
             else:
                 self._install_via_resolution(pkgs)
             self._verify_installed(pkgs)
@@ -120,10 +126,20 @@ class AurInstaller:
     # -- helper path ------------------------------------------------------
 
     def _install_with_helper(self, helper: str, pkgs: List[str]) -> None:
-        # Build the helper itself from source; its deps are all official-repo, so
-        # makepkg -s covers them (no bootstrap chicken-and-egg).
-        self._clone(helper)
-        self._build_one(helper)
+        if helper in pkgs:
+            # Build the helper itself from source; its deps are all official-repo,
+            # so makepkg -s covers them (no bootstrap chicken-and-egg).
+            self._clone(helper)
+            self._build_one(helper)
+        else:
+            # Not part of this delta: an earlier apply must have installed it.
+            # Verify rather than silently switching strategy mid-install.
+            installed = self._run("pacman", ["-Q", helper], check=False)
+            if getattr(installed, "returncode", 0) != 0:
+                raise CommandExecutionError(
+                    f"declared AUR helper {helper!r} is not installed and is not "
+                    f"part of the current install delta; re-run plan/apply"
+                )
         rest = [p for p in pkgs if p != helper]
         if not rest:
             return

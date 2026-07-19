@@ -122,14 +122,15 @@ class _Harness:
         return [f"{c} {' '.join(a)}" for c, a in self.runs]
 
 
-def _install(pkgs, harness, resolver, exists=lambda p: "sudoers" in str(p)):
+def _install(pkgs, harness, resolver, exists=lambda p: "sudoers" in str(p),
+             helper=None):
     inst = AurInstaller(Target(root="/"), resolver=resolver)
     with patch("dasik.lib.actions.aur_installer.Command.execute",
                side_effect=harness.command_execute), \
          patch("dasik.lib.actions.aur_installer.os.path.exists", side_effect=exists), \
          patch("dasik.lib.actions.aur_installer.os.remove"), \
          patch("builtins.open", MagicMock()):
-        inst.install(pkgs)
+        inst.install(pkgs, helper=helper)
     return inst
 
 
@@ -291,6 +292,43 @@ def test_helper_invocation_safe_argv():
     assert "asunder" in payload
     head = helper[:helper.index("-c") + 4]      # everything su itself consumes
     assert not any("asunder" in tok for tok in head)
+
+
+def test_preinstalled_declared_helper_is_reused_without_rebuild():
+    """Retry after a partial apply: yay is already installed and not in the delta,
+    so it must be reused as the helper — never cloned or rebuilt."""
+    harness = _Harness(installed=["yay"])
+    resolver = _StubResolver(repo=[], aur=["asunder"])
+    _install(["asunder"], harness, resolver, helper="yay")
+
+    assert _makepkgs(harness) == []
+    assert _clones(harness) == []
+    assert _helper_payloads(harness) == [
+        ["yay", "-S", "--noconfirm", "--needed", "asunder"]
+    ]
+    assert ("pacman", ["-Q", "yay"]) in harness.runs
+    assert ("pacman", ["-Q", "asunder"]) in harness.runs
+
+
+def test_selected_retry_helper_must_already_be_installed():
+    """A declared helper that is neither in the delta nor installed aborts loudly
+    instead of silently falling back to another strategy."""
+    harness = _Harness(installed=[])
+    resolver = _StubResolver(repo=[], aur=["asunder"])
+    with pytest.raises(
+        CommandExecutionError,
+        match="declared AUR helper 'yay' is not installed",
+    ):
+        _install(["asunder"], harness, resolver, helper="yay")
+
+    assert _helper_payloads(harness) == []
+
+
+def test_unsupported_explicit_helper_rejected():
+    harness = _Harness()
+    resolver = _StubResolver(repo=[], aur=["asunder"])
+    with pytest.raises(CommandExecutionError, match="Unsupported AUR helper"):
+        _install(["asunder"], harness, resolver, helper="pacaur")
 
 
 # --- cleanup / prerequisites --------------------------------------------- #

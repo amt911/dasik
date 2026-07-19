@@ -20,10 +20,16 @@ def _ok():
     return MagicMock(returncode=0, stdout=b"", stderr=b"")
 
 
-def _resolution(repo=(), aur=(), groups=()):
+def _resolution(repo=(), aur=(), groups=(), unknown=(), unavailable=()):
     """A canned PackageResolution so apply-routing tests stay decoupled from the
     live PackageResolver (network + pacman DBs)."""
-    return PackageResolution(repo=list(repo), aur=list(aur), groups=list(groups))
+    return PackageResolution(
+        repo=list(repo),
+        aur=list(aur),
+        groups=list(groups),
+        unknown=list(unknown),
+        unavailable=list(unavailable),
+    )
 
 
 def _fake_command_run(stdout: bytes = b"", returncode: int = 0):
@@ -222,7 +228,7 @@ def test_apply_aur_install_uses_makepkg_path():
     with patch.object(PackagesAction, "_apply_aur_install") as aur_install, \
          patch("dasik.lib.actions.packages_action.Command.execute") as run:
         a.apply(changes)
-    aur_install.assert_called_once_with(["yay"])
+    aur_install.assert_called_once_with(["yay"], helper="yay")
     # No pacman -S call (no pacman pkgs to install)
     for call in run.call_args_list:
         assert "-S" not in call.args[1] or "base-devel" in call.args[1]
@@ -245,7 +251,7 @@ def test_apply_separates_pacman_install_from_aur_install():
          patch("dasik.lib.actions.packages_action.Command.execute") as run:
         run.return_value = _ok()
         a.apply(changes)
-    aur_install.assert_called_once_with(["yay"])
+    aur_install.assert_called_once_with(["yay"], helper="yay")
     # Exactly one pacman -S call for the pacman items
     pacman_S_calls = [
         c for c in run.call_args_list
@@ -267,14 +273,59 @@ def test_apply_aur_install_delegates_to_aur_installer():
     and resolver, and hands it resolution.aur."""
     a = PackagesAction(config=["aur-yay"], context=_ctx("/"))
     with patch("dasik.lib.actions.aur_installer.AurInstaller") as Installer:
-        a._apply_aur_install(["yay"])
+        a._apply_aur_install(["asunder"], helper="yay")
     # constructed with (target, resolver=self._resolver)
     Installer.assert_called_once()
     call = Installer.call_args
     assert call.args[0] is a.context.target
     assert call.kwargs.get("resolver") is a._resolver
-    # and driven with the AUR package list
-    Installer.return_value.install.assert_called_once_with(["yay"])
+    # and driven with the AUR package list + the chosen helper
+    Installer.return_value.install.assert_called_once_with(
+        ["asunder"], helper="yay")
+
+
+def test_apply_passes_declared_helper_when_only_rest_is_pending():
+    """Partial retry: yay was installed by an earlier failed apply, so it is NOT
+    in the delta — but it is still declared, so it must be the chosen helper."""
+    action = PackagesAction(config=["yay", "asunder"], context=_ctx("/"))
+    changes = [Change("packages", Op.INSTALL, "asunder")]
+    with patch.object(
+        action, "_resolve_sources", return_value=_resolution(aur=["asunder"])
+    ), patch.object(action, "_apply_aur_install") as aur_install:
+        action.apply(changes)
+    aur_install.assert_called_once_with(["asunder"], helper="yay")
+
+
+def test_apply_excludes_helper_skipped_as_unknown():
+    """A helper dropped by warn-and-skip is not installed, so it is not eligible."""
+    action = PackagesAction(config=["yay", "asunder"], context=_ctx("/"))
+    changes = [
+        Change("packages", Op.INSTALL, "yay"),
+        Change("packages", Op.INSTALL, "asunder"),
+    ]
+    with patch.object(
+        action,
+        "_resolve_sources",
+        return_value=_resolution(aur=["asunder"], unknown=["yay"]),
+    ), patch.object(action, "_apply_aur_install") as aur_install:
+        action.apply(changes)
+    aur_install.assert_called_once_with(["asunder"], helper=None)
+
+
+def test_apply_uses_next_eligible_helper_when_first_is_skipped():
+    action = PackagesAction(config=["yay", "paru", "asunder"], context=_ctx("/"))
+    changes = [
+        Change("packages", Op.INSTALL, "yay"),
+        Change("packages", Op.INSTALL, "paru"),
+        Change("packages", Op.INSTALL, "asunder"),
+    ]
+    with patch.object(
+        action,
+        "_resolve_sources",
+        return_value=_resolution(aur=["paru", "asunder"], unknown=["yay"]),
+    ), patch.object(action, "_apply_aur_install") as aur_install:
+        action.apply(changes)
+    aur_install.assert_called_once_with(["paru", "asunder"], helper="paru")
 
 
 def test_apply_aur_install_requires_target():

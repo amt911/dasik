@@ -140,3 +140,30 @@ def test_name_and_optional():
     a = NetworkAction(_cfg())
     assert a.name == "Network Configuration"
     assert a.is_optional is True
+
+
+# --- hostname alone is enough (F-31) --------------------------------------- #
+#
+# The registry required BOTH 'network' and 'hostname', so a config that declared
+# only a hostname was skipped entirely and /etc/hostname was never written — the
+# installed system kept the ISO's name with no error anywhere.
+
+def test_registered_requiring_only_hostname():
+    from dasik.lib.actions.action_registry import get_default_registry
+    from dasik.lib.actions.actions_handler_v2 import setup_actions
+    setup_actions()
+    meta = next(m for m in get_default_registry().get_all_actions()
+                if m["class"].__name__ == "NetworkAction")
+    assert meta["required_fields"] == ["hostname"]
+
+
+def test_hostname_without_network_section_still_plans(tmp_path):
+    from dasik.lib.actions.action_context import ActionContext
+    from dasik.lib.target.target import Target
+    (tmp_path / "etc").mkdir()
+    a = NetworkAction({"hostname": "archlinux-torre-amd"},
+                      ActionContext(target=Target(root=str(tmp_path))))
+    assert a.plan(managed=[]), "a declared hostname must be applied on its own"
+    a.apply(a.plan(managed=[]))
+    assert (tmp_path / "etc" / "hostname").read_text().strip() == "archlinux-torre-amd"
+    assert a.plan(managed=["network"]) == []          # converged -> no-op

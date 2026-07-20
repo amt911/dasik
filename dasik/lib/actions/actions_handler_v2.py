@@ -93,11 +93,14 @@ def setup_actions() -> None:
     )
     register_action(
         action_class=NetworkAction,
-        # __root__: needs both the 'network' section and the root-level
-        # 'hostname' (issue #66 port reads both from the root config).
+        # __root__: reads the root-level 'hostname' plus the optional 'network'
+        # section. Only `hostname` is required: demanding both meant a config
+        # that declared a hostname and no `network` block was skipped entirely
+        # and /etc/hostname was never written (forensic report F-31). The action
+        # already no-ops on an empty hostname and treats `network` as optional.
         config_key='__root__',
         is_optional=True,
-        required_fields=['network', 'hostname'],
+        required_fields=['hostname'],
     )
     register_action(
         action_class=PacmanAction,

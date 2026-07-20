@@ -1,0 +1,121 @@
+"""Cross-field preflight: reject an incoherent config BEFORE the first mutation.
+
+Schema validation (pydantic) only proves each field's shape. These checks are the
+ones the 2026-07-19 install needed: a user demanding the `docker` group that no
+declared package creates (useradd would have failed after the disk was already
+wiped), a display-manager unit no package provides, and a /etc/crypttab entry with
+a malformed option pointing at a device that does not exist.
+"""
+from dasik.lib.validation.preflight import preflight, has_errors
+
+
+def _errors(cfg):
+    return [i for i in preflight(cfg) if i.level == "error"]
+
+
+def _warnings(cfg):
+    return [i for i in preflight(cfg) if i.level == "warning"]
+
+
+# --- supplementary groups -------------------------------------------------- #
+
+def test_group_with_known_provider_not_declared_is_an_error():
+    cfg = {"users": [{"username": "andres", "groups": ["docker", "wheel"]}],
+           "packages": ["podman", "podman-docker", "docker-buildx"]}
+    errs = _errors(cfg)
+    assert len(errs) == 1
+    assert errs[0].code == "group_without_provider"
+    assert "docker" in errs[0].message
+    assert has_errors(preflight(cfg))
+
+
+def test_group_provided_by_declared_package_is_accepted():
+    cfg = {"users": [{"username": "andres", "groups": ["docker", "libvirt"]}],
+           "packages": ["docker", "libvirt"]}
+    assert _errors(cfg) == []
+
+
+def test_base_groups_need_no_package():
+    cfg = {"users": [{"username": "andres",
+                      "groups": ["wheel", "video", "audio", "input", "storage"]}]}
+    assert _errors(cfg) == []
+
+
+def test_unknown_group_is_a_warning_not_an_error():
+    cfg = {"users": [{"username": "andres", "groups": ["mycustomgroup"]}]}
+    assert _errors(cfg) == []
+    assert [w.code for w in _warnings(cfg)] == ["unknown_group"]
+
+
+# --- systemd units with a known provider ----------------------------------- #
+
+def test_display_manager_unit_without_its_package_is_an_error():
+    cfg = {"systemd": {"enable_units": ["sddm.service"]},
+           "packages": ["plasma-meta"]}
+    errs = _errors(cfg)
+    assert [e.code for e in errs] == ["unit_without_provider"]
+    assert "sddm" in errs[0].message
+
+
+def test_plasmalogin_unit_accepted_via_plasma_meta():
+    cfg = {"systemd": {"enable_units": ["plasmalogin.service"]},
+           "packages": ["plasma-meta"]}
+    assert _errors(cfg) == []
+
+
+def test_two_display_managers_enabled_is_an_error():
+    cfg = {"systemd": {"enable_units": ["sddm.service", "plasmalogin.service"]},
+           "packages": ["sddm", "plasma-login-manager"]}
+    assert [e.code for e in _errors(cfg)] == ["multiple_display_managers"]
+
+
+# --- crypttab -------------------------------------------------------------- #
+
+def _crypttab(content, **extra):
+    cfg = {"files": [{"path": "/etc/crypttab", "content": content}]}
+    cfg.update(extra)
+    return cfg
+
+
+_DISKS = {"disks": {"disks": [{
+    "device": "/dev/vda",
+    "partitions": [
+        {"label": "esp", "mountpoint": "/boot", "filesystem": "fat32"},
+        {"label": "root", "filesystem": "btrfs", "encrypt": True,
+         "luks_name": "cryptroot"},
+    ]}]}}
+
+
+def test_crypttab_malformed_option_is_an_error():
+    cfg = _crypttab("cryptswap LABEL=cryptswap /dev/urandom swap,cipher=aes-xts-plain64,size512\n",
+                    **_DISKS)
+    codes = [e.code for e in _errors(cfg)]
+    assert "crypttab_bad_option" in codes
+
+
+def test_crypttab_swap_on_undeclared_device_is_an_error():
+    """`swap` reformats the device on every boot — it must name a declared one."""
+    cfg = _crypttab("cryptswap LABEL=cryptswap /dev/urandom swap,size=512\n", **_DISKS)
+    codes = [e.code for e in _errors(cfg)]
+    assert "crypttab_undeclared_device" in codes
+
+
+def test_crypttab_entry_for_declared_luks_partition_is_accepted():
+    cfg = _crypttab("cryptroot LABEL=root none luks,discard\n", **_DISKS)
+    assert _errors(cfg) == []
+
+
+def test_crypttab_comments_and_blank_lines_ignored():
+    cfg = _crypttab("# <name> <device> <password> <options>\n\n", **_DISKS)
+    assert _errors(cfg) == []
+
+
+# --- clean config ---------------------------------------------------------- #
+
+def test_coherent_config_has_no_issues():
+    cfg = {
+        "users": [{"username": "andres", "groups": ["wheel", "libvirt"]}],
+        "packages": ["libvirt", "plasma-meta"],
+        "systemd": {"enable_units": ["plasmalogin.service", "NetworkManager.service"]},
+    }
+    assert preflight(cfg) == []

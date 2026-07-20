@@ -87,12 +87,32 @@ class SnapperAction(AbstractAction):
         target = self._target()
         if target is None:
             return
+        if changes:
+            self._ensure_snapper_installed(target)
         by_name = {c["name"]: c["subvolume"] for c in self.configs}
         for change in changes:
             subvol = by_name.get(change.item)
             if subvol is None:
                 continue
             self._create_config(change.item, subvol, target)
+
+    @staticmethod
+    def _ensure_snapper_installed(target) -> None:
+        """Install snapper + snap-pac if they are not there yet.
+
+        This action runs BEFORE PackagesAction on purpose: snap-pac's pacman
+        hooks snapshot every transaction, so the config has to exist before the
+        big package transaction, not after it (on 2026-07-19 the whole install
+        ran with no snapper config and no snapshots). Running first means the
+        binary may not be installed yet, so the action installs its own
+        prerequisite. `--needed` makes it a no-op afterwards, and PackagesAction
+        still owns both names in the manifest.
+        """
+        probe = Command.execute("pacman", ["-Qq", "snapper"], target=target)
+        if getattr(probe, "returncode", 0) == 0:
+            return
+        Command.execute("pacman", ["--noconfirm", "--needed", "-S", "snapper", "snap-pac"],
+                        target=target, check=True, stream=True)
 
     def _create_config(self, name: str, subvol: str, target) -> None:
         # `snapper create-config` fails if a `.snapshots` subvolume already
@@ -129,7 +149,43 @@ class SnapperAction(AbstractAction):
         return {self._DOMAIN: [c["name"] for c in self.configs]}
 
     def import_state(self, managed=None) -> dict:
-        return {}
+        """Capture the snapper configs that exist on the target (sync).
+
+        Each file under /etc/snapper/configs is a config named after the file,
+        with its subvolume in ``SUBVOLUME=``. Returning ``{}`` (the old
+        behaviour) meant a host with real snapshots round-tripped into a config
+        with no `snapper` section at all — the action was then skipped as absent.
+        """
+        target = self._target()
+        configs_dir = target.path(_CONFIGS_DIR) if target is not None \
+            else "/mnt" + _CONFIGS_DIR
+        try:
+            names = sorted(os.listdir(configs_dir))
+        except OSError:
+            return {}
+        configs: List[dict] = []
+        for name in names:
+            path = os.path.join(configs_dir, name)
+            if not os.path.isfile(path):
+                continue
+            subvol = self._read_subvolume(path)
+            if subvol:
+                configs.append({"name": name, "subvolume": subvol})
+        if not configs:
+            return {}
+        return {self._DOMAIN: {"enable": True, "configs": configs}}
+
+    @staticmethod
+    def _read_subvolume(path: str) -> "str | None":
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                for line in f:
+                    key, sep, value = line.partition("=")
+                    if sep and key.strip() == "SUBVOLUME":
+                        return value.strip().strip('"').strip("'") or None
+        except OSError:
+            return None
+        return None
 
     # --- legacy executor bridge --------------------------------------- #
 

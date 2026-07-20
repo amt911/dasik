@@ -106,6 +106,16 @@ def setup_actions() -> None:
     )
 
     # === Phase 3: package installation ====================================
+    # snapper create-config runs BEFORE the package transaction: snap-pac's
+    # pacman hooks snapshot each transaction, so the config must already exist
+    # or the whole install happens unprotected (as it did on 2026-07-19). The
+    # action installs snapper/snap-pac itself if they are not there yet; the
+    # timers still come from the expand toggle.
+    register_action(
+        action_class=SnapperAction,
+        config_key='snapper',
+        is_optional=True,
+    )
     register_action(
         action_class=PackagesAction,
         # __root__: reads the packages list plus the sibling package_sources /
@@ -137,13 +147,6 @@ def setup_actions() -> None:
     register_action(
         action_class=FirewallAction,
         config_key='firewall',
-        is_optional=True,
-    )
-    # snapper create-config (package + timers come from the expand toggle). Runs
-    # after packages installed snapper and the btrfs subvolumes are mounted.
-    register_action(
-        action_class=SnapperAction,
-        config_key='snapper',
         is_optional=True,
     )
     register_action(

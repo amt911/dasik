@@ -323,7 +323,18 @@ def _cmd_apply(config_path: Path, target_root: str, assume_yes: bool) -> int:
     if plan.is_empty():
         return 0
 
-    new_manifest = reconciler.apply(plan, results, assume_yes=assume_yes)
+    try:
+        new_manifest = reconciler.apply(plan, results, assume_yes=assume_yes)
+    except Exception as e:
+        # The reconciler already persisted what completed as a PARTIAL
+        # generation; say so, because the system HAS been mutated and the next
+        # plan will resume from that reality rather than from scratch.
+        print(f"error: apply failed: {e}", file=sys.stderr)
+        print("The progress made so far was recorded as a partial generation "
+              "(see `dasik generations`); it is not a convergence. Fix the "
+              "cause and run `dasik apply` again — completed work is not redone.",
+              file=sys.stderr)
+        return 1
     if new_manifest is None:
         print("Aborted: no changes applied.", file=sys.stderr)
         return 1
@@ -388,7 +399,14 @@ def _cmd_generations(target_root: str) -> int:
         print("No generations recorded.")
         return 0
     for g in gens:
-        marker = " (current)" if g.is_current else ""
+        flags = []
+        if g.is_current:
+            flags.append("current")
+        if g.partial:
+            # Not a convergence: the apply that produced it failed part-way, so
+            # the system was mutated but never reached the declared state.
+            flags.append("partial — apply failed part-way")
+        marker = f" ({', '.join(flags)})" if flags else ""
         print(f"Generation {g.number}{marker}")
     return 0
 
@@ -401,7 +419,9 @@ def _previous_generation(gen_store: GenerationStore) -> Optional[int]:
     current = next((g.number for g in gens if g.is_current), None)
     if current is None:
         return None
-    earlier = [g.number for g in gens if g.number < current]
+    # Skip partial generations: their apply failed part-way, so they never
+    # represent a state the system converged to (see Manifest.partial).
+    earlier = [g.number for g in gens if g.number < current and not g.partial]
     return max(earlier) if earlier else None
 
 
@@ -425,7 +445,9 @@ def _cmd_rollback(target_root: str, number: Optional[int], assume_yes: bool) -> 
     # the *current* manifest (loaded below) stays the owned set M.
     try:
         restored_config, _restored_manifest = gen_store.restore(number)
-    except FileNotFoundError as e:
+    except (FileNotFoundError, ValueError) as e:
+        # ValueError: the target generation is partial (its apply failed
+        # part-way) — restoring it would re-apply a state that never converged.
         print(f"Error: {e}", file=sys.stderr)
         return 1
 

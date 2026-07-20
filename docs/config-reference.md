@@ -516,6 +516,32 @@ destructive action unvalidated. Two layers:
 | `crypttab_bad_option` | error | Not `crypttab(5)` syntax (`size512` instead of `size=512`). |
 | `crypttab_undeclared_device` | error / warning | Entry names a device no declared partition provides. **Error** when the entry carries `swap`, which reformats that device on every boot. |
 
+## Generations and a failed apply
+
+`apply` records a generation when it converges. When it fails **part-way** — the
+disk is already partitioned, some packages are installed — the progress is still
+recorded, as a **partial** generation:
+
+```
+$ dasik generations
+Generation 4
+Generation 5 (current, partial — apply failed part-way)
+```
+
+A partial generation:
+
+* claims only the domains of actions that actually completed; domains of failed
+  or never-reached actions keep the **previous** manifest's ownership (dasik does
+  not know they changed, and forgetting ownership would make a later plan stop
+  seeing what it owns);
+* is **not** a convergence — the next `plan` still lists what is missing;
+* **cannot be rolled back to** (`rollback N` refuses it, and a bare `rollback`
+  skips it and picks the last complete generation).
+
+Re-running `apply` after fixing the cause does not redo completed work: every
+action derives its plan from the live system (`pacman -Qq`, `lsblk`, files under
+`/etc`), so installed packages and converged disks are skipped.
+
 ## See also
 
 - [copy-your-config-and-test.md](copy-your-config-and-test.md) — capturing a running

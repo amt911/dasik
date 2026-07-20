@@ -104,6 +104,11 @@ config.json
   → Action.plan()         idempotency check: inspect current system state, diff vs config
   → Action.apply()        apply changes (only what plan() found)
   → Action.import_state() sync: capture system reality back into config
+
+An apply that fails part-way persists what completed as a **partial** generation
+(`Manifest.partial`): ownership of failed/unreached domains is carried forward
+from the previous manifest, `rollback` refuses to restore it, and the next plan
+still shows the divergence. It records progress, never convergence.
 ```
 
 Every change runs against the **mounted install target at `/mnt`**, typically via `arch-chroot /mnt`. Actions read `/mnt/etc/...` to decide `plan()`. This is install-from-live-ISO tooling, not a config manager for the running host.

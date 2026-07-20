@@ -47,16 +47,20 @@ class AurInstaller:
     # -- argv / run -------------------------------------------------------
 
     def _run(self, cmd: str, args: List[str], check: bool = True,
-             stream: bool = False):
+             stream: bool = False, label: "str | None" = None):
         return Command.execute(cmd, args, target=self._target, check=check,
-                               stream=stream)
+                               stream=stream, label=label)
 
     def _run_as_builder(self, script: str, *args: str, check: bool = True,
-                        stream: bool = False):
+                        stream: bool = False, label: "str | None" = None):
         """Run *script* as the build user with values passed as ``$1``.. positional
-        parameters (never interpolated into the shell string)."""
+        parameters (never interpolated into the shell string).
+
+        *label* names the LOGICAL command for error messages: everything here runs
+        through ``su``, so without it a failure reads "su failed (exit 1)" and the
+        user cannot tell which package or which tool broke."""
         argv = PackagesAction._su_argv(self.BUILD_USER, script, *args)
-        return self._run(argv[0], argv[1:], check=check, stream=stream)
+        return self._run(argv[0], argv[1:], check=check, stream=stream, label=label)
 
     @staticmethod
     def _text(data: "bytes | str | None") -> str:
@@ -150,6 +154,7 @@ class AurInstaller:
         self._run_as_builder(
             'exec "$@"', helper, "-S", "--noconfirm", "--needed", *rest,
             check=True, stream=True,
+            label=f"{helper} -S {' '.join(rest)}",
         )
 
     # -- own resolution path ---------------------------------------------
@@ -290,7 +295,8 @@ class AurInstaller:
         self._run("rm", ["-rf", build_dir], check=False)
         # url/dir are $1/$2 positional args — never spliced into the shell string.
         self._run_as_builder('git clone "$1" "$2"', url, build_dir,
-                             check=True, stream=True)
+                             check=True, stream=True,
+                             label=f"git clone {url}")
         return build_dir
 
     def _read_deps(self, pkg_dir: str) -> Set[str]:
@@ -306,7 +312,8 @@ class AurInstaller:
     def _build_one(self, pkg: str) -> None:
         build_dir = self._clone_dir(pkg)
         self._run_as_builder('cd "$1" && makepkg -sri --noconfirm', build_dir,
-                             check=True, stream=True)
+                             check=True, stream=True,
+                             label=f"makepkg -sri ({pkg})")
 
     def _verify_installed(self, pkgs: Sequence[str]) -> None:
         for pkg in pkgs:

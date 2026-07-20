@@ -5,6 +5,7 @@ NO raw subprocess. Tests cover the DECISION logic — dependency classification,
 topological build order, --asdeps marking, helper delegation, safe argv, cleanup,
 and the abort-before-build guarantees (unknown dep, cycle, AUR unavailable).
 """
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -418,3 +419,20 @@ def test_long_commands_stream():
     scripts = [c[1][3] for c in su_streamed]
     assert any("git clone" in s for s in scripts)
     assert any("makepkg -sri" in s for s in scripts)
+
+
+# --- failure labelling (F-26) --------------------------------------------- #
+
+def test_helper_and_makepkg_runs_are_labelled_with_the_logical_command():
+    """Every build shells out through `su`, so without a label the user is told
+    "su failed (exit 1)" and has to guess which package/command broke."""
+    from unittest.mock import patch as _patch
+    inst = AurInstaller(Target(root="/mnt"))
+    with _patch.object(AurInstaller, "_run") as run:
+        run.return_value = SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+        inst._build_one("sunshine")
+        inst._install_with_helper("yay", ["yay", "sunshine"])
+    labels = [c.kwargs.get("label") for c in run.call_args_list
+              if c.kwargs.get("stream")]
+    assert any(lbl and "makepkg" in lbl and "sunshine" in lbl for lbl in labels)
+    assert any(lbl and lbl.startswith("yay -S") for lbl in labels)

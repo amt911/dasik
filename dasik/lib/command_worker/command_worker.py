@@ -4,7 +4,45 @@ from ..logging import run_logger
 from ..target.target import Target
 from shutil import which
 import os
+import re
 import subprocess
+
+# Lines worth surfacing when a long streamed command fails. `yay`/`makepkg` keep
+# printing (optional deps, hooks, "[installed]" lines) long after the real error,
+# so the last 2000 characters are usually noise — on 2026-07-19 the user was
+# shown "— file dialogs, screen sharing [installed]" while the log held
+# "Packages failed to build: sunshine epson-inkjet-printer-escpr epsonscan2".
+_ERROR_LINE = re.compile(
+    r"(^|\s)(error|ERROR|Error|failed|FAILED|Failed|fatal|No such file|"
+    r"not found|Permission denied|404|403)\b|^==> ERROR|^Packages failed",
+)
+_EXCERPT_LIMIT = 4000
+
+
+def _failure_excerpt(output: str, limit: int = _EXCERPT_LIMIT) -> str:
+    """The most likely cause of a failure, in output order.
+
+    Error-looking lines first (deduped, order preserved); if none match, the tail.
+    Bounded to *limit* characters so a runaway build log cannot flood the console.
+    """
+    lines = output.splitlines()
+    picked: "list[str]" = []
+    seen: set = set()
+    for line in lines:
+        stripped = line.strip()
+        if stripped and _ERROR_LINE.search(stripped) and stripped not in seen:
+            seen.add(stripped)
+            picked.append(stripped)
+    if not picked:
+        picked = [ln for ln in lines[-20:] if ln.strip()]
+    text = "\n".join(picked)
+    if len(text) > limit:
+        # keep both ends: the first cause and the final summary
+        head, tail = text[: limit // 2], text[-limit // 2:]
+        text = head + "\n…\n" + tail
+    return text[:limit]
+
+
 
 
 class Command:
@@ -21,7 +59,7 @@ class Command:
     def execute(cmd: str, args: list[str], run_as_chroot: bool = False,
                 target: "Target | None" = None, input: "bytes | None" = None,
                 env: "dict[str, str] | None" = None, check: bool = False,
-                stream: bool = False):
+                stream: bool = False, label: "str | None" = None):
         """Run *cmd* with *args*, optionally inside ``arch-chroot <root>``.
 
         Chroot root resolution:
@@ -72,7 +110,8 @@ class Command:
         logger = run_logger.get()
 
         if stream:
-            return Command._run_streaming(cmd, argv, full_env, check, logger)
+            return Command._run_streaming(cmd, argv, full_env, check, logger,
+                                          label=label)
 
         result = subprocess.run(
             argv,
@@ -99,13 +138,13 @@ class Command:
                 detail=stderr.strip(),
             )
             raise CommandExecutionError(
-                f"{cmd} failed (exit {rc}): {stderr.strip()[-2000:]}"
+                f"{label or cmd} failed (exit {rc}): {stderr.strip()[-2000:]}"
             )
 
         return result
 
     @staticmethod
-    def _run_streaming(cmd, argv, full_env, check, logger):
+    def _run_streaming(cmd, argv, full_env, check, logger, label=None):
         """Run *argv* under Popen, echoing each output line live and recording
         the full output to the log file once. Returns a ``CompletedProcess`` with
         the captured stdout (stderr merged into it), preserving execute()'s
@@ -131,11 +170,18 @@ class Command:
         result = subprocess.CompletedProcess(argv, rc, stdout=buf, stderr=b"")
 
         if check and rc != 0:
-            tail = buf.decode("utf-8", errors="replace").strip()[-2000:]
+            output = buf.decode("utf-8", errors="replace")
+            excerpt = _failure_excerpt(output)
+            # *label* is the LOGICAL command (e.g. "yay -S"); argv[0] is often a
+            # wrapper (`su`, `arch-chroot`) whose name tells the user nothing.
+            name = label or cmd
+            log_hint = (f"\nFull output: {logger.log_path}"
+                        if getattr(logger, "log_path", None) else "")
             logger.error(
                 f"command failed (exit {rc}): {' '.join(argv)}",
-                detail=tail,
+                detail=excerpt,
             )
-            raise CommandExecutionError(f"{cmd} failed (exit {rc}): {tail}")
+            raise CommandExecutionError(
+                f"{name} failed (exit {rc}):\n{excerpt}{log_hint}")
 
         return result

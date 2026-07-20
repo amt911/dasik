@@ -37,6 +37,7 @@ import os
 import re
 import subprocess
 import warnings
+from contextlib import contextmanager
 
 
 AUR_PREFIX = "aur-"
@@ -95,13 +96,20 @@ class PackagesAction(AbstractAction):
         self.aur_pkgs: List[str] = []
         self._reason: dict[str, str] = {}   # bare name -> "explicit"|"dep"
         self._legacy_aur: set[str] = set()  # names to force onto the AUR path
+        # Packages declared `{"name": …, "optional": true}`: their install may
+        # fail without aborting the apply (see apply()). Never claimed as managed.
+        self.optional_packages: set[str] = set()
+        # Optional packages whose install actually failed in this apply.
+        self.failed_optional: List[str] = []
         seen: set[str] = set()
 
         for entry in raw:
             if isinstance(entry, dict):
                 name, reason = entry["name"], entry.get("reason", "explicit")
+                is_optional = bool(entry.get("optional", False))
             else:
                 name, reason = entry, "explicit"
+                is_optional = False
             _validate_pkg_name(name)
 
             is_legacy = name.startswith(AUR_PREFIX)
@@ -121,6 +129,8 @@ class PackagesAction(AbstractAction):
                 continue
             seen.add(bare)
             self.desired.append(bare)
+            if is_optional:
+                self.optional_packages.add(bare)
             if is_legacy:
                 self.aur_pkgs.append(bare)   # AUR: reason-exempt
             else:
@@ -404,7 +414,7 @@ class PackagesAction(AbstractAction):
         Excludes names dropped by warn-and-skip (``_skipped_unknown``) so the
         manifest never claims dasik installed a package it never could. Before
         apply, ``_skipped_unknown`` is empty and this is the full desired set."""
-        skipped = set(self._skipped_unknown)
+        skipped = set(self._skipped_unknown) | set(self.failed_optional)
         return {self._PACMAN_DOMAIN: [n for n in self.desired if n not in skipped]}
 
     def import_state(self, managed: "list[str] | None" = None) -> dict:
@@ -429,8 +439,15 @@ class PackagesAction(AbstractAction):
             raw_name = entry["name"] if isinstance(entry, dict) else entry
             bare = _bare(raw_name)
             declared.add(bare)
+            spec: dict = {}
             if bare in installed and bare not in explicit:
-                result.append({"name": bare, "reason": "dep"})
+                spec["reason"] = "dep"
+            if bare in self.optional_packages:
+                # `optional` is INTENT, not reality — keep it across a sync or the
+                # next apply would abort on the very package marked non-blocking.
+                spec["optional"] = True
+            if spec:
+                result.append({"name": bare, **spec})
             else:
                 result.append(bare)   # explicit / intent (not installed)
 
@@ -483,10 +500,14 @@ class PackagesAction(AbstractAction):
         """Apply ``package_policy.unknown`` to confirmed-unknown names.
 
         ``error`` aborts before any mutation; ``warn-and-skip`` records them,
-        warns once (visible + logged), and lets the resolvable names install."""
+        warns once (visible + logged), and lets the resolvable names install.
+        A name declared ``optional`` is always skipped — being non-blocking is
+        exactly what the flag declares, so even the strict policy honours it."""
         if not resolution.unknown:
             return
-        if self.unknown_policy == "error":
+        required_unknown = [n for n in resolution.unknown
+                            if n not in self.optional_packages]
+        if required_unknown and self.unknown_policy == "error":
             self._abort_unknown(resolution)
         skipped = sorted(resolution.unknown)
         self._skipped_unknown = skipped
@@ -522,6 +543,7 @@ class PackagesAction(AbstractAction):
         aur_installs: list[str] = []
         git_installs: list = []
         self._skipped_unknown = []
+        self.failed_optional = []
         if install_names:
             resolution = self._resolve_sources(install_names, target)
             # unavailable is ALWAYS blocking; unknown follows package_policy.
@@ -533,14 +555,26 @@ class PackagesAction(AbstractAction):
             aur_installs = resolution.aur
             git_installs = resolution.git
 
-        if repo_installs:
+        required_repo, optional_repo = self._split_optional(repo_installs)
+        if required_repo:
             Command.execute(
                 "pacman",
-                ["--noconfirm", "--needed", "-S", *repo_installs],
+                ["--noconfirm", "--needed", "-S", *required_repo],
                 target=target,
                 check=True,
                 stream=True,
             )
+        # Optional repo packages go one at a time, AFTER the required transaction:
+        # a single broken name must not take the others (or the install) down.
+        for pkg in optional_repo:
+            with self._optional_guard([pkg]):
+                Command.execute(
+                    "pacman",
+                    ["--noconfirm", "--needed", "-S", pkg],
+                    target=target,
+                    check=True,
+                    stream=True,
+                )
 
         # Git builds: fresh installs (resolution.git) + ref-change rebuilds. The
         # rebuild sources come from package_sources by name.
@@ -562,7 +596,16 @@ class PackagesAction(AbstractAction):
                  if name in self.desired and name not in skipped),
                 None,
             )
-            self._apply_aur_install(aur_installs, helper=helper)
+            required_aur, optional_aur = self._split_optional(aur_installs)
+            if required_aur:
+                self._apply_aur_install(required_aur, helper=helper)
+            # Optional AUR packages build in their own batch: on 2026-07-19 three
+            # peripheral packages (sunshine, two Epson drivers) made yay exit 1 and
+            # that exception stopped the reconciler before users, initramfs and
+            # bootloader ever ran.
+            if optional_aur:
+                with self._optional_guard(optional_aur):
+                    self._apply_aur_install(optional_aur, helper=helper)
 
         # Enforce install reason (repo packages only). -S marks explicit by
         # default, so a fresh explicit install needs no -D; a dep install does.
@@ -581,6 +624,33 @@ class PackagesAction(AbstractAction):
                 target=target,
                 check=True,
                 stream=True,
+            )
+
+    def _split_optional(self, names: "list[str]") -> "tuple[list[str], list[str]]":
+        """(required, optional) preserving order."""
+        required = [n for n in names if n not in self.optional_packages]
+        optional = [n for n in names if n in self.optional_packages]
+        return required, optional
+
+    @contextmanager
+    def _optional_guard(self, batch: "list[str]"):
+        """Run an optional install batch; on failure record the packages that are
+        still missing and continue.
+
+        The failure is loud (red + log) and the packages are excluded from
+        ``managed_keys()``, so the manifest never claims them and the next plan
+        retries them — a visible divergence, not a silent "converged"."""
+        try:
+            yield
+        except (CommandExecutionError, ConfigValidationError) as exc:
+            installed = self._installed_all()
+            missing = [p for p in batch if p not in installed]
+            self.failed_optional.extend(m for m in missing
+                                        if m not in self.failed_optional)
+            run_logger.get().error(
+                "optional packages not installed: " + ", ".join(missing),
+                detail=f"{exc}\nThey are NOT recorded as installed; the next "
+                       "apply retries them. Convergence continues.",
             )
 
     def _apply_git_install(self, git_pkgs: list) -> None:

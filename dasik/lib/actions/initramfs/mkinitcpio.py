@@ -90,6 +90,6 @@ class MkinitcpioBackend(InitramfsBackend):
             if not found:                      # no existing HOOKS line → add one
                 f.write(f"HOOKS=({hooks_str})\n")
         if self.target is not None:
-            Command.execute("mkinitcpio", ["-P"], target=self.target)
+            Command.execute("mkinitcpio", ["-P"], target=self.target, check=True)
         else:
-            Command.execute("mkinitcpio", ["-P"], True)
+            Command.execute("mkinitcpio", ["-P"], True, check=True)

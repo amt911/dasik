@@ -54,11 +54,21 @@ def setup_actions() -> None:
     from .bootloader_action import BootloaderAction
     from .ms_fonts_action import MicrosoftFontsAction
     from .zram_action import ZramAction
+    from .pacman_hooks_action import PacmanHooksAction
 
     # === Phase 1: disk & base install =====================================
     register_action(
         action_class=DiskPartitionAction,
         config_key='disks',
+        is_optional=True,
+    )
+    # dasik-owned pacman hooks (today: the mkinitcpio neutralizers). MUST come
+    # before pacstrap: the very first transaction installs the kernel and fires
+    # mkinitcpio's hooks, which would clobber the dracut image. The target is
+    # already mounted at this point (DiskPartitionAction ran).
+    register_action(
+        action_class=PacmanHooksAction,
+        config_key='__root__',
         is_optional=True,
     )
     register_action(
@@ -83,11 +93,14 @@ def setup_actions() -> None:
     )
     register_action(
         action_class=NetworkAction,
-        # __root__: needs both the 'network' section and the root-level
-        # 'hostname' (issue #66 port reads both from the root config).
+        # __root__: reads the root-level 'hostname' plus the optional 'network'
+        # section. Only `hostname` is required: demanding both meant a config
+        # that declared a hostname and no `network` block was skipped entirely
+        # and /etc/hostname was never written (forensic report F-31). The action
+        # already no-ops on an empty hostname and treats `network` as optional.
         config_key='__root__',
         is_optional=True,
-        required_fields=['network', 'hostname'],
+        required_fields=['hostname'],
     )
     register_action(
         action_class=PacmanAction,
@@ -96,6 +109,16 @@ def setup_actions() -> None:
     )
 
     # === Phase 3: package installation ====================================
+    # snapper create-config runs BEFORE the package transaction: snap-pac's
+    # pacman hooks snapshot each transaction, so the config must already exist
+    # or the whole install happens unprotected (as it did on 2026-07-19). The
+    # action installs snapper/snap-pac itself if they are not there yet; the
+    # timers still come from the expand toggle.
+    register_action(
+        action_class=SnapperAction,
+        config_key='snapper',
+        is_optional=True,
+    )
     register_action(
         action_class=PackagesAction,
         # __root__: reads the packages list plus the sibling package_sources /
@@ -127,13 +150,6 @@ def setup_actions() -> None:
     register_action(
         action_class=FirewallAction,
         config_key='firewall',
-        is_optional=True,
-    )
-    # snapper create-config (package + timers come from the expand toggle). Runs
-    # after packages installed snapper and the btrfs subvolumes are mounted.
-    register_action(
-        action_class=SnapperAction,
-        config_key='snapper',
         is_optional=True,
     )
     register_action(

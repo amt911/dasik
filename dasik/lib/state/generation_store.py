@@ -10,6 +10,10 @@ from ..target.target import Target
 class GenInfo:
     number: int
     is_current: bool
+    # True when the apply that produced it failed part-way: the system was
+    # mutated but never converged, so this is a record of progress, not a state
+    # to return to (see Manifest.partial).
+    partial: bool = False
 
 
 class GenerationStore:
@@ -52,6 +56,13 @@ class GenerationStore:
         self._point_current_at(n)
         return n
 
+    def _is_partial(self, gen_dir: Path) -> bool:
+        try:
+            state = json.loads((gen_dir / "state.json").read_text())
+        except (OSError, json.JSONDecodeError):
+            return False
+        return bool(state.get("partial", False))
+
     def list(self) -> list[GenInfo]:
         if not self.base_dir.exists():
             return []
@@ -61,13 +72,24 @@ class GenerationStore:
         dirs = [p for p in self.base_dir.iterdir() if p.is_dir() and p.name.isdigit()]
         gens: list[GenInfo] = []
         for p in sorted(dirs, key=lambda p: int(p.name)):
-            gens.append(GenInfo(number=int(p.name), is_current=(p.name == current)))
+            gens.append(GenInfo(number=int(p.name), is_current=(p.name == current),
+                                partial=self._is_partial(p)))
         return gens
 
     def restore(self, number: int) -> tuple[dict[str, Any], dict[str, Any]]:
         gen_dir = self.base_dir / str(number)
         if not gen_dir.is_dir():
             raise FileNotFoundError(f"Generation {number} not found")
+        if self._is_partial(gen_dir):
+            # Rolling back TO a half-applied state would re-apply a config that
+            # was never fully converged and hand it a manifest claiming ownership
+            # dasik never established. Roll back to an earlier COMPLETE generation
+            # instead, or fix the failure and re-run apply.
+            raise ValueError(
+                f"Generation {number} is partial (its apply failed part-way) and "
+                "cannot be rolled back to; pick an earlier complete generation "
+                "or fix the failure and run `dasik apply` again."
+            )
         config = json.loads((gen_dir / "config.json").read_text())
         manifest = json.loads((gen_dir / "state.json").read_text())
         self._point_current_at(number)

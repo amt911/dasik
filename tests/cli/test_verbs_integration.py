@@ -155,3 +155,69 @@ def test_apply_expands_bluetooth_toggle_into_packages(tmp_path):
         code = main(["apply", str(p), "--target", str(tmp_path), "--yes"])
     assert code == 0
     assert "bluez" in captured["installed"]
+
+
+# --- partial generations surfaced by the CLI (F-01) ------------------------ #
+
+def test_generations_marks_partial_entries(tmp_path, capsys):
+    from dasik.lib.state.generation_store import GenerationStore
+    from dasik.lib.target.target import Target
+    store = GenerationStore(Target(root=str(tmp_path)))
+    store.new({}, {"generation": 1})
+    store.new({}, {"generation": 2, "partial": True})
+
+    rc = main(["generations", "--target", str(tmp_path)])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "Generation 1" in out and "partial" not in out.split("Generation 2")[0]
+    assert "Generation 2 (current, partial — apply failed part-way)" in out
+
+
+def test_rollback_refuses_a_partial_target(tmp_path, capsys):
+    from dasik.lib.state.generation_store import GenerationStore
+    from dasik.lib.target.target import Target
+    store = GenerationStore(Target(root=str(tmp_path)))
+    store.new({}, {"generation": 1, "partial": True})
+
+    rc = main(["rollback", "1", "--target", str(tmp_path), "--yes"])
+    assert rc == 1
+    assert "partial" in capsys.readouterr().err
+
+
+def test_rollback_default_skips_partial_generations(tmp_path, capsys):
+    """`rollback` with no number must land on the last COMPLETE generation."""
+    from dasik.lib.state.generation_store import GenerationStore
+    from dasik.lib.target.target import Target
+    store = GenerationStore(Target(root=str(tmp_path)))
+    store.new({"packages": []}, {"generation": 1})              # complete
+    store.new({"packages": []}, {"generation": 2, "partial": True})
+    store.new({"packages": []}, {"generation": 3})              # current
+
+    from dasik import __main__ as cli_mod
+    assert cli_mod._previous_generation(store) == 1
+
+
+def test_apply_failure_reports_the_recorded_partial_generation(tmp_path, capsys):
+    from unittest.mock import MagicMock, patch as _patch
+    from dasik.lib.exceptions.exceptions import CommandExecutionError
+
+    cfg = tmp_path / "c.json"
+    cfg.write_text(json.dumps({"packages": ["git"]}))
+
+    with _patch("dasik.__main__.Reconciler") as Recon, \
+         _patch("dasik.__main__.setup_actions", lambda: None), \
+         _patch("dasik.__main__.get_default_registry") as Reg, \
+         _patch("dasik.__main__.StateStore") as Store, \
+         _patch("dasik.__main__.GenerationStore"):
+        Reg.return_value.get_all_actions.return_value = []
+        plan = MagicMock()
+        plan.is_empty.return_value = False
+        Recon.return_value.build_plan.return_value = (plan, [])
+        Recon.return_value.apply.side_effect = CommandExecutionError("pacman failed")
+        Store.return_value.load.return_value.to_dict.return_value = {"managed": {}}
+        rc = main(["apply", str(cfg), "--yes", "--target", str(tmp_path)])
+
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert "pacman failed" in err
+    assert "partial" in err.lower()

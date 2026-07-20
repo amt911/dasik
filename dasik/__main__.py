@@ -226,15 +226,58 @@ def _is_legacy_invocation(raw: list[str]) -> Optional[str]:
     return None
 
 
-def _cmd_plan(config_path: Path, target_root: str) -> int:
-    """Run the read-only plan flow."""
+def _load_validated_config(config_path: Path) -> Optional[dict]:
+    """Read *config_path* and validate it against the pydantic schema.
+
+    Returns the raw config dict, or None after printing the reason. Every verb
+    that can reach a mutating action goes through here: `dasik check` used to be
+    the only place `JsonModel.model_validate()` ran, so skipping it meant a
+    syntactically-valid-but-wrong JSON reached the disk actions.
+    """
     try:
         config = json.loads(config_path.read_text())
     except Exception as e:
         print(f"Error loading config: {e}", file=sys.stderr)
+        return None
+
+    from pydantic import ValidationError
+    from dasik.lib.models.json_model import JsonModel
+    try:
+        JsonModel.model_validate(config)
+    except ValidationError as e:
+        print(f"Config {config_path} is invalid:\n{e}", file=sys.stderr)
+        return None
+    return config
+
+
+def _preflight_or_none(config: dict) -> Optional[dict]:
+    """Run the cross-field checks on the EXPANDED *config*.
+
+    Returns the config when it is coherent (warnings are printed and do not
+    block), None after printing the errors — an error here is a deterministic
+    failure later (missing group, unit no package provides, destructive crypttab
+    entry), and it must be caught before the first partition is touched.
+    """
+    from dasik.lib.validation.preflight import has_errors, preflight, render
+    issues = preflight(config)
+    if has_errors(issues):
+        print("Config is not coherent — refusing to continue:\n" + render(issues),
+              file=sys.stderr)
+        return None
+    if issues:
+        print("Preflight warnings:\n" + render(issues))
+    return config
+
+
+def _cmd_plan(config_path: Path, target_root: str) -> int:
+    """Run the read-only plan flow."""
+    config = _load_validated_config(config_path)
+    if config is None:
         return 1
 
     config = expand_config(config)
+    if _preflight_or_none(config) is None:
+        return 1
     setup_actions()
     registry = get_default_registry()
 
@@ -251,13 +294,13 @@ def _cmd_plan(config_path: Path, target_root: str) -> int:
 
 def _cmd_apply(config_path: Path, target_root: str, assume_yes: bool) -> int:
     """Run the destructive convergence flow."""
-    try:
-        config = json.loads(config_path.read_text())
-    except Exception as e:
-        print(f"Error loading config: {e}", file=sys.stderr)
+    config = _load_validated_config(config_path)
+    if config is None:
         return 1
 
     config = expand_config(config)
+    if _preflight_or_none(config) is None:
+        return 1
     setup_actions()
     registry = get_default_registry()
     target = Target(root=target_root)
@@ -280,7 +323,18 @@ def _cmd_apply(config_path: Path, target_root: str, assume_yes: bool) -> int:
     if plan.is_empty():
         return 0
 
-    new_manifest = reconciler.apply(plan, results, assume_yes=assume_yes)
+    try:
+        new_manifest = reconciler.apply(plan, results, assume_yes=assume_yes)
+    except Exception as e:
+        # The reconciler already persisted what completed as a PARTIAL
+        # generation; say so, because the system HAS been mutated and the next
+        # plan will resume from that reality rather than from scratch.
+        print(f"error: apply failed: {e}", file=sys.stderr)
+        print("The progress made so far was recorded as a partial generation "
+              "(see `dasik generations`); it is not a convergence. Fix the "
+              "cause and run `dasik apply` again — completed work is not redone.",
+              file=sys.stderr)
+        return 1
     if new_manifest is None:
         print("Aborted: no changes applied.", file=sys.stderr)
         return 1
@@ -293,9 +347,14 @@ def _cmd_sync(config_path: Path, target_root: str) -> int:
     """Capture system reality back into the config file (spec §4 sync flow)."""
     try:
         raw_text = config_path.read_text()
-        config = json.loads(raw_text)
     except Exception as e:
         print(f"Error loading config: {e}", file=sys.stderr)
+        return 1
+    # Schema-validate the seed too: sync REWRITES this file, so starting from a
+    # config pydantic would reject would silently launder it into a new one.
+    # No preflight here — sync's job is to repair a config from reality.
+    config = _load_validated_config(config_path)
+    if config is None:
         return 1
 
     setup_actions()
@@ -340,7 +399,14 @@ def _cmd_generations(target_root: str) -> int:
         print("No generations recorded.")
         return 0
     for g in gens:
-        marker = " (current)" if g.is_current else ""
+        flags = []
+        if g.is_current:
+            flags.append("current")
+        if g.partial:
+            # Not a convergence: the apply that produced it failed part-way, so
+            # the system was mutated but never reached the declared state.
+            flags.append("partial — apply failed part-way")
+        marker = f" ({', '.join(flags)})" if flags else ""
         print(f"Generation {g.number}{marker}")
     return 0
 
@@ -353,7 +419,9 @@ def _previous_generation(gen_store: GenerationStore) -> Optional[int]:
     current = next((g.number for g in gens if g.is_current), None)
     if current is None:
         return None
-    earlier = [g.number for g in gens if g.number < current]
+    # Skip partial generations: their apply failed part-way, so they never
+    # represent a state the system converged to (see Manifest.partial).
+    earlier = [g.number for g in gens if g.number < current and not g.partial]
     return max(earlier) if earlier else None
 
 
@@ -377,7 +445,9 @@ def _cmd_rollback(target_root: str, number: Optional[int], assume_yes: bool) -> 
     # the *current* manifest (loaded below) stays the owned set M.
     try:
         restored_config, _restored_manifest = gen_store.restore(number)
-    except FileNotFoundError as e:
+    except (FileNotFoundError, ValueError) as e:
+        # ValueError: the target generation is partial (its apply failed
+        # part-way) — restoring it would re-apply a state that never converged.
         print(f"Error: {e}", file=sys.stderr)
         return 1
 
@@ -444,6 +514,10 @@ def _cmd_check(config_path: Path) -> int:
         JsonModel.model_validate(data)
     except ValidationError as e:
         print(f"Config {config_path} is invalid:\n{e}", file=sys.stderr)
+        return 1
+    # Same cross-field checks plan/apply run, on the expanded config: `check`
+    # exists so a coherence problem is found here, not mid-install.
+    if _preflight_or_none(expand_config(data)) is None:
         return 1
     print(f"{config_path}: OK — valid dasik config.")
     return 0

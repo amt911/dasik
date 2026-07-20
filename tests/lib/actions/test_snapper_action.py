@@ -12,7 +12,13 @@ import pytest
 from dasik.lib.actions.snapper_action import SnapperAction
 from dasik.lib.exceptions.exceptions import CommandExecutionError
 from dasik.lib.expand.toggles import expand_snapper
+from dasik.lib.actions.action_context import ActionContext
 from dasik.lib.state.change import Op
+from dasik.lib.target.target import Target
+
+
+def _ctx(root):
+    return ActionContext(target=Target(root=str(root)))
 
 
 def _fake_exec(mountpoint_rc=1, create_rc=0):
@@ -130,3 +136,75 @@ def test_toggle_contributes_packages_and_timers():
     assert "snapper-timeline.timer" in out["units"]
     assert "snapper-cleanup.timer" in out["units"]
     assert expand_snapper({}) == {}
+
+
+# --- sync round-trip (F-14) ------------------------------------------------ #
+
+def test_import_state_captures_configs_from_the_target(tmp_path):
+    """import_state() returned {} — a real snapper setup was invisible to sync,
+    so a captured config lost its snapshots entirely."""
+    cfg_dir = tmp_path / "etc" / "snapper" / "configs"
+    cfg_dir.mkdir(parents=True)
+    (cfg_dir / "root").write_text('SUBVOLUME="/"\nTIMELINE_CREATE="yes"\n')
+    (cfg_dir / "home").write_text("SUBVOLUME=/home\n")
+    a = SnapperAction({}, _ctx(tmp_path))
+    frag = a.import_state()
+    assert frag["snapper"]["enable"] is True
+    assert sorted(frag["snapper"]["configs"], key=lambda c: c["name"]) == [
+        {"name": "home", "subvolume": "/home"},
+        {"name": "root", "subvolume": "/"},
+    ]
+
+
+def test_import_state_empty_without_snapper_configs(tmp_path):
+    assert SnapperAction({}, _ctx(tmp_path)).import_state() == {}
+
+
+# --- bootstrap order (F-13) ------------------------------------------------ #
+
+def test_registered_before_packages():
+    """snap-pac hooks snapshot pacman transactions, so the config must exist
+    before the big package transaction — not after it."""
+    from dasik.lib.actions.action_registry import get_default_registry
+    from dasik.lib.actions.actions_handler_v2 import setup_actions
+    setup_actions()
+    names = [m["class"].__name__ for m in get_default_registry().get_all_actions()]
+    assert names.index("SnapperAction") < names.index("PackagesAction")
+
+
+def test_apply_installs_snapper_before_creating_the_config(tmp_path):
+    """Running before Packages means the binary may not be there yet; the action
+    installs its own prerequisite (idempotent: pacman --needed)."""
+    from unittest.mock import patch
+    a = SnapperAction({"enable": True,
+                       "configs": [{"name": "root", "subvolume": "/"}]},
+                      _ctx(tmp_path))
+    calls = []
+
+    def fake_exec(cmd, args, **kw):
+        calls.append((cmd, args))
+        rc = 1 if (cmd, tuple(args)) == ("pacman", ("-Qq", "snapper")) else 0
+        return SimpleNamespace(returncode=rc, stdout=b"", stderr=b"")
+
+    with patch("dasik.lib.actions.snapper_action.Command.execute", side_effect=fake_exec):
+        a.apply(a.plan(managed=[]))
+    cmds = [c for c, _ in calls]
+    assert cmds.index("pacman") < cmds.index("snapper")
+    install = next(args for cmd, args in calls if cmd == "pacman" and "-S" in args)
+    assert "snapper" in install and "snap-pac" in install
+
+
+def test_apply_skips_the_install_when_snapper_is_present(tmp_path):
+    from unittest.mock import patch
+    a = SnapperAction({"enable": True,
+                       "configs": [{"name": "root", "subvolume": "/"}]},
+                      _ctx(tmp_path))
+    calls = []
+
+    def fake_exec(cmd, args, **kw):
+        calls.append((cmd, args))
+        return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+
+    with patch("dasik.lib.actions.snapper_action.Command.execute", side_effect=fake_exec):
+        a.apply(a.plan(managed=[]))
+    assert not any(cmd == "pacman" and "-S" in args for cmd, args in calls)

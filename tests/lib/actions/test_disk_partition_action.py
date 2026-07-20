@@ -282,3 +282,44 @@ def test_import_state_no_luks_options_when_only_auto():
                       return_value="rd.luks.options=THEUUID=fido2-device=auto"):
         frag = a.import_state(managed=[])
     assert frag["disks"]["disks"][0]["partitions"][1]["luks_options"] == []
+
+
+# --- mountpoint permissions (F-20) ---------------------------------------- #
+#
+# `mkdir` gives 0755, so /mnt/var/tmp existed as 0755 before pacstrap and pacman
+# warned "directory permissions differ ... filesystem: 755 package: 1777".
+# /var/tmp and /tmp must be world-writable + sticky from the moment they exist.
+
+import os as _os
+from dasik.lib.actions.disk_partition_action import _mountpoint_mode, _make_mountpoint
+
+
+def test_var_tmp_and_tmp_get_sticky_world_writable_mode():
+    assert _mountpoint_mode("/var/tmp") == 0o1777
+    assert _mountpoint_mode("/tmp") == 0o1777
+
+
+def test_ordinary_mountpoint_has_no_forced_mode():
+    assert _mountpoint_mode("/home") is None
+    assert _mountpoint_mode("/") is None
+
+
+def test_make_mountpoint_applies_the_mode(tmp_path):
+    host = tmp_path / "mnt" / "var" / "tmp"
+    _make_mountpoint(str(host), "/var/tmp")
+    assert _os.stat(host).st_mode & 0o7777 == 0o1777
+
+
+def test_make_mountpoint_fixes_an_existing_wrong_mode(tmp_path):
+    host = tmp_path / "mnt" / "var" / "tmp"
+    host.mkdir(parents=True)
+    _os.chmod(host, 0o755)
+    _make_mountpoint(str(host), "/var/tmp")
+    assert _os.stat(host).st_mode & 0o7777 == 0o1777
+
+
+def test_make_mountpoint_leaves_ordinary_modes_alone(tmp_path):
+    host = tmp_path / "mnt" / "home"
+    _make_mountpoint(str(host), "/home")
+    assert host.is_dir()
+    assert _os.stat(host).st_mode & 0o7777 != 0o1777

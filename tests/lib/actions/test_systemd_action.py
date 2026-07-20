@@ -1,5 +1,7 @@
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from dasik.lib.actions.systemd_action import SystemdAction
 
 
@@ -250,3 +252,27 @@ def test_actual_does_not_probe_non_instance_units():
     with patch("dasik.lib.actions.systemd_action.Command.execute", side_effect=fake):
         a = SystemdAction({"enable_units": ["sshd.service", "cups.service"]}, _ctx("/"))
         assert a.actual() == {"sshd.service"}          # cups.service not probed (no '@')
+
+
+# --- mutating commands must fail loud (F-06) ------------------------------- #
+
+def test_enable_disable_use_check_true():
+    """A missing unit makes `systemctl enable` exit non-zero; without check=True
+    the failure is invisible and the unit is recorded as managed."""
+    a = SystemdAction({}, _ctx("/"))
+    changes = [
+        Change("systemd", Op.ENABLE, "sshd.service"),
+        Change("systemd", Op.DISABLE, "bluetooth.service"),
+    ]
+    with patch("dasik.lib.actions.systemd_action.Command.execute") as run:
+        a.apply(changes)
+    assert all(c.kwargs.get("check") is True for c in run.call_args_list)
+
+
+def test_enable_failure_propagates():
+    from dasik.lib.exceptions.exceptions import CommandExecutionError
+    a = SystemdAction({}, _ctx("/"))
+    with patch("dasik.lib.actions.systemd_action.Command.execute",
+               side_effect=CommandExecutionError("no such unit")):
+        with pytest.raises(CommandExecutionError):
+            a.apply([Change("systemd", Op.ENABLE, "sddm.service")])

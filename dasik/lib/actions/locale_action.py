@@ -98,6 +98,6 @@ class LocaleAction(CompositeV3Action):
             f.write(f"KEYMAP={self._desired_tty_layout}")
         t = self._target()
         if t is not None:
-            Command.execute("locale-gen", [], target=t)
+            Command.execute("locale-gen", [], target=t, check=True)
         else:
-            Command.execute("locale-gen", [], True)
+            Command.execute("locale-gen", [], True, check=True)

@@ -18,6 +18,7 @@ from typing import Any, List
 
 from .abstract_action import AbstractAction
 from ..command_worker.command_worker import Command
+from ..exceptions.exceptions import ConfigValidationError
 from ..state.change import Change, Op
 
 _ZONE_PATH = "/etc/firewalld/zones/public.xml"
@@ -25,38 +26,85 @@ _ZONE_PATH = "/etc/firewalld/zones/public.xml"
 _DEFAULT_SERVICES = ["dhcpv6-client", "ssh"]
 
 
+# Clause grammar, consumed left to right. Each entry is (key, anchored regex).
+# A rule is only accepted when EVERY token it contains matches one of these —
+# an unrepresentable clause must fail closed, never be silently dropped: the
+# rate limit of `accept limit value="2/m"` is what keeps the rule narrow, so
+# ignoring it would widen access (see firewalld richlanguage(5)).
+_CLAUSES: List[tuple] = [
+    ("family", r'family[=\s]+"?([^"\s]+)"?'),
+    ("source", r'source\s+address[=\s]+"?([^"\s]+)"?'),
+    ("destination", r'destination\s+address[=\s]+"?([^"\s]+)"?'),
+    ("service", r'service\s+name[=\s]+"?([^"\s]+)"?'),
+    ("port", r'port\s+port[=\s]+"?([^"\s]+)"?\s+protocol[=\s]+"?([^"\s]+)"?'),
+    ("protocol", r'protocol\s+value[=\s]+"?([^"\s]+)"?'),
+    ("action", r'(accept|drop)\b'),
+    ("reject", r'reject\b(?:\s+type[=\s]+"?([^"\s]+)"?)?'),
+    ("limit", r'limit\s+value[=\s]+"?([^"\s]+)"?'),
+]
+
+
 def _rich_rule_to_xml(rule: str) -> str:
     """Convert a firewall-cmd rich-rule string to a zone-XML <rule> element.
 
-    Tolerant of quoted/unquoted values. Supports the common grammar: family,
-    source/destination address, service name, port+protocol, and the terminal
-    action (accept|reject|drop). Unknown clauses are ignored, never dropped
-    silently to a crash.
+    Tolerant of quoted/unquoted values. Supports family, source/destination
+    address, service name, port+protocol, protocol value, the terminal action
+    (accept|reject|drop) and its optional rate ``limit``. Any other clause
+    (log, audit, masquerade, forward-port, NOT …) raises
+    :class:`ConfigValidationError`: an access rule that cannot be represented
+    losslessly must be rejected, not approximated.
     """
-    def grab(pattern: str):
-        m = re.search(pattern, rule)
-        return m.group(1) if m else None
+    rest = rule.strip()
+    m = re.match(r'rule\b', rest)
+    if not m:
+        raise ConfigValidationError(f"rich rule must start with 'rule': {rule!r}")
+    rest = rest[m.end():]
 
-    family = grab(r'family[=\s]"?([^"\s]+)"?')
-    inner: List[str] = []
-    src = grab(r'source\s+address[=\s]"?([^"\s]+)"?')
-    if src:
-        inner.append(f'<source address="{src}"/>')
-    dst = grab(r'destination\s+address[=\s]"?([^"\s]+)"?')
-    if dst:
-        inner.append(f'<destination address="{dst}"/>')
-    svc = grab(r'service\s+name[=\s]"?([^"\s]+)"?')
-    if svc:
-        inner.append(f'<service name="{svc}"/>')
-    port = grab(r'\bport\s+port[=\s]"?([^"\s]+)"?')
-    proto = grab(r'protocol[=\s]"?([^"\s]+)"?')
-    if port and proto:
-        inner.append(f'<port port="{port}" protocol="{proto}"/>')
-    for action in ("accept", "reject", "drop"):
-        if re.search(rf'\b{action}\b', rule):
-            inner.append(f'<{action}/>')
+    parsed: dict = {}
+    while rest.strip():
+        rest = rest.lstrip()
+        for key, pattern in _CLAUSES:
+            m = re.match(pattern, rest)
+            if not m:
+                continue
+            if key in parsed or (key in ("action", "reject") and
+                                 ("action" in parsed or "reject" in parsed)):
+                raise ConfigValidationError(
+                    f"duplicate '{key}' clause in rich rule: {rule!r}")
+            parsed[key] = m.groups()
+            rest = rest[m.end():]
             break
-    attrs = f' family="{family}"' if family else ""
+        else:
+            raise ConfigValidationError(
+                f"unsupported clause in rich rule: {rest.strip()!r} (rule: {rule!r})")
+
+    if "action" not in parsed and "reject" not in parsed:
+        raise ConfigValidationError(f"rich rule has no action: {rule!r}")
+
+    inner: List[str] = []
+    if "source" in parsed:
+        inner.append(f'<source address="{parsed["source"][0]}"/>')
+    if "destination" in parsed:
+        inner.append(f'<destination address="{parsed["destination"][0]}"/>')
+    if "service" in parsed:
+        inner.append(f'<service name="{parsed["service"][0]}"/>')
+    if "port" in parsed:
+        port, proto = parsed["port"]
+        inner.append(f'<port port="{port}" protocol="{proto}"/>')
+    if "protocol" in parsed:
+        inner.append(f'<protocol value="{parsed["protocol"][0]}"/>')
+
+    limit = f'<limit value="{parsed["limit"][0]}"/>' if "limit" in parsed else ""
+    if "reject" in parsed:
+        rtype = parsed["reject"][0]
+        attrs = f' type="{rtype}"' if rtype else ""
+        inner.append(f'<reject{attrs}>{limit}</reject>' if limit
+                     else f'<reject{attrs}/>')
+    else:
+        act = parsed["action"][0]
+        inner.append(f'<{act}>{limit}</{act}>' if limit else f'<{act}/>')
+
+    attrs = f' family="{parsed["family"][0]}"' if "family" in parsed else ""
     return f'<rule{attrs}>' + "".join(inner) + "</rule>"
 
 

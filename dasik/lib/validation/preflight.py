@@ -48,13 +48,22 @@ _GROUP_PROVIDERS: Dict[str, Set[str]] = {
     "i2c": {"i2c-tools"},
 }
 
-# unit -> packages that provide it. Meta packages that pull the provider count.
-_UNIT_PROVIDERS: Dict[str, Set[str]] = {
+# Display-manager unit -> packages that provide it (a meta package that pulls the
+# provider counts). ERROR when none is declared: an enabled DM unit no package
+# ships means no graphical login at all, and `systemctl enable` fails outright —
+# exactly the sddm.service / plasmalogin.service drift of 2026-07-19.
+_DM_UNIT_PROVIDERS: Dict[str, Set[str]] = {
     "sddm.service": {"sddm", "sddm-git"},
     "gdm.service": {"gdm"},
     "lightdm.service": {"lightdm"},
     "ly.service": {"ly"},
     "plasmalogin.service": {"plasma-login-manager", "plasma-meta", "plasma"},
+}
+
+# Other units with a known provider. WARNING only: the provider is often present
+# as somebody else's dependency (openssh, libvirt), so an undeclared name does
+# not prove the unit will be missing — and blocking on it would be wrong.
+_UNIT_PROVIDERS: Dict[str, Set[str]] = {
     "docker.service": {"docker"},
     "docker.socket": {"docker"},
     "libvirtd.service": {"libvirt"},
@@ -65,8 +74,10 @@ _UNIT_PROVIDERS: Dict[str, Set[str]] = {
     "snapper-boot.timer": {"snapper"},
 }
 
-_DISPLAY_MANAGER_UNITS = {"sddm.service", "gdm.service", "lightdm.service",
-                          "ly.service", "plasmalogin.service"}
+_DISPLAY_MANAGER_UNITS = set(_DM_UNIT_PROVIDERS)
+
+# Config directories that belong to one specific display manager.
+_DM_CONFIG_FIELDS = {"sddm_conf_d": "sddm.service"}
 
 # crypttab(5) options. Bare flags vs key=value options — `size512` (the token
 # seen in the 2026-07-19 config) is neither, so it is rejected.
@@ -199,19 +210,35 @@ def _check_units(config: Dict[str, Any], packages: Set[str]) -> List[Issue]:
     issues: List[Issue] = []
     units = _enabled_units(config)
     for unit in units:
-        providers = _UNIT_PROVIDERS.get(unit)
+        providers = _DM_UNIT_PROVIDERS.get(unit)
         if providers and not (providers & packages):
             issues.append(Issue(
                 "error", "unit_without_provider",
+                f"display manager unit {unit!r} is enabled but no declared package "
+                f"provides it (provided by: {', '.join(sorted(providers))}). "
+                "`systemctl enable` would fail and the system would have no "
+                "graphical login."))
+            continue
+        providers = _UNIT_PROVIDERS.get(unit)
+        if providers and not (providers & packages):
+            issues.append(Issue(
+                "warning", "unit_without_provider",
                 f"unit {unit!r} is enabled but no declared package provides it "
-                f"(provided by: {', '.join(sorted(providers))}). `systemctl enable` "
-                "would fail on the target."))
+                f"(provided by: {', '.join(sorted(providers))}); it will only work "
+                "if something else pulls that package in."))
     dms = [u for u in units if u in _DISPLAY_MANAGER_UNITS]
     if len(dms) > 1:
         issues.append(Issue(
             "error", "multiple_display_managers",
             f"more than one display manager enabled ({', '.join(sorted(dms))}); "
             "display-manager.service can only be one of them."))
+    for field, owner_unit in _DM_CONFIG_FIELDS.items():
+        if config.get(field) and owner_unit not in units:
+            issues.append(Issue(
+                "warning", "display_manager_config_mismatch",
+                f"{field!r} is declared but {owner_unit!r} is not enabled; those "
+                "files are read by that display manager only (Plasma Login Manager "
+                "reads /etc/plasmalogin.conf.d instead)."))
     return issues
 
 

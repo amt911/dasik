@@ -208,3 +208,82 @@ def test_install_streams_keyring_and_pacstrap(tmp_path):
     # pacman -Sy archlinux-keyring and pacstrap both stream (long output)
     assert seen["pacman"].get("stream") is True
     assert seen["pacstrap"].get("stream") is True
+
+
+# --- hook failures inside pacstrap (F-19) ---------------------------------- #
+#
+# pacstrap exits 0 even when a hook it ran failed: the 2026-07-19 log shows
+# mkinitcpio reporting "the image may not be complete" and "command failed to
+# execute correctly" inside pacstrap, and BaseInstallAction only saw rc 0.
+
+_PACSTRAP_WITH_FAILED_HOOK = b"""\
+:: Running post-transaction hooks...
+( 5/10) Updating linux initcpios...
+==> Starting build: '6.9.1-arch1-1'
+==> WARNING: consolefont: no font found in configuration
+==> ERROR: file not found: `/etc/vconsole.conf'
+==> WARNING: errors were encountered during the build. The image may not be complete.
+error: command failed to execute correctly
+( 6/10) Arming ConditionNeedsUpdate...
+"""
+
+
+def test_pacstrap_hook_failure_is_reported(monkeypatch, tmp_path):
+    from unittest.mock import MagicMock, patch
+    from dasik.lib.actions.base_install_action import BaseInstallAction
+
+    warnings_seen = []
+
+    class _Logger:
+        def warning(self, message, detail=""):
+            warnings_seen.append((message, detail))
+
+        def error(self, message, detail=""):
+            warnings_seen.append((message, detail))
+
+    def fake_exec(cmd, args, **kw):
+        if cmd == "genfstab":
+            return MagicMock(returncode=0, stdout=b"UUID=x / ext4 defaults 0 1\n")
+        if cmd == "pacstrap":
+            return MagicMock(returncode=0, stdout=_PACSTRAP_WITH_FAILED_HOOK)
+        return MagicMock(returncode=0, stdout=b"")
+
+    a = BaseInstallAction({"enable_microcode": False}, _ctx(tmp_path))
+    (tmp_path / "etc").mkdir(exist_ok=True)
+    with patch("dasik.lib.actions.base_install_action.Command.execute",
+               side_effect=fake_exec), \
+         patch("dasik.lib.actions.base_install_action.run_logger.get",
+               return_value=_Logger()):
+        a._install()
+
+    assert any("hook" in msg.lower() for msg, _ in warnings_seen), warnings_seen
+    assert any("command failed to execute correctly" in detail
+               for _, detail in warnings_seen)
+
+
+def test_clean_pacstrap_output_reports_nothing(monkeypatch, tmp_path):
+    from unittest.mock import MagicMock, patch
+    from dasik.lib.actions.base_install_action import BaseInstallAction
+
+    seen = []
+
+    class _Logger:
+        def warning(self, message, detail=""):
+            seen.append(message)
+
+        def error(self, message, detail=""):
+            seen.append(message)
+
+    def fake_exec(cmd, args, **kw):
+        if cmd == "genfstab":
+            return MagicMock(returncode=0, stdout=b"UUID=x / ext4 defaults 0 1\n")
+        return MagicMock(returncode=0, stdout=b":: Running post-transaction hooks...\n")
+
+    a = BaseInstallAction({"enable_microcode": False}, _ctx(tmp_path))
+    (tmp_path / "etc").mkdir(exist_ok=True)
+    with patch("dasik.lib.actions.base_install_action.Command.execute",
+               side_effect=fake_exec), \
+         patch("dasik.lib.actions.base_install_action.run_logger.get",
+               return_value=_Logger()):
+        a._install()
+    assert seen == []

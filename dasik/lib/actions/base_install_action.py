@@ -10,12 +10,42 @@ from typing import Any, Dict, List
 from colorama import Fore, Style, init
 from .abstract_action import AbstractAction
 from ..command_worker.command_worker import Command
+from ..logging import run_logger
 from ..exceptions.exceptions import CommandExecutionError
 from ..state.change import Change, Op
 
 _MARKER = "/usr/bin/pacman"
 _DOMAIN = "base"
 
+
+
+
+# pacstrap exits 0 even when a hook it ran FAILED — alpm reports the hook's
+# failure on its own output and carries on. The 2026-07-19 install shows
+# mkinitcpio failing inside pacstrap ("the image may not be complete",
+# "command failed to execute correctly") with the outer command returning 0, so
+# nothing surfaced. These are warnings, not aborts: the later initramfs action
+# regenerates the image — but the user must see that the base image is suspect.
+_HOOK_FAILURE_MARKERS = (
+    "command failed to execute correctly",
+    "image may not be complete",
+    "==> ERROR",
+    "error: could not",
+)
+
+
+def _report_hook_failures(output) -> None:
+    if isinstance(output, bytes):
+        output = output.decode("utf-8", errors="replace")
+    text = output or ""
+    hits = [line.strip() for line in text.splitlines()
+            if any(marker in line for marker in _HOOK_FAILURE_MARKERS)]
+    if not hits:
+        return
+    run_logger.get().warning(
+        "a hook failed during pacstrap (pacstrap itself exited 0)",
+        detail="\n".join(hits),
+    )
 
 class BaseInstallAction(AbstractAction):
     """Install the Arch base system (base, linux, firmware, microcode)."""
@@ -131,6 +161,7 @@ class BaseInstallAction(AbstractAction):
                 f"pacstrap failed (rc={getattr(pacstrap, 'returncode', '?')}); "
                 f"base system not installed into {root}."
             )
+        _report_hook_failures(pacstrap.stdout)
         result = Command.execute("genfstab", ["-U", root])
         if getattr(result, "returncode", 0) != 0:
             raise CommandExecutionError(

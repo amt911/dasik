@@ -49,6 +49,14 @@ def test_unknown_group_is_a_warning_not_an_error():
 
 # --- systemd units with a known provider ----------------------------------- #
 
+def test_non_dm_unit_without_its_package_is_only_a_warning():
+    """openssh & friends are often pulled in as a dependency, so we cannot prove
+    the unit will be missing — inform, do not block."""
+    cfg = {"systemd": {"enable_units": ["sshd.service"]}, "packages": ["base"]}
+    assert _errors(cfg) == []
+    assert [w.code for w in _warnings(cfg)] == ["unit_without_provider"]
+
+
 def test_display_manager_unit_without_its_package_is_an_error():
     cfg = {"systemd": {"enable_units": ["sddm.service"]},
            "packages": ["plasma-meta"]}
@@ -111,6 +119,14 @@ def test_crypttab_comments_and_blank_lines_ignored():
 
 
 # --- clean config ---------------------------------------------------------- #
+
+def test_display_manager_config_files_for_another_dm_warn():
+    cfg = {"systemd": {"enable_units": ["plasmalogin.service"]},
+           "packages": ["plasma-meta"],
+           "sddm_conf_d": [{"name": "kde_settings.conf", "content": "[Theme]\n"}]}
+    assert _errors(cfg) == []
+    assert [w.code for w in _warnings(cfg)] == ["display_manager_config_mismatch"]
+
 
 def test_coherent_config_has_no_issues():
     cfg = {

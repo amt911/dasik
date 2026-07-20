@@ -11,7 +11,7 @@ NEVER be recorded as managed/installed, so the divergence stays visible and the
 next plan retries it.
 """
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -20,6 +20,19 @@ from dasik.lib.actions.packages_action import PackagesAction
 from dasik.lib.exceptions.exceptions import CommandExecutionError
 from dasik.lib.state.change import Change, Op
 from dasik.lib.target.target import Target
+
+
+@pytest.fixture(autouse=True)
+def _quiet_run_logger():
+    """Stub the process-wide RunLogger.
+
+    These tests exercise the FAILURE path, which logs; the global logger may be
+    left configured (with an already-closed stream) by another test, and that
+    turns an unrelated I/O error into a failure of this test.
+    """
+    with patch("dasik.lib.actions.packages_action.run_logger.get",
+               return_value=MagicMock()):
+        yield
 
 
 def _action(packages, installed=()):

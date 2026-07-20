@@ -97,6 +97,9 @@ A pytest suite **does** exist (`tests/` mirrors `dasik/lib/`, configured in `pyp
 config.json
   → JsonParser            (dasik/lib/json_parser/) — opens file, validates with pydantic JsonModel,
                            returns a plain dict via .debug()
+  → preflight()           (dasik/lib/validation/) — cross-field coherence on the EXPANDED config
+                           (groups without a provider, DM unit without its package, crypttab);
+                           errors abort BEFORE the first mutation, warnings only inform
   → Reconciler            (dasik/lib/reconciler/) — walks the setup_actions() registry
   → Action.plan()         idempotency check: inspect current system state, diff vs config
   → Action.apply()        apply changes (only what plan() found)
@@ -124,7 +127,10 @@ Every change runs against the **mounted install target at `/mnt`**, typically vi
 
 `do_action()` and the `_before_check`/`after_check`/`KEY_NAME` members are **vestigial** shims (the legacy handler that used them is gone — PR #151); a couple of actions still carry them but nothing calls them. New code uses `plan()/apply()/import_state()` (and the `is_needed()/execute()/verify()` executor shims).
 
-Actions are registered in `actions_handler_v2.setup_actions()` with `register_action(action_class, config_key, is_optional, required_fields, depends_on)`. `config_key='__root__'` means the action reads root-level config fields (e.g. `DropFilesAction`, `MkinitcpioAction`). `ActionExecutor` walks the registry in order; ordering matters (disk/base first, boot last).
+Actions are registered in `actions_handler_v2.setup_actions()` with `register_action(action_class, config_key, is_optional, required_fields, depends_on)`. `config_key='__root__'` means the action reads root-level config fields (e.g. `DropFilesAction`, `MkinitcpioAction`). `ActionExecutor` walks the registry in order; **ordering matters** (disk/base first, boot last) and two orderings are load-bearing:
+
+- `PacmanHooksAction` runs in phase 1, **between the disk actions and pacstrap**: it writes the mkinitcpio neutralizer hooks, which must exist before the *first* pacman transaction or mkinitcpio clobbers dracut's initramfs (forensic report F-10).
+- `SnapperAction` runs **before** `PackagesAction`: snap-pac's hooks snapshot each transaction, so the config must already exist. It installs `snapper`/`snap-pac` itself when missing (F-13).
 
 ### Adding a new config option (the common task)
 

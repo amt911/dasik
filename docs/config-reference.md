@@ -135,7 +135,8 @@ List of accounts:
 ### `packages`  *(sync ✓)*
 
 A list; each item is either a **string** (explicitly installed) or an object
-`{"name": "...", "reason": "explicit" | "dep"}`. Use the **real package name only**
+`{"name": "...", "reason": "explicit" | "dep", "optional": true | false}`. Use the
+**real package name only**
 — dasik resolves each name's origin automatically at apply time (configured repo →
 pacman group → `package_sources` → AUR), so `firefox`, `yay` and
 `claude-desktop-bin` all just work; the same name keeps working if a package later
@@ -152,6 +153,37 @@ not know whether the package exists, so it refuses rather than skip.
 
 > The deprecated `aur-<name>` prefix is still accepted (with a warning) for
 > configs produced by older syncs; `sync` rewrites it back to the plain name.
+
+#### `optional: true` — a failure that must not stop the install
+
+A package marked `{"name": "sunshine", "optional": true}` may **fail to install
+without aborting the apply**. Optional packages are installed in their own batch
+*after* the required ones (repo packages one at a time, AUR packages in a separate
+build batch), so one broken upstream cannot take the others — or the rest of the
+convergence — down with it.
+
+It is not a licence to lie about state: a failed optional package is reported in
+red, is **excluded from the manifest** (dasik never claims it is installed), and
+the next `plan` lists it again. An unknown optional name is skipped even under
+`package_policy.unknown = "error"`. `sync` preserves the flag, since it is intent.
+
+Use it for peripheral software whose source can break independently of your
+system: large AUR applications, vendor printer drivers, fonts. Do **not** use it
+for anything the machine needs to boot or log in.
+
+```json
+"packages": [
+  "base", "linux", "plasma-meta",
+  {"name": "sunshine", "optional": true},
+  {"name": "epsonscan2", "optional": true}
+]
+```
+
+Why it exists: on 2026-07-19 three peripheral AUR packages out of 311 failed
+(one upstream `pkg_resources` transition, two vendor URLs returning HTTP 403).
+`yay` installed everything else and exited 1, and that single exit code stopped
+the reconciler before users, systemd units, firewall, snapper, the initramfs and
+the bootloader — on an already-partitioned disk.
 
 ### `package_policy`
 
@@ -318,6 +350,13 @@ Pulls in `zram-generator`.
 | `remove_services` | list[str] | `[]` | Default services to remove (e.g. `ssh`). |
 | `rich_rules` | list[str] | `[]` | `firewall-cmd` rich-rule strings. |
 
+Rich rules round-trip **losslessly**: family, source/destination address, service,
+port+protocol, protocol value, the action (`accept`/`reject`/`drop`) and its rate
+`limit`. A rule dasik cannot represent exactly (`log`, `audit`, `masquerade`,
+`NOT` …) is **rejected** with `ConfigValidationError` rather than approximated —
+dropping a clause of an access rule (e.g. `accept limit value="2/m"`) would
+silently widen it.
+
 ### `wireguard`  *(sync ✓ via `files`)*
 
 | Field | Type | Default | Notes |
@@ -326,12 +365,17 @@ Pulls in `zram-generator`.
 | `interface_name` | string | `wg0` | |
 | `config_content` | string | `null` | Full `/etc/wireguard/<iface>.conf` (holds the private key — keep the config private). |
 
-### `snapper`
+### `snapper`  *(sync ✓)*
 
 | Field | Type | Default | Notes |
 | --- | --- | --- | --- |
 | `enable` | bool | `false` | Package + timers via the toggle; this creates the configs. |
 | `configs` | list | `[{name: "root", subvolume: "/"}]` | Each `{"name": "...", "subvolume": "/abs/path"}`. |
+
+The action runs **before** the package transaction (snap-pac's pacman hooks
+snapshot each transaction, so the config must already exist) and installs
+`snapper`/`snap-pac` itself if they are not on the target yet. `sync` captures
+every config found under `/etc/snapper/configs`.
 
 ### Simple bool toggles
 
@@ -449,6 +493,28 @@ One config exercising every section — validate a copy with `dasik check`
 ```
 
 ---
+
+## Validation: `check`, and what runs before a mutation
+
+`dasik check <config>` validates without touching anything, and **the same
+validation now runs inside `plan`, `apply` and `sync`** — a config never reaches a
+destructive action unvalidated. Two layers:
+
+1. **Schema** (pydantic `JsonModel`): field types, required keys, package-name and
+   path grammar.
+2. **Preflight** (cross-field coherence, on the *expanded* config). Errors abort
+   before the first mutation; warnings are printed and do not block.
+
+| Code | Level | Meaning |
+| --- | --- | --- |
+| `group_without_provider` | error | A user needs a supplementary group no declared package creates (e.g. `docker` with only `podman-docker`). `useradd -G` would fail — after the disk was wiped. |
+| `unknown_group` | warning | Group is neither a base group nor one dasik knows a provider for. |
+| `unit_without_provider` (display manager) | error | `sddm.service` enabled but no `sddm` declared, etc. |
+| `unit_without_provider` (other units) | warning | Provider not declared, but it is often present as a dependency. |
+| `multiple_display_managers` | error | Two DM units enabled; `display-manager.service` can be only one. |
+| `display_manager_config_mismatch` | warning | e.g. `sddm_conf_d` declared while Plasma Login Manager is the enabled DM (it reads `/etc/plasmalogin.conf.d`). |
+| `crypttab_bad_option` | error | Not `crypttab(5)` syntax (`size512` instead of `size=512`). |
+| `crypttab_undeclared_device` | error / warning | Entry names a device no declared partition provides. **Error** when the entry carries `swap`, which reformats that device on every boot. |
 
 ## See also
 

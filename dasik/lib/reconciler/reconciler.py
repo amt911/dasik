@@ -196,17 +196,30 @@ class Reconciler:
             if answer not in ("y", "yes"):
                 return None
 
-        for result in results:
-            result.action.apply(result.changes)
+        completed: list[ActionPlanResult] = []
+        try:
+            for result in results:
+                result.action.apply(result.changes)
+                completed.append(result)
+        except BaseException:
+            # An apply that fails part-way has ALREADY mutated the system (disk
+            # partitioned, packages installed). Recording nothing — the old
+            # behaviour — lost every trace of where it stopped and of what dasik
+            # now owns. Persist what actually completed, flagged `partial`, then
+            # let the failure propagate: this is a record of progress, never a
+            # claim of convergence.
+            self._persist(self._build_new_manifest(completed, partial=True))
+            raise
 
         new_manifest = self._build_new_manifest(results)
-
-        if self._generation_store is not None:
-            self._generation_store.new(self._config, new_manifest.to_dict())
-        if self._state_store is not None:
-            self._state_store.save(new_manifest)
-
+        self._persist(new_manifest)
         return new_manifest
+
+    def _persist(self, manifest: Manifest) -> None:
+        if self._generation_store is not None:
+            self._generation_store.new(self._config, manifest.to_dict())
+        if self._state_store is not None:
+            self._state_store.save(manifest)
 
     @staticmethod
     def _warn_live_host(count: int) -> None:
@@ -320,10 +333,18 @@ class Reconciler:
         return new_config, new_manifest
 
     def _build_new_manifest(
-        self, results: list[ActionPlanResult]
+        self, results: list[ActionPlanResult], *, partial: bool = False
     ) -> Manifest:
         managed: dict[str, Any] = {}
         action_state: dict[str, Any] = {}
+        if partial:
+            # Domains of actions that failed or were never reached keep the
+            # PREVIOUS manifest's entries: we do not know they changed, and
+            # dropping ownership would make a later plan stop seeing items dasik
+            # owns (M is what REMOVE = M\D is computed from).
+            previous = self._manifest if isinstance(self._manifest, dict) else {}
+            managed.update(dict(previous.get("managed", {})))
+            action_state.update(dict(previous.get("action_state", {})))
         for result in results:
             keys = result.action.managed_keys()
             if not isinstance(keys, dict):
@@ -350,4 +371,5 @@ class Reconciler:
             config_hash=config_hash,
             managed=managed,
             action_state=action_state,
+            partial=partial,
         )

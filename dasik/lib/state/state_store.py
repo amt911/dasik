@@ -15,6 +15,11 @@ class Manifest:
     ``action_state`` (schema v2) holds per-action free-form state keyed by domain,
     e.g. ``{"packages": {"source_refs": {name: applied_sha}}}`` — this lets a
     changed Git ref be detected even when the package name is already installed.
+
+    ``partial`` marks a manifest written by an apply that FAILED part-way: the
+    system was mutated, but it is not the declared state. Such a record exists so
+    the progress is visible (and ownership is not silently lost); it is never a
+    convergence claim, and `rollback` refuses to restore one.
     """
 
     version: int = STATE_VERSION
@@ -23,6 +28,7 @@ class Manifest:
     config_hash: str | None = None
     managed: dict[str, Any] = field(default_factory=dict)
     action_state: dict[str, Any] = field(default_factory=dict)
+    partial: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -37,6 +43,8 @@ class Manifest:
             managed=data.get("managed", {}),
             # Absent in pre-v2 manifests — default to empty so old state loads.
             action_state=data.get("action_state", {}),
+            # Absent in manifests written before partial-progress recording.
+            partial=bool(data.get("partial", False)),
         )
 
 

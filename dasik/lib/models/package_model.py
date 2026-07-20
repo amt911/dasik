@@ -31,6 +31,14 @@ class PackageSpec(BaseModel):
     """
     name: str
     reason: Literal["explicit", "dep"] = "explicit"
+    optional: bool = False
+    """A package whose install failure must not stop convergence.
+
+    Set it on peripheral software (a large AUR application, a vendor printer
+    driver) whose upstream source can break independently of dasik. A failed
+    optional package is reported and left OUT of the manifest — it is never
+    claimed as installed, so the divergence stays visible and the next apply
+    retries it. Required packages (the default) still abort the apply."""
 
 
 class PackagePolicyModel(BaseModel):

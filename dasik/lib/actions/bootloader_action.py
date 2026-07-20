@@ -135,10 +135,13 @@ class BootloaderAction(AbstractAction):
         return [img for img in ("/intel-ucode.img", "/amd-ucode.img")
                 if os.path.exists(self._p("/boot" + img))]
 
-    def _install(self) -> None:  # pragma: no cover - shells out to bootctl/grub
+    def _install(self) -> None:
+        # Every mutating boot command runs with check=True: a bootloader that
+        # failed to install must abort the action, never be followed by
+        # loader.conf/arch.conf (files that make an unbootable ESP look applied).
         t = self._target()
         if self._is_sdboot():
-            Command.execute("bootctl", ["install"], target=t)
+            Command.execute("bootctl", ["install"], target=t, check=True)
             loader = self._p("/boot/loader/loader.conf")
             os.makedirs(os.path.dirname(loader), exist_ok=True)
             with open(loader, "w") as f:
@@ -153,8 +156,10 @@ class BootloaderAction(AbstractAction):
             with open(os.path.join(entries_dir, "arch.conf"), "w") as f:
                 f.write("\n".join(lines) + "\n")
         else:
-            Command.execute("pacman", ["--noconfirm", "--needed", "-S", "grub", "efibootmgr"], target=t)
+            Command.execute("pacman", ["--noconfirm", "--needed", "-S", "grub", "efibootmgr"],
+                            target=t, check=True)
             Command.execute("grub-install", [
                 "--target=x86_64-efi", "--efi-directory=/boot", "--bootloader-id=GRUB",
-            ], target=t)
-            Command.execute("grub-mkconfig", ["-o", "/boot/grub/grub.cfg"], target=t)
+            ], target=t, check=True)
+            Command.execute("grub-mkconfig", ["-o", "/boot/grub/grub.cfg"],
+                            target=t, check=True)

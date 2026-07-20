@@ -40,5 +40,10 @@ config/test.json
 config/test-config.json
 config/test-config.json.bak
 
-# dasik run logs (./dasik-<verb>-<date>.log) — local diagnostics, never commit
+# dasik run logs (./dasik-<verb>-<date>.log) — local diagnostics, never commit.
+# Also any install log pasted in for analysis: RunLogger records full argv, so a
+# log may contain values from the config; it must never be committed or attached
+# to a PR unsanitised (forensic report §9.13).
 dasik-*.log
+log-llm.log
+*-install.log

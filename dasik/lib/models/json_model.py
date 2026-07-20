@@ -1,5 +1,5 @@
 import re
-from typing import Optional, List, Union, Dict, Any
+from typing import Literal, Optional, List, Union, Dict, Any
 from pydantic import BaseModel, Field, model_validator
 
 from .locale_model import LocaleModel
@@ -55,7 +55,11 @@ class JsonModel(BaseModel):
         default_factory=dict,
         description="Map of package name -> Git PKGBUILD source for packages not in "
                     "any pacman repo/group or the AUR.")
-    bootloader: str = Field(default="grub", description="grub | sd-boot")
+    # Restricted to the backends dasik actually implements: a typo used to fall
+    # through to the default backend silently (forensic report §9.9). "systemd-boot"
+    # is kept as an accepted alias of "sd-boot" (BootloaderAction treats them alike).
+    bootloader: Literal["grub", "sd-boot", "systemd-boot"] = Field(
+        default="grub", description="grub | sd-boot")
 
     # Files / lines to drop on the target system
     udev_rules: List[FileEntry] = Field(default_factory=list)
@@ -72,7 +76,7 @@ class JsonModel(BaseModel):
     # Toggles
     enable_trim: bool = False
     remove_home_on_delete: bool = False
-    initramfs: str = "mkinitcpio"
+    initramfs: Literal["mkinitcpio", "dracut"] = "mkinitcpio"
 
     # Sub-models
     pacman: Optional[PacmanModel] = None

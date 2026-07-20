@@ -105,10 +105,14 @@ class SystemdAction(AbstractAction):
             return
         enables = [c.item for c in changes if c.op is Op.ENABLE]
         disables = [c.item for c in changes if c.op is Op.DISABLE]
+        # check=True: `systemctl enable` on a unit no package provides exits
+        # non-zero. Without it the failure is silent and the unit still lands in
+        # the manifest as managed — a false convergence that re-plans forever
+        # while the system has, say, no display manager configured.
         for unit in enables:                       # additive first
-            Command.execute("systemctl", ["enable", unit], target=target)
+            Command.execute("systemctl", ["enable", unit], target=target, check=True)
         for unit in disables:
-            Command.execute("systemctl", ["disable", unit], target=target)
+            Command.execute("systemctl", ["disable", unit], target=target, check=True)
 
     def import_state(self, managed=None) -> dict:
         # Capture reality: keep all declared units (intent) + every enabled unit

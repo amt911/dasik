@@ -102,7 +102,7 @@ class PacmanAction(CompositeV3Action):
         # live host.
         t = self._target()
         if changes and self.multilib and t is not None and getattr(t, "is_chroot", False):
-            Command.execute("pacman", ["-Sy"], target=t)
+            Command.execute("pacman", ["-Sy"], target=t, check=True)
 
     def _import_fragment(self, value) -> dict:
         st = self._actual_state() or self._desired_state()

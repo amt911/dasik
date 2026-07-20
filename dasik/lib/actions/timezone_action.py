@@ -79,11 +79,11 @@ class TimezoneAction(ScalarV3Action):
         link = f"/usr/share/zoneinfo/{value}"
         t = self._target()
         if t is not None:
-            Command.execute("ln", ["-sf", link, _LOCALTIME], target=t)
-            Command.execute("hwclock", ["--systohc"], target=t)
+            Command.execute("ln", ["-sf", link, _LOCALTIME], target=t, check=True)
+            Command.execute("hwclock", ["--systohc"], target=t, check=True)
         else:
-            Command.execute("ln", ["-sf", link, _LOCALTIME], True)
-            Command.execute("hwclock", ["--systohc"], True)
+            Command.execute("ln", ["-sf", link, _LOCALTIME], True, check=True)
+            Command.execute("hwclock", ["--systohc"], True, check=True)
 
     def _import_fragment(self, value: str) -> dict:
         region, _, city = value.partition("/")

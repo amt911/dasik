@@ -1,5 +1,6 @@
 """Disk partitioning action."""
 import json
+import os
 import re
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -23,6 +24,32 @@ _DISCOVER_FS = {
     "vfat": "fat32", "fat32": "fat32", "swap": "swap",
 }
 _LABEL_OK = re.compile(r"[A-Za-z0-9_.-]{1,36}")
+
+
+# Mountpoints whose permissions are NOT the mkdir default. `mkdir` yields 0755,
+# so /mnt/var/tmp existed as 0755 before pacstrap and pacman warned "directory
+# permissions differ on /mnt/var/tmp/ filesystem: 755 package: 1777". Both /tmp
+# and /var/tmp must be world-writable + sticky from the moment they are created;
+# relying on systemd-tmpfiles at first boot means the wrong mode is live for the
+# whole install.
+_MOUNTPOINT_MODES = {
+    "/tmp": 0o1777,
+    "/var/tmp": 0o1777,
+}
+
+
+def _mountpoint_mode(canonical: str) -> Optional[int]:
+    """The mode a mountpoint must have, or None to keep the mkdir default."""
+    return _MOUNTPOINT_MODES.get(canonical.rstrip("/") or "/")
+
+
+def _make_mountpoint(host_path: str, canonical: "Optional[str]") -> None:
+    """Create *host_path* (parents included) and enforce the canonical path's
+    required mode, also when the directory already existed."""
+    Path(host_path).mkdir(parents=True, exist_ok=True)
+    mode = _mountpoint_mode(canonical) if canonical else None
+    if mode is not None:
+        os.chmod(host_path, mode)
 
 
 class DiskPartitionAction(AbstractAction):
@@ -1171,9 +1198,9 @@ class DiskPartitionAction(AbstractAction):
         """
         device = self.partition_map[partition.label]
         mountpoint = f"/mnt{partition.mountpoint}"
-        
-        # Create mountpoint
-        Path(mountpoint).mkdir(parents=True, exist_ok=True)
+
+        # Create mountpoint (with the mode that path requires, e.g. /var/tmp 1777)
+        _make_mountpoint(mountpoint, partition.mountpoint)
         
         # Build mount command
         mount_cmd = ["mount"]
@@ -1194,7 +1221,7 @@ class DiskPartitionAction(AbstractAction):
         
         for subvol in partition.btrfs_subvolumes:
             mountpoint = f"/mnt{subvol.mountpoint}"
-            Path(mountpoint).mkdir(parents=True, exist_ok=True)
+            _make_mountpoint(mountpoint, subvol.mountpoint)
             
             # Partition-level mount_options apply to every subvolume (+ its own).
             options = self._subvol_mount_options(partition, subvol)

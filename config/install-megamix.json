@@ -16,6 +16,7 @@
 
   "packages": [
     "base",
+    "docker",
     "linux",
     "linux-firmware",
     "git",

@@ -70,8 +70,11 @@ def test_desired_is_deterministic_and_has_no_duplicate_modules():
 
 def test_actual_value_reads_conf():
     # non-encrypted: no crypttab, so actual_value is a plain dasik.conf read.
-    with patch("builtins.open", mock_open(read_data="add_dracutmodules+=\" btrfs \"\n")):
-        assert _b(_cfg(fs="btrfs")).actual_value() == "add_dracutmodules+=\" btrfs \"\n"
+    # No kernel in the target yet -> the image check has nothing to verify.
+    b = _b(_cfg(fs="btrfs"))
+    with patch("builtins.open", mock_open(read_data="add_dracutmodules+=\" btrfs \"\n")), \
+         patch.object(type(b), "_target_kernels", lambda self: []):
+        assert b.actual_value() == "add_dracutmodules+=\" btrfs \"\n"
 
 
 def test_actual_value_none_when_absent():
@@ -333,7 +336,8 @@ def test_actual_value_returns_conf_when_crypttab_matches():
             return mock_open(read_data=desired_conf)()
         return mock_open(read_data=desired_ct)()
 
-    with patch("builtins.open", side_effect=fake_open):
+    with patch("builtins.open", side_effect=fake_open), \
+         patch.object(type(b), "_target_kernels", lambda self: []):
         assert b.actual_value() == desired_conf
 
 
@@ -344,3 +348,65 @@ def test_subvol_root_detects_btrfs_and_forces_it():
     conf = b.desired_value()
     for mod in ("crypt", "systemd", "systemd-cryptsetup", "btrfs"):
         assert mod in conf, mod
+
+
+# --- convergence must include the produced image (F-09) -------------------- #
+#
+# actual_value() used to read only dasik.conf/crypttab — pure intent. If dracut
+# failed AFTER those files were written, the next plan saw the backend satisfied
+# and the target kept booting a stale (or absent) initramfs.
+
+import os
+
+
+def _target_tree(tmp_path, *, kver="6.9.1-arch1-1", pkgbase="linux", image=True):
+    (tmp_path / "etc" / "dracut.conf.d").mkdir(parents=True)
+    (tmp_path / "boot").mkdir()
+    mods = tmp_path / "usr" / "lib" / "modules" / kver
+    mods.mkdir(parents=True)
+    (mods / "pkgbase").write_text(pkgbase + "\n")
+    if image:
+        (tmp_path / "boot" / f"initramfs-{pkgbase}.img").write_text("IMG")
+    return tmp_path
+
+
+def _converged_backend(tmp_path, cfg=None):
+    """Backend whose conf is on disk and whose image is newer than it — the
+    state a successful dracut run leaves behind."""
+    b = _b(cfg or _cfg(fs="btrfs"), root=str(tmp_path))
+    (tmp_path / "etc" / "dracut.conf.d" / "dasik.conf").write_text(b.desired_value())
+    for img in (tmp_path / "boot").glob("initramfs-*.img"):
+        os.utime(img, None)
+    return b
+
+
+def test_actual_value_none_when_image_missing(tmp_path):
+    _target_tree(tmp_path, image=False)
+    b = _converged_backend(tmp_path)
+    assert b.actual_value() is None
+
+
+def test_actual_value_returns_conf_when_image_present(tmp_path):
+    _target_tree(tmp_path)
+    b = _converged_backend(tmp_path)
+    assert b.actual_value() == b.desired_value()
+
+
+def test_actual_value_none_when_image_older_than_config(tmp_path):
+    """dracut wrote the conf, then failed: the image on disk predates it."""
+    _target_tree(tmp_path)
+    b = _converged_backend(tmp_path)
+    conf = tmp_path / "etc" / "dracut.conf.d" / "dasik.conf"
+    img = tmp_path / "boot" / "initramfs-linux.img"
+    os.utime(img, (1000, 1000))
+    os.utime(conf, (2000, 2000))
+    assert b.actual_value() is None
+
+
+def test_actual_value_none_when_a_second_kernel_has_no_image(tmp_path):
+    _target_tree(tmp_path)
+    mods = tmp_path / "usr" / "lib" / "modules" / "6.9.1-lts"
+    mods.mkdir(parents=True)
+    (mods / "pkgbase").write_text("linux-lts\n")
+    b = _converged_backend(tmp_path)
+    assert b.actual_value() is None

@@ -1,5 +1,7 @@
 from unittest.mock import patch
 
+import pytest
+
 from dasik.lib.actions.bootloader_action import BootloaderAction
 from dasik.lib.actions.action_context import ActionContext
 from dasik.lib.target.target import Target
@@ -188,3 +190,35 @@ def test_root_param_finds_subvol_mounted_encrypted_root():
 def test_root_label_finds_subvol_mounted_root():
     a = BootloaderAction(_subvol_root_cfg())
     assert a._root_label() == "root"
+
+
+# --- mutating boot commands must fail loud (F-18) -------------------------- #
+
+def test_sdboot_install_aborts_before_writing_loader_when_bootctl_fails(tmp_path):
+    """A failed `bootctl install` must not be followed by loader.conf/arch.conf:
+    those files make the action look applied on an ESP with no bootloader."""
+    from dasik.lib.exceptions.exceptions import CommandExecutionError
+    a = BootloaderAction(_cfg(), _ctx(tmp_path))
+    with patch("dasik.lib.actions.bootloader_action.Command.execute",
+               side_effect=CommandExecutionError("bootctl failed")):
+        with pytest.raises(CommandExecutionError):
+            a._install()
+    assert not (tmp_path / "boot" / "loader" / "loader.conf").exists()
+    assert not (tmp_path / "boot" / "loader" / "entries" / "arch.conf").exists()
+
+
+def test_sdboot_install_uses_check_true(tmp_path):
+    a = BootloaderAction(_cfg(), _ctx(tmp_path))
+    with patch("dasik.lib.actions.bootloader_action.Command.execute") as run:
+        a._install()
+    assert run.call_args_list[0].args[0] == "bootctl"
+    assert run.call_args_list[0].kwargs.get("check") is True
+
+
+def test_grub_install_uses_check_true(tmp_path):
+    a = BootloaderAction(_cfg(bootloader="grub"), _ctx(tmp_path))
+    with patch("dasik.lib.actions.bootloader_action.Command.execute") as run:
+        a._install()
+    cmds = [c.args[0] for c in run.call_args_list]
+    assert cmds == ["pacman", "grub-install", "grub-mkconfig"]
+    assert all(c.kwargs.get("check") is True for c in run.call_args_list)

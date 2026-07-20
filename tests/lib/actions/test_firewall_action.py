@@ -7,7 +7,10 @@ with tests (pure file generation), no firewalld/QEMU needed.
 """
 from types import SimpleNamespace
 
+import pytest
+
 from dasik.lib.actions.firewall_action import FirewallAction, _rich_rule_to_xml
+from dasik.lib.exceptions.exceptions import ConfigValidationError
 from dasik.lib.state.change import Op
 
 
@@ -33,6 +36,37 @@ def test_rich_rule_quoted_and_port():
 def test_rich_rule_service_drop():
     xml = _rich_rule_to_xml('rule service name=ssh drop')
     assert xml == '<rule><service name="ssh"/><drop/></rule>'
+
+
+def test_rich_rule_accept_keeps_rate_limit():
+    """A rate limit is part of the action element — dropping it widens access."""
+    xml = _rich_rule_to_xml('rule service name="ssh" accept limit value="2/m"')
+    assert xml == ('<rule><service name="ssh"/>'
+                   '<accept><limit value="2/m"/></accept></rule>')
+
+
+def test_rich_rule_reject_keeps_rate_limit():
+    xml = _rich_rule_to_xml('rule family="ipv4" port port="80" protocol="tcp" '
+                            'reject limit value="10/s"')
+    assert xml == ('<rule family="ipv4"><port port="80" protocol="tcp"/>'
+                   '<reject><limit value="10/s"/></reject></rule>')
+
+
+def test_rich_rule_unsupported_clause_fails_closed():
+    """An access rule that cannot be represented must be rejected, not widened."""
+    with pytest.raises(ConfigValidationError):
+        _rich_rule_to_xml('rule service name="ssh" log prefix="ssh" level=info accept')
+
+
+def test_rich_rule_without_action_fails_closed():
+    with pytest.raises(ConfigValidationError):
+        _rich_rule_to_xml('rule service name="ssh"')
+
+
+def test_desired_xml_propagates_unsupported_rule(tmp_path):
+    a = _fw(rich_rules=['rule service name="ssh" audit accept'])
+    with pytest.raises(ConfigValidationError):
+        a._desired_xml()
 
 
 # --- zone XML + idempotent plan ------------------------------------------- #

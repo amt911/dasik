@@ -13,7 +13,7 @@ pip install .
 dasik is verb-based (`dasik <verb> <config>`):
 
 ```bash
-dasik check  config.json            # validate the config (JSON + schema), read-only
+dasik check  config.json            # validate the config (schema + coherence), read-only
 dasik plan   config.json            # show what would change (read-only)
 dasik apply  config.json --target /mnt --yes   # converge (DESTRUCTIVE on install)
 dasik sync   config.json --target /  # capture the running system back into the config
@@ -23,6 +23,12 @@ dasik rollback                       # restore + re-apply a previous generation
 
 The bare `dasik <config>` form (no verb) was **removed** — it now errors and
 points you at `dasik plan` / `dasik apply`.
+
+`plan`, `apply` and `sync` run the **same validation as `check`** before doing
+anything: the pydantic schema, then cross-field preflight checks (a user in a
+group no package creates, a display-manager unit no package provides, a bad or
+destructive `/etc/crypttab` entry). Errors abort before the first mutation;
+warnings are printed and do not block.
 
 > 📖 **[Config reference — every option](docs/config-reference.md)** — the full set
 > of config fields (disks, users, packages, services, files, feature toggles, …),

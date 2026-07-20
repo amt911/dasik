@@ -76,10 +76,39 @@ def test_import_state_detects_dracut():
         assert a.import_state()["initramfs"] == "dracut"
 
 
-def test_import_state_detects_mkinitcpio_when_present():
+def test_import_state_detects_mkinitcpio_when_no_neutralizer(tmp_path):
+    """Both packages installed and mkinitcpio's hooks intact -> mkinitcpio is
+    the generator that actually runs."""
     with patch("dasik.lib.actions.initramfs_action.Command.execute",
                side_effect=_pkg_fake({"dracut", "mkinitcpio"})):
-        a = InitramfsAction({}, _ctx("/"))
+        a = InitramfsAction({}, _ctx(str(tmp_path)))
+        assert a.import_state()["initramfs"] == "mkinitcpio"
+
+
+def test_import_state_detects_dracut_when_mkinitcpio_is_neutralized(tmp_path):
+    """dasik KEEPS mkinitcpio installed and overrides its pacman hooks with
+    no-ops, so "both packages installed" is the NORMAL dracut layout. Detecting
+    by coexistence alone imported a dracut host as mkinitcpio and sync silently
+    switched its generator."""
+    hooks = tmp_path / "etc" / "pacman.d" / "hooks"
+    hooks.mkdir(parents=True)
+    (hooks / "90-mkinitcpio-install.hook").write_text(
+        "# Managed by dasik: disables mkinitcpio's initramfs regeneration\n"
+        "Target = dasik-initramfs-neutralizer-never-matches\n")
+    with patch("dasik.lib.actions.initramfs_action.Command.execute",
+               side_effect=_pkg_fake({"dracut", "mkinitcpio"})):
+        a = InitramfsAction({}, _ctx(str(tmp_path)))
+        assert a.import_state()["initramfs"] == "dracut"
+
+
+def test_import_state_ignores_a_foreign_mkinitcpio_hook_override(tmp_path):
+    """Someone else's override of the same hook is not dasik's neutralizer."""
+    hooks = tmp_path / "etc" / "pacman.d" / "hooks"
+    hooks.mkdir(parents=True)
+    (hooks / "90-mkinitcpio-install.hook").write_text("[Trigger]\nTarget = linux\n")
+    with patch("dasik.lib.actions.initramfs_action.Command.execute",
+               side_effect=_pkg_fake({"dracut", "mkinitcpio"})):
+        a = InitramfsAction({}, _ctx(str(tmp_path)))
         assert a.import_state()["initramfs"] == "mkinitcpio"
 
 

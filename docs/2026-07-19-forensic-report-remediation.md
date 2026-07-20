@@ -5,7 +5,7 @@ Status of every finding in
 what was changed, and what is deliberately **not** changed here.
 
 Branch: `fix/forensic-2026-07-19`. All gates green at the end of the work:
-`pytest` 1180 passed, coverage 90.9 % (gate 80 %), `mypy` clean (80 files),
+`pytest` 1198 passed, coverage 91.0 % (gate 80 %), `mypy` clean (80 files),
 `bandit` clean, mutation gate clean (112 killed, 2 documented equivalents).
 
 Nothing destructive was executed: no `apply`, no `rollback`, no partitioning, no
@@ -15,6 +15,7 @@ real install. Every `execute()`/`apply()` path is exercised through mocks.
 
 | ID | Finding | Fix |
 | --- | --- | --- |
+| F-01 | A failed apply recorded nothing (no generation, no ownership) | `apply()` persists a manifest flagged `partial`: only completed actions' domains are claimed, failed/unreached domains keep the previous ownership, the exception still propagates. `generations` labels it, `rollback` refuses to restore it and skips it when picking a default. |
 | F-04, F-17 | One failing AUR package aborts the whole install | `{"name": …, "optional": true}` package spec. Optional packages install in their own batch after the required ones; a failure is reported, excluded from the manifest and retried next apply. Unknown optional names skip even under `unknown="error"`. |
 | F-06 | `systemctl enable/disable` ignored its exit code | `check=True`; a unit no package provides now aborts instead of being recorded as managed. |
 | F-08 | Firewall rich rule silently lost `limit value="2/m"` | `_rich_rule_to_xml` is a consuming parser: the rate limit is emitted inside the action element and an unrepresentable clause (`log`, `audit`, `masquerade`, `NOT`) raises `ConfigValidationError` instead of being approximated. |
@@ -32,6 +33,7 @@ real install. Every `execute()`/`apply()` path is exercised through mocks.
 | F-26 | `su failed (exit 1): — file dialogs …` | `Command.execute(label=…)` names the logical command; the message carries an excerpt of the error lines in output order plus the path to the full log. AUR helper/clone/makepkg runs are labelled. |
 | F-29 | The install log was not gitignored | `log-llm.log` / `*-install.log` added, with a note that RunLogger records full argv. |
 | §9.9 | `initramfs`/`bootloader` were free strings | Restricted to the implemented backends (`mkinitcpio`/`dracut`, `grub`/`sd-boot`/`systemd-boot`). |
+| F-31 | No hostname configured | The registry required BOTH `network` and `hostname`, so a hostname-only config was skipped and `/etc/hostname` was never written; only `hostname` is required now. Both local configs declare `archlinux-torre-amd` + a NetworkManager block. |
 
 ### Config decisions applied (local, gitignored configs)
 
@@ -52,13 +54,11 @@ group), and the three `disk-*.json` samples were rewrapped to the current
 
 | ID | Finding | Reason |
 | --- | --- | --- |
-| F-01 | A partial apply leaves a formatted disk with no generation recorded | Mitigated (an optional failure no longer aborts; the manifest never claims what is not installed; the next `plan` rediscovers reality from pacman), but per-action checkpointing is a reconciler design change that deserves its own branch and its own review. |
 | F-02, F-03 | Sunshine's `pkg_resources` transition, Epson's HTTP 403 | Not dasik's to fix. Do not work around a vendor CDN or install pip globally; the packages are optional now, so they no longer block a convergence. |
 | F-21, F-22, F-28 | `lib32-gstreamer` test failures, `btdu`'s killed `gdb-add-index`, pacman provider defaults | Environmental/AUR-side; no dasik defect was demonstrated. |
 | F-23, F-30 | `claude-cowork-service` obsolete, JDownloader needs manual onboarding | Config/product decisions for you: "package present" ≠ "application configured". |
 | F-24 | The AUR build tree is always deleted | Deliberate: a resumable cache needs ownership, a PKGBUILD fingerprint and an invalidation policy before it is safe. |
 | F-27 | Credentials in `config/test-config.json` | Yours to rotate; the file stays gitignored and no value was read into any output here. |
-| F-31 | No `hostname`/`network` block | Intentional-looking, but the installed system will keep the ISO's defaults — decide before the next install. |
 
 ## Verification still owed (needs a disposable guest)
 

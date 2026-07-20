@@ -124,22 +124,27 @@ def test_initramfs_default_mkinitcpio_is_noop():
     assert expand_initramfs({"initramfs": "mkinitcpio"}) == {}
 
 
-def test_initramfs_dracut_installs_dracut_and_neutralizes_mkinitcpio():
+def test_initramfs_dracut_installs_dracut_only():
+    """The neutralizer hooks are NOT expanded into `files` any more: written
+    there, DropFilesAction would only create them after Packages — long after
+    pacstrap re-ran mkinitcpio. PacmanHooksAction owns them now (phase 1)."""
     out = expand_initramfs({"initramfs": "dracut"})
-    assert "dracut" in out["packages"]
-    paths = [f["path"] for f in out["files"]]
-    assert "/etc/pacman.d/hooks/90-mkinitcpio-install.hook" in paths
-    assert "/etc/pacman.d/hooks/60-mkinitcpio-remove.hook" in paths
-    # each override is a valid no-op hook (Exec = /bin/true), so mkinitcpio never runs
-    for f in out["files"]:
-        assert "Exec = /bin/true" in f["content"]
+    assert out == {"packages": ["dracut"]}
+
+
+def test_neutralizer_hook_is_a_noop_override():
+    from dasik.lib.expand.toggles import _neutralizer_hook, NEUTRALIZER_MARKER
+    hook = _neutralizer_hook("90-mkinitcpio-install.hook")
+    assert "Exec = /bin/true" in hook
+    assert NEUTRALIZER_MARKER in hook
 
 
 def test_initramfs_dracut_merges_into_config_via_expand():
     from dasik.lib.expand import expand_config
     merged = expand_config({"initramfs": "dracut", "packages": ["base"]})
     assert "dracut" in merged["packages"]
-    assert any("mkinitcpio-install.hook" in f["path"] for f in merged["files"])
+    assert not any("mkinitcpio-install.hook" in f["path"]
+                   for f in merged.get("files", []))
 
 
 from dasik.lib.expand.toggles import expand_zram

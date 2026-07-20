@@ -11,6 +11,7 @@ from typing import Any, Dict, Optional
 from .scalar_action import ScalarV3Action
 from .initramfs import make_backend
 from ..command_worker.command_worker import Command
+from ..expand.toggles import NEUTRALIZER_MARKER as _NEUTRALIZER_MARKER
 
 
 def _pkg_installed(pkg: str, target) -> bool:
@@ -50,17 +51,38 @@ class InitramfsAction(ScalarV3Action):
         self._backend.apply()
 
     def _detect_generator(self) -> Optional[str]:
-        """Which initramfs generator the target actually uses. dracut iff it is
-        installed and mkinitcpio is not (mkinitcpio is removed when you switch to
-        dracut); mkinitcpio otherwise (the Arch default)."""
+        """Which initramfs generator the target actually uses.
+
+        Detection is by EFFECTIVE OWNERSHIP, not by package coexistence: dasik
+        deliberately keeps mkinitcpio installed when dracut is the generator and
+        neutralizes its pacman hooks instead (safe + reversible — see
+        ``expand_initramfs``). So "both installed" is the normal dracut layout;
+        judging by presence alone imported a dracut host as mkinitcpio and let
+        sync silently switch its generator. dracut wins when mkinitcpio is absent
+        OR its hooks are neutralized by dasik."""
         target = getattr(self.context, "target", None) if self.context else None
         if target is None:
             return None
         dracut = _pkg_installed("dracut", target)
         mkinitcpio = _pkg_installed("mkinitcpio", target)
-        if dracut and not mkinitcpio:
+        if dracut and (not mkinitcpio or self._mkinitcpio_neutralized(target)):
             return "dracut"
         return "mkinitcpio"
+
+    @staticmethod
+    def _mkinitcpio_neutralized(target) -> bool:
+        """True when dasik's no-op override of mkinitcpio's pacman hooks is in
+        place (identified by the marker Target= it triggers on, which no package
+        can ever match)."""
+        hooks_dir = target.path("/etc/pacman.d/hooks")
+        for name in ("90-mkinitcpio-install.hook", "60-mkinitcpio-remove.hook"):
+            try:
+                with open(os.path.join(hooks_dir, name), "r", encoding="utf-8") as f:
+                    if _NEUTRALIZER_MARKER in f.read():
+                        return True
+            except OSError:
+                continue
+        return False
 
     def _dracut_bluetooth_in_initramfs(self) -> bool:
         """True if any /etc/dracut.conf.d/*.conf pulls the `bluetooth` module into

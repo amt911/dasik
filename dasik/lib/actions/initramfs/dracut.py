@@ -157,7 +157,37 @@ class DracutBackend(InitramfsBackend):
                 actual_ct = ""
             if actual_ct != desired_ct:
                 return None
+
+        # …and ONLY when the images those inputs describe actually exist and are
+        # not older than them. Reading intent alone made a failed dracut run look
+        # converged: the conf/crypttab are written BEFORE dracut runs, so a crash
+        # (or an image later clobbered by mkinitcpio) left the next plan empty
+        # while /boot held a stale — or no — initramfs for the declared kernel.
+        if not self._images_current(self._path(_CONF)):
+            return None
         return conf
+
+    def _images_current(self, *input_paths: str) -> bool:
+        """True when every target kernel has an initramfs image at least as new
+        as the newest input file. No kernel yet (pre-pacstrap) → nothing to
+        verify, so the file compare decides on its own."""
+        kernels = self._target_kernels()
+        if not kernels:
+            return True
+        newest_input = 0.0
+        for path in input_paths:
+            try:
+                newest_input = max(newest_input, os.path.getmtime(path))
+            except OSError:
+                continue
+        for _kver, pkgbase in kernels:
+            image = self._path(f"/boot/initramfs-{pkgbase}.img")
+            try:
+                if os.path.getmtime(image) < newest_input:
+                    return False
+            except OSError:                      # missing image → not converged
+                return False
+        return True
 
     def apply(self) -> None:
         desired = self.desired_value()

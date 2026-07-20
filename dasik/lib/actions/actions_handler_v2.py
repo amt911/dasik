@@ -54,11 +54,21 @@ def setup_actions() -> None:
     from .bootloader_action import BootloaderAction
     from .ms_fonts_action import MicrosoftFontsAction
     from .zram_action import ZramAction
+    from .pacman_hooks_action import PacmanHooksAction
 
     # === Phase 1: disk & base install =====================================
     register_action(
         action_class=DiskPartitionAction,
         config_key='disks',
+        is_optional=True,
+    )
+    # dasik-owned pacman hooks (today: the mkinitcpio neutralizers). MUST come
+    # before pacstrap: the very first transaction installs the kernel and fires
+    # mkinitcpio's hooks, which would clobber the dracut image. The target is
+    # already mounted at this point (DiskPartitionAction ran).
+    register_action(
+        action_class=PacmanHooksAction,
+        config_key='__root__',
         is_optional=True,
     )
     register_action(

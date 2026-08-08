@@ -109,6 +109,12 @@ class KernelCmdlineAction(AbstractAction):
                         opts.append("fido2-device=auto")
                     # Extra verbatim rd.luks.options (e.g. "token-timeout=10s").
                     opts.extend(part.get("luks_options", []) or [])
+                    # TRIM has to be passed THROUGH the mapping: without
+                    # `discard` the fstrim.timer that `enable_trim` schedules
+                    # runs against a LUKS volume that swallows every discard.
+                    # Opt-in, because it reveals which blocks are in use.
+                    if self._cfg.get("enable_trim") and "discard" not in opts:
+                        opts.append("discard")
                     if opts:
                         params.append(f"rd.luks.options={uuid}={','.join(opts)}")
 

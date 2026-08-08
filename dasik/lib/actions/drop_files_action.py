@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional
 from .abstract_action import AbstractAction
 from .initramfs.base import detect_encryption
 from ..command_worker.command_worker import Command
+from ..logging import run_logger
 from ..state.change import Change, Op
 
 
@@ -148,7 +149,61 @@ class DropFilesAction(AbstractAction):
         for p in sorted(set(desired) & actual):
             if self._read(p) != desired[p]:
                 changes.append(Change(_FILES_DOMAIN, Op.MODIFY, p, reason="content drift"))
+        self._warn_shadowed([c.item for c in changes if c.op is not Op.DELETE])
         return changes
+
+    def _warn_shadowed(self, paths: List[str]) -> None:
+        """Warn for each declared file that overrides one a package ships.
+
+        Overriding is a legitimate thing to declare (the fingerprint PAM
+        snippets do exactly that), but pacman will then leave a `.pacnew` beside
+        it on every upgrade and the override never picks the change up — which
+        for a PAM file is how a machine stops accepting logins months later. So:
+        say it, do not refuse it.
+        """
+        for path in paths:
+            owner = self._pacman_owner(path)
+            vendor = self._vendor_copy(path)
+            if not owner and not vendor:
+                continue
+            source = f"the {owner} package" if owner else f"the vendor file {vendor}"
+            run_logger.get().warning(
+                f"{path} overrides {source}",
+                detail="pacman will write a .pacnew next to it on upgrade; this "
+                       "declaration will NOT pick those changes up. Intentional "
+                       "for a deliberate override — check it after a big update.",
+            )
+
+    def _pacman_owner(self, path: str) -> Optional[str]:
+        """`pacman -Qo <path>` package name, or None (unowned / probe failed)."""
+        try:
+            res = Command.execute("pacman", ["-Qo", path], target=self._target())
+        except Exception:      # nosec B110 - a failed probe just means "unknown"
+            return None
+        if getattr(res, "returncode", 1) != 0:
+            return None
+        out = getattr(res, "stdout", b"") or b""
+        if isinstance(out, bytes):
+            out = out.decode("utf-8", errors="replace")
+        # "<path> is owned by <pkg> <version>"
+        marker = " is owned by "
+        return out.split(marker)[1].split()[0] if marker in out else None
+
+    def _vendor_copy(self, path: str) -> Optional[str]:
+        """The /usr/lib counterpart of an /etc file, when one exists.
+
+        Arch ships PAM defaults in /usr/lib/pam.d (plasmalogin, polkit-1,
+        kde-fingerprint): nothing under /etc owns them, so `pacman -Qo` finds
+        nothing, yet an /etc/pam.d file shadows them completely.
+        """
+        if not path.startswith("/etc/"):
+            return None
+        vendor = "/usr/lib/" + path[len("/etc/"):]
+        try:
+            full = self._abs(vendor)
+        except AttributeError:          # no usable target (unit-test doubles)
+            return None
+        return vendor if os.path.exists(full) else None
 
     def managed_keys(self) -> dict:
         return {_FILES_DOMAIN: sorted(self._desired().keys())}

@@ -49,6 +49,28 @@ def detect_tpm2(cfg: Dict[str, Any]) -> bool:
     return _any_partition_flag(cfg, "unlock_tpm2")
 
 
+def detect_hibernation(cfg: Dict[str, Any]) -> bool:
+    """True when the config asks for hibernation.
+
+    Either a swap partition is declared, or the kernel cmdline names a resume
+    device (a synced config can carry ``resume=`` with the swap described
+    elsewhere). The initramfs needs the resume module in both cases: without it
+    the kernel never restores the image and simply boots fresh — the hibernation
+    write succeeds and the session is silently lost.
+    """
+    disks = cfg.get("disks", {})
+    if isinstance(disks, dict):
+        for disk in disks.get("disks", []):
+            for part in disk.get("partitions", []):
+                if part.get("filesystem") == "swap":
+                    return True
+    for token in cfg.get("kernel_cmdline", []) or []:
+        for word in str(token).split():
+            if word.startswith("resume="):
+                return True
+    return False
+
+
 def detect_bluetooth_in_initramfs(cfg: Dict[str, Any]) -> bool:
     bt = cfg.get("bluetooth")
     return bool(isinstance(bt, dict) and bt.get("in_initramfs"))
@@ -65,6 +87,7 @@ class InitramfsBackend:
         self.has_fido2 = detect_fido2(self.config)
         self.has_tpm2 = detect_tpm2(self.config)
         self.bluetooth_in_initramfs = detect_bluetooth_in_initramfs(self.config)
+        self.has_hibernation = detect_hibernation(self.config)
 
     def _path(self, canonical: str) -> str:
         if self.target is not None:

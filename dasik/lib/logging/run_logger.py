@@ -16,6 +16,7 @@ code and tests never depend on CLI wiring.
 """
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 from typing import IO, List, Optional
@@ -23,6 +24,43 @@ from typing import IO, List, Optional
 from colorama import Fore, Style, init as _colorama_init
 
 _colorama_init(autoreset=True)
+
+
+_REDACTED = "<redacted>"
+
+# Commands that take a password hash on argv (`usermod -p <hash> <name>`), which
+# would otherwise be recorded verbatim: the install log is the artifact users
+# paste into bug reports.
+_PASSWORD_COMMANDS = {"usermod", "useradd", "chpasswd"}
+_PASSWORD_FLAGS = {"-p", "--password"}
+
+# crypt(3) hashes as they appear inside a message that already joined an argv
+# ($y$ yescrypt, $6$ sha512, $2b$ bcrypt, $argon2id$ …).
+_HASH_RE = re.compile(r"\$(?:y|gy|7|6|5|1|2[abxy]?|argon2[a-z]*)\$\S+")
+
+
+def redact_argv(argv: List[str]) -> List[str]:
+    """Copy of *argv* with any password-hash argument replaced.
+
+    Positional (not pattern) matching: only the value right after ``-p`` of a
+    password command is touched, so ``mkdir -p`` and ``pacman -Qp`` keep reading
+    as they ran.
+    """
+    if not any(part in _PASSWORD_COMMANDS for part in argv):
+        return list(argv)
+    out = list(argv)
+    for i, part in enumerate(out[:-1]):
+        if part in _PASSWORD_FLAGS:
+            out[i + 1] = _REDACTED
+    return out
+
+
+def redact_text(text: str) -> str:
+    """Blank out crypt hashes anywhere in free text (a message that embedded an
+    argv, or a command echoing its own arguments)."""
+    if "$" not in text:
+        return text
+    return _HASH_RE.sub(_REDACTED, text)
 
 
 def _to_text(data: "bytes | str | None") -> str:
@@ -92,9 +130,9 @@ class RunLogger:
         ``stream=True`` run echoed each line via :meth:`stream_line`): the file
         still gets the full block, but the console echo is suppressed here to
         avoid printing everything twice."""
-        cmd = " ".join(argv)
-        out = _to_text(stdout)
-        err = _to_text(stderr)
+        cmd = " ".join(redact_argv(argv))
+        out = redact_text(_to_text(stdout))
+        err = redact_text(_to_text(stderr))
 
         self._write_file(f"$ {cmd}\n")
         if out:
@@ -116,7 +154,7 @@ class RunLogger:
         Console-only: the file record is written once, at the end, by
         :meth:`record` — ``stream_start``/``stream_line`` never touch the file."""
         if self.verbose:
-            self._console(self._dim(f"$ {' '.join(argv)}"))
+            self._console(self._dim(f"$ {' '.join(redact_argv(argv))}"))
 
     def stream_line(self, line: str) -> None:
         """Echo one live output line on the console (verbose only). Never writes
@@ -129,6 +167,7 @@ class RunLogger:
 
         Used for command failures and any other hard error worth putting in front
         of the user."""
+        message, detail = redact_text(message), redact_text(detail)
         self._write_file(f"[ERROR] {message}\n")
         if detail:
             self._write_file(detail if detail.endswith("\n") else detail + "\n")
@@ -143,6 +182,7 @@ class RunLogger:
 
         Used for non-fatal notices the user must still see — e.g. a declared
         package skipped because no source was found."""
+        message, detail = redact_text(message), redact_text(detail)
         self._write_file(f"[WARNING] {message}\n")
         if detail:
             self._write_file(detail if detail.endswith("\n") else detail + "\n")

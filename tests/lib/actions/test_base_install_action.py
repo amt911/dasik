@@ -22,7 +22,34 @@ def _marker(tmp_path):
 
 def test_base_packages_without_microcode():
     a = BaseInstallAction({"enable_microcode": False})
-    assert a.packages == ["base", "linux", "linux-firmware"]
+    assert a.packages == ["base", "linux", "linux-firmware", "mkinitcpio"]
+
+
+# --- the initramfs generator is pacstrapped, not left to the default ------- #
+#
+# `base` depends on the virtual `initramfs`, which THREE packages provide;
+# pacstrap picks the first (mkinitcpio) unless told otherwise. On 2026-08-08
+# that installed mkinitcpio into a dracut system: its pacman hook ran inside
+# pacstrap — where /mnt/etc/pacman.d/hooks (the dasik neutralizers) is not read
+# — and failed mid-transaction ("errors were encountered during the build").
+# Naming the declared generator removes both the interactive provider prompt and
+# the second generator.
+
+def test_pacstrap_installs_the_declared_dracut_generator():
+    a = BaseInstallAction({"enable_microcode": False, "initramfs": "dracut"})
+    assert "dracut" in a.packages
+    assert "mkinitcpio" not in a.packages
+
+
+def test_pacstrap_defaults_to_mkinitcpio_when_unspecified():
+    a = BaseInstallAction({"enable_microcode": False})
+    assert "mkinitcpio" in a.packages
+
+
+def test_generator_comes_before_the_microcode_package():
+    with patch("builtins.open", mock_open(read_data="vendor_id : AuthenticAMD")):
+        a = BaseInstallAction({"enable_microcode": True, "initramfs": "dracut"})
+    assert a.packages == ["base", "linux", "linux-firmware", "dracut", "amd-ucode"]
 
 
 def test_adds_amd_ucode_on_amd():

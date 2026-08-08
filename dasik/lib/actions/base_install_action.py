@@ -56,7 +56,18 @@ class BaseInstallAction(AbstractAction):
         super().__init__(config, context)
         cfg: Dict[str, Any] = config if isinstance(config, dict) else {}
         self.enable_microcode: bool = cfg.get("enable_microcode", False)
-        self.packages: List[str] = ["base", "linux", "linux-firmware"]
+        # `base` depends on the VIRTUAL `initramfs`, provided by mkinitcpio,
+        # booster and dracut alike; pacstrap answers its own provider prompt with
+        # the first one (mkinitcpio). On a dracut system that is the wrong one:
+        # mkinitcpio lands in the target and its pacman hook runs INSIDE pacstrap,
+        # which reads the host's hook dirs — the neutralizers PacmanHooksAction
+        # wrote under <target>/etc/pacman.d/hooks do not apply to that
+        # transaction, and it failed there on 2026-08-08 ("errors were
+        # encountered during the build"). Naming the declared generator makes the
+        # dependency explicit: no prompt, one generator.
+        self.generator: str = cfg.get("initramfs") or "mkinitcpio"
+        self.packages: List[str] = ["base", "linux", "linux-firmware",
+                                    self.generator]
         init(autoreset=True)
         if self.enable_microcode:
             self.packages += [self._detect_microcode()]

@@ -39,8 +39,17 @@ class MkinitcpioBackend(InitramfsBackend):
                 elif h == "block":
                     new.append(h)
                     new.append("sd-encrypt")
-                elif h in ("usr", "resume", "consolefont"):
+                elif h in ("usr", "consolefont"):
                     continue
+                elif h == "resume":
+                    # Kept ONLY when the config hibernates. The encrypted
+                    # rewrite used to drop it unconditionally, removing from a
+                    # hibernating system the very hook that resumes it: on the
+                    # systemd path this hook is what installs
+                    # systemd-hibernate-resume, on the busybox path it is what
+                    # performs the resume.
+                    if self.has_hibernation:
+                        new.append(h)
                 else:
                     new.append(h)
             hooks = new
@@ -54,6 +63,13 @@ class MkinitcpioBackend(InitramfsBackend):
                 hooks.insert(hooks.index(insert_after) + 1, "btrfs")
             else:
                 hooks.insert(1, "btrfs")
+        # Hibernation: the hook must exist, and it must run BEFORE the root is
+        # mounted — resuming on top of a mounted root eats the filesystem. After
+        # sd-encrypt/encrypt/block so the device it resumes from is open.
+        if self.has_hibernation and "resume" not in hooks:
+            anchor = next((h for h in ("filesystems", "fsck") if h in hooks), None)
+            hooks.insert(hooks.index(anchor) if anchor else len(hooks), "resume")
+
         seen: set = set()
         deduped: List[str] = []
         for h in hooks:

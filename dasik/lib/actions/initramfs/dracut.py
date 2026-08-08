@@ -125,8 +125,18 @@ class DracutBackend(InitramfsBackend):
                         continue
                     name = part.get("luks_name", "cryptroot")
                     uuid = luks_uuid(name, part.get("luks_uuid"))
-                    options = "luks,x-initrd.attach" if mounts_root(part) else "luks"
-                    derived[name] = f"{name} UUID={uuid} none {options}"
+                    opts = ["luks"]
+                    # x-initrd.attach: the volume must be open before the real
+                    # root is. True for / and for a swap holding the hibernation
+                    # image — resume happens in the initramfs or not at all.
+                    if mounts_root(part) or part.get("filesystem") == "swap":
+                        opts.append("x-initrd.attach")
+                    # Same reason as the cmdline's rd.luks.options: without
+                    # `discard` the mapping swallows the TRIM that enable_trim
+                    # schedules.
+                    if self.config.get("enable_trim"):
+                        opts.append("discard")
+                    derived[name] = f"{name} UUID={uuid} none {','.join(opts)}"
 
         # Non-root captured lines (swap etc.); skip any whose mapper is a derived
         # root name — the derived (correct) entry wins over a stale captured one.

@@ -11,7 +11,7 @@ import re
 from typing import Any, Dict, List
 from .abstract_action import AbstractAction
 from ..command_worker.command_worker import Command
-from ..exceptions.exceptions import ConfigValidationError
+from ..exceptions.exceptions import CommandExecutionError, ConfigValidationError
 from ..state.change import Change, Op
 
 # Linux useradd NAME_REGEX: lowercase/underscore start, then [a-z0-9_-], optional
@@ -226,6 +226,19 @@ class UsersAction(AbstractAction):
         # abort loudly, never masquerade as success. In particular a failed
         # `useradd` must stop before the follow-up `usermod -p` sets a password
         # on a user that was never created.
+        # …but a failure on ONE user must not hide the next: aborting on the
+        # first one meant discovering a single broken user per apply, and an
+        # apply is a whole install. Each user's own sequence stays atomic (a
+        # failed useradd still skips its usermod); the failures are collected
+        # and raised together at the end.
+        failures: List[str] = []
+
+        def attempt(user: str, run) -> None:
+            try:
+                run()
+            except CommandExecutionError as exc:
+                failures.append(f"{user}: {exc}")
+
         for name in creates:
             u = self._by_name[name]
             argv = ["-m", "-s", u.get("shell", "/bin/bash")]
@@ -233,19 +246,35 @@ class UsersAction(AbstractAction):
             if groups:
                 argv += ["-G", ",".join(groups)]
             argv.append(name)
-            Command.execute("useradd", argv, target=target, check=True)
-            Command.execute("usermod", ["-p", u["hashed_password"], name], target=target, check=True)
+
+            def create(u=u, argv=argv, name=name):
+                Command.execute("useradd", argv, target=target, check=True)
+                Command.execute("usermod", ["-p", u["hashed_password"], name],
+                                target=target, check=True)
+            attempt(name, create)
 
         for name in modifies:
             u = self._by_name[name]
-            if name != "root":
-                Command.execute("usermod", ["-s", u.get("shell", "/bin/bash"), name], target=target, check=True)
-                Command.execute("usermod", ["-G", ",".join(u.get("groups", [])), name], target=target, check=True)
-            Command.execute("usermod", ["-p", u["hashed_password"], name], target=target, check=True)
+
+            def modify(u=u, name=name):
+                if name != "root":
+                    Command.execute("usermod", ["-s", u.get("shell", "/bin/bash"), name], target=target, check=True)
+                    Command.execute("usermod", ["-G", ",".join(u.get("groups", [])), name], target=target, check=True)
+                Command.execute("usermod", ["-p", u["hashed_password"], name], target=target, check=True)
+            attempt(name, modify)
 
         for name in deletes:
             argv = ["-r", name] if self.remove_home_on_delete else [name]
-            Command.execute("userdel", argv, target=target, check=True)
+
+            def delete(argv=argv):
+                Command.execute("userdel", argv, target=target, check=True)
+            attempt(name, delete)
+
+        if failures:
+            raise CommandExecutionError(
+                f"user setup failed for {len(failures)} account(s):\n"
+                + "\n".join(f"  - {f}" for f in failures)
+            )
 
     # ------------------------------------------------------------------ #
     #  legacy is_needed / execute / verify (old ActionExecutor path)

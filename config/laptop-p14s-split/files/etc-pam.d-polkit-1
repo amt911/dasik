@@ -1,0 +1,9 @@
+#%PAM-1.0
+# Managed by dasik: overrides /usr/lib/pam.d/polkit-1 (vendor) to add the
+# fingerprint to KDE's authentication dialogs. Same CVE-2024-37408 caveat as
+# /etc/pam.d/sudo. Admin identity stays unix-group:wheel (polkit 50-default.rules).
+auth       sufficient   pam_fprintd.so
+auth       include      system-auth
+account    include      system-auth
+password   include      system-auth
+session    include      system-auth

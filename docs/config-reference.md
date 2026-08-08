@@ -25,7 +25,8 @@ validation:
 | Directive | Becomes |
 | --- | --- |
 | `{"$include": "path.json"}` | the parsed JSON of that file (object, list, string…) |
-| `{"$include_text": "path.conf"}` | that file's contents, as a string |
+| `{"$include_text": "path.conf"}` | that file's contents, as a string (verbatim, trailing newline included) |
+| `{"$include_line": "secrets/hash"}` | that file's first line, stripped — for secrets |
 | `{"$concat": [ ... ]}` | the lists inside it, flattened into one |
 
 ```json
@@ -55,9 +56,27 @@ does not see:
   fine.
 * `$include_text` never parses: the file arrives verbatim, newlines and all.
 
-**Secrets follow for free.** `"hashed_password": {"$include_text": "secrets/andres.hash"}`
-keeps the hash out of the committed config; the same works for `luks_password`
-(which also has `luks_keyfile`).
+**Secrets.** Use `$include_line`, not `$include_text`: the latter is verbatim by
+design (a PAM file needs its final newline), and `usermod -p '$y$…\n'` sets a hash
+nobody can log in with while nothing complains.
+
+```json
+"hashed_password": {"$include_line": "secrets/hashed-password"},
+"luks_password":   {"$include_line": "secrets/luks-passphrase"}
+```
+
+Referencing one secret file from two places is the point: both encrypted
+partitions read the same passphrase, so root and swap cannot drift apart and
+systemd's initrd password cache asks once. `.gitignore` keeps
+`config/*/secrets/*` out of the repo and tracks only the `.example` next to it.
+
+Two ready-made splits live in the repo:
+[`config/test-config-split/`](../config/test-config-split/) (the tracked sample,
+427 lines → a 97-line `main.json` plus 18 fragments) and
+[`config/laptop-p14s-split/`](../config/laptop-p14s-split/) (the ThinkPad config,
+with its hash and passphrase in `secrets/`). `tests/lib/test_split_configs.py`
+asserts each one assembles to exactly its single-file counterpart, so the two
+forms cannot drift.
 
 **`sync` refuses a config assembled this way** — it rewrites the file it is given
 and would flatten the split into one document. Sync a scratch copy and fold the

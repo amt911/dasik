@@ -13,6 +13,12 @@ separate files, so three directives are enough:
     ``files[].content`` readable: the PAM snippet lives in a real file that an
     editor highlights, not as ``"#%PAM-1.0\\nauth sufficient …"``.
 
+``{"$include_line": "secrets/hash"}``
+    The file's FIRST line, stripped. ``$include_text`` is verbatim by design (a
+    PAM file needs its final newline), which makes it the wrong tool for a
+    secret: ``usermod -p '$y$…\n'`` sets a hash nobody can log in with and
+    nothing complains. Secrets use this one.
+
 ``{"$concat": [ ... ]}``
     The lists inside it, flattened into one. Lets `packages` be split by theme
     (base + desktop + dev) instead of one 172-entry block.
@@ -23,8 +29,10 @@ must be relative and free of ``..``; cycles are reported. Each of those rules
 exists because the alternative is a config that loads something its reader
 cannot see.
 
-Secrets follow from this for free: ``"hashed_password": {"$include_text":
-"secrets/andres.hash"}`` keeps the hash out of the committed config.
+Secrets follow from this: ``"hashed_password": {"$include_line":
+"secrets/hashed-password"}`` keeps the hash out of the committed config, and the
+same file can be referenced from two places (both LUKS partitions want the same
+passphrase).
 """
 from __future__ import annotations
 
@@ -35,8 +43,9 @@ from typing import Any, List, Tuple
 
 INCLUDE = "$include"
 INCLUDE_TEXT = "$include_text"
+INCLUDE_LINE = "$include_line"
 CONCAT = "$concat"
-_DIRECTIVES = (INCLUDE, INCLUDE_TEXT, CONCAT)
+_DIRECTIVES = (INCLUDE, INCLUDE_TEXT, INCLUDE_LINE, CONCAT)
 
 
 class ConfigIncludeError(Exception):
@@ -118,6 +127,14 @@ def _resolve(node: Any, base_dir: Path, chain: Tuple[Path, ...]) -> Any:
 
     if directive == INCLUDE_TEXT:
         return text
+
+    if directive == INCLUDE_LINE:
+        line = text.splitlines()[0].strip() if text.splitlines() else ""
+        if not line:
+            raise ConfigIncludeError(
+                f"{INCLUDE_LINE} file {value} is empty — expected a secret on "
+                "its first line")
+        return line
 
     resolved_path = path.resolve()
     if resolved_path in chain:

@@ -1,0 +1,97 @@
+{
+  "metadata": {
+    "note": "Split form of ../test-config.json — identical once assembled (tests/lib/test_split_configs.py asserts it). Edit the fragment you care about instead of scrolling 430 lines: packages.json, systemd.json, disks.json, and one real file per /etc body under files/ and udev_rules/."
+  },
+  "timezone": {
+    "region": "Europe",
+    "city": "Madrid"
+  },
+  "locales": {
+    "$include": "locales.json"
+  },
+  "pacman": {
+    "options": {
+      "Parallel": true,
+      "Color": true,
+      "VerbosePkgLists": false
+    },
+    "multilib": true
+  },
+  "users": {
+    "$include": "users.json"
+  },
+  "packages": {
+    "$include": "packages.json"
+  },
+  "systemd": {
+    "$include": "systemd.json"
+  },
+  "initramfs": "dracut",
+  "bluetooth": {
+    "enable": true,
+    "in_initramfs": true
+  },
+  "disks": {
+    "$include": "disks.json"
+  },
+  "udev_rules": [
+    {
+      "name": "1-qudelix.rules",
+      "content": {
+        "$include_text": "udev_rules/1-qudelix.rules"
+      }
+    },
+    {
+      "name": "50-dolphin-UB400.rules",
+      "content": {
+        "$include_text": "udev_rules/50-dolphin-UB400.rules"
+      }
+    }
+  ],
+  "modprobe_conf": [
+    {
+      "name": "nested_virt.conf",
+      "content": {
+        "$include_text": "modprobe.d/nested_virt.conf"
+      }
+    }
+  ],
+  "modules_load": [
+    {
+      "name": "virtio.conf",
+      "content": {
+        "$include_text": "modules-load.d/virtio.conf"
+      }
+    }
+  ],
+  "files": [
+    {
+      "path": "/etc/crypttab",
+      "content": {
+        "$include_text": "files/etc-crypttab"
+      }
+    },
+    {
+      "path": "/etc/plasmalogin.conf.d/10-dasik.conf",
+      "content": {
+        "$include_text": "files/etc-plasmalogin.conf.d-10-dasik.conf"
+      }
+    }
+  ],
+  "zram": {
+    "$include": "zram.json"
+  },
+  "firewall": {
+    "$include": "firewall.json"
+  },
+  "bootloader": "sd-boot",
+  "enable_microcode": true,
+  "snapper": {
+    "$include": "snapper.json"
+  },
+  "hostname": "archlinux-torre-amd",
+  "network": {
+    "type": "NetworkManager",
+    "add_default_hosts": true
+  }
+}

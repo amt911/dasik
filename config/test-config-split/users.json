@@ -1,0 +1,17 @@
+[
+  {
+    "username": "andres",
+    "hashed_password": "$y$j9T$P5YrqNBKLi1zWKMi5dqRN.$hGLnaFiNTduQAwYoz6YfCwsBiBIAntDt8coIbh2Vru7",
+    "shell": "/bin/zsh",
+    "groups": [
+      "libvirt",
+      "wheel"
+    ]
+  },
+  {
+    "username": "test",
+    "hashed_password": "$y$j9T$oOYO2Jvto6IPWyTMjhC7C/$iD9OOFZXYdC2K1KYNnl8j7pBOs9OdSGiF1pQ.z6Cvd1",
+    "shell": "/usr/bin/bash",
+    "groups": []
+  }
+]

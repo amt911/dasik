@@ -1,0 +1,9 @@
+{
+  "enable": true,
+  "configs": [
+    {
+      "name": "root",
+      "subvolume": "/"
+    }
+  ]
+}

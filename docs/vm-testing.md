@@ -309,6 +309,18 @@ its `check()` only passes in hostonly mode when a swap appears in
 `host_fs_types[]` — and dasik runs dracut inside `arch-chroot /mnt`, where that
 detection fails exactly as it does for the LUKS root. The fix forces the module
 (`detect_hibernation` → `force_add_dracutmodules+=" resume "`), after which the
-same test reports `253:1` in `/sys/power/resume` and resumes. mkinitcpio's
-equivalent hook is **not** handled — hook order matters there and it has not been
-verified.
+same test reports `253:1` in `/sys/power/resume` and resumes.
+
+**mkinitcpio too.** Its `resume` hook was worse off than dracut's module: the
+encrypted rewrite *stripped* it from HOOKS, so dasik's default generator removed
+the one hook a hibernating system needs. It is now kept (or inserted) before
+`filesystems` — resuming on top of an already-mounted root is how a filesystem
+gets eaten — and `config/vm-laptop-hibernate-mkinitcpio.json` proves it through
+the same two-boot check. That config also declares **no** `rd.luks.name` at all,
+so the same run proves both unlocks are derived, one per encrypted partition:
+
+```text
+cryptroot -> ../dm-1 ; cryptswap -> ../dm-0
+cat /sys/power/resume -> 253:0
+BOOT1-BOOTID == BOOT2-BOOTID -> RESUMED FROM HIBERNATION: True
+```

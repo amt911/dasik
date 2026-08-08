@@ -15,6 +15,56 @@ present), and whether `sync` captures it.
 
 ---
 
+## Splitting a config across files
+
+A config that manages a real machine is mostly two things: a long package list and
+a handful of verbatim file bodies escaped into single JSON lines. Both read badly
+inline, so any value may be replaced by one of three directives, resolved **before**
+validation:
+
+| Directive | Becomes |
+| --- | --- |
+| `{"$include": "path.json"}` | the parsed JSON of that file (object, list, string…) |
+| `{"$include_text": "path.conf"}` | that file's contents, as a string |
+| `{"$concat": [ ... ]}` | the lists inside it, flattened into one |
+
+```json
+{
+  "hostname": "archlinux-p14s",
+  "packages": {"$concat": [
+    {"$include": "packages-base.json"},
+    {"$include": "packages-desktop.json"}
+  ]},
+  "disks": {"$include": "disks.json"},
+  "files": [
+    {"path": "/etc/pam.d/sudo", "content": {"$include_text": "parts/pam-sudo"}}
+  ]
+}
+```
+
+A working example lives in [`config/split-example/`](../config/split-example/) —
+`dasik check config/split-example/main.json` assembles and validates it.
+
+Rules, each of them there so a config cannot quietly load something its reader
+does not see:
+
+* Paths are **relative to the file that names them**, so a directory of fragments
+  moves as a unit. Absolute paths and `..` are refused.
+* A directive must be the **only key** in its object.
+* Include cycles are reported, but including the same fragment from two places is
+  fine.
+* `$include_text` never parses: the file arrives verbatim, newlines and all.
+
+**Secrets follow for free.** `"hashed_password": {"$include_text": "secrets/andres.hash"}`
+keeps the hash out of the committed config; the same works for `luks_password`
+(which also has `luks_keyfile`).
+
+**`sync` refuses a config assembled this way** — it rewrites the file it is given
+and would flatten the split into one document. Sync a scratch copy and fold the
+result back by hand.
+
+---
+
 ## Top-level fields at a glance
 
 | Field | Type | What it manages |
@@ -240,7 +290,18 @@ mkinitcpio's pacman hooks automatically.
 ### `kernel_cmdline`  *(sync ✓)*
 
 `list[str]` — extra kernel parameters appended to the boot entry (e.g.
-`intel_iommu=on`). LUKS `rd.luks.*` params are derived from `disks`, not listed here.
+`intel_iommu=on`). The LUKS `rd.luks.*` params are derived from `disks` — one set
+per **encrypted partition**, not just the root one — so they do not belong here.
+
+Two rules worth knowing:
+
+* `rd.luks.name`, `rd.luks.key` and `rd.luks.options` are **repeatable** (one per
+  device): an entry you write here is *added* next to the derived ones. Every
+  other parameter is single-valued, so yours replaces the derived one
+  (`root=`, `resume=`).
+* `sync` captures the boot entry's own parameters minus everything dasik derives
+  from `disks` — so `resume=`, `amd_pstate=` and friends survive a capture, while
+  machine-specific UUIDs never enter the config.
 
 ---
 

@@ -32,7 +32,11 @@ warnings are printed and do not block.
 
 > 📖 **[Config reference — every option](docs/config-reference.md)** — the full set
 > of config fields (disks, users, packages, services, files, feature toggles, …),
-> with types, defaults, and which ones `sync` captures.
+> with types, defaults, and which ones `sync` captures. It also covers
+> **[splitting a config across files](docs/config-reference.md#splitting-a-config-across-files)**
+> (`$include` / `$include_text` / `$concat`), so a 400-line config becomes a
+> handful of readable ones — working example in
+> [`config/split-example/`](config/split-example/).
 >
 > 📖 **[Copy your running system into a config and test it in a VM](docs/copy-your-config-and-test.md)**
 > — step-by-step for `sync` (capture your system), making the `disks` block

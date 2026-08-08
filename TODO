@@ -1,15 +1,21 @@
-Cosas que no funcionan correctamente en el script de instalacion:
+These notes predate the v3 rewrite and are kept only as history.
 
-Configuracion sin encriptacion:
-- Se añaden los hooks de sd-encrypt (systemd) de manera innecesaria.
-DONE - Supone que la particion root esta encriptada de todas formas (GRUB).
-DONE - La particion swap la encripta de manera innecesaria.
+Everything on the original list is done:
 
+- "que si ejecuto varias veces el mismo json no se modifique nada en el sistema"
+  → the whole point of the v3 reconciler: plan/apply/import_state, a manifest per
+    generation, and property-based tests that assert a second apply is a no-op.
+- "ActionsHandler demasiado grande"
+  → split into the action registry + Reconciler; the monolithic handler was
+    deleted in PR #151.
+- "sd-encrypt hooks innecesarios sin encriptación" and "la partición swap la
+  encripta de manera innecesaria"
+  → hooks are derived from the disk config (see dasik/lib/actions/initramfs/),
+    and encryption is per-partition.
+- "los paquetes deben tener la casuística de si están instalados asdeps o
+  asexplicit"
+  → PackagesAction runs `pacman -D --asdeps` / `--asexplicit` to reconcile the
+    install reason (packages_action.py).
 
-after install
-
-
-Vale, pero a ver, me gustaria hacer algo similar a nixos, que si ejecuto varias veces el mismo json no se modifique nada en el sistema. Tambien creo que como lo has hecho ahora genera una clase ActionsHandler demasiado grande, podrias ayudarme a mejorarlo? El caso es que me gusta como funciona ahora, pero hay que tener en cuenta que puede haber mas campos opcionales, no solo el des disco
-
-
-Los paquetes deben tener la casuhistica de si estan instalados asdeps o asexplicit
+Open work is tracked in docs/improvement-review-2026-08-08.md and in the GitHub
+issues/PRs, not here.

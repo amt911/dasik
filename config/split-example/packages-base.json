@@ -1,0 +1,9 @@
+[
+  "base",
+  "linux",
+  "linux-firmware",
+  "btrfs-progs",
+  "dracut",
+  "networkmanager",
+  "sudo"
+]

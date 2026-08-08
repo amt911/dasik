@@ -55,6 +55,13 @@ class DracutBackend(InitramfsBackend):
             mods.append("fido2")
         if self.has_tpm2:
             mods.append("tpm2-tss")
+        # Hibernation: dracut ships 74resume, but its check() only passes in
+        # hostonly mode when a swap is in host_fs_types[] — from a chroot it is
+        # not, exactly like the LUKS root above. Verified in a VM on 2026-08-08:
+        # without forcing, the image carried no resume module, /sys/power/resume
+        # stayed 0:0, and the boot after `systemctl hibernate` was a COLD one.
+        if self.has_hibernation:
+            mods.append("resume")
         # dedupe, preserve order
         seen: set = set()
         deduped: List[str] = []

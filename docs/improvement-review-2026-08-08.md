@@ -6,8 +6,15 @@ provides; PR #170 — dracut silently dropping its `resume` module). Every findi
 below is backed by code or by a command whose output is quoted; nothing here is
 a guess about what the code "probably" does.
 
-Nothing in this document is implemented. It is a list of candidates, ordered by
-what would hurt most if it stayed.
+**Status:** every finding below was implemented in the branch that follows this
+document (PR #172) — the text is kept as written, in the past tense of a review,
+because it records *why* each change exists. The one deliberate substitution: the
+last item asked for a `hashed_password_file` field, and the config-splitting work
+in the same PR covers it without new API surface
+(`"hashed_password": {"$include_text": "secrets/andres.hash"}`). Rotating the
+passwords that are already public is still yours to do.
+
+Ordered by what would have hurt most if it had stayed.
 
 ---
 

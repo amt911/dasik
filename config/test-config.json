@@ -1,0 +1,432 @@
+{
+  "timezone": {
+    "region": "Europe",
+    "city": "Madrid"
+  },
+  "locales": {
+    "selected_locales": [
+      "en_US.UTF-8 UTF-8",
+      "es_ES.UTF-8 UTF-8"
+    ],
+    "desired_locale": "en_US.UTF-8",
+    "desired_tty_layout": "us"
+  },
+  "pacman": {
+    "options": {
+      "Parallel": true,
+      "Color": true,
+      "VerbosePkgLists": false
+    },
+    "multilib": true
+  },
+  "users": [
+    {
+      "username": "andres",
+      "hashed_password": "$y$j9T$L0DlN5ioFZGJlMY/nbpZ7.$8Hqqj9SoW5xpcQ.bmiSuSN.jIhyBXNx.rVR36aVJ6J/",
+      "shell": "/bin/zsh",
+      "groups": [
+        "libvirt",
+        "wheel"
+      ]
+    },
+    {
+      "username": "test",
+      "hashed_password": "$y$j9T$L0DlN5ioFZGJlMY/nbpZ7.$8Hqqj9SoW5xpcQ.bmiSuSN.jIhyBXNx.rVR36aVJ6J/",
+      "shell": "/usr/bin/bash",
+      "groups": []
+    }
+  ],
+  "packages": [
+    "7zip",
+    "amd-ucode",
+    "arch-wiki-docs",
+    "base",
+    "base-devel",
+    "bat",
+    "bc",
+    "bluez",
+    "bluez-utils",
+    "btdu",
+    "btop",
+    "btrfs-progs",
+    "calf",
+    "compsize",
+    "cups",
+    "cups-pdf",
+    "dkms",
+    "docker-buildx",
+    "dosfstools",
+    "dracut",
+    "duperemove",
+    "ethtool",
+    "evince",
+    "ex-vi-compat",
+    "exfatprogs",
+    "f3",
+    "fastfetch",
+    "fdupes",
+    "firefox",
+    "firewalld",
+    "fish",
+    "freac",
+    "freeze-bin",
+    "fzf",
+    "gdu",
+    "git",
+    "github-cli",
+    "gparted",
+    "htop",
+    "iotop-c",
+    "iperf3",
+    "jdk17-openjdk",
+    "jdupes",
+    "jq",
+    "kde-graphics-meta",
+    "kde-multimedia-meta",
+    "kde-system-meta",
+    "kde-utilities-meta",
+    "kdiskmark",
+    "konsave",
+    "lib32-nvidia-utils",
+    "libva-nvidia-driver",
+    "libva-utils",
+    "libvirt",
+    "linux",
+    "linux-firmware",
+    "linux-headers",
+    "lsd",
+    "lsp-plugins",
+    "meld",
+    "nano",
+    "net-tools",
+    "networkmanager",
+    "nodejs",
+    "npm",
+    "ntfs-3g",
+    "ntfsprogs",
+    "nvidia-open-dkms",
+    "nvidia-settings",
+    "nvidia-utils",
+    "nvm",
+    "nvme-cli",
+    "nvtop",
+    "obs-studio",
+    "obsidian",
+    "pacman-contrib",
+    "piper",
+    "plasma-meta",
+    "pngquant",
+    "pnpm",
+    "podman",
+    "podman-compose",
+    "podman-docker",
+    "power-profiles-daemon",
+    "pwgen",
+    "qemu-block-gluster",
+    "qemu-block-iscsi",
+    "qemu-full",
+    "qemu-guest-agent",
+    "qemu-user-static",
+    "rclone",
+    "rebuild-detector",
+    "reflector",
+    "rsync",
+    "shellcheck",
+    "simple-scan",
+    "snap-pac",
+    "snapper",
+    "sudo",
+    "swtpm",
+    "systemd-boot-pacman-hook",
+    "tldr",
+    "tmux",
+    "ttf-hack-nerd",
+    "unrar",
+    "unzip",
+    "uv",
+    "vdpauinfo",
+    "virt-firmware",
+    "virt-manager",
+    "vlc",
+    "wget",
+    "whipper",
+    "wireguard-tools",
+    "wl-clipboard",
+    "wsdd",
+    "xclip",
+    "xf86-video-vesa",
+    "xorg-bdftopcf",
+    "xorg-docs",
+    "xorg-font-util",
+    "xorg-fonts-100dpi",
+    "xorg-fonts-75dpi",
+    "xorg-fonts-encodings",
+    "xorg-iceauth",
+    "xorg-mkfontscale",
+    "xorg-server",
+    "xorg-server-common",
+    "xorg-server-devel",
+    "xorg-server-xephyr",
+    "xorg-server-xnest",
+    "xorg-server-xvfb",
+    "xorg-sessreg",
+    "xorg-setxkbmap",
+    "xorg-smproxy",
+    "xorg-x11perf",
+    "xorg-xauth",
+    "xorg-xbacklight",
+    "xorg-xcmsdb",
+    "xorg-xcursorgen",
+    "xorg-xdpyinfo",
+    "xorg-xdriinfo",
+    "xorg-xev",
+    "xorg-xeyes",
+    "xorg-xgamma",
+    "xorg-xhost",
+    "xorg-xinput",
+    "xorg-xkbcomp",
+    "xorg-xkbevd",
+    "xorg-xkbutils",
+    "xorg-xkill",
+    "xorg-xlsatoms",
+    "xorg-xlsclients",
+    "xorg-xmodmap",
+    "xorg-xpr",
+    "xorg-xprop",
+    "xorg-xrandr",
+    "xorg-xrdb",
+    "xorg-xrefresh",
+    "xorg-xset",
+    "xorg-xsetroot",
+    "xorg-xvinfo",
+    "xorg-xwayland",
+    "xorg-xwd",
+    "xorg-xwininfo",
+    "xorg-xwud",
+    "xpadneo-dkms",
+    "yay",
+    "yazi",
+    "zram-generator",
+    "zsh",
+    "openssh"
+  ],
+  "systemd": {
+    "enable_units": [
+      "NetworkManager-dispatcher.service",
+      "NetworkManager-wait-online.service",
+      "NetworkManager.service",
+      "avahi-daemon.service",
+      "bluetooth.service",
+      "coolercontrold.service",
+      "firewalld.service",
+      "fstrim.timer",
+      "getty@.service",
+      "libvirtd.service",
+      "lm_sensors.service",
+      "nmb.service",
+      "ollama.service",
+      "paccache.timer",
+      "power-profiles-daemon.service",
+      "reflector.timer",
+      "remote-fs.target",
+      "plasmalogin.service",
+      "smb.service",
+      "snapper-boot.timer",
+      "snapper-cleanup.timer",
+      "snapper-timeline.timer",
+      "sshd.service",
+      "systemd-oomd.service",
+      "systemd-timesyncd.service",
+      "tailscaled.service",
+      "wsdd.service"
+    ],
+    "enable_sockets": [
+      "avahi-daemon.socket",
+      "cups.socket",
+      "libvirtd-admin.socket",
+      "libvirtd-ro.socket",
+      "libvirtd.socket",
+      "pcscd.socket",
+      "podman.socket",
+      "systemd-oomd.socket",
+      "systemd-userdbd.socket",
+      "virtlockd-admin.socket",
+      "virtlockd.socket",
+      "virtlogd-admin.socket",
+      "virtlogd.socket"
+    ],
+    "disable_units": []
+  },
+  "initramfs": "dracut",
+  "bluetooth": {
+    "enable": true,
+    "in_initramfs": true
+  },
+  "disks": {
+    "disks": [
+      {
+        "device": "/dev/vda",
+        "partition_table": "gpt",
+        "wipe_disk": true,
+        "partitions": [
+          {
+            "label": "esp",
+            "size": "1GiB",
+            "filesystem": "fat32",
+            "partition_type": "esp",
+            "mountpoint": "/boot",
+            "encrypt": false,
+            "luks_name": null,
+            "luks_keyfile": null,
+            "luks_uuid": null,
+            "unlock_keyfile": null,
+            "unlock_keydev": null,
+            "unlock_tpm2": false,
+            "unlock_fido2": false,
+            "luks_options": [],
+            "mount_options": [],
+            "btrfs_subvolumes": [],
+            "format": true
+          },
+          {
+            "label": "root",
+            "size": "rest",
+            "filesystem": "btrfs",
+            "partition_type": "linux",
+            "mountpoint": null,
+            "encrypt": true,
+            "luks_name": "cryptroot",
+            "luks_password": "123",
+            "luks_keyfile": null,
+            "luks_uuid": null,
+            "unlock_keyfile": null,
+            "unlock_keydev": null,
+            "unlock_tpm2": false,
+            "unlock_fido2": false,
+            "luks_options": [],
+            "mount_options": [
+              "compress-force=zstd:3"
+            ],
+            "btrfs_subvolumes": [
+              {
+                "name": "@",
+                "mountpoint": "/",
+                "mount_options": []
+              },
+              {
+                "name": "@snapshots",
+                "mountpoint": "/.snapshots",
+                "mount_options": []
+              },
+              {
+                "name": "@srv",
+                "mountpoint": "/srv",
+                "mount_options": []
+              },
+              {
+                "name": "@home",
+                "mountpoint": "/home",
+                "mount_options": []
+              },
+              {
+                "name": "@var_abs",
+                "mountpoint": "/var/abs",
+                "mount_options": []
+              },
+              {
+                "name": "@var_cache",
+                "mountpoint": "/var/cache",
+                "mount_options": []
+              },
+              {
+                "name": "@var_lib_libvirt",
+                "mountpoint": "/var/lib/libvirt",
+                "mount_options": []
+              },
+              {
+                "name": "@var_log",
+                "mountpoint": "/var/log",
+                "mount_options": []
+              },
+              {
+                "name": "@var_tmp",
+                "mountpoint": "/var/tmp",
+                "mount_options": []
+              }
+            ],
+            "format": true
+          }
+        ]
+      }
+    ]
+  },
+  "udev_rules": [
+    {
+      "name": "1-qudelix.rules",
+      "content": "# 96Hz\nKERNEL==\"hidraw*\", ATTRS{idVendor}==\"0a12\", ATTRS{idProduct}==\"4003\", MODE=\"0660\", TAG+=\"uaccess\"\n\n# 88.2Hz\nKERNEL==\"hidraw*\", ATTRS{idVendor}==\"0a12\", ATTRS{idProduct}==\"4004\", MODE=\"0660\", TAG+=\"uaccess\"\n\n# 48Hz\nKERNEL==\"hidraw*\", ATTRS{idVendor}==\"0a12\", ATTRS{idProduct}==\"4005\", MODE=\"0660\", TAG+=\"uaccess\"\n\n# 44.1Hz\nKERNEL==\"hidraw*\", ATTRS{idVendor}==\"0a12\", ATTRS{idProduct}==\"4006\", MODE=\"0660\", TAG+=\"uaccess\"\n\n# 44.1Hz/48/88.2/96Khz\nKERNEL==\"hidraw*\", ATTRS{idVendor}==\"0a12\", ATTRS{idProduct}==\"4007\", MODE=\"0660\", TAG+=\"uaccess\"\n\n# 48Hz with Mic\nKERNEL==\"hidraw*\", ATTRS{idVendor}==\"0a12\", ATTRS{idProduct}==\"4125\", MODE=\"0660\", TAG+=\"uaccess\"\n\n# 44.1Hz with Mic\nKERNEL==\"hidraw*\", ATTRS{idVendor}==\"0a12\", ATTRS{idProduct}==\"4126\", MODE=\"0660\", TAG+=\"uaccess\"\n"
+    },
+    {
+      "name": "50-dolphin-UB400.rules",
+      "content": "SUBSYSTEM==\"usb\", ATTRS{idVendor}==\"0a12\", ATTRS{idProduct}==\"0001\", MODE=\"0660\", TAG+=\"uaccess\"\n"
+    }
+  ],
+  "modprobe_conf": [
+    {
+      "name": "nested_virt.conf",
+      "content": "options kvm_amd nested=1\n"
+    }
+  ],
+  "modules_load": [
+    {
+      "name": "virtio.conf",
+      "content": "virtio-net\nvirtio-blk\nvirtio-scsi\nvirtio-serial\nvirtio-balloon\n"
+    }
+  ],
+  "files": [
+    {
+      "path": "/etc/crypttab",
+      "content": "# Configuration for encrypted block devices.\n# See crypttab(5) for details.\n\n# NOTE: Do not list your root (/) partition here, it must be set up\n#       beforehand by the initramfs (/etc/mkinitcpio.conf).\n\n# <name>       <device>                                     <password>              <options>\n# home         UUID=b8ad5c18-f445-495d-9095-c9ec4f9d2f37    /etc/mypassword1\n# data1        /dev/sda3                                    /etc/mypassword2\n# data2        /dev/sda5                                    /etc/cryptfs.key\n# swap         /dev/sdx4                                    /dev/urandom            swap,cipher=aes-cbc-essiv:sha256,size=256\n# vol          /dev/sdb7                                    none\n"
+    },
+    {
+      "path": "/etc/plasmalogin.conf.d/10-dasik.conf",
+      "content": "# Managed by dasik. Plasma Login Manager (plasmalogin.service) reads\n# /etc/plasmalogin.conf.d/*.conf — it is an SDDM fork, but it does NOT read\n# /etc/sddm.conf.d and it is fixed to the Breeze theme (no [Theme] key).\n# The previous sddm.conf.d \"DisplayServer=x11-user\" is intentionally NOT carried\n# over: plasmalogin defaults to Wayland. Re-add it only if you want X11 again.\n[Autologin]\nRelogin=false\nSession=plasma\nUser=andres\n\n[General]\nHaltCommand=/usr/bin/systemctl poweroff\nRebootCommand=/usr/bin/systemctl reboot\n\n[Users]\nMaximumUid=60513\nMinimumUid=1000\n"
+    }
+  ],
+  "zram": {
+    "zram0": {
+      "swap-priority": "100",
+      "zram-size": "min(ram / 2, 8192)"
+    }
+  },
+  "firewall": {
+    "enable": true,
+    "allowed_services": [
+      "samba",
+      "samba-client",
+      "samba-dc",
+      "syncthing"
+    ],
+    "remove_services": [
+      "ssh"
+    ],
+    "rich_rules": [
+      "rule service name=\"ssh\" accept limit value=\"2/m\""
+    ]
+  },
+  "bootloader": "sd-boot",
+  "enable_microcode": true,
+  "snapper": {
+    "enable": true,
+    "configs": [
+      {
+        "name": "root",
+        "subvolume": "/"
+      }
+    ]
+  },
+  "hostname": "archlinux-torre-amd",
+  "network": {
+    "type": "NetworkManager",
+    "add_default_hosts": true
+  }
+}

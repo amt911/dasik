@@ -269,3 +269,46 @@ KVM-capable host.
   `_has_partition_table`, mount order, network type, RAM cap, `--dry-run`
   assembly) are **unit-tested**. The safety guards make a mis-pointed run fail
   safe.
+
+## Hibernation (`qemu.sh hibernate`)
+
+Hibernation is the one boot-chain property a single boot cannot prove: writing
+the image always "works", and a kernel that cannot restore it just boots fresh —
+silently losing the session. The check therefore takes **two boots** on the same
+image and compares `/proc/sys/kernel/random/boot_id`, which a resume preserves
+and a cold boot regenerates.
+
+```bash
+DASIK_VM_WORKDIR=~/.cache/dasik-vmtest-hib \
+DASIK_VM_RAM=4096 DASIK_VM_DISK=12G \
+DASIK_VM_ISO=~/ISO/archlinux-x86_64.iso \
+scripts/vmtest/qemu.sh install-driven config/vm-laptop-hibernate.json
+
+DASIK_VM_RAM=4096 \
+scripts/vmtest/qemu.sh hibernate ~/.cache/dasik-vmtest-hib/vda.qcow2 hibpass
+```
+
+`config/vm-laptop-hibernate.json` is the rehearsal of a hibernating laptop: an
+encrypted swap partition **plus** an encrypted btrfs root on `@`, both unlocked
+in the initramfs. Both `rd.luks.name` tokens are declared explicitly in
+`kernel_cmdline` because `KernelCmdlineAction` derives one only for the partition
+that mounts `/`, and its merge is key-based — a single explicit `rd.luks.name`
+would drop the derived one.
+
+Boot 1 asserts the preconditions and then hibernates; boot 2 must show the same
+`boot_id` and the `/run` marker written before hibernating. Expected verdict:
+
+```text
+RESUMED FROM HIBERNATION: True
+>> hibernate layer PASSED — the second boot restored the image.
+```
+
+**What it caught (2026-08-08).** The first run resumed nothing: `/sys/power/resume`
+was `0:0` and `lsinitrd | grep -c resume` was `0`. dracut ships `74resume`, but
+its `check()` only passes in hostonly mode when a swap appears in
+`host_fs_types[]` — and dasik runs dracut inside `arch-chroot /mnt`, where that
+detection fails exactly as it does for the LUKS root. The fix forces the module
+(`detect_hibernation` → `force_add_dracutmodules+=" resume "`), after which the
+same test reports `253:1` in `/sys/power/resume` and resumes. mkinitcpio's
+equivalent hook is **not** handled — hook order matters there and it has not been
+verified.

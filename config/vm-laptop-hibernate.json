@@ -1,0 +1,54 @@
+{
+  "metadata": {
+    "note": "VM rehearsal of config/laptop-p14s.json's boot chain: encrypted btrfs root on the @ subvolume (partition mountpoint=null) PLUS a second LUKS device holding swap, so hibernation can resume. dracut + sd-boot. Both rd.luks.name tokens are declared explicitly because KernelCmdlineAction only derives one for the partition that mounts root, and its merge is key-based. Public test passphrase 'hibpass' on BOTH devices (systemd's initrd password cache then asks once); autologins root over serial. NOT for real hardware."
+  },
+  "disks": {
+    "disks": [
+      {
+        "device": "/dev/vda",
+        "partition_table": "gpt",
+        "wipe_disk": true,
+        "partitions": [
+          {"label": "esp", "size": "512MiB", "filesystem": "fat32", "partition_type": "esp", "mountpoint": "/boot", "format": true},
+          {"label": "swap", "size": "4GiB", "filesystem": "swap", "partition_type": "linux-swap", "mountpoint": null, "format": true,
+           "encrypt": true, "luks_name": "cryptswap", "luks_password": "hibpass"},
+          {"label": "root", "size": "rest", "filesystem": "btrfs", "partition_type": "linux", "mountpoint": null, "format": true,
+           "encrypt": true, "luks_name": "cryptroot", "luks_password": "hibpass",
+           "mount_options": ["compress-force=zstd:3"],
+           "btrfs_subvolumes": [
+             {"name": "@", "mountpoint": "/"},
+             {"name": "@home", "mountpoint": "/home"}
+           ]}
+        ]
+      }
+    ]
+  },
+  "bootloader": "sd-boot",
+  "enable_microcode": false,
+  "initramfs": "dracut",
+  "hostname": "dasik-hib",
+  "kernel_cmdline": [
+    "console=ttyS0,115200",
+    "rd.luks.name=0ed69442-a99e-5f65-88d8-28d3e9945408=cryptroot",
+    "rd.luks.name=7c678858-646c-5261-9727-4779b680f718=cryptswap",
+    "resume=/dev/mapper/cryptswap"
+  ],
+  "timezone": {"region": "Etc", "city": "UTC"},
+  "locales": {"selected_locales": ["en_US.UTF-8 UTF-8"], "desired_locale": "en_US.UTF-8", "desired_tty_layout": "us"},
+  "network": {"type": "systemd-networkd"},
+  "packages": ["base", "linux", "linux-firmware", "btrfs-progs", "python", "python-pydantic", "python-colorama", "fprintd"],
+  "files": [
+    {"path": "/etc/systemd/system/serial-getty@ttyS0.service.d/autologin.conf",
+     "content": "[Service]\nExecStart=\nExecStart=-/sbin/agetty --autologin root --noclear --keep-baud 115200,38400,9600 %I $TERM\n"},
+    {"path": "/etc/pam.d/sudo",
+     "content": "#%PAM-1.0\n# Managed by dasik. Vendor file (sudo package) + fingerprint on top.\n# WARNING: fingerprint auth for sudo is the CVE-2024-37408 vector.\nauth       sufficient  pam_fprintd.so\nauth       include     system-auth\naccount    include     system-auth\nsession    include     system-auth\nsession    optional    pam_systemd.so class=none\n"},
+    {"path": "/etc/pam.d/polkit-1",
+     "content": "#%PAM-1.0\n# Managed by dasik: overrides /usr/lib/pam.d/polkit-1 (vendor) to add the finger.\nauth       sufficient   pam_fprintd.so\nauth       include      system-auth\naccount    include      system-auth\npassword   include      system-auth\nsession    include      system-auth\n"}
+  ],
+  "zram": {
+    "zram0": {
+      "swap-priority": "100",
+      "zram-size": "min(ram / 2, 8192)"
+    }
+  }
+}

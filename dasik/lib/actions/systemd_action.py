@@ -5,6 +5,7 @@ Idempotent: only enables units that are not already enabled.
 from typing import Any, List
 from .abstract_action import AbstractAction
 from ..command_worker.command_worker import Command
+from ..exceptions.exceptions import CommandExecutionError
 from ..state.change import Op
 import subprocess
 
@@ -109,10 +110,37 @@ class SystemdAction(AbstractAction):
         # non-zero. Without it the failure is silent and the unit still lands in
         # the manifest as managed — a false convergence that re-plans forever
         # while the system has, say, no display manager configured.
+        #
+        # But a config typically declares DOZENS of units, and aborting on the
+        # first broken one hides the rest: the 2026-08-08 install died on
+        # `coolercontrold.service` after 10 minutes while four more units were
+        # just as orphaned — one apply per discovery. So every unit is attempted
+        # and the failures are reported together, once.
+        failures: List[str] = []
         for unit in enables:                       # additive first
-            Command.execute("systemctl", ["enable", unit], target=target, check=True)
+            self._systemctl("enable", unit, target, failures)
         for unit in disables:
-            Command.execute("systemctl", ["disable", unit], target=target, check=True)
+            self._systemctl("disable", unit, target, failures)
+        if failures:
+            raise CommandExecutionError(
+                f"systemctl failed for {len(failures)} unit(s):\n"
+                + "\n".join(f"  - {f}" for f in failures)
+                + "\nNo installed package provides those units (or the name is "
+                  "wrong): declare the package that ships each one, or drop it "
+                  "from `systemd`."
+            )
+
+    @staticmethod
+    def _systemctl(op: str, unit: str, target, failures: List[str]) -> None:
+        """Run one `systemctl <op> <unit>`, collecting the failure instead of
+        raising. *label* carries the unit because systemctl can exit non-zero
+        with an empty stderr — without it the console shows a bare
+        ``systemctl failed (exit 1):``."""
+        try:
+            Command.execute("systemctl", [op, unit], target=target, check=True,
+                            label=f"systemctl {op} {unit}")
+        except CommandExecutionError as exc:
+            failures.append(f"{unit}: {exc}")
 
     def import_state(self, managed=None) -> dict:
         # Capture reality: keep all declared units (intent) + every enabled unit

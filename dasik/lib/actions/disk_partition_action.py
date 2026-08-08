@@ -131,9 +131,19 @@ class DiskPartitionAction(AbstractAction):
             if self._disk_converged(disk):
                 continue
             if disk.wipe_disk or not self._has_partition_table(disk.device):
+                # destructive=True: the op is INSTALL, but applying this runs
+                # `wipefs --all` + `sgdisk --zap-all` + mkfs. Only this domain
+                # knows that, and without saying so the change slipped past the
+                # confirmation prompt that `pacman -R` has to pass.
+                # The reason names what is being erased — a bare "wipe_disk" in
+                # a y/N prompt tells the user nothing about which disk it is.
+                existing = sorted(self._device_labels(disk.device))
+                found = f" (holds: {', '.join(existing)})" if existing else ""
                 changes.append(Change(
                     self._DOMAIN, Op.INSTALL, disk.device,
-                    reason="wipe_disk" if disk.wipe_disk else "empty disk",
+                    reason=(f"{'wipe_disk' if disk.wipe_disk else 'empty disk'} "
+                            f"— ERASES {disk.device}{found}"),
+                    destructive=True,
                 ))
             else:
                 print(

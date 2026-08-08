@@ -190,7 +190,12 @@ class Reconciler:
         if destructive and self._target.root == "/":
             self._warn_live_host(len(destructive))
         if destructive and not assume_yes:
+            # Spell out WHAT is being destroyed. "Apply 2 destructive change(s)?"
+            # gave the user nothing to check against — least of all which disk is
+            # about to be erased.
+            listing = "\n".join(c.render() for c in destructive)
             answer = input_fn(
+                f"These {len(destructive)} change(s) DESTROY data:\n{listing}\n"
                 f"Apply {len(destructive)} destructive change(s)? [y/N] "
             ).strip().lower()
             if answer not in ("y", "yes"):

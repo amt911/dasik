@@ -29,15 +29,25 @@ class Change:
     op: Op
     item: str
     reason: str = ""
+    # Some changes are destructive in a way the OP cannot express: the disk
+    # domain emits its repartition as Op.INSTALL, yet it runs `wipefs --all` +
+    # `sgdisk --zap-all` + mkfs. Only the domain knows, so it says so here. The
+    # flag only ever ADDS destructiveness — __post_init__ forces it True for the
+    # ops that are destructive by definition, so destructive=False cannot make a
+    # REMOVE look safe.
+    destructive: bool = False
 
-    @property
-    def destructive(self) -> bool:
-        return self.op in _DESTRUCTIVE_OPS
+    def __post_init__(self) -> None:
+        if self.op in _DESTRUCTIVE_OPS and not self.destructive:
+            object.__setattr__(self, "destructive", True)
 
     def render(self) -> str:
         sign = _SIGNS[self.op]
         tail = f"  ({self.reason})" if self.reason else ""
-        return f"  {sign} [{self.domain}] {self.op.value} {self.item}{tail}"
+        # An Op.INSTALL that erases a device must not read like any other "+".
+        mark = ("  ** DESTRUCTIVE **"
+                if self.destructive and self.op not in _DESTRUCTIVE_OPS else "")
+        return f"  {sign} [{self.domain}] {self.op.value} {self.item}{tail}{mark}"
 
 
 @dataclass

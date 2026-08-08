@@ -1,0 +1,15 @@
+{
+  "enable": true,
+  "allowed_services": [
+    "samba",
+    "samba-client",
+    "samba-dc",
+    "syncthing"
+  ],
+  "remove_services": [
+    "ssh"
+  ],
+  "rich_rules": [
+    "rule service name=\"ssh\" accept limit value=\"2/m\""
+  ]
+}

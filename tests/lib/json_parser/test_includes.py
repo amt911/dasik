@@ -142,3 +142,45 @@ def test_a_plain_config_is_returned_unchanged(tmp_path):
 def test_a_dollar_key_that_is_not_a_directive_is_left_alone(tmp_path):
     cfg = {"content": "PS1='$PWD'", "$weird": 1}
     assert _resolve(tmp_path, cfg) == cfg
+
+
+# --- $include_line: secrets, without the trailing newline -------------------
+#
+# `$include_text` is verbatim on purpose (a PAM file needs its final newline),
+# which makes it the WRONG tool for a password hash: `usermod -p '$y$…\n'` sets
+# a hash nobody can log in with, and nothing complains. So secrets get their own
+# directive that reads one line and strips it.
+
+def test_include_line_strips_the_trailing_newline(tmp_path):
+    _write(tmp_path, "secrets/hash", "$y$j9T$abc\n")
+    out = _resolve(tmp_path, {"hashed_password": {"$include_line": "secrets/hash"}})
+    assert out == {"hashed_password": "$y$j9T$abc"}
+
+
+def test_include_line_ignores_everything_after_the_first_line(tmp_path):
+    _write(tmp_path, "secrets/pass", "hunter2\n# a comment about it\n")
+    assert _resolve(tmp_path, {"$include_line": "secrets/pass"}) == "hunter2"
+
+
+def test_include_line_strips_surrounding_whitespace(tmp_path):
+    _write(tmp_path, "secrets/pass", "  hunter2  \n")
+    assert _resolve(tmp_path, {"$include_line": "secrets/pass"}) == "hunter2"
+
+
+def test_include_line_on_an_empty_file_is_an_error(tmp_path):
+    _write(tmp_path, "secrets/empty", "\n")
+    with pytest.raises(ConfigIncludeError, match="empty"):
+        _resolve(tmp_path, {"$include_line": "secrets/empty"})
+
+
+def test_include_line_obeys_the_same_path_rules(tmp_path):
+    with pytest.raises(ConfigIncludeError, match=r"\.\."):
+        _resolve(tmp_path, {"$include_line": "../secret"})
+
+
+def test_the_same_secret_can_be_referenced_twice(tmp_path):
+    """Both LUKS partitions want the SAME passphrase, from one file."""
+    _write(tmp_path, "secrets/luks", "passphrase\n")
+    out = _resolve(tmp_path, {"a": {"$include_line": "secrets/luks"},
+                              "b": {"$include_line": "secrets/luks"}})
+    assert out == {"a": "passphrase", "b": "passphrase"}

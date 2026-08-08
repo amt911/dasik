@@ -1,0 +1,10 @@
+{
+  "enable": true,
+  "allowed_services": [],
+  "remove_services": [
+    "ssh"
+  ],
+  "rich_rules": [
+    "rule service name=\"ssh\" accept limit value=\"2/m\""
+  ]
+}

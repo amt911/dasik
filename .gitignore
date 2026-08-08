@@ -46,3 +46,10 @@ config/test-config.json.bak
 dasik-*.log
 log-llm.log
 *-install.log
+
+# Split configs keep their secrets beside them; only the .example is tracked.
+config/*/secrets/*
+!config/*/secrets/*.example
+
+# The single-file laptop config carries a real password hash — keep it local.
+config/laptop-p14s.json

@@ -153,7 +153,7 @@ To mirror "add an option to a NixOS module":
 2. **Action** — create `dasik/lib/actions/<thing>_action.py` subclassing `AbstractAction`; implement `name`, `is_needed`, `execute`, `verify`. Shell out via `Command.execute(...)` (`dasik/lib/command_worker/`), passing `run_as_chroot=True` for changes inside the target.
 3. **Register** — add a `register_action(...)` call in `setup_actions()` at the correct phase, `is_optional=True` for optional sections.
 4. **Config sample** — add/extend a JSON under `config/` so the option is exercised.
-5. **Detectability** — prove `plan` sees it, in BOTH directions (see the rule below).
+5. **Detectability** — prove `plan` sees it *and* `sync` reads it back, in BOTH directions (see the two rules below).
 
 ### Every feature must be detectable by `plan`/`apply`
 
@@ -180,6 +180,41 @@ declared off but owned in the manifest ⇒ REMOVE.** An unowned parameter someon
 else set is deliberately left alone. The matrix for issue #173 block A lives in
 [`tests/lib/test_feature_detectability.py`](tests/lib/test_feature_detectability.py) —
 extend it when adding a feature.
+
+### …and capturable by `sync`
+
+The same rule on the way back: **a feature `apply` converges but `sync` cannot
+read is a one-way street.** Capture the machine, re-apply the captured config,
+and the feature silently disappears — which is exactly how `sysrq`, `cpu` and
+`reflector` behaved until they got an `import_state`.
+
+Two failure modes, both silent:
+
+- **Nothing captures it.** `reflector` wrote `/etc/xdg/reflector/reflector.conf`
+  and nothing read it back (file discovery only scans `DropFilesAction._SECTIONS`,
+  and /etc/xdg is not one of them), so the mirrorlist policy was lost outright.
+  A feature delivered purely by an expand toggle has no owner on the way back
+  until you give it one — see the CAPTURE-ONLY actions `CpuAction` /
+  `ReflectorAction` (`plan()` deliberately empty; they exist so
+  `Reconciler.sync`, which only visits v3 actions, reaches them).
+- **It captures as noise instead of as itself.** `sysrq_always_enabled=1` and
+  `amd_pstate=active` came back as hand-set `kernel_cmdline` entries, so the
+  captured config described the same policy without ever growing the block that
+  explains it. Parameters a block owns are subtracted by NAME in
+  `KernelCmdlineAction.import_state`, whether or not the config declares the
+  block.
+
+Assert per feature: **machine has it ⇒ the declaration is captured; machine
+lacks it ⇒ nothing is invented (and a declared flag is CLEARED, since sync
+reports reality); the captured config validates and re-plans to nothing.** The
+last one is the real invariant — `sync` → `plan` must be silent. The matrix
+lives in [`tests/lib/test_feature_sync_capture.py`](tests/lib/test_feature_sync_capture.py).
+
+Watch out for two legitimate reasons a key is absent from a synced config:
+`subtract_contributions` strips whatever the *seed's* toggles already derive
+(`systemd-boot-update.service` never gets listed because `bootloader: sd-boot`
+re-derives it), and `_cmd_sync` drops newly-added empty values. Assert
+reproducibility (`expand_config(captured)`), not literal presence.
 
 ### Running commands
 
@@ -298,6 +333,7 @@ that crashes before it ever reaches `is_needed()`.
 - **Don't lower the coverage gate** — exclude untestable modules in config with a written justification instead.
 - **Preserve idempotency** — any new action must implement a real `is_needed()` that reads system state. A re-run of the same JSON must be a no-op.
 - **Every feature must be detectable by `plan`** — missing ⇒ planned, present ⇒ silent, owned-but-undeclared ⇒ removed. Assert all of them; a quiet plan is not evidence. See [Every feature must be detectable by `plan`/`apply`](#every-feature-must-be-detectable-by-planapply).
+- **…and capturable by `sync`** — every feature needs an `import_state` that reads it back as its own block, and `sync` → `plan` must be a no-op. A feature delivered only by an expand toggle has no owner on the way back until you add one. See […and capturable by `sync`](#and-capturable-by-sync).
 - **Keep sections optional** — config has many optional blocks (disks, kvm, cups, wireguard, …), not just disks. New top-level fields should be `Optional`/defaulted in `JsonModel`.
 - **The legacy handler is gone** — the monolithic `actions_handler.py` and the no-verb `dasik <config>` fallback were removed (PR #151). Put all behavior in the v2/v3 registry/action path (`setup_actions()` + `plan()/apply()/import_state()`).
 - **Entry point is on v3** — `__main__`'s verbs (`plan`/`apply`/`sync`/`generations`/`rollback`) use the reconciler. A bare `dasik <config>` (no verb) is rejected with a pointer to `plan`/`apply`.

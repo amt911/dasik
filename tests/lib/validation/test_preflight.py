@@ -161,3 +161,29 @@ def test_implicit_wheel_default_without_sudo_only_warns():
 def test_no_sudo_finding_when_nothing_asks_for_it():
     issues = preflight({"packages": ["base"]}, efi_boot=True)
     assert not any(i.code in ("sudo_without_provider", "wheel_without_sudo") for i in issues)
+
+
+# --- cpu / power-profiles-daemon ------------------------------------------- #
+
+def test_ppd_with_an_explicit_governor_warns():
+    issues = preflight({"cpu": {"power_profiles_daemon": True, "governor": "performance"}},
+                       efi_boot=True)
+    assert any(i.code == "ppd_and_governor" and i.level == "warning" for i in issues)
+
+
+def test_ppd_with_tlp_is_an_error():
+    issues = preflight({"cpu": {"power_profiles_daemon": True}, "packages": ["tlp"]},
+                       efi_boot=True)
+    assert any(i.code == "ppd_and_tlp" and i.level == "error" for i in issues)
+
+
+def test_governor_without_ppd_is_clean():
+    issues = preflight({"cpu": {"power_profiles_daemon": False, "governor": "performance"}},
+                       efi_boot=True)
+    assert not any(i.code in ("ppd_and_governor", "ppd_and_tlp") for i in issues)
+
+
+def test_ppd_unit_without_its_package_warns():
+    issues = preflight({"systemd": {"enable_units": ["power-profiles-daemon.service"]},
+                        "packages": ["base"]}, efi_boot=True)
+    assert any(i.code == "unit_without_provider" and i.level == "warning" for i in issues)

@@ -73,6 +73,9 @@ _UNIT_PROVIDERS: Dict[str, Set[str]] = {
     "snapper-timeline.timer": {"snapper"},
     "snapper-cleanup.timer": {"snapper"},
     "snapper-boot.timer": {"snapper"},
+    "power-profiles-daemon.service": {"power-profiles-daemon"},
+    "cpupower.service": {"cpupower"},
+    "reflector.timer": {"reflector"},
 }
 
 # Packages that ship /usr/bin/sudo (and visudo). `base` does NOT.
@@ -272,6 +275,25 @@ def _check_sudo(config: Dict[str, Any], packages: Set[str]) -> List[Issue]:
     return []
 
 
+def _check_cpu(config: Dict[str, Any], packages: Set[str]) -> List[Issue]:
+    """power-profiles-daemon owns the frequency policy it shares with nobody."""
+    cpu = config.get("cpu") or {}
+    if not cpu or not cpu.get("power_profiles_daemon", True):
+        return []
+    issues: List[Issue] = []
+    if cpu.get("governor"):
+        issues.append(Issue(
+            "warning", "ppd_and_governor",
+            "power-profiles-daemon manages the energy-performance preference, so a "
+            "fixed cpupower governor will be fought over; declare one or the other."))
+    if "tlp" in packages:
+        issues.append(Issue(
+            "error", "ppd_and_tlp",
+            "power-profiles-daemon and tlp both manage power policy and conflict; "
+            "keep one of them."))
+    return issues
+
+
 def _check_crypttab(config: Dict[str, Any]) -> List[Issue]:
     content = _crypttab_content(config)
     if not content:
@@ -353,6 +375,7 @@ def preflight(config: Dict[str, Any],
     issues += _check_groups(config, packages)
     issues += _check_units(config, packages)
     issues += _check_sudo(config, packages)
+    issues += _check_cpu(config, packages)
     issues += _check_crypttab(config)
     issues += _check_efi(config, efi_boot)
     return issues

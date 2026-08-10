@@ -44,6 +44,7 @@ def setup_actions() -> None:
     from .network_action import NetworkAction
     from .pacman_action import PacmanAction
     from .users_action import UsersAction
+    from .sudo_action import SudoAction
     from .packages_action import PackagesAction
     from .systemd_action import SystemdAction
     from .firewall_action import FirewallAction
@@ -135,6 +136,13 @@ def setup_actions() -> None:
         # __root__: needs the root-level remove_home_on_delete flag alongside
         # the users list (issue: per-user delete flag is unreadable at delete).
         config_key='__root__',
+        is_optional=True,
+    )
+    # Sudo comes after Users: the wheel group has members by now, and
+    # PackagesAction has installed `sudo` (so `visudo` exists in the target).
+    register_action(
+        action_class=SudoAction,
+        config_key='__root__',   # reads `sudo` plus `users` for the implicit default
         is_optional=True,
     )
 

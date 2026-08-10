@@ -80,7 +80,7 @@ python -m dasik config/install-megamix.json # equivalent module form
 
 # flags
 dasik config.json -v        # verbose
-dasik config.json --dry-run # NOTE: parsed but NOT implemented yet (see __main__.py TODO)
+dasik plan config.json      # the dry run: shows every change, touches nothing
 
 # test / quality
 pytest                       # unit tests (~430, all passing)
@@ -215,12 +215,12 @@ Rules:
 - **Property-based testing** *(highest priority)* — **Hypothesis**. Define invariants and let it generate hundreds of cases including weird boundaries: "parsing then re-serializing a config round-trips", "reconcile(current, current) yields an empty plan (a no-op)", "applying a plan twice is a no-op". This is the automated proof of the idempotency promise.
 - **Runtime boundary validation** — **pydantic** already guards the config boundary (`dasik/lib/models/`); keep every new top-level field modeled and validated there rather than reaching into raw dicts. Untrusted input (the user's JSON, `/mnt/etc/...` file contents) must cross a validated boundary, not be trusted by shape.
 - **Strict types + static analysis** — **mypy** (a `.mypy_cache` is already present — run `mypy dasik` and keep it clean) plus a SAST pass (**Semgrep** or **Bandit** for Python). SAST matters here because this tool shells out constantly: watch for command injection when building `Command.execute` argument lists from config, and never interpolate untrusted strings into a shell.
-- **Smoke / dry-run validation** — there is no live-ISO in CI and installs are destructive, so the "does it actually boot" check is: run `dasik <config>` against the real sample configs under `config/` with all destructive flags **off** (or the future `--dry-run`, once implemented) and confirm parsing + `is_needed()` planning complete without exceptions. Never run a real install against the dev machine's disks.
+- **Smoke / dry-run validation** — there is no live-ISO in CI and installs are destructive, so the "does it actually boot" check is: run `dasik plan config/<file>.json` (read-only — the dry run) against the real sample configs under `config/` and confirm parsing + planning complete without exceptions. Never run a real install against the dev machine's disks.
 - **Dependency auditing** — AI invents non-existent packages ("slopsquatting") and pulls vulnerable versions. Runtime deps are intentionally two (`pydantic`, `colorama`); use `pip-audit`, and verify every new dependency actually exists and is the one you think it is before adding it.
 
 **Process rule (worth more than any tool): don't let the AI define the acceptance criteria.** You write or review the important test cases yourself — at least the key asserts and the requirement's edge cases (does a re-run really no-op? does the destructive flag really gate?) — and have the AI implement against them. That breaks the loop where the same misunderstanding lives in both the test and the code. Mutation testing is the automated backstop; the judgment about *what the system should do* stays yours.
 
-Priority by immediate payoff: **mutation + property-based testing first** on the idempotency logic, then **keep mypy clean and a couple of dry-run smoke checks**.
+Priority by immediate payoff: **mutation + property-based testing first** on the idempotency logic, then **keep mypy clean and a couple of `dasik plan` smoke checks**.
 
 ## Agentic PR verification (MANDATORY on every PR)
 
@@ -273,4 +273,4 @@ that crashes before it ever reaches `is_needed()`.
 - **Never push** *(default)* — no `git push` under any circumstance, and absolutely never `git push --force` / `--force-with-lease`. Leave pushing to the user. **Exception:** when **"modo desatendido"** is active, you may push the feature branches you create (never `main`/protected branches, never force) so PRs are ready for review.
 - **Never merge — no permission** — you do NOT have permission to merge anything into any branch, nor to merge any pull request. No `git merge`, no fast-forward integration, no `gh pr merge`. Leave every merge (branches and PRs alike) to the user. This holds in every mode, **including "modo desatendido"**.
 - **GitHub via `gh`** — if the `gh` CLI is available, you may open pull requests, issues, and similar (comments, labels, etc.). These don't require pushing on your part beyond what `gh` itself does for an already-pushed branch.
-- **Every PR must include a manual test plan** — when opening a PR, add a **How to test manually** section describing the exact steps to exercise the change by hand. For dasik, list the concrete `dasik config/<file>.json` invocation(s) to run, any flags (`-v`, `--dry-run`), the sample config to use (destructive flags **off**), and the expected result (parsing succeeds, `is_needed()` planning is correct, a re-run is a no-op). Include setup (which config, whether `/mnt` must be mounted) and edge/error cases (invalid JSON, missing binary, already-satisfied state) to check.
+- **Every PR must include a manual test plan** — when opening a PR, add a **How to test manually** section describing the exact steps to exercise the change by hand. For dasik, list the concrete `dasik <verb> config/<file>.json` invocation(s) to run, any flags (`-v`), the sample config to use (destructive flags **off**), and the expected result (parsing succeeds, `is_needed()` planning is correct, a re-run is a no-op). Include setup (which config, whether `/mnt` must be mounted) and edge/error cases (invalid JSON, missing binary, already-satisfied state) to check.

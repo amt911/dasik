@@ -1,0 +1,43 @@
+{
+  "enable_units": [
+    "NetworkManager-dispatcher.service",
+    "NetworkManager-wait-online.service",
+    "NetworkManager.service",
+    "avahi-daemon.service",
+    "bluetooth.service",
+    "firewalld.service",
+    "fstrim.timer",
+    "fwupd-refresh.timer",
+    "getty@.service",
+    "libvirtd.service",
+    "lm_sensors.service",
+    "paccache.timer",
+    "plasmalogin.service",
+    "power-profiles-daemon.service",
+    "reflector.timer",
+    "remote-fs.target",
+    "snapper-boot.timer",
+    "snapper-cleanup.timer",
+    "snapper-timeline.timer",
+    "sshd.service",
+    "systemd-oomd.service",
+    "systemd-timesyncd.service",
+    "wsdd.service"
+  ],
+  "enable_sockets": [
+    "avahi-daemon.socket",
+    "cups.socket",
+    "libvirtd-admin.socket",
+    "libvirtd-ro.socket",
+    "libvirtd.socket",
+    "pcscd.socket",
+    "podman.socket",
+    "systemd-oomd.socket",
+    "systemd-userdbd.socket",
+    "virtlockd-admin.socket",
+    "virtlockd.socket",
+    "virtlogd-admin.socket",
+    "virtlogd.socket"
+  ],
+  "disable_units": []
+}

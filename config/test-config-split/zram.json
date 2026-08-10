@@ -1,0 +1,6 @@
+{
+  "zram0": {
+    "swap-priority": "100",
+    "zram-size": "min(ram / 2, 8192)"
+  }
+}

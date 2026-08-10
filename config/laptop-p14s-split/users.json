@@ -1,0 +1,13 @@
+[
+  {
+    "username": "andres",
+    "hashed_password": {
+      "$include_line": "secrets/hashed-password"
+    },
+    "shell": "/bin/zsh",
+    "groups": [
+      "libvirt",
+      "wheel"
+    ]
+  }
+]

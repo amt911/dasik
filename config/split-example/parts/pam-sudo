@@ -1,0 +1,7 @@
+#%PAM-1.0
+# Fingerprint first, password as the fallback. Kept in a real file instead of a
+# JSON string: an editor highlights it and a diff on it is readable.
+auth       sufficient  pam_fprintd.so
+auth       include     system-auth
+account    include     system-auth
+session    include     system-auth

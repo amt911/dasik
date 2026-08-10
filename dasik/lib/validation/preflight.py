@@ -19,6 +19,7 @@ contributed by toggles count as declared.
 """
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Set
 
@@ -278,11 +279,50 @@ def _check_crypttab(config: Dict[str, Any]) -> List[Issue]:
     return issues
 
 
-def preflight(config: Dict[str, Any]) -> List[Issue]:
-    """Return every cross-field issue found in *config* (expanded form)."""
+# Both bootloaders dasik knows how to install are EFI-only: `bootctl install`,
+# and `grub-install --target=x86_64-efi --efi-directory=/boot`.
+_EFI_BOOTLOADERS = {"sd-boot", "systemd-boot", "grub"}
+
+
+def _check_efi(config: Dict[str, Any], efi_boot: Optional[bool]) -> List[Issue]:
+    """Refuse an EFI bootloader when the installer is not booted in EFI mode.
+
+    `bootctl install` does not fail on a legacy-BIOS boot: it prints "Not booted
+    with EFI, skipping EFI variable setup", writes the loader to the ESP and
+    exits 0. The install therefore reports success and the machine reboots
+    straight past it into whatever else the firmware finds — typically the ISO
+    it was installed from. Only an install (a config that partitions disks) is
+    affected; a day-2 run against a live system declares no `disks` and is
+    already booting somehow.
+    """
+    if efi_boot is not False or not config.get("disks"):
+        return []
+    loader = str(config.get("bootloader", "grub"))
+    if loader not in _EFI_BOOTLOADERS:
+        return []
+    return [Issue(
+        "error", "no_efi_firmware",
+        f"bootloader {loader!r} needs UEFI, but this system is not booted in EFI "
+        "mode (/sys/firmware/efi is absent), so the installed loader could never "
+        "be started — `bootctl install` would still exit 0 and the machine would "
+        "reboot into the installer media. Boot the ISO in UEFI mode (in QEMU: "
+        "OVMF firmware; in virt-manager: Customize before install → Overview → "
+        "Firmware = UEFI).")]
+
+
+def preflight(config: Dict[str, Any],
+              efi_boot: Optional[bool] = None) -> List[Issue]:
+    """Return every cross-field issue found in *config* (expanded form).
+
+    *efi_boot* describes the environment the installer runs in; it is probed
+    from /sys/firmware/efi when not given, and passed explicitly by tests.
+    """
+    if efi_boot is None:
+        efi_boot = os.path.exists("/sys/firmware/efi")
     packages = _declared_packages(config)
     issues: List[Issue] = []
     issues += _check_groups(config, packages)
     issues += _check_units(config, packages)
     issues += _check_crypttab(config)
+    issues += _check_efi(config, efi_boot)
     return issues

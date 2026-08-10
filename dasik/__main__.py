@@ -240,6 +240,16 @@ def _load_validated_config(config_path: Path) -> Optional[dict]:
         print(f"Error loading config: {e}", file=sys.stderr)
         return None
 
+    # A config may be assembled from fragments ($include / $include_text /
+    # $concat), resolved relative to the file that names them, BEFORE the schema
+    # sees it — the model validates the finished config, not the split.
+    from dasik.lib.json_parser.includes import ConfigIncludeError, resolve_includes
+    try:
+        config = resolve_includes(config, config_path.parent)
+    except ConfigIncludeError as e:
+        print(f"Error in {config_path}: {e}", file=sys.stderr)
+        return None
+
     from pydantic import ValidationError
     from dasik.lib.models.json_model import JsonModel
     try:
@@ -355,6 +365,19 @@ def _cmd_sync(config_path: Path, target_root: str) -> int:
     # No preflight here — sync's job is to repair a config from reality.
     config = _load_validated_config(config_path)
     if config is None:
+        return 1
+
+    # …and for the same reason it must not flatten a config that was split
+    # across files: ConfigWriter emits one document, so every $include would be
+    # replaced by the resolved value and the split silently undone.
+    from dasik.lib.json_parser.includes import uses_includes
+    if uses_includes(json.loads(raw_text)):
+        print(
+            f"{config_path} is assembled from includes ($include/$include_text/"
+            "$concat) and sync would flatten it into a single file.\n"
+            "Sync into a scratch copy instead and fold the changes back by hand:\n"
+            f"  cp {config_path} /tmp/synced.json && dasik sync /tmp/synced.json",
+            file=sys.stderr)
         return 1
 
     setup_actions()
@@ -507,6 +530,14 @@ def _cmd_check(config_path: Path) -> int:
         data = json.loads(raw)
     except json.JSONDecodeError as e:
         print(f"Invalid JSON in {config_path}: {e}", file=sys.stderr)
+        return 1
+    # Assemble the fragments first: `check` validates the finished config, which
+    # is also what makes it the way to verify a split before applying it.
+    from dasik.lib.json_parser.includes import ConfigIncludeError, resolve_includes
+    try:
+        data = resolve_includes(data, config_path.parent)
+    except ConfigIncludeError as e:
+        print(f"Error in {config_path}: {e}", file=sys.stderr)
         return 1
     from pydantic import ValidationError
     from dasik.lib.models.json_model import JsonModel

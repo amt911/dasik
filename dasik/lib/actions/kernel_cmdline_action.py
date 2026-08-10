@@ -79,8 +79,10 @@ class KernelCmdlineAction(AbstractAction):
 
         for disk in disks.get("disks", []):
             for part in disk.get("partitions", []):
-                if not mounts_root(part):
-                    continue
+                # LUKS parameters belong to EVERY encrypted partition, not only
+                # the one providing /: a second device (swap for hibernation, an
+                # encrypted /home) is left closed by the initramfs without its
+                # own rd.luks.name, and /etc/crypttab alone runs too late.
                 if part.get("encrypt"):
                     from dasik.lib.actions.luks_uuid import luks_uuid
                     dm_name = part.get("luks_name", "cryptroot")
@@ -89,7 +91,8 @@ class KernelCmdlineAction(AbstractAction):
                     # first apply, before the disk is even encrypted.
                     uuid = luks_uuid(dm_name, part.get("luks_uuid"))
                     params.append(f"rd.luks.name={uuid}={dm_name}")
-                    params.append(f"root=/dev/mapper/{dm_name} rw")
+                    if mounts_root(part):
+                        params.append(f"root=/dev/mapper/{dm_name} rw")
                     keyfile = part.get("unlock_keyfile")
                     if keyfile:
                         # Automatic unlock via a keyfile (e.g. on a pendrive);
@@ -106,11 +109,20 @@ class KernelCmdlineAction(AbstractAction):
                         opts.append("fido2-device=auto")
                     # Extra verbatim rd.luks.options (e.g. "token-timeout=10s").
                     opts.extend(part.get("luks_options", []) or [])
+                    # TRIM has to be passed THROUGH the mapping: without
+                    # `discard` the fstrim.timer that `enable_trim` schedules
+                    # runs against a LUKS volume that swallows every discard.
+                    # Opt-in, because it reveals which blocks are in use.
+                    if self._cfg.get("enable_trim") and "discard" not in opts:
+                        opts.append("discard")
                     if opts:
                         params.append(f"rd.luks.options={uuid}={','.join(opts)}")
 
+                # rootflags describe the mount of /, so only the partition that
+                # provides it contributes them — an encrypted btrfs /home must
+                # not overwrite the root's subvol= and compression options.
                 fs = part.get("filesystem", "")
-                if fs == "btrfs":
+                if fs == "btrfs" and mounts_root(part):
                     subvols = part.get("btrfs_subvolumes", [])
                     root_sv = next((s for s in subvols if s.get("mountpoint") == "/"), None)
                     sv_name = root_sv["name"] if root_sv else "@"
@@ -126,20 +138,32 @@ class KernelCmdlineAction(AbstractAction):
                     params.append(f"rootflags={opts_str}")
         return params
 
-    @staticmethod
-    def _merge(auto: List[str], explicit: List[str]) -> List[str]:
-        """Merge auto-derived and explicit params, explicit wins on conflict."""
-        # Use explicit as base; auto params only added if no explicit
-        # param with the same key exists
-        explicit_keys = set()
-        for p in explicit:
-            key = p.split("=")[0] if "=" in p else p
-            explicit_keys.add(key)
+    # Kernel parameters that may appear MORE THAN ONCE, one per device. For
+    # these the whole token identifies the entry — keying on the name alone made
+    # a single explicit `rd.luks.name` drop every derived one, so a config that
+    # declared a second encrypted device silently lost the unlock for the first
+    # and stopped booting.
+    _REPEATABLE = ("rd.luks.name", "rd.luks.key", "rd.luks.options")
+
+    @classmethod
+    def _merge(cls, auto: List[str], explicit: List[str]) -> List[str]:
+        """Merge auto-derived and explicit params; explicit wins on conflict.
+
+        "Conflict" means the same single-valued key (``root=``, ``resume=``).
+        A repeatable parameter never conflicts: the explicit token is added
+        alongside the derived ones, deduplicated by full value.
+        """
+        def key_of(param: str) -> str:
+            name = param.split("=")[0] if "=" in param else param
+            # Repeatable: the token itself is the identity, so a different
+            # device can never collide with another device's entry.
+            return param if name in cls._REPEATABLE else name
+
+        explicit_keys = {key_of(p) for p in explicit}
 
         merged = list(explicit)
         for p in auto:
-            key = p.split("=")[0] if "=" in p else p
-            if key not in explicit_keys:
+            if key_of(p) not in explicit_keys:
                 merged.append(p)
         return merged
 
@@ -204,9 +228,36 @@ class KernelCmdlineAction(AbstractAction):
         return {self._DOMAIN: self._desired_tokens()}
 
     def import_state(self, managed=None) -> dict:
-        # Round-trip the declared explicit params only. Never emit the resolved
-        # LUKS UUID — keeping the config portable across machines.
-        return {self._DOMAIN: list(self.explicit_params)}
+        """Capture the boot entry's own parameters.
+
+        Everything dasik DERIVES from ``disks`` is subtracted: those tokens carry
+        resolved LUKS UUIDs and a machine-specific root device, and re-emitting
+        them would pin the config to one machine (they are re-derived on apply).
+        What is left is what somebody set by hand — ``resume=``, ``amd_pstate=``,
+        an unlock for a device this config does not describe — and dropping it,
+        as this used to, quietly removed hibernation from a captured config.
+
+        Falls back to the declared params when the entry cannot be read (no
+        target, no bootloader entry yet): sync must never blank a declaration
+        just because it could not look.
+        """
+        live = self._current_cmdline().split() if self._target() is not None else []
+        if not live:
+            return {self._DOMAIN: list(self.explicit_params)}
+
+        derived_keys = set()
+        for token in self._tokens(self._derive_from_disks()):
+            name = token.split("=")[0] if "=" in token else token
+            derived_keys.add(token if name in self._REPEATABLE else name)
+
+        kept: List[str] = []
+        for token in live:
+            name = token.split("=")[0] if "=" in token else token
+            key = token if name in self._REPEATABLE else name
+            if key in derived_keys or token in kept:
+                continue
+            kept.append(token)
+        return {self._DOMAIN: kept}
 
     def _new_tokens(self, changes) -> List[str]:
         installs = [c.item for c in changes if c.op is Op.INSTALL]

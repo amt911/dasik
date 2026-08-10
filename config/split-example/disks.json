@@ -1,0 +1,21 @@
+{
+  "disks": [
+    {
+      "device": "/dev/vda",
+      "partition_table": "gpt",
+      "wipe_disk": true,
+      "partitions": [
+        {"label": "esp", "size": "512MiB", "filesystem": "fat32",
+         "partition_type": "esp", "mountpoint": "/boot", "format": true},
+        {"label": "root", "size": "rest", "filesystem": "btrfs",
+         "mountpoint": null, "format": true,
+         "encrypt": true, "luks_name": "cryptroot", "luks_password": "CHANGE-ME",
+         "mount_options": ["compress-force=zstd:3"],
+         "btrfs_subvolumes": [
+           {"name": "@", "mountpoint": "/"},
+           {"name": "@home", "mountpoint": "/home"}
+         ]}
+      ]
+    }
+  ]
+}

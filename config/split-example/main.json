@@ -1,0 +1,20 @@
+{
+  "metadata": {
+    "note": "Example of a config split across files. `dasik check main.json` assembles it. Three directives: $include (parsed JSON), $include_text (raw text, for file bodies), $concat (lists joined). Paths are relative to the file that names them."
+  },
+  "hostname": "split-example",
+  "timezone": {"region": "Etc", "city": "UTC"},
+  "bootloader": "sd-boot",
+  "initramfs": "dracut",
+  "packages": {"$concat": [
+    {"$include": "packages-base.json"},
+    {"$include": "packages-desktop.json"}
+  ]},
+  "disks": {"$include": "disks.json"},
+  "files": [
+    {"path": "/etc/pam.d/sudo", "content": {"$include_text": "parts/pam-sudo"}}
+  ],
+  "sysctl_d": [
+    {"name": "99-dasik.conf", "content": {"$include_text": "parts/99-sysctl.conf"}}
+  ]
+}

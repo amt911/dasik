@@ -16,6 +16,10 @@ from .abstract_action import AbstractAction
 from ..command_worker.command_worker import Command
 from ..state.change import Op
 
+_CPUINFO = "/proc/cpuinfo"
+# `guided` is an amd_pstate-only mode; intel_pstate takes these.
+_INTEL_MODES = ("active", "passive", "disable")
+
 
 class KernelCmdlineAction(AbstractAction):
     """Set kernel command line parameters declaratively."""
@@ -34,7 +38,7 @@ class KernelCmdlineAction(AbstractAction):
 
     @property
     def desired_params(self) -> List[str]:
-        return self._merge(self._derive_from_disks(), self.explicit_params)
+        return self._merge(self._derived(), self.explicit_params)
 
     # ------------------------------------------------------------------ #
     #  portable LUKS UUID resolution (via the open mapping; host-level)
@@ -138,6 +142,59 @@ class KernelCmdlineAction(AbstractAction):
                     params.append(f"rootflags={opts_str}")
         return params
 
+    # ------------------------------------------------------------------ #
+    #  auto-derivation from the cpu block / sysrq flag
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _cpu_vendor() -> Optional[str]:
+        """"amd" / "intel" / None, from /proc/cpuinfo.
+
+        The installer runs on the machine being installed, so the live CPU is the
+        target's CPU — the same assumption BaseInstallAction._detect_microcode
+        already makes when it picks amd-ucode vs intel-ucode.
+        """
+        try:
+            with open(_CPUINFO, "r") as f:
+                content = f.read()
+        except OSError:
+            return None
+        if "AuthenticAMD" in content:
+            return "amd"
+        if "GenuineIntel" in content:
+            return "intel"
+        return None
+
+    def _derive_from_cpu(self) -> List[str]:
+        """Kernel params for the `cpu` block and the `sysrq` flag."""
+        params: List[str] = []
+        cpu = self._cfg.get("cpu") or {}
+        if cpu:
+            driver = cpu.get("scaling_driver", "auto")
+            mode = cpu.get("mode", "active")
+            if driver == "auto":
+                driver = {"amd": "amd_pstate", "intel": "intel_pstate"}.get(
+                    self._cpu_vendor() or "", "none")
+            if driver == "amd_pstate":
+                params.append(f"amd_pstate={mode}")
+            elif driver == "intel_pstate":
+                # `guided` is amd_pstate-only; on Intel the kernel would ignore
+                # it, so emit the driver's default rather than a parameter that
+                # silently does nothing.
+                params.append(f"intel_pstate={mode if mode in _INTEL_MODES else 'active'}")
+            elif driver == "acpi_cpufreq":
+                # The built-in driver binds first; it has to stand down for
+                # acpi-cpufreq to take over.
+                params.append("amd_pstate=disable" if self._cpu_vendor() == "amd"
+                              else "intel_pstate=disable")
+        if self._cfg.get("sysrq"):
+            params.append("sysrq_always_enabled=1")
+        return params
+
+    def _derived(self) -> List[str]:
+        """Everything dasik derives itself — never captured back by `sync`."""
+        return self._derive_from_disks() + self._derive_from_cpu()
+
     # Kernel parameters that may appear MORE THAN ONCE, one per device. For
     # these the whole token identifies the entry — keying on the name alone made
     # a single explicit `rd.luks.name` drop every derived one, so a config that
@@ -210,7 +267,7 @@ class KernelCmdlineAction(AbstractAction):
         return out
 
     def _desired_tokens(self) -> List[str]:
-        merged = self._merge(self._derive_from_disks(), self.explicit_params)
+        merged = self._merge(self._derived(), self.explicit_params)
         seen: set = set()
         deduped: List[str] = []
         for tok in self._tokens(merged):
@@ -257,12 +314,15 @@ class KernelCmdlineAction(AbstractAction):
     def import_state(self, managed=None) -> dict:
         """Capture the boot entry's own parameters.
 
-        Everything dasik DERIVES from ``disks`` is subtracted: those tokens carry
-        resolved LUKS UUIDs and a machine-specific root device, and re-emitting
-        them would pin the config to one machine (they are re-derived on apply).
-        What is left is what somebody set by hand — ``resume=``, ``amd_pstate=``,
-        an unlock for a device this config does not describe — and dropping it,
-        as this used to, quietly removed hibernation from a captured config.
+        Everything dasik DERIVES — from ``disks``, from the ``cpu`` block, from
+        the ``sysrq`` flag — is subtracted: the disk tokens carry resolved LUKS
+        UUIDs and a machine-specific root device (re-emitting them would pin the
+        config to one machine), and the cpu/sysrq tokens are already declared by
+        their own blocks, so keeping them would duplicate the declaration on
+        every sync. What is left is what somebody set by hand — ``resume=``, an
+        ``amd_pstate=`` with no ``cpu`` block behind it, an unlock for a device
+        this config does not describe — and dropping it, as this used to,
+        quietly removed hibernation from a captured config.
 
         Falls back to the declared params when the entry cannot be read (no
         target, no bootloader entry yet): sync must never blank a declaration
@@ -273,7 +333,7 @@ class KernelCmdlineAction(AbstractAction):
             return {self._DOMAIN: list(self.explicit_params)}
 
         derived_keys = set()
-        for token in self._tokens(self._derive_from_disks()):
+        for token in self._tokens(self._derived()):
             name = token.split("=")[0] if "=" in token else token
             derived_keys.add(token if name in self._REPEATABLE else name)
 

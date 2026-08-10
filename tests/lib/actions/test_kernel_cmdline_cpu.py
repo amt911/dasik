@@ -108,11 +108,49 @@ def test_import_state_does_not_re_emit_derived_cpu_params(tmp_path, amd):
     assert "quiet" in captured
 
 
-def test_import_state_still_keeps_a_hand_set_pstate_without_a_cpu_block(tmp_path):
+def _entry(tmp_path, options):
     entries = tmp_path / "boot/loader/entries"
     entries.mkdir(parents=True)
-    (entries / "arch.conf").write_text("options root=LABEL=root rw amd_pstate=active\n")
+    (entries / "arch.conf").write_text(f"options {options}\n")
     (tmp_path / "boot/loader/loader.conf").write_text("default arch\n")
 
-    action = KernelCmdlineAction({"bootloader": "sd-boot"}, _ctx(tmp_path))
-    assert "amd_pstate=active" in action.import_state()["kernel_cmdline"]
+
+def test_import_state_captures_a_hand_set_pstate_as_the_block(tmp_path):
+    """A parameter dasik knows how to derive comes back as its declaration.
+
+    Keeping it in `kernel_cmdline` (as this used to) meant a synced config
+    described the same policy twice, and never grew the `cpu` block that owns
+    it.
+    """
+    _entry(tmp_path, "root=LABEL=root rw amd_pstate=active")
+
+    captured = KernelCmdlineAction({"bootloader": "sd-boot"}, _ctx(tmp_path)).import_state()
+
+    assert "amd_pstate=active" not in captured["kernel_cmdline"]
+
+
+def test_import_state_captures_a_live_sysrq_as_the_flag(tmp_path):
+    _entry(tmp_path, "root=LABEL=root rw sysrq_always_enabled=1 quiet")
+
+    captured = KernelCmdlineAction({"bootloader": "sd-boot"}, _ctx(tmp_path)).import_state()
+
+    assert captured["sysrq"] is True
+    assert "sysrq_always_enabled=1" not in captured["kernel_cmdline"]
+    assert "quiet" in captured["kernel_cmdline"]
+
+
+def test_import_state_clears_a_flag_the_live_entry_does_not_carry(tmp_path):
+    """sync captures reality: a declared flag that never reached the entry is
+    not preserved just because it was declared."""
+    _entry(tmp_path, "root=LABEL=root rw quiet")
+
+    action = KernelCmdlineAction({"bootloader": "sd-boot", "sysrq": True}, _ctx(tmp_path))
+
+    assert action.import_state()["sysrq"] is False
+
+
+def test_import_state_leaves_the_flag_alone_without_a_readable_entry():
+    """No target, nothing read — sync must not claim the flag is off."""
+    captured = KernelCmdlineAction({"bootloader": "sd-boot", "sysrq": True}).import_state()
+
+    assert "sysrq" not in captured

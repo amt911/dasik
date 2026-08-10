@@ -40,14 +40,17 @@ A handy alias for this repo:
 alias sdasik='sudo ~/repos/dasik/.venv/bin/dasik'
 ```
 
-### `Error: Binary not found: arch-chroot`
+### `Error: arch-chroot not found …`
 
-Some actions shell out to `arch-chroot` (from `arch-install-scripts`) when they
-probe/converge a target. `sync` and `plan` against your live system (`--target /`)
-generally don't need it, but **`apply` does**, and a few probes may. If you hit it:
+Every command against a target whose root is **not** `/` runs inside
+`arch-chroot` (from `arch-install-scripts`), so the verbs refuse to start
+without it. The usual cause on an installed machine is the **default target**:
+`plan` and `apply` default to `--target /mnt` (the install-from-ISO case), while
+`sync`, `generations` and `rollback` default to `--target /`.
 
 ```bash
-sudo pacman -S arch-install-scripts
+dasik plan config/mysystem.json --target /      # day-2: no arch-chroot needed
+sudo pacman -S arch-install-scripts             # only if you really mean /mnt
 ```
 
 ---

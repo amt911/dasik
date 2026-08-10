@@ -329,8 +329,10 @@ Two rules worth knowing:
   other parameter is single-valued, so yours replaces the derived one
   (`root=`, `resume=`).
 * `sync` captures the boot entry's own parameters minus everything dasik derives
-  from `disks` — so `resume=`, `amd_pstate=` and friends survive a capture, while
-  machine-specific UUIDs never enter the config.
+  from `disks` (machine-specific UUIDs never enter the config) and minus the
+  parameters a block owns — `amd_pstate=`, `intel_pstate=`, `sysrq_always_enabled=1`
+  come back as the `cpu` block and the `sysrq` flag, not as raw parameters. What
+  is left is what you really set by hand: `resume=`, `quiet`, `intel_iommu=on`.
 
 ---
 
@@ -420,7 +422,7 @@ the implicit default.
 
 ---
 
-## `cpu`
+## `cpu`  *(sync ✓)*
 
 CPU frequency scaling — the old installer's `install_cpu_scaler`.
 
@@ -435,16 +437,20 @@ CPU frequency scaling — the old installer's `install_cpu_scaler`.
 "cpu": { "scaling_driver": "auto", "mode": "active", "power_profiles_daemon": true }
 ```
 
-The kernel parameter (`amd_pstate=active` / `intel_pstate=active`) is **derived**,
-not captured: it lands on every loader entry and an explicit `kernel_cmdline`
-entry for the same key still wins. `sync` subtracts it, so it is never
-duplicated back into `kernel_cmdline`. Preflight warns when `power_profiles_daemon`
+The kernel parameter (`amd_pstate=active` / `intel_pstate=active`) is **derived**:
+it lands on every loader entry and an explicit `kernel_cmdline` entry for the same
+key still wins. `sync` subtracts it from `kernel_cmdline` and rebuilds this block
+instead — driver and mode from the live entry, `governor` from
+`/etc/default/cpupower`, `power_profiles_daemon` from the unit. A machine with no
+pstate parameter and no governor captures no `cpu` block at all (ppd on its own is
+already covered by `packages` + `systemd`), and `<driver>=disable` comes back as
+`scaling_driver: "acpi_cpufreq"` — the only reason dasik emits it. Preflight warns when `power_profiles_daemon`
 and `governor` are both set (ppd owns the energy-performance preference) and
 errors on ppd + `tlp`.
 
 ---
 
-## `reflector`
+## `reflector`  *(sync ✓)*
 
 Periodic pacman mirrorlist refresh: installs `reflector`, enables
 `reflector.timer`, and writes `/etc/xdg/reflector/reflector.conf`.
@@ -460,6 +466,10 @@ Periodic pacman mirrorlist refresh: installs `reflector`, enables
 ```json
 "reflector": { "countries": ["ES"], "protocols": ["https"], "latest": 20, "sort": "rate" }
 ```
+
+`sync` reads the conf back (repeated *and* comma-separated `--country` lines, both
+`--flag value` and `--flag=value`). A conf with no `--latest` captures
+`"latest": null` — defaulting it to 20 would add a filter the machine never had.
 
 ---
 
@@ -542,7 +552,7 @@ every config found under `/etc/snapper/configs`.
 | `enable_trim` | `false` | `fstrim.timer` for SSDs. |
 | `enable_microcode` | `false` | CPU microcode (`amd-ucode`/`intel-ucode`) in the boot entry. |
 | `remove_home_on_delete` | `false` | Remove a user's home when the account is removed. |
-| `sysrq` | `false` | REISUB: derives `sysrq_always_enabled=1` on the kernel cmdline (subtracted by `sync`, like the `cpu` parameters). |
+| `sysrq` | `false` | REISUB: derives `sysrq_always_enabled=1` on the kernel cmdline. `sync` captures it back as this flag (never as a raw `kernel_cmdline` entry), and clears it when the live entry does not carry the parameter. |
 
 ---
 

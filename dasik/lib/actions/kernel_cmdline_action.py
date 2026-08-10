@@ -20,6 +20,12 @@ _CPUINFO = "/proc/cpuinfo"
 # `guided` is an amd_pstate-only mode; intel_pstate takes these.
 _INTEL_MODES = ("active", "passive", "disable")
 
+_SYSRQ_PARAM = "sysrq_always_enabled=1"
+# Parameter NAMES a config block owns: on import they are never captured as
+# hand-set `kernel_cmdline` entries, because `sysrq` (here) and `cpu`
+# (CpuAction) declare them. See import_state.
+_BLOCK_OWNED_PARAMS = ("amd_pstate", "intel_pstate", "sysrq_always_enabled")
+
 
 class KernelCmdlineAction(AbstractAction):
     """Set kernel command line parameters declaratively."""
@@ -311,28 +317,45 @@ class KernelCmdlineAction(AbstractAction):
     def managed_keys(self) -> dict:
         return {self._DOMAIN: self._desired_tokens()}
 
-    def import_state(self, managed=None) -> dict:
-        """Capture the boot entry's own parameters.
+    def live_params(self) -> List[str]:
+        """The parameters on the target's default boot entry (``[]`` if unread).
 
-        Everything dasik DERIVES — from ``disks``, from the ``cpu`` block, from
-        the ``sysrq`` flag — is subtracted: the disk tokens carry resolved LUKS
-        UUIDs and a machine-specific root device (re-emitting them would pin the
-        config to one machine), and the cpu/sysrq tokens are already declared by
-        their own blocks, so keeping them would duplicate the declaration on
-        every sync. What is left is what somebody set by hand — ``resume=``, an
-        ``amd_pstate=`` with no ``cpu`` block behind it, an unlock for a device
-        this config does not describe — and dropping it, as this used to,
-        quietly removed hibernation from a captured config.
+        Public because the ``cpu`` block is reconstructed from the same entry
+        (``CpuAction.import_state``) and must not grow a second copy of the
+        bootloader-entry readers.
+        """
+        if self._target() is None:
+            return []
+        return self._current_cmdline().split()
+
+    def import_state(self, managed=None) -> dict:
+        """Capture the boot entry's own parameters, plus the ``sysrq`` flag.
+
+        Everything dasik DERIVES is subtracted. The disk tokens (resolved LUKS
+        UUIDs, a machine-specific root device) would pin the config to one
+        machine; the cpu/sysrq tokens belong to their own blocks, and keeping
+        them would declare the same policy twice. Those two are subtracted by
+        NAME, whether or not this config declares the block — otherwise a sync
+        from a bare seed captured ``amd_pstate=active`` as a hand-set parameter
+        and the ``cpu``/``sysrq`` declarations never appeared at all. Their
+        values are not lost: the flag is returned here and the block by
+        ``CpuAction``.
+
+        What is left is what somebody really set by hand — ``resume=``,
+        ``quiet``, an unlock for a device this config does not describe — and
+        dropping it, as this used to, quietly removed hibernation from a
+        captured config.
 
         Falls back to the declared params when the entry cannot be read (no
         target, no bootloader entry yet): sync must never blank a declaration
-        just because it could not look.
+        just because it could not look — which is also why ``sysrq`` is then
+        absent from the fragment rather than reported as off.
         """
-        live = self._current_cmdline().split() if self._target() is not None else []
+        live = self.live_params()
         if not live:
             return {self._DOMAIN: list(self.explicit_params)}
 
-        derived_keys = set()
+        derived_keys = set(_BLOCK_OWNED_PARAMS)
         for token in self._tokens(self._derived()):
             name = token.split("=")[0] if "=" in token else token
             derived_keys.add(token if name in self._REPEATABLE else name)
@@ -344,7 +367,7 @@ class KernelCmdlineAction(AbstractAction):
             if key in derived_keys or token in kept:
                 continue
             kept.append(token)
-        return {self._DOMAIN: kept}
+        return {self._DOMAIN: kept, "sysrq": _SYSRQ_PARAM in live}
 
     def _new_tokens(self, changes) -> List[str]:
         installs = [c.item for c in changes if c.op is Op.INSTALL]

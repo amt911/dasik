@@ -75,6 +75,9 @@ _UNIT_PROVIDERS: Dict[str, Set[str]] = {
     "snapper-boot.timer": {"snapper"},
 }
 
+# Packages that ship /usr/bin/sudo (and visudo). `base` does NOT.
+_SUDO_PROVIDERS: Set[str] = {"sudo", "base-devel"}
+
 _DISPLAY_MANAGER_UNITS = set(_DM_UNIT_PROVIDERS)
 
 # Config directories that belong to one specific display manager.
@@ -243,6 +246,32 @@ def _check_units(config: Dict[str, Any], packages: Set[str]) -> List[Issue]:
     return issues
 
 
+def _check_sudo(config: Dict[str, Any], packages: Set[str]) -> List[Issue]:
+    """A sudoers fragment is useless without sudo installed.
+
+    An EXPLICIT `sudo` block is an error: the user asked for something the config
+    cannot deliver (the fragment could not even be validated with visudo). The
+    IMPLICIT default (no block, a user in `wheel`) only warns — a config that
+    installs fine today must not start failing preflight because of a default it
+    never asked for.
+    """
+    if _SUDO_PROVIDERS & packages:
+        return []
+    if config.get("sudo") is not None:
+        return [Issue(
+            "error", "sudo_without_provider",
+            "a `sudo` block is declared but no declared package provides sudo "
+            f"(provided by: {', '.join(sorted(_SUDO_PROVIDERS))}); the fragment "
+            "could not even be validated with visudo.")]
+    for user in config.get("users") or []:
+        if isinstance(user, dict) and "wheel" in (user.get("groups") or []):
+            return [Issue(
+                "warning", "wheel_without_sudo",
+                f"user {user.get('username')!r} is in `wheel` but no declared "
+                "package provides sudo, so the group grants nothing.")]
+    return []
+
+
 def _check_crypttab(config: Dict[str, Any]) -> List[Issue]:
     content = _crypttab_content(config)
     if not content:
@@ -323,6 +352,7 @@ def preflight(config: Dict[str, Any],
     issues: List[Issue] = []
     issues += _check_groups(config, packages)
     issues += _check_units(config, packages)
+    issues += _check_sudo(config, packages)
     issues += _check_crypttab(config)
     issues += _check_efi(config, efi_boot)
     return issues

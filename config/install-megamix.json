@@ -16,6 +16,7 @@
 
   "packages": [
     "base",
+    "sudo",
     "docker",
     "linux",
     "linux-firmware",
@@ -75,11 +76,18 @@
   },
 
   "kernel_cmdline": [
-    "sysrq_always_enabled=1",
     "intel_iommu=on"
   ],
 
   "enable_trim": true,
+
+  "sysrq": true,
+
+  "sudo": { "wheel": true, "nopasswd": false, "rules": [] },
+
+  "cpu": { "scaling_driver": "auto", "mode": "active", "power_profiles_daemon": true },
+
+  "reflector": { "countries": ["ES"], "protocols": ["https"], "latest": 20, "sort": "rate" },
 
   "initramfs": "mkinitcpio",
 

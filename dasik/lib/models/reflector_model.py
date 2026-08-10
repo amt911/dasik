@@ -6,14 +6,19 @@ from pydantic import BaseModel, Field, field_validator
 
 _COUNTRY_RE = re.compile(r"^[A-Za-z][A-Za-z .'-]*$")
 
+Protocol = Literal["https", "http", "rsync", "ftp"]
+
+
+def _default_protocols() -> List[Protocol]:
+    return ["https"]
+
 
 class ReflectorModel(BaseModel):
     """Options written to /etc/xdg/reflector/reflector.conf."""
 
     countries: List[str] = Field(default_factory=list,
                                  description="Mirror countries, e.g. ['ES', 'France']")
-    protocols: List[Literal["https", "http", "rsync", "ftp"]] = Field(
-        default_factory=lambda: ["https"])
+    protocols: List[Protocol] = Field(default_factory=_default_protocols)
     latest: Optional[int] = Field(20, ge=1, description="Keep the N most recently synced")
     sort: Literal["rate", "age", "score", "delay", "country"] = "rate"
     save: str = Field("/etc/pacman.d/mirrorlist", description="Mirrorlist to write")

@@ -124,3 +124,24 @@ def test_execute_check_false_does_not_raise_on_nonzero(monkeypatch):
     )
     result = cw.Command.execute("pacman", ["-Qi", "firefox"], target=Target(root="/"))
     assert result.returncode == 1
+
+
+def test_missing_arch_chroot_names_the_package_and_the_day2_flag(monkeypatch):
+    """The library-level failure is as actionable as the CLI gate.
+
+    A caller that reaches Command.execute with a chroot target on a host
+    without arch-chroot (a bare `Reconciler`, a test harness) gets the same
+    remedy the CLI prints, not a bare "Binary not found".
+    """
+    import pytest
+
+    from dasik.lib.command_worker import command_worker as cw
+    from dasik.lib.exceptions.exceptions import CommandNotFoundException
+
+    monkeypatch.setattr(cw, "which", lambda _: None)
+    with pytest.raises(CommandNotFoundException) as excinfo:
+        Command.execute("pacman", ["-Qq"], target=Target(root="/mnt"))
+
+    message = str(excinfo.value)
+    assert "arch-install-scripts" in message
+    assert "--target /" in message

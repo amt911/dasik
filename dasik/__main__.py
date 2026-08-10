@@ -38,6 +38,7 @@ from dasik.lib.state.config_writer import ConfigWriter
 from dasik.lib.state.generation_store import GenerationStore
 from dasik.lib.state.state_store import StateStore
 from dasik.lib.target.target import Target
+from dasik.lib.target.target_check import check_target
 from dasik.lib.expand import expand_config, subtract_contributions
 
 
@@ -279,8 +280,26 @@ def _preflight_or_none(config: dict) -> Optional[dict]:
     return config
 
 
+def _target_or_none(target_root: str) -> Optional[Target]:
+    """The Target for *target_root*, or None (message printed) if unusable.
+
+    Runs before any action so a run that cannot possibly work — a chroot target
+    on a host without ``arch-chroot`` — fails immediately and says what to do,
+    instead of dying mid-probe on "Binary not found: arch-chroot".
+    """
+    target = Target(root=target_root)
+    problem = check_target(target)
+    if problem is not None:
+        print(f"Error: {problem}", file=sys.stderr)
+        return None
+    return target
+
+
 def _cmd_plan(config_path: Path, target_root: str) -> int:
     """Run the read-only plan flow."""
+    target = _target_or_none(target_root)
+    if target is None:
+        return 1
     config = _load_validated_config(config_path)
     if config is None:
         return 1
@@ -293,7 +312,7 @@ def _cmd_plan(config_path: Path, target_root: str) -> int:
 
     reconciler = Reconciler(
         config=config,
-        target=Target(root=target_root),
+        target=target,
         manifest=None,
         action_metas=registry.get_all_actions(),
     )
@@ -304,6 +323,9 @@ def _cmd_plan(config_path: Path, target_root: str) -> int:
 
 def _cmd_apply(config_path: Path, target_root: str, assume_yes: bool) -> int:
     """Run the destructive convergence flow."""
+    target = _target_or_none(target_root)
+    if target is None:
+        return 1
     config = _load_validated_config(config_path)
     if config is None:
         return 1
@@ -313,7 +335,6 @@ def _cmd_apply(config_path: Path, target_root: str, assume_yes: bool) -> int:
         return 1
     setup_actions()
     registry = get_default_registry()
-    target = Target(root=target_root)
     state_store = StateStore(target)
     gen_store = GenerationStore(target)
 
@@ -355,6 +376,9 @@ def _cmd_apply(config_path: Path, target_root: str, assume_yes: bool) -> int:
 
 def _cmd_sync(config_path: Path, target_root: str) -> int:
     """Capture system reality back into the config file (spec §4 sync flow)."""
+    target = _target_or_none(target_root)
+    if target is None:
+        return 1
     try:
         raw_text = config_path.read_text()
     except Exception as e:
@@ -382,7 +406,6 @@ def _cmd_sync(config_path: Path, target_root: str) -> int:
 
     setup_actions()
     registry = get_default_registry()
-    target = Target(root=target_root)
     state_store = StateStore(target)
     manifest_dict = state_store.load().to_dict()
 
@@ -450,7 +473,9 @@ def _previous_generation(gen_store: GenerationStore) -> Optional[int]:
 
 def _cmd_rollback(target_root: str, number: Optional[int], assume_yes: bool) -> int:
     """Restore a generation's config and re-apply it (spec §4 rollback)."""
-    target = Target(root=target_root)
+    target = _target_or_none(target_root)
+    if target is None:
+        return 1
     state_store = StateStore(target)
     gen_store = GenerationStore(target)
 

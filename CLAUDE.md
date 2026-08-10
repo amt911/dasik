@@ -72,7 +72,9 @@ Confirm the switch briefly when it happens.
 ```bash
 # install (editable, for development)
 pip install -e .
-pip install -e .[dev]   # also installs pytest + pytest-cov
+pip install -e .[dev]        # pytest + pytest-cov + hypothesis + mypy + bandit
+pip install -e '.[dev,mut]'  # + mutmut — REQUIRED: the pre-push hook gates on it
+git config core.hooksPath .githooks   # enable the gates (once per clone)
 
 # run against a config
 dasik config/install-megamix.json          # console-script entry point
@@ -87,7 +89,13 @@ pytest                       # unit tests (~430, all passing)
 pytest --cov=dasik           # coverage (gate: 80%; needs the [dev] extra)
 pytest -k is_needed          # filter by name
 mypy dasik                   # static type checking (a .mypy_cache is present)
+scripts/mutation.sh          # mutation gate, set_math tier (needs the [mut] extra)
 ```
+
+**The four gates run on every `git push`** via `.githooks/pre-push` (pytest+coverage,
+mypy, bandit, mutation) — the same set CI enforces. The hook activates `.venv`
+itself and refuses to run if any tool is missing, so it can never pass by
+skipping a gate. `--no-verify` bypasses it (discouraged; CI still gates).
 
 A pytest suite **does** exist (`tests/` mirrors `dasik/lib/`, configured in `pyproject.toml`; ~430 tests, all passing — run `pytest`). See [Tests and quality](#tests-and-quality).
 

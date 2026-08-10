@@ -153,6 +153,33 @@ To mirror "add an option to a NixOS module":
 2. **Action** — create `dasik/lib/actions/<thing>_action.py` subclassing `AbstractAction`; implement `name`, `is_needed`, `execute`, `verify`. Shell out via `Command.execute(...)` (`dasik/lib/command_worker/`), passing `run_as_chroot=True` for changes inside the target.
 3. **Register** — add a `register_action(...)` call in `setup_actions()` at the correct phase, `is_optional=True` for optional sections.
 4. **Config sample** — add/extend a JSON under `config/` so the option is exercised.
+5. **Detectability** — prove `plan` sees it, in BOTH directions (see the rule below).
+
+### Every feature must be detectable by `plan`/`apply`
+
+**A declared block that converges but never shows up in `dasik plan` is a bug**,
+even when `apply` does the right thing: you cannot tell "already applied" from
+"dasik ignores this block", and `apply` then changes the machine in ways the dry
+run never announced.
+
+Two things make this easy to get wrong:
+
+- **A feature usually rides another domain.** `sysrq` has no `[sysrq]` line in
+  the plan — it appears as `+ [kernel_cmdline] install sysrq_always_enabled=1`,
+  the `cpu` block as `amd_pstate=active` on the same domain plus a package, a
+  unit and `/etc/default/cpupower`, `reflector` as a `[files]` entry plus
+  `reflector.timer`. That is fine. Being invisible *everywhere* is not.
+- **Silence is ambiguous.** A quiet plan means "already converged" — which is
+  exactly what a feature nobody looks at also produces. On a machine whose boot
+  entry already carried `sysrq_always_enabled=1` (the old imperative installer's
+  `enable_reisub`) the silence was correct, and indistinguishable from a bug.
+
+So every feature needs BOTH assertions, and the disable direction where it
+exists: **missing on the target ⇒ a change is planned; present ⇒ no change;
+declared off but owned in the manifest ⇒ REMOVE.** An unowned parameter someone
+else set is deliberately left alone. The matrix for issue #173 block A lives in
+[`tests/lib/test_feature_detectability.py`](tests/lib/test_feature_detectability.py) —
+extend it when adding a feature.
 
 ### Running commands
 
@@ -270,6 +297,7 @@ that crashes before it ever reaches `is_needed()`.
 - **TDD by default** for new logic (`models/`, `json_parser/`, `actions/` `is_needed`/`verify`, `command_worker/`). Don't merge logic without tests.
 - **Don't lower the coverage gate** — exclude untestable modules in config with a written justification instead.
 - **Preserve idempotency** — any new action must implement a real `is_needed()` that reads system state. A re-run of the same JSON must be a no-op.
+- **Every feature must be detectable by `plan`** — missing ⇒ planned, present ⇒ silent, owned-but-undeclared ⇒ removed. Assert all of them; a quiet plan is not evidence. See [Every feature must be detectable by `plan`/`apply`](#every-feature-must-be-detectable-by-planapply).
 - **Keep sections optional** — config has many optional blocks (disks, kvm, cups, wireguard, …), not just disks. New top-level fields should be `Optional`/defaulted in `JsonModel`.
 - **The legacy handler is gone** — the monolithic `actions_handler.py` and the no-verb `dasik <config>` fallback were removed (PR #151). Put all behavior in the v2/v3 registry/action path (`setup_actions()` + `plan()/apply()/import_state()`).
 - **Entry point is on v3** — `__main__`'s verbs (`plan`/`apply`/`sync`/`generations`/`rollback`) use the reconciler. A bare `dasik <config>` (no verb) is rejected with a pointer to `plan`/`apply`.

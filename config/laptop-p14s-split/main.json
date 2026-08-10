@@ -107,6 +107,23 @@
     "install_codecs": true
   },
   "enable_trim": true,
+  "sysrq": true,
+  "sudo": {
+    "wheel": true,
+    "nopasswd": false,
+    "rules": []
+  },
+  "cpu": {
+    "scaling_driver": "auto",
+    "mode": "active",
+    "power_profiles_daemon": true
+  },
+  "reflector": {
+    "countries": ["ES"],
+    "protocols": ["https"],
+    "latest": 20,
+    "sort": "rate"
+  },
   "kernel_cmdline": [
     "rd.luks.name=0ed69442-a99e-5f65-88d8-28d3e9945408=cryptroot",
     "rd.luks.name=7c678858-646c-5261-9727-4779b680f718=cryptswap",

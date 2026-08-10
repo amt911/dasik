@@ -19,6 +19,7 @@ from .ms_fonts_model import MicrosoftFontsModel
 from .firewall_model import FirewallModel
 from .wireguard_model import WireguardModel
 from .snapper_model import SnapperModel
+from .sudo_model import SudoModel
 
 
 class JsonModel(BaseModel):
@@ -89,6 +90,7 @@ class JsonModel(BaseModel):
     firewall: Optional[FirewallModel] = None
     wireguard: Optional[WireguardModel] = None
     snapper: Optional[SnapperModel] = None
+    sudo: Optional[SudoModel] = None
     # zram-generator: {device: {option: value}} mirroring zram-generator.conf ini.
     zram: Optional[Dict[str, Dict[str, Any]]] = None
 

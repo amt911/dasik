@@ -1,0 +1,476 @@
+{
+  "timezone": {
+    "region": "Europe",
+    "city": "Madrid"
+  },
+  "locales": {
+    "selected_locales": [
+      "en_US.UTF-8 UTF-8",
+      "es_ES.UTF-8 UTF-8"
+    ],
+    "desired_locale": "en_US.UTF-8",
+    "desired_tty_layout": "us"
+  },
+  "pacman": {
+    "options": {
+      "Parallel": true,
+      "Color": true,
+      "VerbosePkgLists": false
+    },
+    "multilib": true
+  },
+  "users": [
+    {
+      "username": "andres",
+      "hashed_password": "$y$j9T$L0DlN5ioFZGJlMY/nbpZ7.$8Hqqj9SoW5xpcQ.bmiSuSN.jIhyBXNx.rVR36aVJ6J/",
+      "shell": "/bin/zsh",
+      "groups": [
+        "libvirt",
+        "wheel"
+      ]
+    }
+  ],
+  "packages": [
+    "7zip",
+    "amd-ucode",
+    "arch-wiki-docs",
+    "avahi",
+    "base",
+    "base-devel",
+    "bat",
+    "bc",
+    "bluez",
+    "bluez-utils",
+    "brightnessctl",
+    "btdu",
+    "btop",
+    "btrfs-progs",
+    "calf",
+    "ccid",
+    "compsize",
+    "cups",
+    "cups-pdf",
+    "dkms",
+    "docker-buildx",
+    "dosfstools",
+    "dracut",
+    "duperemove",
+    "ethtool",
+    "evince",
+    "ex-vi-compat",
+    "exfatprogs",
+    "f3",
+    "fastfetch",
+    "fdupes",
+    "firefox",
+    "firewalld",
+    "fish",
+    "fprintd",
+    "freac",
+    "freeze-bin",
+    "fwupd",
+    "fzf",
+    "gdu",
+    "git",
+    "github-cli",
+    "gparted",
+    "htop",
+    "iotop-c",
+    "iperf3",
+    "jdk17-openjdk",
+    "jdupes",
+    "jq",
+    "kde-graphics-meta",
+    "kde-multimedia-meta",
+    "kde-system-meta",
+    "kde-utilities-meta",
+    "kdiskmark",
+    "konsave",
+    "libva-utils",
+    "libvirt",
+    "linux",
+    "linux-firmware",
+    "linux-headers",
+    "lm_sensors",
+    "lsd",
+    "lsp-plugins",
+    "meld",
+    "nano",
+    "net-tools",
+    "networkmanager",
+    "nodejs",
+    "npm",
+    "ntfs-3g",
+    "ntfsprogs",
+    "nvm",
+    "nvme-cli",
+    "nvtop",
+    "obs-studio",
+    "obsidian",
+    "openssh",
+    "pacman-contrib",
+    "pcsclite",
+    "piper",
+    "plasma-meta",
+    "pngquant",
+    "pnpm",
+    "podman",
+    "podman-compose",
+    "podman-docker",
+    "power-profiles-daemon",
+    "powertop",
+    "pwgen",
+    "qemu-block-gluster",
+    "qemu-block-iscsi",
+    "qemu-full",
+    "qemu-guest-agent",
+    "qemu-user-static",
+    "rclone",
+    "rebuild-detector",
+    "reflector",
+    "rsync",
+    "shellcheck",
+    "simple-scan",
+    "snap-pac",
+    "snapper",
+    "sof-firmware",
+    "sudo",
+    "swtpm",
+    "systemd-boot-pacman-hook",
+    "tldr",
+    "tmux",
+    "ttf-hack-nerd",
+    "unrar",
+    "unzip",
+    "usbutils",
+    "uv",
+    "vdpauinfo",
+    "virt-firmware",
+    "virt-manager",
+    "vlc",
+    "wget",
+    "whipper",
+    "wireguard-tools",
+    "wl-clipboard",
+    "wsdd",
+    "xclip",
+    "xf86-video-vesa",
+    "xorg-bdftopcf",
+    "xorg-docs",
+    "xorg-font-util",
+    "xorg-fonts-100dpi",
+    "xorg-fonts-75dpi",
+    "xorg-fonts-encodings",
+    "xorg-iceauth",
+    "xorg-mkfontscale",
+    "xorg-server",
+    "xorg-server-common",
+    "xorg-server-devel",
+    "xorg-server-xephyr",
+    "xorg-server-xnest",
+    "xorg-server-xvfb",
+    "xorg-sessreg",
+    "xorg-setxkbmap",
+    "xorg-smproxy",
+    "xorg-x11perf",
+    "xorg-xauth",
+    "xorg-xbacklight",
+    "xorg-xcmsdb",
+    "xorg-xcursorgen",
+    "xorg-xdpyinfo",
+    "xorg-xdriinfo",
+    "xorg-xev",
+    "xorg-xeyes",
+    "xorg-xgamma",
+    "xorg-xhost",
+    "xorg-xinput",
+    "xorg-xkbcomp",
+    "xorg-xkbevd",
+    "xorg-xkbutils",
+    "xorg-xkill",
+    "xorg-xlsatoms",
+    "xorg-xlsclients",
+    "xorg-xmodmap",
+    "xorg-xpr",
+    "xorg-xprop",
+    "xorg-xrandr",
+    "xorg-xrdb",
+    "xorg-xrefresh",
+    "xorg-xset",
+    "xorg-xsetroot",
+    "xorg-xvinfo",
+    "xorg-xwayland",
+    "xorg-xwd",
+    "xorg-xwininfo",
+    "xorg-xwud",
+    "xpadneo-dkms",
+    "yay",
+    "yazi",
+    "zram-generator",
+    "zsh"
+  ],
+  "systemd": {
+    "enable_units": [
+      "NetworkManager-dispatcher.service",
+      "NetworkManager-wait-online.service",
+      "NetworkManager.service",
+      "avahi-daemon.service",
+      "bluetooth.service",
+      "firewalld.service",
+      "fstrim.timer",
+      "fwupd-refresh.timer",
+      "getty@.service",
+      "libvirtd.service",
+      "lm_sensors.service",
+      "paccache.timer",
+      "plasmalogin.service",
+      "power-profiles-daemon.service",
+      "reflector.timer",
+      "remote-fs.target",
+      "snapper-boot.timer",
+      "snapper-cleanup.timer",
+      "snapper-timeline.timer",
+      "sshd.service",
+      "systemd-oomd.service",
+      "systemd-timesyncd.service",
+      "wsdd.service"
+    ],
+    "enable_sockets": [
+      "avahi-daemon.socket",
+      "cups.socket",
+      "libvirtd-admin.socket",
+      "libvirtd-ro.socket",
+      "libvirtd.socket",
+      "pcscd.socket",
+      "podman.socket",
+      "systemd-oomd.socket",
+      "systemd-userdbd.socket",
+      "virtlockd-admin.socket",
+      "virtlockd.socket",
+      "virtlogd-admin.socket",
+      "virtlogd.socket"
+    ],
+    "disable_units": []
+  },
+  "initramfs": "dracut",
+  "bluetooth": {
+    "enable": true,
+    "in_initramfs": false
+  },
+  "disks": {
+    "disks": [
+      {
+        "device": "/dev/nvme0n1",
+        "partition_table": "gpt",
+        "wipe_disk": true,
+        "partitions": [
+          {
+            "label": "esp",
+            "size": "1GiB",
+            "filesystem": "fat32",
+            "partition_type": "esp",
+            "mountpoint": "/boot",
+            "encrypt": false,
+            "luks_name": null,
+            "luks_keyfile": null,
+            "luks_uuid": null,
+            "unlock_keyfile": null,
+            "unlock_keydev": null,
+            "unlock_tpm2": false,
+            "unlock_fido2": false,
+            "luks_options": [],
+            "mount_options": [],
+            "btrfs_subvolumes": [],
+            "format": true
+          },
+          {
+            "label": "swap",
+            "size": "32GiB",
+            "filesystem": "swap",
+            "partition_type": "linux-swap",
+            "mountpoint": null,
+            "encrypt": true,
+            "luks_name": "cryptswap",
+            "luks_password": "CHANGE-ME-before-applying",
+            "luks_keyfile": null,
+            "luks_uuid": null,
+            "unlock_keyfile": null,
+            "unlock_keydev": null,
+            "unlock_tpm2": false,
+            "unlock_fido2": false,
+            "luks_options": [],
+            "mount_options": [],
+            "btrfs_subvolumes": [],
+            "format": true
+          },
+          {
+            "label": "root",
+            "size": "rest",
+            "filesystem": "btrfs",
+            "partition_type": "linux",
+            "mountpoint": null,
+            "encrypt": true,
+            "luks_name": "cryptroot",
+            "luks_password": "CHANGE-ME-before-applying",
+            "luks_keyfile": null,
+            "luks_uuid": null,
+            "unlock_keyfile": null,
+            "unlock_keydev": null,
+            "unlock_tpm2": false,
+            "unlock_fido2": false,
+            "luks_options": [],
+            "mount_options": [
+              "compress-force=zstd:3"
+            ],
+            "btrfs_subvolumes": [
+              {
+                "name": "@",
+                "mountpoint": "/",
+                "mount_options": []
+              },
+              {
+                "name": "@snapshots",
+                "mountpoint": "/.snapshots",
+                "mount_options": []
+              },
+              {
+                "name": "@srv",
+                "mountpoint": "/srv",
+                "mount_options": []
+              },
+              {
+                "name": "@home",
+                "mountpoint": "/home",
+                "mount_options": []
+              },
+              {
+                "name": "@var_abs",
+                "mountpoint": "/var/abs",
+                "mount_options": []
+              },
+              {
+                "name": "@var_cache",
+                "mountpoint": "/var/cache",
+                "mount_options": []
+              },
+              {
+                "name": "@var_lib_libvirt",
+                "mountpoint": "/var/lib/libvirt",
+                "mount_options": []
+              },
+              {
+                "name": "@var_log",
+                "mountpoint": "/var/log",
+                "mount_options": []
+              },
+              {
+                "name": "@var_tmp",
+                "mountpoint": "/var/tmp",
+                "mount_options": []
+              }
+            ],
+            "format": true
+          }
+        ]
+      }
+    ]
+  },
+  "udev_rules": [
+    {
+      "name": "1-qudelix.rules",
+      "content": "# 96Hz\nKERNEL==\"hidraw*\", ATTRS{idVendor}==\"0a12\", ATTRS{idProduct}==\"4003\", MODE=\"0660\", TAG+=\"uaccess\"\n\n# 88.2Hz\nKERNEL==\"hidraw*\", ATTRS{idVendor}==\"0a12\", ATTRS{idProduct}==\"4004\", MODE=\"0660\", TAG+=\"uaccess\"\n\n# 48Hz\nKERNEL==\"hidraw*\", ATTRS{idVendor}==\"0a12\", ATTRS{idProduct}==\"4005\", MODE=\"0660\", TAG+=\"uaccess\"\n\n# 44.1Hz\nKERNEL==\"hidraw*\", ATTRS{idVendor}==\"0a12\", ATTRS{idProduct}==\"4006\", MODE=\"0660\", TAG+=\"uaccess\"\n\n# 44.1Hz/48/88.2/96Khz\nKERNEL==\"hidraw*\", ATTRS{idVendor}==\"0a12\", ATTRS{idProduct}==\"4007\", MODE=\"0660\", TAG+=\"uaccess\"\n\n# 48Hz with Mic\nKERNEL==\"hidraw*\", ATTRS{idVendor}==\"0a12\", ATTRS{idProduct}==\"4125\", MODE=\"0660\", TAG+=\"uaccess\"\n\n# 44.1Hz with Mic\nKERNEL==\"hidraw*\", ATTRS{idVendor}==\"0a12\", ATTRS{idProduct}==\"4126\", MODE=\"0660\", TAG+=\"uaccess\"\n"
+    },
+    {
+      "name": "50-dolphin-UB400.rules",
+      "content": "SUBSYSTEM==\"usb\", ATTRS{idVendor}==\"0a12\", ATTRS{idProduct}==\"0001\", MODE=\"0660\", TAG+=\"uaccess\"\n"
+    }
+  ],
+  "modprobe_conf": [
+    {
+      "name": "nested_virt.conf",
+      "content": "options kvm_amd nested=1\n"
+    }
+  ],
+  "modules_load": [],
+  "files": [
+    {
+      "path": "/etc/plasmalogin.conf.d/10-dasik.conf",
+      "content": "# Managed by dasik. Plasma Login Manager (plasmalogin.service) reads\n# /etc/plasmalogin.conf.d/*.conf — it is an SDDM fork, but it does NOT read\n# /etc/sddm.conf.d and it is fixed to the Breeze theme (no [Theme] key).\n# No [Autologin] here, unlike the desktop: on a laptop the login prompt is the\n# second factor after the LUKS passphrase.\n[General]\nHaltCommand=/usr/bin/systemctl poweroff\nRebootCommand=/usr/bin/systemctl reboot\n\n[Users]\nMaximumUid=60513\nMinimumUid=1000\n"
+    },
+    {
+      "path": "/etc/pam.d/sudo",
+      "content": "#%PAM-1.0\n# Managed by dasik. Vendor file (sudo package) + fingerprint on top.\n# WARNING: fingerprint auth for sudo is the CVE-2024-37408 vector — a background\n# process can consume the prompt and obtain permissions without you touching the\n# reader. Delete the pam_fprintd line to go back to password-only sudo.\nauth       sufficient  pam_fprintd.so\nauth       include     system-auth\naccount    include     system-auth\nsession    include     system-auth\nsession    optional    pam_systemd.so class=none\n"
+    },
+    {
+      "path": "/etc/pam.d/polkit-1",
+      "content": "#%PAM-1.0\n# Managed by dasik: overrides /usr/lib/pam.d/polkit-1 (vendor) to add the\n# fingerprint to KDE's authentication dialogs. Same CVE-2024-37408 caveat as\n# /etc/pam.d/sudo. Admin identity stays unix-group:wheel (polkit 50-default.rules).\nauth       sufficient   pam_fprintd.so\nauth       include      system-auth\naccount    include      system-auth\npassword   include      system-auth\nsession    include      system-auth\n"
+    },
+    {
+      "path": "/etc/pam.d/plasmalogin",
+      "content": "#%PAM-1.0\n# Managed by dasik: overrides /usr/lib/pam.d/plasmalogin (plasma-login-manager).\n# PASSWORD FIRST, finger as the fallback: typing the password is what lets\n# pam_kwallet5 unlock KWallet at login (the ArchWiki warns fingerprint-only\n# login leaves the wallet locked). Leave the password field empty and press\n# Enter to authenticate with the finger instead.\n# Keep this file in sync when plasma-login-manager updates its vendor file:\n#   diff /usr/lib/pam.d/plasmalogin /etc/pam.d/plasmalogin\nauth        [success=1 new_authtok_reqd=1 default=ignore]  pam_unix.so try_first_pass likeauth nullok\nauth        sufficient  pam_fprintd.so\nauth        include     system-login\n-auth       optional    pam_gnome_keyring.so\n-auth       optional    pam_kwallet5.so\n\naccount     include     system-login\n\npassword    include     system-login\n-password   optional    pam_gnome_keyring.so    use_authtok\n\nsession     optional    pam_keyinit.so          force revoke\nsession     include     system-login\n-session    optional    pam_gnome_keyring.so    auto_start\n-session    optional    pam_kwallet5.so         auto_start\n"
+    }
+  ],
+  "zram": {
+    "zram0": {
+      "swap-priority": "100",
+      "zram-size": "min(ram / 2, 8192)"
+    }
+  },
+  "firewall": {
+    "enable": true,
+    "allowed_services": [],
+    "remove_services": [
+      "ssh"
+    ],
+    "rich_rules": [
+      "rule service name=\"ssh\" accept limit value=\"2/m\""
+    ]
+  },
+  "bootloader": "sd-boot",
+  "enable_microcode": true,
+  "snapper": {
+    "enable": true,
+    "configs": [
+      {
+        "name": "root",
+        "subvolume": "/"
+      }
+    ]
+  },
+  "hostname": "archlinux-p14s",
+  "network": {
+    "type": "NetworkManager",
+    "add_default_hosts": true
+  },
+  "drivers": [
+    "amd"
+  ],
+  "hardware_acceleration": {
+    "enable": true,
+    "install_codecs": true
+  },
+  "enable_trim": true,
+  "sysrq": true,
+  "sudo": {
+    "wheel": true,
+    "nopasswd": false,
+    "rules": []
+  },
+  "cpu": {
+    "scaling_driver": "auto",
+    "mode": "active",
+    "power_profiles_daemon": true
+  },
+  "reflector": {
+    "countries": ["ES"],
+    "protocols": ["https"],
+    "latest": 20,
+    "sort": "rate"
+  },
+  "kernel_cmdline": [
+    "rd.luks.name=0ed69442-a99e-5f65-88d8-28d3e9945408=cryptroot",
+    "rd.luks.name=7c678858-646c-5261-9727-4779b680f718=cryptswap",
+    "resume=/dev/mapper/cryptswap"
+  ],
+  "notes": "Lenovo ThinkPad P14s Gen 2 (AMD Ryzen 7 PRO 5850U, Cezanne iGPU, no discrete GPU). BEFORE APPLYING: (1) set both luks_password fields (they are placeholders — use the SAME passphrase on cryptroot and cryptswap so systemd's initrd password cache asks only once); (2) confirm the disk is /dev/nvme0n1 with lsblk — wipe_disk is true; (3) size the swap partition to your RAM (32GiB assumed) or hibernation cannot fit; (4) regenerate hashed_password with `dasik hash-password`. In the UEFI set Sleep to 'Linux' (s2idle) — with 'Windows 10' the lid switch is flaky. Fingerprint: Synaptics 06cb:00bd, supported in-tree; enrol with `fprintd-enroll` and keep the reader firmware current via fwupd."
+}

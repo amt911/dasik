@@ -240,9 +240,20 @@ def expand_cpu(config: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
+def expand_sdboot_update(config: Dict[str, Any]) -> Dict[str, Any]:
+    # systemd ships this unit itself: it runs `bootctl update` when the ESP's
+    # loader is older than the installed systemd. The old imperative installer
+    # built the AUR `systemd-boot-pacman-hook` for the same job; the native unit
+    # needs no package at all.
+    if config.get("bootloader") not in ("sd-boot", "systemd-boot"):
+        return {}
+    return {"units": ["systemd-boot-update.service"]}
+
+
 # Order matters only for deterministic output; aggregation de-dups.
 TOGGLES = [
     expand_bluetooth, expand_cups, expand_trim, expand_kvm,
     expand_wireguard, expand_firewall, expand_hwaccel, expand_snapper,
     expand_drivers, expand_initramfs, expand_zram, expand_cpu,
+    expand_sdboot_update,
 ]

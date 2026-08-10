@@ -175,6 +175,22 @@ class KernelCmdlineAction(AbstractAction):
         t = self._target()
         return t.path("/etc/default/grub") if t is not None else "/mnt/etc/default/grub"
 
+    def _default_entry(self) -> Optional[str]:
+        """The entry filename loader.conf selects (`default arch` → arch.conf)."""
+        t = self._target()
+        loader = (t.path("/boot/loader/loader.conf") if t is not None
+                  else "/mnt/boot/loader/loader.conf")
+        try:
+            with open(loader, "r") as f:
+                for line in f:
+                    parts = line.split()
+                    if len(parts) >= 2 and parts[0] == "default":
+                        name = parts[1]
+                        return name if name.endswith(".conf") else name + ".conf"
+        except OSError:
+            pass
+        return None
+
     def _sdboot_entries(self) -> List[str]:
         t = self._target()
         entries_dir = t.path("/boot/loader/entries") if t is not None else "/mnt/boot/loader/entries"
@@ -206,8 +222,19 @@ class KernelCmdlineAction(AbstractAction):
     def _current_cmdline(self) -> str:
         if self.bootloader == "grub":
             return self._current_params_grub()
-        entries = self._sdboot_entries()
-        return self._current_params_sdboot(entries[0]) if entries else ""
+        # Read the entry the firmware actually boots. Reading `listdir[0]`
+        # stopped being deterministic once a second entry (arch-fallback.conf)
+        # existed — it sorts FIRST, so the plan compared against the rescue entry.
+        entries = sorted(self._sdboot_entries())
+        if not entries:
+            return ""
+        for wanted in (self._default_entry(), "arch.conf"):
+            if not wanted:
+                continue
+            for entry in entries:
+                if os.path.basename(entry) == wanted:
+                    return self._current_params_sdboot(entry)
+        return self._current_params_sdboot(entries[0])
 
     def actual(self) -> set:
         if self._target() is None:

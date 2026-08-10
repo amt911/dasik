@@ -209,9 +209,40 @@ def expand_zram(config: Dict[str, Any]) -> Dict[str, Any]:
     return {"packages": ["zram-generator"]}
 
 
+_CPUPOWER_CONF = "/etc/default/cpupower"
+
+
+def expand_cpu(config: Dict[str, Any]) -> Dict[str, Any]:
+    cfg = config.get("cpu") or {}
+    if not cfg:
+        return {}
+    packages: list = []
+    units: list = []
+    files: list = []
+    if cfg.get("power_profiles_daemon", True):
+        packages.append("power-profiles-daemon")
+        units.append("power-profiles-daemon.service")
+    governor = cfg.get("governor")
+    if governor:
+        # cpupower applies a fixed governor; power-profiles-daemon would fight
+        # it, which is why preflight warns when both are declared.
+        packages.append("cpupower")
+        units.append("cpupower.service")
+        files.append({"path": _CPUPOWER_CONF,
+                      "content": f'# Managed by dasik\ngovernor="{governor}"\n'})
+    out: Dict[str, Any] = {}
+    if packages:
+        out["packages"] = packages
+    if units:
+        out["units"] = units
+    if files:
+        out["files"] = files
+    return out
+
+
 # Order matters only for deterministic output; aggregation de-dups.
 TOGGLES = [
     expand_bluetooth, expand_cups, expand_trim, expand_kvm,
     expand_wireguard, expand_firewall, expand_hwaccel, expand_snapper,
-    expand_drivers, expand_initramfs, expand_zram,
+    expand_drivers, expand_initramfs, expand_zram, expand_cpu,
 ]

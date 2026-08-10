@@ -20,6 +20,7 @@ from .firewall_model import FirewallModel
 from .wireguard_model import WireguardModel
 from .snapper_model import SnapperModel
 from .sudo_model import SudoModel
+from .cpu_model import CpuModel
 
 
 class JsonModel(BaseModel):
@@ -76,6 +77,10 @@ class JsonModel(BaseModel):
 
     # Toggles
     enable_trim: bool = False
+    # REISUB: sysrq_always_enabled=1 on the kernel cmdline (the old installer's
+    # enable_reisub). The cmdline value applies from early boot, which is when
+    # the magic SysRq keys actually matter.
+    sysrq: bool = False
     remove_home_on_delete: bool = False
     initramfs: Literal["mkinitcpio", "dracut"] = "mkinitcpio"
 
@@ -91,6 +96,7 @@ class JsonModel(BaseModel):
     wireguard: Optional[WireguardModel] = None
     snapper: Optional[SnapperModel] = None
     sudo: Optional[SudoModel] = None
+    cpu: Optional[CpuModel] = None
     # zram-generator: {device: {option: value}} mirroring zram-generator.conf ini.
     zram: Optional[Dict[str, Dict[str, Any]]] = None
 

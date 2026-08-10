@@ -79,6 +79,12 @@ def test_plan_install_when_absent(tmp_path):
 
 def test_plan_empty_when_present(tmp_path):
     _mark_sdboot(tmp_path)
+    # Converged means BOTH entries: the rescue entry is a domain item of its
+    # own (see test_bootloader_fallback_entry.py), so sd-boot alone still has
+    # work left to do.
+    entries = tmp_path / "boot/loader/entries"
+    entries.mkdir(parents=True, exist_ok=True)
+    (entries / "arch-fallback.conf").write_text("title Arch Linux (fallback initramfs)\n")
     a = BootloaderAction(_cfg("sd-boot"), _ctx(tmp_path))
     assert a.plan(managed=[]) == []
 

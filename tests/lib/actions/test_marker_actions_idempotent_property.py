@@ -30,18 +30,27 @@ def test_base_install_idempotent(installed):
         assert a.is_needed() is True
 
 
-@given(installed=st.booleans(), loader=st.sampled_from(["sd-boot", "systemd-boot", "grub"]))
-def test_bootloader_idempotent(installed, loader):
+@given(installed=st.booleans(), fallback=st.booleans(),
+       loader=st.sampled_from(["sd-boot", "systemd-boot", "grub"]))
+def test_bootloader_idempotent(installed, fallback, loader):
+    """Converged means the loader marker AND — on systemd-boot — the rescue
+    entry; once both are there a re-apply is a no-op."""
     a = BootloaderAction({"bootloader": loader}, context=SimpleNamespace(target=object()))
     a._installed = lambda: installed
+    a._fallback_present = lambda: fallback
+    sdboot = loader in ("sd-boot", "systemd-boot")
+
+    expected = []
+    if not installed:
+        expected.append((Op.INSTALL, loader))
+    if sdboot and not fallback:
+        expected.append((Op.INSTALL, "fallback-entry"))
+
     changes = a.plan(managed=[])
+    assert [(c.op, c.item) for c in changes] == expected
+    assert a.is_needed() is bool(expected)
     if installed:
-        assert changes == []            # already installed → no-op (re-run safe)
-        assert a.is_needed() is False
-        assert a.verify() is True
-    else:
-        assert [(c.op, c.item) for c in changes] == [(Op.INSTALL, loader)]
-        assert a.is_needed() is True
+        assert a.verify() is True       # verify() only asserts the loader itself
 
 
 @given(install=st.booleans(), has_iso=st.booleans(), present=st.booleans())

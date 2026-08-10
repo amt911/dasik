@@ -226,6 +226,29 @@ reaches a login/boot marker within `DASIK_VM_BOOT_TIMEOUT`, else fails.
 Add `--dry-run` to any `qemu.sh` subcommand to print the exact
 `qemu-system-x86_64` command without launching.
 
+### Copying the repo into a guest over ssh (no 9p share)
+
+When the guest is reachable over ssh/vsock instead of the 9p share, **don't use
+`scp -r`**: it has no exclude and would follow `resources/`, the two read-only
+bind-mounts (the offline Arch Wiki + the old installer scripts, >12k files) that
+are gitignored and useless inside the VM. Use `rsync` with a gitignore-aware
+filter, which skips `resources/`, `.venv/`, `__pycache__/` and the rest in one
+flag — and is incremental on every later push:
+
+```bash
+rsync -a --filter=':- .gitignore' --exclude '.git' dasik root@'vsock%33':/root/
+```
+
+Run it from the repo's **parent** directory; no trailing slash on the source, so
+it lands as `/root/dasik` (same shape as `scp -r dasik …`). Replace the host with
+your own (`root@vsock%33` is a vsock-proxied guest). If the guest has no `rsync`,
+pipe a tar instead:
+
+```bash
+tar cz --exclude=resources --exclude=.git --exclude=.venv --exclude=__pycache__ dasik \
+  | ssh root@'vsock%33' tar xz -C /root
+```
+
 ## CI
 
 `scripts/vmtest/loopback.sh` and `qemu.sh run-iso` need root / nested KVM, which

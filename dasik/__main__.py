@@ -24,7 +24,6 @@ from __future__ import annotations
 import argparse
 import getpass
 import json
-import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -40,6 +39,8 @@ from dasik.lib.state.state_store import StateStore
 from dasik.lib.target.target import Target
 from dasik.lib.target.target_check import check_target
 from dasik.lib.expand import expand_config, subtract_contributions
+from dasik.lib.exceptions.exceptions import PasswordHashError
+from dasik.lib.passwords import SHA512, YESCRYPT, hash_password
 
 
 # Verbs that shell out to real commands and therefore benefit from an install
@@ -204,10 +205,18 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     check_p.add_argument("config", help="Path to the JSON configuration file")
 
-    sub.add_parser(
+    hash_p = sub.add_parser(
         "hash-password",
-        help="Prompt for a password (twice) and print its sha512crypt hash "
-             "for use as a user's hashed_password.",
+        help="Prompt for a password (twice) and print its crypt hash for use "
+             "as a user's hashed_password.",
+    )
+    hash_p.add_argument(
+        "--method",
+        choices=[YESCRYPT, SHA512],
+        default=YESCRYPT,
+        help=f"Hash format. Default: {YESCRYPT} — what Arch's own passwd writes "
+             f"(login.defs ENCRYPT_METHOD) and what sync captures back. "
+             f"{SHA512} is the older sha512crypt ($6$).",
     )
 
     return parser
@@ -579,12 +588,13 @@ def _cmd_check(config_path: Path) -> int:
     return 0
 
 
-def _cmd_hash_password() -> int:
-    """Prompt for a password twice and print its sha512crypt hash.
+def _cmd_hash_password(method: str = YESCRYPT) -> int:
+    """Prompt for a password twice and print its hash in *method*'s format.
 
-    The password is fed to ``openssl passwd -6`` over **stdin** (never argv,
-    which is world-readable via /proc). Returns 1 on mismatch, empty input, or
-    an openssl failure; 0 on success.
+    Defaults to yescrypt — what Arch's own ``passwd`` writes (login.defs sets
+    ENCRYPT_METHOD YESCRYPT) and therefore what ``sync`` reads back out of
+    /etc/shadow. Returns 1 on mismatch, empty input, or a hashing failure; 0 on
+    success.
     """
     pw = getpass.getpass("Password: ")
     if not pw:
@@ -593,16 +603,11 @@ def _cmd_hash_password() -> int:
     if pw != getpass.getpass("Confirm: "):
         print("Error: passwords do not match.", file=sys.stderr)
         return 1
-    result = subprocess.run(
-        ["openssl", "passwd", "-6", "-stdin"],
-        input=pw.encode(),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-    if result.returncode != 0:
-        print(f"Error: openssl failed: {result.stderr.decode().strip()}", file=sys.stderr)
+    try:
+        print(hash_password(pw, method=method))
+    except PasswordHashError as e:
+        print(f"Error: {e}", file=sys.stderr)
         return 1
-    print(result.stdout.decode().strip())
     return 0
 
 
@@ -651,7 +656,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             return _cmd_check(path)
 
         if args.verb == "hash-password":
-            return _cmd_hash_password()
+            return _cmd_hash_password(args.method)
 
         parser.print_help(file=sys.stderr)
         return 2

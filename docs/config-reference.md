@@ -196,7 +196,7 @@ List of accounts:
 | Field | Type | Default | Notes |
 | --- | --- | --- | --- |
 | `username` | string | — | |
-| `hashed_password` | string | — | Crypt hash (`$6$…` / `$y$…`); use `dasik hash-password` or `openssl passwd -6`. |
+| `hashed_password` | string | — | Crypt hash; `dasik hash-password` prints yescrypt (`$y$…`), the format Arch's `passwd` writes and `sync` captures. `--method sha512` gives the older `$6$…`. |
 | `shell` | string | `/bin/bash` | |
 | `groups` | list[str] | `[]` | Supplementary groups. |
 

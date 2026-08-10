@@ -240,6 +240,29 @@ def expand_cpu(config: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
+_REFLECTOR_CONF = "/etc/xdg/reflector/reflector.conf"
+
+
+def expand_reflector(config: Dict[str, Any]) -> Dict[str, Any]:
+    cfg = config.get("reflector") or {}
+    if not cfg:
+        return {}
+    lines = ["# Managed by dasik"]
+    lines += [f"--country {c}" for c in cfg.get("countries") or []]
+    lines += [f"--protocol {p}" for p in cfg.get("protocols") or ["https"]]
+    latest = cfg.get("latest", 20)
+    if latest:
+        lines.append(f"--latest {latest}")
+    lines.append(f"--sort {cfg.get('sort', 'rate')}")
+    lines.append(f"--save {cfg.get('save', '/etc/pacman.d/mirrorlist')}")
+    return {
+        "packages": ["reflector"],
+        # Only the timer: the one-shot service is what the timer triggers.
+        "units": ["reflector.timer"],
+        "files": [{"path": _REFLECTOR_CONF, "content": "\n".join(lines) + "\n"}],
+    }
+
+
 def expand_sdboot_update(config: Dict[str, Any]) -> Dict[str, Any]:
     # systemd ships this unit itself: it runs `bootctl update` when the ESP's
     # loader is older than the installed systemd. The old imperative installer
@@ -255,5 +278,5 @@ TOGGLES = [
     expand_bluetooth, expand_cups, expand_trim, expand_kvm,
     expand_wireguard, expand_firewall, expand_hwaccel, expand_snapper,
     expand_drivers, expand_initramfs, expand_zram, expand_cpu,
-    expand_sdboot_update,
+    expand_sdboot_update, expand_reflector,
 ]

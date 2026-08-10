@@ -21,6 +21,7 @@ from .wireguard_model import WireguardModel
 from .snapper_model import SnapperModel
 from .sudo_model import SudoModel
 from .cpu_model import CpuModel
+from .reflector_model import ReflectorModel
 
 
 class JsonModel(BaseModel):
@@ -97,6 +98,7 @@ class JsonModel(BaseModel):
     snapper: Optional[SnapperModel] = None
     sudo: Optional[SudoModel] = None
     cpu: Optional[CpuModel] = None
+    reflector: Optional[ReflectorModel] = None
     # zram-generator: {device: {option: value}} mirroring zram-generator.conf ini.
     zram: Optional[Dict[str, Dict[str, Any]]] = None
 

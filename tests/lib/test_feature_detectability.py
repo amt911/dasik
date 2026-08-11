@@ -196,6 +196,94 @@ def test_an_initramfs_that_already_has_the_hook_plans_nothing(tmp_path):
     assert action.plan(managed=[]) == []
 
 
+# --- pendrive LUKS keyfile ------------------------------------------------- #
+
+_PENDRIVE = {"disks": {"disks": [{"device": "/dev/vda", "partitions": [
+    {"label": "root", "size": "rest", "filesystem": "ext4", "mountpoint": "/",
+     "encrypt": True, "luks_name": "cryptroot", "luks_password": "pw",
+     "unlock_keyfile": "/keyfile", "unlock_keydev": "1234-ABCD",
+     "unlock_keydev_fs": "vfat"}]}]}}
+
+
+def _luks_uuid():
+    from dasik.lib.actions.luks_uuid import luks_uuid
+    return luks_uuid("cryptroot")
+
+
+def test_the_pendrive_unlock_is_planned_on_the_cmdline(tmp_path):
+    planned = _cmdline_plan(tmp_path, _PENDRIVE, "root=/dev/mapper/cryptroot rw")
+
+    items = [item for _op, item in planned]
+    assert f"rd.luks.key={_luks_uuid()}=/keyfile:UUID=1234-ABCD" in items
+    assert any("keyfile-timeout=10s" in item for item in items)
+
+
+def test_the_pendrive_unlock_already_on_the_entry_plans_nothing(tmp_path):
+    uuid = _luks_uuid()
+    entry = (f"rd.luks.name={uuid}=cryptroot root=/dev/mapper/cryptroot rw "
+             f"rd.luks.key={uuid}=/keyfile:UUID=1234-ABCD "
+             f"rd.luks.options={uuid}=keyfile-timeout=10s")
+
+    assert _cmdline_plan(tmp_path, _PENDRIVE, entry) == []
+
+
+def test_dropping_the_pendrive_unlock_removes_the_parameter(tmp_path):
+    uuid = _luks_uuid()
+    token = f"rd.luks.key={uuid}=/keyfile:UUID=1234-ABCD"
+    plain = {"disks": {"disks": [{"device": "/dev/vda", "partitions": [
+        {"label": "root", "size": "rest", "filesystem": "ext4", "mountpoint": "/",
+         "encrypt": True, "luks_name": "cryptroot", "luks_password": "pw"}]}]}}
+
+    planned = _cmdline_plan(tmp_path, plain,
+                            f"rd.luks.name={uuid}=cryptroot root=/dev/mapper/cryptroot "
+                            f"rw {token}", managed=[token])
+
+    assert ("REMOVE", token) in planned
+
+
+def test_the_keyfile_enrollment_is_planned(tmp_path):
+    """The key material has its own domain — the cmdline alone would announce
+    an unlock whose keyslot may not exist."""
+    from dasik.lib.actions.luks_keyfile_action import LuksKeyfileAction
+
+    action = LuksKeyfileAction(_PENDRIVE, _ctx(tmp_path))
+    with patch.object(LuksKeyfileAction, "_key_device_present", return_value=True), \
+         patch.object(LuksKeyfileAction, "_mount_keydev", return_value=str(tmp_path)), \
+         patch.object(LuksKeyfileAction, "_umount_keydev"), \
+         patch.object(LuksKeyfileAction, "_luks_device", return_value="/dev/vda2"), \
+         patch.object(LuksKeyfileAction, "_key_works", return_value=False):
+        planned = [(c.op.name, c.item) for c in action.plan(managed=[])]
+
+    assert planned == [("INSTALL", "cryptroot:/keyfile")]
+
+
+def test_an_enrolled_keyfile_plans_nothing(tmp_path):
+    from dasik.lib.actions.luks_keyfile_action import LuksKeyfileAction
+
+    (tmp_path / "keyfile").write_text("key")
+    action = LuksKeyfileAction(_PENDRIVE, _ctx(tmp_path))
+    with patch.object(LuksKeyfileAction, "_key_device_present", return_value=True), \
+         patch.object(LuksKeyfileAction, "_mount_keydev", return_value=str(tmp_path)), \
+         patch.object(LuksKeyfileAction, "_umount_keydev"), \
+         patch.object(LuksKeyfileAction, "_luks_device", return_value="/dev/vda2"), \
+         patch.object(LuksKeyfileAction, "_key_works", return_value=True):
+        assert action.plan(managed=[]) == []
+
+
+def test_the_key_device_module_is_planned_in_the_initramfs(tmp_path):
+    """Without it the initramfs cannot read the pendrive, so the unlock the
+    cmdline announces would never happen."""
+    from dasik.lib.actions.initramfs_action import InitramfsAction
+
+    (tmp_path / "etc").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "etc/mkinitcpio.conf").write_text(
+        "MODULES=()\nHOOKS=(base udev autodetect modconf block filesystems fsck)\n")
+    action = InitramfsAction(_PENDRIVE, _ctx(tmp_path))
+
+    assert [c.op.name for c in action.plan(managed=[])] == ["MODIFY"]
+    assert "MODULES=(vfat)" in action._backend.desired_value()
+
+
 # --- helper ---------------------------------------------------------------- #
 
 def _units_planned(config):

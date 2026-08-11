@@ -147,8 +147,9 @@ for making a captured layout portable.
 | `luks_password` | string | `null` | Passphrase, **plaintext** in config. Omit → cryptsetup prompts at install. |
 | `luks_keyfile` | string | `null` | Path to a key file (instead of a passphrase). |
 | `luks_uuid` | string | `null` | Explicit LUKS header UUID. Unset → deterministic UUID (header ↔ cmdline agree). `sync` bakes the real one. |
-| `unlock_keyfile` | string | `null` | Key file added as an extra LUKS key for auto boot-unlock (`rd.luks.key`). |
-| `unlock_keydev` | string | `null` | FS UUID of the device holding `unlock_keyfile` (e.g. a USB pendrive). |
+| `unlock_keyfile` | string | `null` | Key file added as an extra LUKS key for auto boot-unlock (`rd.luks.key`). dasik creates it if missing. **With** `unlock_keydev` the path is relative to that device's root; **without** it, an absolute path inside the target, embedded into the initramfs. |
+| `unlock_keydev` | string | `null` | Device holding `unlock_keyfile` (e.g. a USB pendrive): a bare FS UUID, or an explicit `UUID=`/`PARTUUID=`/`LABEL=`/`/dev/…`. |
+| `unlock_keydev_fs` | string | `null` | Filesystem of `unlock_keydev` (`vfat`, `exfat`, `ext4`, `btrfs`, `xfs`) — the module the initramfs needs to read it. |
 | `unlock_tpm2` | bool | `false` | Enroll a TPM2 keyslot (passwordless). |
 | `unlock_fido2` | bool | `false` | Enroll a FIDO2 token (needs the physical key at enroll **and** boot). |
 | `luks_options` | list[str] | `[]` | Extra verbatim `rd.luks.options` tokens (e.g. `token-timeout=10s`). |
@@ -162,6 +163,41 @@ for making a captured layout portable.
 | `name` | string | — | e.g. `@`, `@home`. |
 | `mountpoint` | string | — | e.g. `/`, `/home`. |
 | `mount_options` | list[str] | `["compress-force=zstd"]` | |
+
+### Unlocking from a keyfile (a pendrive)  *(sync ✓)*
+
+```json
+{ "encrypt": true, "luks_name": "cryptroot", "luks_password": "…",
+  "unlock_keyfile": "/keyfile-tuxedo", "unlock_keydev": "1234-ABCD",
+  "unlock_keydev_fs": "vfat" }
+```
+
+The volume opens by itself when the key device is attached, and still accepts
+the passphrase when it is not. What dasik does with that declaration:
+
+* **creates the keyfile** if it is missing (512 × 4 bytes from `/dev/random`,
+  mode `0600`) and **enrolls it** as an extra keyslot, authorised by
+  `luks_password`/`luks_keyfile`. An existing file is never overwritten — the
+  pendrive may already carry another machine's key.
+* **is idempotent**: the check is `cryptsetup open --test-passphrase`, so a
+  converged machine plans nothing, and a machine that gains a pendrive later
+  gets it on the next `apply` (this no longer rides the disk format).
+* **writes `rd.luks.key=<luks-uuid>=<path>:UUID=<fs-uuid>`** plus
+  `rd.luks.options=<luks-uuid>=keyfile-timeout=10s`. That timeout is not
+  optional: without it a boot with the key device absent waits forever instead
+  of asking for the passphrase. Declare your own `keyfile-timeout=…` in
+  `luks_options` to override it.
+* **puts `unlock_keydev_fs` in the initramfs** (mkinitcpio `MODULES`, dracut
+  `filesystems+=`), or an embedded keyfile into the image itself (mkinitcpio
+  `FILES`, dracut `install_items+=`) when there is no key device.
+
+`sync` reads all three fields back from the live `rd.luks.key`, and probes the
+device's filesystem with `lsblk`.
+
+**Un-declaring removes the kernel parameter, not the keyslot.** `luksKillSlot`
+on the wrong slot destroys access to the volume, so dasik reports the keyslot it
+is leaving behind and you remove it yourself with `cryptsetup luksRemoveKey`
+once you are sure of your other way in.
 
 ---
 

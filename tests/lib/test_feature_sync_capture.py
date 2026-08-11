@@ -166,6 +166,86 @@ def test_replanning_the_captured_config_is_a_no_op(tmp_path):
     assert action.plan(managed=[]) == []
 
 
+# --- pendrive LUKS keyfile ------------------------------------------------- #
+#
+# The end-to-end `_synced` harness cannot reach this one: the capture keys off
+# the volume's real LUKS UUID, which comes from `cryptsetup` on a live machine.
+# So the machine is faked at that boundary instead — everything above it (the
+# parsing, the subtraction, the re-plan) is the real code.
+
+_DISKS_SEED = {"disks": [{
+    "device": "/dev/vda", "partition_table": "gpt", "wipe_disk": True,
+    "partitions": [
+        {"label": "boot", "size": "512MiB", "filesystem": "fat32",
+         "partition_type": "esp", "mountpoint": "/boot"},
+        {"label": "root", "size": "rest", "filesystem": "ext4", "mountpoint": "/",
+         "encrypt": True, "luks_name": "cryptroot", "luks_password": "pw"},
+    ]}]}
+
+
+def _captured_partition(cmdline, fstype=b"vfat\n"):
+    from dasik.lib.actions.disk_partition_action import DiskPartitionAction
+
+    def fake(cmd, args=None, *_rest, **_kw):
+        if cmd == "lsblk":
+            return MagicMock(stdout=fstype, returncode=0)
+        if cmd == "cryptsetup" and args and args[0] == "status":
+            return MagicMock(stdout=b"  device:  /dev/vda2\n", returncode=0)
+        if cmd == "cryptsetup" and args and args[0] == "luksUUID":
+            return MagicMock(stdout=b"THEUUID\n", returncode=0)
+        return MagicMock(stdout=b"", returncode=0)
+
+    action = DiskPartitionAction(_DISKS_SEED, ActionContext(target=Target(root="/")))
+    with patch("dasik.lib.actions.disk_partition_action.Command.execute", side_effect=fake), \
+         patch.object(DiskPartitionAction, "_kernel_cmdline_text", return_value=cmdline):
+        frag = action.import_state(managed=[])
+    return frag["disks"]["disks"][0]["partitions"][1]
+
+
+def test_sync_captures_the_pendrive_unlock():
+    part = _captured_partition("rd.luks.name=THEUUID=cryptroot "
+                               "rd.luks.key=THEUUID=/keyfile:UUID=1234-ABCD "
+                               "rd.luks.options=THEUUID=keyfile-timeout=10s")
+
+    assert part["unlock_keyfile"] == "/keyfile"
+    assert part["unlock_keydev"] == "UUID=1234-ABCD"
+    assert part["unlock_keydev_fs"] == "vfat"
+    # …and the timeout dasik re-derives is not ALSO captured as an option.
+    assert part.get("luks_options", []) == []
+
+
+def test_sync_does_not_invent_a_pendrive_unlock():
+    part = _captured_partition("rd.luks.name=THEUUID=cryptroot root=/dev/mapper/cryptroot")
+
+    assert part.get("unlock_keyfile") is None
+    assert part.get("unlock_keydev") is None
+
+
+def test_the_captured_pendrive_config_replans_to_nothing(tmp_path):
+    """sync → plan must be silent: the captured fields have to re-derive the
+    very parameters they were read from, `UUID=` prefix and timeout included."""
+    part = _captured_partition("rd.luks.key=THEUUID=/keyfile:UUID=1234-ABCD "
+                               "rd.luks.options=THEUUID=keyfile-timeout=10s")
+    captured = {"bootloader": "sd-boot", "disks": {"disks": [
+        {"device": "/dev/vda", "partitions": [part]}]}}
+    JsonModel.model_validate(captured)          # the capture is a valid config
+
+    # The capture also bakes in the volume's real header UUID, so the re-derived
+    # parameters key off THAT, not the deterministic fallback.
+    uuid = part["luks_uuid"]
+    (tmp_path / "boot/loader/entries").mkdir(parents=True)
+    (tmp_path / "boot/loader/loader.conf").write_text("default arch\n")
+    (tmp_path / "boot/loader/entries/arch.conf").write_text(
+        "title Arch\noptions "
+        f"rd.luks.name={uuid}=cryptroot root=/dev/mapper/cryptroot rw "
+        f"rd.luks.key={uuid}=/keyfile:UUID=1234-ABCD "
+        f"rd.luks.options={uuid}=keyfile-timeout=10s\n")
+    action = KernelCmdlineAction(expand_config(captured),
+                                 ActionContext(target=Target(root=str(tmp_path))))
+
+    assert action.plan(managed=[]) == []
+
+
 def test_the_units_a_feature_brings_are_reproducible_from_the_capture(tmp_path):
     """reflector.timer / power-profiles-daemon.service / systemd-boot-update
     ride the systemd domain. What matters is that RE-APPLYING the capture

@@ -25,6 +25,10 @@ class LocaleAction(CompositeV3Action):
         self._selected_locales: List[str] = cfg.get("selected_locales", [])
         self._desired_locale: str = cfg.get("desired_locale", "")
         self._desired_tty_layout: str = cfg.get("desired_tty_layout", "")
+        # LocaleModel requires all three fields, so an empty dict never reaches
+        # here from a user config — only from the reconciler, which hands
+        # empty_config() for a domain a previous generation owned. See plan().
+        self._declared: bool = bool(cfg)
 
     @property
     def name(self) -> str:
@@ -80,8 +84,24 @@ class LocaleAction(CompositeV3Action):
             "desired_tty_layout": keymap,
         }
 
+    def plan(self, managed):
+        """Nothing declared is not "no locales".
+
+        Dropping a `locales` block a generation owned makes the reconciler plan
+        the empty config, whose desired state is `selected_locales: []`,
+        `LANG=`, `KEYMAP=` — and applying that comments out every entry in
+        locale.gen and empties locale.conf/vconsole.conf. There is no "unset the
+        locale" operation, so leave the machine alone.
+        """
+        return super().plan(managed) if self._declared else []
+
     def _import_fragment(self, value) -> dict:
-        return {self._DOMAIN: self._actual_state() or self._desired_state()}
+        # Report the machine. Falling back to the desired state captured
+        # `{"selected_locales": [], "desired_locale": ""}` from a target whose
+        # files could not be read — an empty block that says nothing and applies
+        # as "wipe the locales".
+        state = self._actual_state()
+        return {self._DOMAIN: state} if state is not None else {}
 
     def _set_value(self) -> None:  # pragma: no cover - writes /etc + runs locale-gen
         gen_path = self._p(_LOCALE_GEN)

@@ -110,3 +110,50 @@ def test_name_and_optional():
     a = LocaleAction(_cfg())
     assert a.name == "Locale Configuration"
     assert a.is_optional is True
+
+
+# --- an absent section is not "the empty locale" ---------------------------
+
+def _machine(tmp_path, gen="en_US.UTF-8 UTF-8\nes_ES.UTF-8 UTF-8\n",
+             conf="LANG=es_ES.UTF-8\n", vconsole="KEYMAP=es\n"):
+    etc = tmp_path / "etc"
+    etc.mkdir(parents=True, exist_ok=True)
+    (etc / "locale.gen").write_text(gen)
+    (etc / "locale.conf").write_text(conf)
+    (etc / "vconsole.conf").write_text(vconsole)
+    return tmp_path
+
+
+def test_an_undeclared_locales_section_plans_nothing(tmp_path):
+    """LocaleModel requires all three fields, so an empty dict never comes from
+    a user config — only from the reconciler, which hands the empty config for a
+    domain a previous generation owned. Planning it as "no locales" would
+    comment out every entry in locale.gen and write LANG= and KEYMAP= empty."""
+    action = LocaleAction(LocaleAction.empty_config(), _ctx(str(_machine(tmp_path))))
+
+    assert action.plan(managed=["anything"]) == []
+
+
+def test_an_undeclared_locales_section_captures_the_machine(tmp_path):
+    action = LocaleAction(LocaleAction.empty_config(), _ctx(str(_machine(tmp_path))))
+
+    assert action.import_state(managed=[]) == {"locales": {
+        "selected_locales": ["en_US.UTF-8 UTF-8", "es_ES.UTF-8 UTF-8"],
+        "desired_locale": "es_ES.UTF-8",
+        "desired_tty_layout": "es"}}
+
+
+def test_sync_invents_no_locales_when_the_target_has_no_files(tmp_path):
+    """A half-built /mnt captured {"selected_locales": [], "desired_locale": ""}
+    — an empty block that says nothing and applies as "wipe the locales"."""
+    action = LocaleAction(LocaleAction.empty_config(), _ctx(str(tmp_path)))
+
+    assert action.import_state(managed=[]) == {}
+
+
+def test_a_declared_locales_section_still_plans(tmp_path):
+    """The guard must not swallow a real declaration."""
+    action = LocaleAction(_cfg(selected=["en_US.UTF-8 UTF-8"], locale="en_US.UTF-8",
+                               layout="us"), _ctx(str(_machine(tmp_path))))
+
+    assert [c.op for c in action.plan(managed=[])] == [Op.MODIFY]

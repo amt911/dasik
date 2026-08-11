@@ -84,7 +84,8 @@ class DracutBackend(InitramfsBackend):
     def desired_value(self) -> str:
         add_mods = self._add_modules()
         force_mods = self._force_modules()
-        if not add_mods and not force_mods:
+        if not add_mods and not force_mods and not self.keydev_filesystems \
+                and not self.embedded_keyfiles:
             return ""
         lines = ["# Managed by dasik"]
         if self.has_encryption:
@@ -97,6 +98,15 @@ class DracutBackend(InitramfsBackend):
             lines.append(f'force_add_dracutmodules+=" {" ".join(force_mods)} "')
         if add_mods:
             lines.append(f'add_dracutmodules+=" {" ".join(add_mods)} "')
+        for fs in self.keydev_filesystems:
+            # The key device's filesystem: hostonly detection sees the root's
+            # filesystems, never the pendrive the keyfile lives on, so the
+            # module has to be named explicitly or the key is unreadable.
+            lines.append(f'filesystems+=" {fs} "')
+        for keyfile in self.embedded_keyfiles:
+            # No key device: the file must travel INSIDE the image, or the
+            # rd.luks.key dasik writes points at a path the initramfs cannot see.
+            lines.append(f'install_items+=" {keyfile} "')
         return "\n".join(lines) + "\n"
 
     def _captured_crypttab(self) -> str:

@@ -39,10 +39,13 @@ def test_desired_btrfs_hook_encrypted():
 
 
 def test_actual_value_parses_hooks_line():
+    """The managed value spans every directive dasik owns (HOOKS, and
+    MODULES/FILES once a key device or an embedded keyfile needs them), so it is
+    rendered as the conf lines themselves."""
     with patch("builtins.open", mock_open(read_data=_DEFAULT)):
         assert _b({}).actual_value() == (
-            "base udev autodetect modconf kms keyboard keymap "
-            "consolefont block filesystems fsck")
+            "HOOKS=(base udev autodetect modconf kms keyboard keymap "
+            "consolefont block filesystems fsck)")
 
 
 def test_actual_value_none_when_file_absent():

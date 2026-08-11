@@ -1,4 +1,4 @@
-"""mkinitcpio backend: derive HOOKS from the disk config + run mkinitcpio -P."""
+"""mkinitcpio backend: derive HOOKS/MODULES/FILES from the config + run mkinitcpio -P."""
 from __future__ import annotations
 import re
 from typing import List, Optional
@@ -9,20 +9,40 @@ _CONF = "/etc/mkinitcpio.conf"
 _DEFAULT_HOOKS = ["base", "udev", "autodetect", "modconf", "kms",
                   "keyboard", "keymap", "consolefont", "block",
                   "filesystems", "fsck"]
+# Directives dasik manages, in the order they are rendered. HOOKS is always
+# present; the other two only when the config gives them content.
+_MANAGED = ("HOOKS", "MODULES", "FILES")
 
 
 class MkinitcpioBackend(InitramfsBackend):
 
-    def _raw_hooks(self) -> Optional[List[str]]:
+    def _raw_entries(self, directive: str) -> Optional[List[str]]:
+        """The words inside `DIRECTIVE=(…)` in the on-disk conf, or None."""
         try:
             with open(self._path(_CONF), "r") as f:
                 for line in f:
-                    m = re.match(r"^HOOKS=\((.+)\)", line)
+                    m = re.match(rf"^{directive}=\((.*)\)", line)
                     if m:
                         return m.group(1).split()
         except FileNotFoundError:
             return None
         return None
+
+    def _raw_hooks(self) -> Optional[List[str]]:
+        return self._raw_entries("HOOKS")
+
+    @staticmethod
+    def _merge(base: Optional[List[str]], extra: List[str]) -> List[str]:
+        """base + extra, order-preserving and deduplicated.
+
+        The user's own MODULES/FILES entries are never dropped: dasik adds what
+        the config requires on top of what is already declared.
+        """
+        merged = list(base or [])
+        for item in extra:
+            if item not in merged:
+                merged.append(item)
+        return merged
 
     def _compute(self, base: List[str]) -> List[str]:
         hooks = list(base)
@@ -89,33 +109,66 @@ class MkinitcpioBackend(InitramfsBackend):
                 deduped.append(h)
         return deduped
 
+    def _entries(self, directive: str) -> List[str]:
+        """The words dasik wants inside `DIRECTIVE=(…)`."""
+        if directive == "HOOKS":
+            return self._compute(self._raw_hooks() or _DEFAULT_HOOKS)
+        if directive == "MODULES":
+            # The key device's filesystem module: without it the initramfs
+            # cannot read the pendrive the keyfile lives on.
+            return self._merge(self._raw_entries("MODULES"), self.keydev_filesystems)
+        # FILES: a keyfile with no key device only exists at boot if it travels
+        # inside the image.
+        return self._merge(self._raw_entries("FILES"), self.embedded_keyfiles)
+
+    @staticmethod
+    def _render(directive: str, entries: List[str]) -> str:
+        return f"{directive}=({' '.join(entries)})"
+
     def desired_value(self) -> str:
-        base = self._raw_hooks() or _DEFAULT_HOOKS
-        return " ".join(self._compute(base))
+        lines = [self._render("HOOKS", self._entries("HOOKS"))]
+        for directive in ("MODULES", "FILES"):
+            entries = self._entries(directive)
+            if entries:
+                lines.append(self._render(directive, entries))
+        return "\n".join(lines)
 
     def actual_value(self) -> Optional[str]:
-        raw = self._raw_hooks()
-        return " ".join(raw) if raw is not None else None
+        raw_hooks = self._raw_hooks()
+        if raw_hooks is None:
+            return None
+        lines = [self._render("HOOKS", raw_hooks)]
+        for directive in ("MODULES", "FILES"):
+            entries = self._raw_entries(directive)
+            if entries:
+                lines.append(self._render(directive, entries))
+        return "\n".join(lines)
 
     def apply(self) -> None:
-        hooks_str = self.desired_value()
+        desired = {d: self._entries(d) for d in _MANAGED}
         path = self._path(_CONF)
         try:
             with open(path, "r") as f:
                 lines = f.readlines()
         except FileNotFoundError:
             lines = []
-        found = False
+        written: set = set()
         with open(path, "w") as f:
             for line in lines:
-                if re.match(r"^HOOKS=", line):
-                    f.write(f"# {line}")
-                    f.write(f"HOOKS=({hooks_str})\n")
-                    found = True
-                else:
+                directive = next((d for d in _MANAGED
+                                  if re.match(rf"^{d}=", line)), None)
+                if directive is None:
                     f.write(line)
-            if not found:                      # no existing HOOKS line → add one
-                f.write(f"HOOKS=({hooks_str})\n")
+                    continue
+                # Keep the previous value visible, commented out, exactly as the
+                # HOOKS rewrite has always done.
+                f.write(f"# {line}")
+                if desired[directive]:
+                    f.write(self._render(directive, desired[directive]) + "\n")
+                written.add(directive)
+            for directive in _MANAGED:
+                if directive not in written and desired[directive]:
+                    f.write(self._render(directive, desired[directive]) + "\n")
         if self.target is not None:
             Command.execute("mkinitcpio", ["-P"], target=self.target, check=True)
         else:

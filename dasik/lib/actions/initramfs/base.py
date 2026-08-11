@@ -71,6 +71,46 @@ def detect_hibernation(cfg: Dict[str, Any]) -> bool:
     return False
 
 
+def _partitions(cfg: Dict[str, Any]):
+    """Every partition stanza in the config, across all disks."""
+    disks = cfg.get("disks", {})
+    if not isinstance(disks, dict):
+        return
+    for disk in disks.get("disks", []):
+        for part in disk.get("partitions", []):
+            yield part
+
+
+def detect_keydev_filesystems(cfg: Dict[str, Any]) -> "list[str]":
+    """Filesystems of the key devices any encrypted partition unlocks from.
+
+    The initramfs must carry those modules or it cannot read the key device at
+    boot — the wiki states it as a requirement whenever the key device's
+    filesystem differs from the root's. A key device whose filesystem is not
+    declared yields nothing here (preflight warns about it); guessing would put
+    an arbitrary module in the image.
+    """
+    found: "list[str]" = []
+    for part in _partitions(cfg):
+        fs = part.get("unlock_keydev_fs")
+        if part.get("unlock_keyfile") and part.get("unlock_keydev") and fs:
+            if fs not in found:
+                found.append(fs)
+    return sorted(found)
+
+
+def detect_embedded_keyfiles(cfg: Dict[str, Any]) -> "list[str]":
+    """Keyfiles that must be baked INTO the image: `unlock_keyfile` with no
+    `unlock_keydev`, i.e. a path inside the target root. Without embedding them
+    the kernel cmdline points at a file the initramfs cannot see."""
+    found: "list[str]" = []
+    for part in _partitions(cfg):
+        keyfile = part.get("unlock_keyfile")
+        if keyfile and not part.get("unlock_keydev") and keyfile not in found:
+            found.append(keyfile)
+    return found
+
+
 def detect_plymouth(cfg: Dict[str, Any]) -> bool:
     """True when the config declares a boot splash.
 
@@ -97,6 +137,8 @@ class InitramfsBackend:
         self.bluetooth_in_initramfs = detect_bluetooth_in_initramfs(self.config)
         self.has_hibernation = detect_hibernation(self.config)
         self.has_plymouth = detect_plymouth(self.config)
+        self.keydev_filesystems = detect_keydev_filesystems(self.config)
+        self.embedded_keyfiles = detect_embedded_keyfiles(self.config)
 
     def _path(self, canonical: str) -> str:
         if self.target is not None:

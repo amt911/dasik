@@ -373,7 +373,7 @@ protects reproducibility, but a PKGBUILD is still third-party code you must trus
 
 `list[str]` — GPU driver selection (e.g. NVIDIA). Expanded into packages + config.
 
-### `bootloader`
+### `bootloader`  *(sync ✓)*
 
 `string` — `grub` (default) or `sd-boot` (a.k.a. `systemd-boot`).
 
@@ -383,6 +383,26 @@ mkinitcpio built one and the same image as the main entry otherwise (dracut
 builds no fallback). Every `kernel_cmdline` parameter is written to both. It also
 enables systemd's own `systemd-boot-update.service`, which keeps the loader on
 the ESP up to date.
+
+**Switching bootloader removes the old one.** Change the value and the next plan
+shows the removal alongside the install:
+
+```text
++ [bootloader] install sd-boot        (install bootloader)
+- [bootloader] remove grub            (switched to sd-boot)
+```
+
+`apply` uninstalls first, then installs. Leaving GRUB means `/boot/grub`,
+`/boot/EFI/GRUB` and the `GRUB` NVRAM entry go; leaving systemd-boot runs
+`bootctl remove` and clears `/boot/EFI/systemd` and `/boot/loader`
+(`loader.conf`, `entries/`, `random-seed`). The **package** is not touched —
+drop `grub` from `packages` yourself if you want it gone.
+
+The stale loader is removed whether or not dasik installed it: two loaders on
+one ESP is not a state anyone wants, and after a `sync` the manifest is empty,
+so an ownership-gated cleanup would never fire. The firmware (NVRAM) part is
+best-effort — a chroot without `efivars` logs a warning instead of aborting the
+install — while the on-ESP files always go.
 
 ### `initramfs`  *(sync ✓)*
 

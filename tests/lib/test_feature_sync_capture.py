@@ -19,6 +19,7 @@ import pytest
 
 from dasik.lib.actions.action_context import ActionContext
 from dasik.lib.actions.action_registry import get_default_registry
+from dasik.lib.actions.bootloader_action import BootloaderAction
 from dasik.lib.actions.actions_handler_v2 import setup_actions
 from dasik.lib.actions.kernel_cmdline_action import KernelCmdlineAction
 from dasik.lib.expand import expand_config, subtract_contributions
@@ -302,3 +303,49 @@ def test_sync_clears_a_declared_root_password_the_machine_lacks(tmp_path):
 
 def test_the_captured_root_password_config_validates(tmp_path):
     JsonModel.model_validate(_synced(_with_shadow(tmp_path, "$6$SET$h")))
+
+
+# --- bootloader ------------------------------------------------------------ #
+
+def _mark(machine, loader):
+    if loader == "sd-boot":
+        d = machine / "boot/EFI/systemd"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "systemd-bootx64.efi").write_text("")
+    else:
+        d = machine / "boot/grub"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "grub.cfg").write_text("")
+
+
+def test_sync_captures_the_installed_bootloader_over_the_seed(tmp_path):
+    machine = _machine(tmp_path)
+    _mark(machine, "grub")
+
+    assert _synced(machine, seed={"bootloader": "sd-boot"})["bootloader"] == "grub"
+
+
+def test_replanning_the_captured_bootloader_is_a_no_op(tmp_path):
+    """The round trip that matters for a switch: capture a grub machine and the
+    plan must not propose reinstalling — or removing — anything."""
+    machine = _machine(tmp_path)
+    _mark(machine, "grub")
+    captured = _synced(machine, seed={"bootloader": "sd-boot"})
+
+    action = BootloaderAction(captured, ActionContext(target=Target(root=str(machine))))
+
+    assert action.plan(managed=[]) == []
+
+
+def test_a_machine_carrying_two_loaders_still_plans_the_cleanup_after_sync(tmp_path):
+    """Not a round-trip violation: a leftover loader IS divergence, so the plan
+    staying loud about it is the point — silence would hide it forever."""
+    machine = _machine(tmp_path)
+    _mark(machine, "grub")
+    _mark(machine, "sd-boot")
+    captured = _synced(machine, seed={"bootloader": "grub"})
+
+    action = BootloaderAction(captured, ActionContext(target=Target(root=str(machine))))
+    ops = {(c.op.name, c.item) for c in action.plan(managed=[])}
+
+    assert ("REMOVE", "grub") in ops        # captured sd-boot, so grub is stale

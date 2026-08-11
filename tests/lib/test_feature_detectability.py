@@ -121,6 +121,20 @@ def test_systemd_boot_update_is_not_planned_on_grub():
     assert _units_planned(config) == []
 
 
+def test_switching_to_grub_disables_the_unit_sd_boot_owned():
+    """The disable direction of the switch: `systemd-boot-update.service` is
+    derived by the sd-boot toggle, so declaring grub stops deriving it and the
+    units domain plans its DISABLE off its own set-math — no bootloader code."""
+    config = expand_config({"bootloader": "grub"})
+    enabled = MagicMock(stdout=b"enabled", returncode=0)
+    with patch("dasik.lib.actions.systemd_action.Command.execute",
+               return_value=enabled):
+        action = SystemdAction(config.get("systemd", {}), _ctx("/mnt"))
+        changes = action.plan(managed=["systemd-boot-update.service"])
+    assert [(c.op.name, c.item) for c in changes] == [
+        ("DISABLE", "systemd-boot-update.service")]
+
+
 # --- sudo ------------------------------------------------------------------ #
 
 def test_a_missing_sudoers_fragment_is_planned(tmp_path):

@@ -38,7 +38,9 @@
 #
 # Knobs (see lib.sh): DASIK_VM_RAM (MiB, default 2048, cap 8192, also refused if
 #   it would exceed host MemAvailable), DASIK_VM_CPUS (2), DASIK_VM_DISK (8G),
-#   DASIK_VM_ISO (path to Arch ISO), DASIK_VM_TPM (1=swtpm), DASIK_VM_WORKDIR.
+#   DASIK_VM_ISO (path to Arch ISO), DASIK_VM_TPM (1=swtpm), DASIK_VM_WORKDIR,
+#   DASIK_VM_KEYDEV (raw image attached as a SECOND disk = the "pendrive" a LUKS
+#   keyfile unlock reads its key from; build it with make-keydev.sh).
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
 # shellcheck source=lib.sh
@@ -75,6 +77,20 @@ _ovmf_args() {
         cp -f "$vars" "$work/OVMF_VARS.fd"
         echo "-drive if=pflash,unit=0,format=raw,readonly=on,file=$code -drive if=pflash,unit=1,format=raw,file=$work/OVMF_VARS.fd"
     fi
+}
+
+# Second virtio disk — the "virtual pendrive" a LUKS keyfile unlock reads its key
+# from. Attached to every flow that boots something (install, boot, unlock,
+# drive), because the key device has to be present at INSTALL time (dasik creates
+# and enrolls the keyfile on it) and again at BOOT time (the initramfs mounts it).
+# Leave DASIK_VM_KEYDEV unset and nothing is attached — every other flow is
+# unchanged. Create the image with make-keydev.sh.
+#
+# NOTE: raw, and second in the -drive order, so the install target stays /dev/vda.
+_keydev_args() {
+    [ -n "${DASIK_VM_KEYDEV:-}" ] || return 0
+    [ -f "$DASIK_VM_KEYDEV" ] || die "DASIK_VM_KEYDEV='$DASIK_VM_KEYDEV' does not exist (run make-keydev.sh)."
+    echo "-drive file=$DASIK_VM_KEYDEV,if=virtio,format=raw"
 }
 
 # Software TPM 2.0 (swtpm) for TPM2 LUKS auto-unlock tests. Sets the globals
@@ -152,7 +168,7 @@ cmd_boot() {
     local args
     _start_tpm "$(dirname "$image")"
     args="$(_base_args) $(_accel_args) $ovmf $TPM_QARGS"
-    args="$args -drive file=$image,if=virtio -boot c"
+    args="$args -drive file=$image,if=virtio -boot c $(_keydev_args)"
 
     log "QEMU command:"; echo "  qemu-system-x86_64 $args"
     if [ "$dry" -eq 1 ]; then log "(dry-run) not launching QEMU."; return 0; fi
@@ -222,7 +238,7 @@ cmd_install() {
     local qargs="-enable-kvm -cpu host -m $DASIK_VM_RAM -smp $DASIK_VM_CPUS -nographic -display none"
     qargs="$qargs $ovmf -kernel $kernel -initrd $initrd -append \"$append\""
     # ISO on virtio (OVMF does not enumerate the IDE -cdrom); qcow2 as vda.
-    qargs="$qargs -drive file=$disk,if=virtio,format=qcow2"
+    qargs="$qargs -drive file=$disk,if=virtio,format=qcow2 $(_keydev_args)"
     qargs="$qargs -drive file=$DASIK_VM_ISO,if=virtio,media=cdrom,format=raw"
     qargs="$qargs -virtfs local,path=$REPO_ROOT,mount_tag=dasik,security_model=none,readonly=on"
     _start_tpm "$work"
@@ -303,7 +319,7 @@ cmd_install_driven() {
     local append="archisobasedir=arch archisolabel=$label cow_spacesize=2G copytoram=n console=ttyS0,115200 dasik_config=$config"
     local qargs="-enable-kvm -cpu host -m $DASIK_VM_RAM -smp $DASIK_VM_CPUS -display none -monitor none"
     qargs="$qargs $ovmf -kernel $kernel -initrd $initrd -append \"$append\""
-    qargs="$qargs -drive file=$disk,if=virtio,format=qcow2"
+    qargs="$qargs -drive file=$disk,if=virtio,format=qcow2 $(_keydev_args)"
     qargs="$qargs -drive file=$DASIK_VM_ISO,if=virtio,media=cdrom,format=raw"
     qargs="$qargs -virtfs local,path=$REPO_ROOT,mount_tag=dasik,security_model=none,readonly=on"
     _start_tpm "$work"
@@ -317,7 +333,10 @@ cmd_install_driven() {
     local http_pid=$!
     local timeout_s="${DASIK_VM_INSTALL_TIMEOUT:-1500}"
     log "Booting guest and driving the install over serial (this takes minutes)…"
-    eval "qemu-system-x86_64 $qargs" >/dev/null 2>&1 &
+    # `exec`: without it $! is the SUBSHELL bash forks for `eval`, and the kill
+    # below leaves the real qemu running — holding the qcow2 lock, so the NEXT
+    # run starts a qemu that cannot open the image and prints nothing at all.
+    eval "exec qemu-system-x86_64 $qargs" >/dev/null 2>&1 &
     local qpid=$!
 
     set +e
@@ -370,7 +389,10 @@ cmd_day2() {
 
     local timeout_s="${DASIK_VM_DAY2_TIMEOUT:-600}"
     log "Booting installed image and driving day-2 apply against target / …"
-    eval "qemu-system-x86_64 $qargs" >/dev/null 2>&1 &
+    # `exec`: without it $! is the SUBSHELL bash forks for `eval`, and the kill
+    # below leaves the real qemu running — holding the qcow2 lock, so the NEXT
+    # run starts a qemu that cannot open the image and prints nothing at all.
+    eval "exec qemu-system-x86_64 $qargs" >/dev/null 2>&1 &
     local qpid=$!
 
     set +e
@@ -418,7 +440,10 @@ cmd_lifecycle() {
 
     local timeout_s="${DASIK_VM_LIFECYCLE_TIMEOUT:-600}"
     log "Booting installed image and driving generation lifecycle against target / …"
-    eval "qemu-system-x86_64 $qargs" >/dev/null 2>&1 &
+    # `exec`: without it $! is the SUBSHELL bash forks for `eval`, and the kill
+    # below leaves the real qemu running — holding the qcow2 lock, so the NEXT
+    # run starts a qemu that cannot open the image and prints nothing at all.
+    eval "exec qemu-system-x86_64 $qargs" >/dev/null 2>&1 &
     local qpid=$!
 
     set +e
@@ -472,7 +497,10 @@ cmd_sync_luks() {
 
     local timeout_s="${DASIK_VM_SYNCLUKS_TIMEOUT:-600}"
     log "Booting encrypted image, unlocking, and driving 'dasik sync' against target / …"
-    eval "qemu-system-x86_64 $qargs" >/dev/null 2>&1 &
+    # `exec`: without it $! is the SUBSHELL bash forks for `eval`, and the kill
+    # below leaves the real qemu running — holding the qcow2 lock, so the NEXT
+    # run starts a qemu that cannot open the image and prints nothing at all.
+    eval "exec qemu-system-x86_64 $qargs" >/dev/null 2>&1 &
     local qpid=$!
 
     set +e
@@ -518,7 +546,7 @@ cmd_boot_unlock() {
     if [ -z "$ovmf" ]; then die "boot-unlock needs OVMF to boot the UEFI image."; fi
 
     local qargs="-enable-kvm -cpu host -m $DASIK_VM_RAM -smp $DASIK_VM_CPUS -display none -monitor none"
-    qargs="$qargs $ovmf -drive file=$image,if=virtio,format=qcow2 -boot c"
+    qargs="$qargs $ovmf -drive file=$image,if=virtio,format=qcow2 -boot c $(_keydev_args)"
     qargs="$qargs -serial unix:$sock,server,nowait -no-reboot"
 
     log "QEMU boot-unlock command:"; echo "  qemu-system-x86_64 $qargs"
@@ -526,7 +554,10 @@ cmd_boot_unlock() {
 
     local timeout_s="${DASIK_VM_UNLOCK_TIMEOUT:-240}"
     log "Booting encrypted image and typing the LUKS passphrase over serial …"
-    eval "qemu-system-x86_64 $qargs" >/dev/null 2>&1 &
+    # `exec`: without it $! is the SUBSHELL bash forks for `eval`, and the kill
+    # below leaves the real qemu running — holding the qcow2 lock, so the NEXT
+    # run starts a qemu that cannot open the image and prints nothing at all.
+    eval "exec qemu-system-x86_64 $qargs" >/dev/null 2>&1 &
     local qpid=$!
 
     set +e
@@ -573,7 +604,7 @@ cmd_drive() {
     if [ -z "$ovmf" ]; then die "drive needs OVMF to boot the UEFI image."; fi
 
     local qargs="-enable-kvm -cpu host -m $DASIK_VM_RAM -smp $DASIK_VM_CPUS -display none -monitor none"
-    qargs="$qargs $ovmf -drive file=$image,if=virtio,format=qcow2 -boot c"
+    qargs="$qargs $ovmf -drive file=$image,if=virtio,format=qcow2 -boot c $(_keydev_args)"
     qargs="$qargs -virtfs local,path=$REPO_ROOT,mount_tag=dasik,security_model=none,readonly=on"
     qargs="$qargs -netdev user,id=n0 -device virtio-net,netdev=n0"
     qargs="$qargs -serial unix:$sock,server,nowait -no-reboot"
@@ -583,7 +614,10 @@ cmd_drive() {
 
     local timeout_s="${DASIK_VM_DRIVE_TIMEOUT:-900}"
     log "Booting installed image and driving $guest against target / …"
-    eval "qemu-system-x86_64 $qargs" >/dev/null 2>&1 &
+    # `exec`: without it $! is the SUBSHELL bash forks for `eval`, and the kill
+    # below leaves the real qemu running — holding the qcow2 lock, so the NEXT
+    # run starts a qemu that cannot open the image and prints nothing at all.
+    eval "exec qemu-system-x86_64 $qargs" >/dev/null 2>&1 &
     local qpid=$!
 
     set +e

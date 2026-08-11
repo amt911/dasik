@@ -1,6 +1,6 @@
 {
   "metadata": {
-    "note": "Pendrive LUKS unlock (issue #173 block B): the root volume is opened from a keyfile on a SECOND device (qemu -drive as /dev/vdb, vfat) instead of typing the passphrase, with rd.luks.options=keyfile-timeout=10s so pulling the pendrive falls back to the prompt. dasik creates the keyfile itself (512x4 random bytes, mode 600) and enrolls it as an extra keyslot; the public test passphrase 'keyfilepass' keeps working. Replace unlock_keydev with the real filesystem UUID of the pendrive (blkid -s UUID -o value /dev/vdb1). Also carries the plymouth splash so both block-B features are exercised in one boot. Autologins root over serial. NOT for real hardware."
+    "note": "Pendrive LUKS unlock (issue #173 block B): the root volume is opened from a keyfile on a SECOND device (qemu -drive as /dev/vdb, vfat) instead of typing the passphrase, with rd.luks.options=keyfile-timeout=10s so pulling the pendrive falls back to the prompt. dasik creates the keyfile itself (512x4 random bytes, mode 600) and enrolls it as an extra keyslot; the public test passphrase 'keyfilepass' keeps working. The key device is built by scripts/vmtest/make-keydev.sh, which pins the vfat volume id to 1234-ABCD so this UUID is right on every machine and never has to be edited in. Also carries the plymouth splash so both block-B features are exercised in one boot. Autologins root over serial. NOT for real hardware."
   },
   "disks": {
     "disks": [

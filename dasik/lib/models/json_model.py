@@ -1,6 +1,6 @@
 import re
 from typing import Literal, Optional, List, Union, Dict, Any
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .locale_model import LocaleModel
 from .timezone_model import TimezoneModel
@@ -23,6 +23,7 @@ from .sudo_model import SudoModel
 from .cpu_model import CpuModel
 from .reflector_model import ReflectorModel
 from .plymouth_model import PlymouthModel
+from .systemd_conf_model import validate_ini_section
 
 
 class JsonModel(BaseModel):
@@ -103,6 +104,19 @@ class JsonModel(BaseModel):
     plymouth: Optional[PlymouthModel] = None
     # zram-generator: {device: {option: value}} mirroring zram-generator.conf ini.
     zram: Optional[Dict[str, Dict[str, Any]]] = None
+    # The pacman-owned /etc/systemd/*.conf files, one block per file, each
+    # holding that file's single section. dasik writes its values as a
+    # <conf>.d/10-dasik.conf drop-in and reads the effective configuration.
+    oomd: Optional[Dict[str, Any]] = Field(
+        default=None, description="[OOM] section of /etc/systemd/oomd.conf")
+    systemd_system_conf: Optional[Dict[str, Any]] = Field(
+        default=None, description="[Manager] section of /etc/systemd/system.conf")
+    systemd_user_conf: Optional[Dict[str, Any]] = Field(
+        default=None, description="[Manager] section of /etc/systemd/user.conf")
+
+    _ini_sections = field_validator(
+        "oomd", "systemd_system_conf", "systemd_user_conf", mode="after"
+    )(staticmethod(validate_ini_section))
 
     @model_validator(mode="after")
     def _validate_package_sources(self) -> "JsonModel":

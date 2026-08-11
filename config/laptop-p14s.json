@@ -416,6 +416,9 @@
       "zram-size": "min(ram / 2, 8192)"
     }
   },
+  "oomd": {
+    "DefaultMemoryPressureDurationSec": "20s"
+  },
   "firewall": {
     "enable": true,
     "allowed_services": [],

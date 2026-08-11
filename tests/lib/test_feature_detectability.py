@@ -18,6 +18,7 @@ from dasik.lib.actions.drop_files_action import DropFilesAction
 from dasik.lib.actions.kernel_cmdline_action import KernelCmdlineAction
 from dasik.lib.actions.sudo_action import SudoAction
 from dasik.lib.actions.systemd_action import SystemdAction
+from dasik.lib.actions.systemd_conf_action import OomdAction
 from dasik.lib.actions.users_action import UsersAction
 from dasik.lib.expand import expand_config
 from dasik.lib.target.target import Target
@@ -342,3 +343,50 @@ def test_an_undeclared_root_password_is_left_alone(tmp_path):
     """Declaring no root password means "dasik does not manage it", not "lock
     root" — the account is never created or deleted by the users domain."""
     assert _users_plan(tmp_path, [], "root:$6$SET$h:19000:0:99999:7:::\n") == []
+
+
+# --- /etc/systemd/*.conf (oomd, system, user) ------------------------------ #
+
+def _oomd_plan(tmp_path, config, on_disk=None, managed=()):
+    if on_disk is not None:
+        conf = tmp_path / "etc/systemd/oomd.conf"
+        conf.parent.mkdir(parents=True, exist_ok=True)
+        conf.write_text(on_disk)
+    action = OomdAction(config, _ctx(tmp_path))
+    return [(c.op.name, c.item) for c in action.plan(managed=list(managed))]
+
+
+def test_an_oomd_setting_the_machine_lacks_is_planned(tmp_path):
+    planned = _oomd_plan(tmp_path, {"oomd": {"SwapUsedLimit": "80%"}},
+                         on_disk="[OOM]\n#SwapUsedLimit=90%\n")
+    assert [op for op, _ in planned] == ["MODIFY"]
+
+
+def test_an_oomd_setting_already_in_the_package_file_plans_nothing(tmp_path):
+    """The file pacman owns still counts as the machine having it — reading
+    only our own drop-in is what made this invisible in the first place."""
+    assert _oomd_plan(tmp_path, {"oomd": {"SwapUsedLimit": "80%"}},
+                      on_disk="[OOM]\nSwapUsedLimit=80%\n") == []
+
+
+def test_dropping_the_oomd_block_removes_the_drop_in_dasik_owns(tmp_path):
+    dropin = tmp_path / "etc/systemd/oomd.conf.d/10-dasik.conf"
+    dropin.parent.mkdir(parents=True, exist_ok=True)
+    dropin.write_text("[OOM]\nSwapUsedLimit = 80%\n")
+
+    planned = _oomd_plan(tmp_path, {}, managed=["[OOM]\nSwapUsedLimit = 80%\n"])
+
+    assert [op for op, _ in planned] == ["REMOVE"]
+
+
+def test_an_unowned_oomd_drop_in_is_left_alone(tmp_path):
+    dropin = tmp_path / "etc/systemd/oomd.conf.d/10-dasik.conf"
+    dropin.parent.mkdir(parents=True, exist_ok=True)
+    dropin.write_text("[OOM]\nSwapUsedLimit = 80%\n")
+
+    assert _oomd_plan(tmp_path, {}) == []
+
+
+def test_the_oomd_daemon_is_planned_as_a_unit():
+    config = expand_config({"oomd": {"SwapUsedLimit": "80%"}})
+    assert _units_planned(config) == ["systemd-oomd.service"]

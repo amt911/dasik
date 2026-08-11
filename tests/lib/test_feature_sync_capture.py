@@ -22,6 +22,7 @@ from dasik.lib.actions.action_registry import get_default_registry
 from dasik.lib.actions.bootloader_action import BootloaderAction
 from dasik.lib.actions.actions_handler_v2 import setup_actions
 from dasik.lib.actions.kernel_cmdline_action import KernelCmdlineAction
+from dasik.lib.actions.systemd_conf_action import OomdAction
 from dasik.lib.expand import expand_config, subtract_contributions
 from dasik.lib.models.json_model import JsonModel
 from dasik.lib.reconciler.reconciler import Reconciler
@@ -349,3 +350,50 @@ def test_a_machine_carrying_two_loaders_still_plans_the_cleanup_after_sync(tmp_p
     ops = {(c.op.name, c.item) for c in action.plan(managed=[])}
 
     assert ("REMOVE", "grub") in ops        # captured sd-boot, so grub is stale
+
+
+# --- /etc/systemd/*.conf (oomd, system, user) ------------------------------ #
+#
+# The reason these needed an owner at all: they are pacman BACKUP files, so
+# DropFilesAction's discovery skips them, and /etc/systemd is not one of its
+# sections either. Nothing read them back.
+
+_STOCK_OOMD = "[OOM]\n#SwapUsedLimit=90%\n#DefaultMemoryPressureDurationSec=30s\n"
+
+
+def _with_oomd(tmp_path, text):
+    machine = _machine(tmp_path)
+    conf = machine / "etc/systemd/oomd.conf"
+    conf.parent.mkdir(parents=True, exist_ok=True)
+    conf.write_text(text)
+    return machine
+
+
+def test_sync_captures_a_setting_from_the_pacman_owned_file(tmp_path):
+    captured = _synced(_with_oomd(
+        tmp_path, "[OOM]\nDefaultMemoryPressureDurationSec=20s\n"))
+
+    assert captured["oomd"] == {"DefaultMemoryPressureDurationSec": "20s"}
+
+
+def test_sync_does_not_invent_settings_from_a_stock_file(tmp_path):
+    """Commented-out defaults are documentation, not configuration."""
+    captured = _synced(_with_oomd(tmp_path, _STOCK_OOMD))
+
+    assert "oomd" not in captured
+    assert "systemd_system_conf" not in captured
+    assert "systemd_user_conf" not in captured
+
+
+def test_the_captured_oomd_config_validates(tmp_path):
+    JsonModel.model_validate(_synced(_with_oomd(
+        tmp_path, "[OOM]\nDefaultMemoryPressureDurationSec=20s\n")))
+
+
+def test_replanning_the_captured_oomd_config_is_a_no_op(tmp_path):
+    machine = _with_oomd(tmp_path, "[OOM]\nDefaultMemoryPressureDurationSec=20s\n")
+    captured = _synced(machine)
+
+    action = OomdAction(captured, ActionContext(target=Target(root=str(machine))))
+
+    assert action.plan(managed=[]) == []

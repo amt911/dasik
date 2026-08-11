@@ -343,6 +343,69 @@ class PackagesAction(AbstractAction):
         """Install reason of an installed package: explicit if in -Qqe else dep."""
         return "explicit" if pkg in self.actual() else "dep"
 
+    def _enabled_units(self) -> list[str]:
+        """Unit files the target has enabled, bare templates excluded.
+
+        `systemctl show` refuses a bare template (`getty@.service` is "neither a
+        valid invocation ID nor unit name") and fails the WHOLE batch with it,
+        so they are filtered here rather than downstream.
+        """
+        target = getattr(self.context, "target", None) if self.context else None
+        if target is None:
+            return []
+        result = Command.execute(
+            "systemctl", ["list-unit-files", "--state=enabled", "--no-legend"],
+            target=target,
+        )
+        stdout = getattr(result, "stdout", b"") or b""
+        if isinstance(stdout, bytes):
+            stdout = stdout.decode("utf-8", errors="replace")
+        units = [line.split()[0] for line in stdout.splitlines() if line.split()]
+        return [u for u in units if "@." not in u]
+
+    def _unit_provider_packages(self) -> set[str]:
+        """Packages owning the unit file of an enabled unit.
+
+        `pacman -Qqe` lists only EXPLICIT packages, so a service pulled in as a
+        dependency is invisible to the capture — on the machine that found this,
+        `sddm` was a dependency of an orphaned `sddm-kcm` and the captured config
+        re-installed a system with no graphical login. The enabled unit is the
+        evidence that the package belongs in the config; ask pacman who owns the
+        unit file rather than keeping a unit→package table.
+
+        Two batched queries, not two per unit. Any probe failing (no systemctl
+        on a half-built target, a path no package owns) yields nothing rather
+        than losing the capture — this only ever ADDS to it.
+        """
+        target = getattr(self.context, "target", None) if self.context else None
+        if target is None:
+            return set()
+        try:
+            units = self._enabled_units()
+            if not units:
+                return set()
+            shown = Command.execute(
+                "systemctl", ["show", "-p", "FragmentPath", "--value", *units],
+                target=target,
+            )
+            out = getattr(shown, "stdout", b"") or b""
+            if isinstance(out, bytes):
+                out = out.decode("utf-8", errors="replace")
+            # A masked unit or an alias reports an empty FragmentPath; /etc is
+            # the admin's own, where pacman owns nothing.
+            paths = [p for p in (line.strip() for line in out.splitlines())
+                     if p.startswith("/usr/")]
+            if not paths:
+                return set()
+            owned = Command.execute("pacman", ["-Qqo", *paths], target=target)
+            out = getattr(owned, "stdout", b"") or b""
+            if isinstance(out, bytes):
+                out = out.decode("utf-8", errors="replace")
+            names = {line.strip() for line in out.splitlines() if line.strip()}
+        except Exception:   # noqa: BLE001 - a probe failure must not lose packages
+            return set()
+        return names & self._installed_all()
+
     def plan(self, managed):
         """Compute INSTALL/REMOVE/MODIFY over the desired (bare) package set.
 
@@ -453,6 +516,9 @@ class PackagesAction(AbstractAction):
 
         for name in sorted(explicit - declared):   # new explicit packages
             result.append(name)
+        # …and whatever an enabled unit proves is there without being explicit.
+        for name in sorted(self._unit_provider_packages() - declared - explicit):
+            result.append({"name": name, "reason": "dep"})
         return {self._PACMAN_DOMAIN: result}
 
     # ------------------------------------------------------------------ #

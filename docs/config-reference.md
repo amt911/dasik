@@ -299,6 +299,17 @@ not know whether the package exists, so it refuses rather than skip.
 > The deprecated `aur-<name>` prefix is still accepted (with a warning) for
 > configs produced by older syncs; `sync` rewrites it back to the plain name.
 
+`sync` captures the explicit packages (`pacman -Qqe`) **plus the package behind
+every enabled unit**, as `{"name": "...", "reason": "dep"}` when pacman has it
+installed as a dependency. Explicit alone is not enough: a service whose provider
+arrived as a dependency — `sddm` pulled in by an orphaned `sddm-kcm` — is invisible
+to `-Qqe`, so the captured config re-installed a machine with `sddm.service`
+enabled and no `sddm` to enable, and `dasik check` rejected it with
+`unit_without_provider`. The provider is found by asking pacman who owns the unit
+file (`systemctl show -p FragmentPath` → `pacman -Qqo`), so there is no unit→package
+table to keep up to date. Units under `/etc/systemd/system` are yours, not a
+package's, and capture nothing.
+
 #### `optional: true` — a failure that must not stop the install
 
 A package marked `{"name": "sunshine", "optional": true}` may **fail to install

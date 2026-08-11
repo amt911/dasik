@@ -132,3 +132,47 @@ def test_name_and_optional():
     a = PacmanAction(_cfg())
     assert a.name == "Pacman Configuration"
     assert a.is_optional is True
+
+
+# --- an absent section is not "dasik's defaults" ---------------------------
+
+def _conf(tmp_path, text="[options]\nColor\nParallelDownloads = 5\n"
+                        "[multilib]\nInclude = /etc/pacman.d/mirrorlist\n"):
+    etc = tmp_path / "etc"
+    etc.mkdir(parents=True, exist_ok=True)
+    (etc / "pacman.conf").write_text(text)
+    return tmp_path
+
+
+def test_an_undeclared_pacman_section_plans_nothing(tmp_path):
+    """PacmanModel defaults every field, so an empty dict never comes from a
+    user config — only from the reconciler handing the empty config for a domain
+    a previous generation owned. Planning it as "the defaults" would re-comment
+    [multilib] on a machine that depends on it."""
+    action = PacmanAction(PacmanAction.empty_config(),
+                          _ctx(str(_conf(tmp_path))))
+
+    assert action.plan(managed=["anything"]) == []
+
+
+def test_an_undeclared_pacman_section_captures_the_machine(tmp_path):
+    action = PacmanAction(PacmanAction.empty_config(), _ctx(str(_conf(tmp_path))))
+
+    assert action.import_state(managed=[]) == {"pacman": {
+        "options": {"Parallel": True, "Color": True, "VerbosePkgLists": False},
+        "multilib": True}}
+
+
+def test_sync_invents_no_pacman_config_without_a_pacman_conf(tmp_path):
+    """No /etc/pacman.conf is an unbuilt target, not a machine whose options
+    happen to be dasik's defaults."""
+    action = PacmanAction(PacmanAction.empty_config(), _ctx(str(tmp_path)))
+
+    assert action.import_state(managed=[]) == {}
+
+
+def test_a_declared_pacman_section_still_plans(tmp_path):
+    action = PacmanAction({"options": {"Color": False}, "multilib": False},
+                          _ctx(str(_conf(tmp_path))))
+
+    assert [c.op for c in action.plan(managed=[])] == [Op.MODIFY]

@@ -83,3 +83,24 @@ class ZramAction(ScalarV3Action):
 
     def _import_fragment(self, value: str) -> dict:
         return {"zram": _parse(value)} if value else {}
+
+    def import_state(self, managed=None) -> dict:
+        """Report the machine, never the config.
+
+        ScalarV3Action falls back to the DESIRED value when the target reads as
+        nothing, which is right for a domain where "nothing read" is a failure
+        rather than a state — a machine always has a timezone. Here it is a
+        state: no /etc/systemd/zram-generator.conf means no zram. Keeping the
+        fallback let sync report a device nobody configured, and re-applying
+        that captured config looked like a no-op it was not.
+
+        A declared block the machine does not have is CLEARED rather than
+        omitted: ConfigWriter.merge only ever overwrites a key, never deletes
+        one, so silence would leave the stale declaration standing. An
+        undeclared domain still captures nothing, so a bootstrap sync adds no
+        empty zram block.
+        """
+        value = self._actual_value()
+        if value:
+            return self._import_fragment(value)
+        return {"zram": {}} if self._zram else {}

@@ -36,21 +36,28 @@ def test_bootloader_idempotent(installed, fallback, loader):
     """Converged means the loader marker AND — on systemd-boot — the rescue
     entry; once both are there a re-apply is a no-op."""
     a = BootloaderAction({"bootloader": loader}, context=SimpleNamespace(target=object()))
-    a._installed = lambda: installed
-    a._fallback_present = lambda: fallback
     sdboot = loader in ("sd-boot", "systemd-boot")
+    # Domain items are canonical: "systemd-boot" is an alias of "sd-boot".
+    canonical = "sd-boot" if sdboot else "grub"
+    # No stale loader in this scenario — only the declared one may be present.
+    a._installed_loaders = lambda: {canonical} if installed else set()
+    a._fallback_present = lambda: fallback
 
     expected = []
     if not installed:
-        expected.append((Op.INSTALL, loader))
+        expected.append((Op.INSTALL, canonical))
     if sdboot and not fallback:
         expected.append((Op.INSTALL, "fallback-entry"))
+    if not sdboot and fallback:
+        # grub does not use loader entries: a rescue entry left over from a
+        # previous systemd-boot is stale and gets removed.
+        expected.append((Op.REMOVE, "fallback-entry"))
 
     changes = a.plan(managed=[])
     assert [(c.op, c.item) for c in changes] == expected
     assert a.is_needed() is bool(expected)
     if installed:
-        assert a.verify() is True       # verify() only asserts the loader itself
+        assert a.verify() is True       # nothing stale left beside it
 
 
 @given(install=st.booleans(), has_iso=st.booleans(), present=st.booleans())

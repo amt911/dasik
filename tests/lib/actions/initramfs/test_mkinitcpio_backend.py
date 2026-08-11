@@ -38,11 +38,15 @@ def test_desired_btrfs_hook_encrypted():
     assert "btrfs" in hooks and hooks.index("btrfs") == hooks.index("systemd") + 1
 
 
-def test_actual_value_parses_hooks_line():
-    with patch("builtins.open", mock_open(read_data=_DEFAULT)):
-        assert _b({}).actual_value() == (
-            "base udev autodetect modconf kms keyboard keymap "
-            "consolefont block filesystems fsck")
+def test_actual_value_parses_hooks_line(tmp_path):
+    """The managed value is HOOKS from the main conf plus dasik's own drop-in
+    (absent here), rendered as the conf lines themselves."""
+    (tmp_path / "etc").mkdir()
+    (tmp_path / "etc/mkinitcpio.conf").write_text(_DEFAULT)
+
+    assert _b({}, root=str(tmp_path)).actual_value() == (
+        "HOOKS=(base udev autodetect modconf kms keyboard keymap "
+        "consolefont block filesystems fsck)")
 
 
 def test_actual_value_none_when_file_absent():

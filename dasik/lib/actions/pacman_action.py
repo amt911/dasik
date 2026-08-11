@@ -34,6 +34,10 @@ class PacmanAction(CompositeV3Action):
         self.color = opts.get("Color", True)
         self.verbose = opts.get("VerbosePkgLists", False)
         self.multilib = cfg.get("multilib", False)
+        # PacmanModel defaults every field, so an empty dict never reaches here
+        # from a user config — only from the reconciler, which hands
+        # empty_config() for a domain a previous generation owned. See plan().
+        self._declared: bool = bool(cfg)
 
     @property
     def name(self) -> str:
@@ -104,8 +108,22 @@ class PacmanAction(CompositeV3Action):
         if changes and self.multilib and t is not None and getattr(t, "is_chroot", False):
             Command.execute("pacman", ["-Sy"], target=t, check=True)
 
+    def plan(self, managed):
+        """Nothing declared is not "dasik's defaults".
+
+        Dropping a `pacman` block a generation owned makes the reconciler plan
+        the empty config, whose desired state is every default — which would
+        re-comment `[multilib]` on a machine that depends on it. Leave
+        pacman.conf alone instead.
+        """
+        return super().plan(managed) if self._declared else []
+
     def _import_fragment(self, value) -> dict:
-        st = self._actual_state() or self._desired_state()
+        # Report the machine: no /etc/pacman.conf is an unbuilt target, not a
+        # machine whose options happen to be dasik's defaults.
+        st = self._actual_state()
+        if st is None:
+            return {}
         return {self._DOMAIN: {
             "options": {
                 "Parallel": st["Parallel"],

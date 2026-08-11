@@ -319,10 +319,17 @@ def _cmd_plan(config_path: Path, target_root: str) -> int:
     setup_actions()
     registry = get_default_registry()
 
+    # The SAME manifest apply loads. Ownership is what makes a REMOVE: the
+    # set-math is M \ D over the manifest, so planning with `manifest=None`
+    # left M empty and no removal could ever show up in the dry run — while
+    # apply, reading the real one, would carry them out unannounced. A plan
+    # that cannot say "this will be removed" is not a dry run.
+    manifest_dict = StateStore(target).load().to_dict()
+
     reconciler = Reconciler(
         config=config,
         target=target,
-        manifest=None,
+        manifest=manifest_dict,
         action_metas=registry.get_all_actions(),
     )
     plan, _results = reconciler.build_plan()

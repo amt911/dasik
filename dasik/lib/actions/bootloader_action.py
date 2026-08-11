@@ -7,19 +7,37 @@ The destructive install lives in `_install()` (mocked in tests).
 """
 from __future__ import annotations
 import os
+import re
+import shutil
 from typing import Any, Dict, List
 from .abstract_action import AbstractAction
 from .partition_utils import mounts_root
 from ..command_worker.command_worker import Command
+from ..exceptions.exceptions import CommandExecutionError, CommandNotFoundException
+from ..logging import run_logger
 from ..state.change import Change, Op
 
 _DOMAIN = "bootloader"
+_SDBOOT = "sd-boot"
+_GRUB = "grub"
 _SDBOOT_MARKER = "/boot/EFI/systemd/systemd-bootx64.efi"
 _GRUB_MARKER = "/boot/grub/grub.cfg"
+_MARKERS = {_SDBOOT: _SDBOOT_MARKER, _GRUB: _GRUB_MARKER}
 _FALLBACK_ENTRY = "/boot/loader/entries/arch-fallback.conf"
 _FALLBACK_ITEM = "fallback-entry"
 _MAIN_INITRD = "/initramfs-linux.img"
 _FALLBACK_INITRD = "/initramfs-linux-fallback.img"
+
+# What each loader leaves behind on the ESP. Fixed constants, never derived from
+# config: nothing user-controlled may reach a recursive delete.
+_SDBOOT_LEFTOVERS = ("/boot/EFI/systemd", "/boot/loader/entries",
+                     "/boot/loader/loader.conf", "/boot/loader/random-seed")
+_GRUB_LEFTOVERS = ("/boot/grub", "/boot/EFI/GRUB")
+
+# The NVRAM entry `grub-install --bootloader-id=GRUB` creates. systemd-boot's
+# ("Linux Boot Manager") is `bootctl remove`'s own business.
+_GRUB_NVRAM_LABEL = "GRUB"
+_EFIBOOTMGR_LINE = re.compile(r"^Boot([0-9A-Fa-f]{4})\*?\s+(.*?)\s*$")
 
 
 class BootloaderAction(AbstractAction):
@@ -80,11 +98,29 @@ class BootloaderAction(AbstractAction):
         return "root=LABEL=root"
 
     def _is_sdboot(self) -> bool:
-        return self.bootloader in ("sd-boot", "systemd-boot")
+        return self.bootloader in (_SDBOOT, "systemd-boot")
+
+    def _desired(self) -> str:
+        """The declared loader, canonicalized.
+
+        ``systemd-boot`` is an accepted alias of ``sd-boot``; domain items use
+        the canonical name only, or a manifest written under the alias would
+        read as a switch on the next plan and remove the very loader it keeps.
+        """
+        return _SDBOOT if self._is_sdboot() else _GRUB
 
     def _installed(self) -> bool:
-        marker = _SDBOOT_MARKER if self._is_sdboot() else _GRUB_MARKER
-        return os.path.exists(self._p(marker))
+        return os.path.exists(self._p(_MARKERS[self._desired()]))
+
+    def _installed_loaders(self) -> set:
+        """Every loader with a marker on the ESP — not only the declared one.
+
+        Probing just the declared loader made a leftover GRUB (or systemd-boot)
+        invisible: nothing planned its removal and a switch left both on the
+        ESP and in NVRAM.
+        """
+        return {name for name, marker in _MARKERS.items()
+                if os.path.exists(self._p(marker))}
 
     # --- v3 contract -------------------------------------------------- #
 
@@ -92,34 +128,56 @@ class BootloaderAction(AbstractAction):
         return os.path.exists(self._p(_FALLBACK_ENTRY))
 
     def actual(self) -> set:
-        found = set()
-        if self._installed():
-            found.add(self.bootloader)
-        if self._is_sdboot() and self._fallback_present():
+        found = self._installed_loaders()
+        if self._fallback_present():
             found.add(_FALLBACK_ITEM)
         return found
 
     def managed_keys(self) -> dict:
-        return {self._DOMAIN: sorted(self.actual())}
+        # Ownership is INTENT, like every other domain: a stale loader found on
+        # the machine must never be recorded as something dasik wants.
+        desired = [self._desired()]
+        if self._is_sdboot():
+            desired.append(_FALLBACK_ITEM)
+        return {self._DOMAIN: sorted(desired)}
 
     def plan(self, managed) -> list:
         have = self.actual()
+        desired = self._desired()
         changes = []
-        if self.bootloader not in have:
-            changes.append(Change(self._DOMAIN, Op.INSTALL, self.bootloader,
+        if desired not in have:
+            changes.append(Change(self._DOMAIN, Op.INSTALL, desired,
                                   reason="install bootloader"))
         # The rescue entry is a domain item of its own, so a machine whose
         # bootloader is ALREADY installed still gets it on the next apply.
         if self._is_sdboot() and _FALLBACK_ITEM not in have:
             changes.append(Change(self._DOMAIN, Op.INSTALL, _FALLBACK_ITEM,
                                   reason="rescue boot entry"))
+        # Switching away leaves the old loader behind unless it is removed —
+        # deliberately regardless of manifest ownership, since after a `sync`
+        # the manifest is empty and two loaders on one ESP is not a state
+        # anyone wants. `plan` always announces it first.
+        for stale in sorted(have & set(_MARKERS)):
+            if stale != desired:
+                changes.append(Change(self._DOMAIN, Op.REMOVE, stale,
+                                      reason=f"switched to {desired}"))
+        if not self._is_sdboot() and _FALLBACK_ITEM in have:
+            changes.append(Change(self._DOMAIN, Op.REMOVE, _FALLBACK_ITEM,
+                                  reason=f"switched to {desired}"))
         return changes
 
     def apply(self, changes) -> None:
         items = {c.item for c in changes}
-        if self.bootloader in items:
+        # Uninstall FIRST: installing before removing leaves two loaders
+        # fighting over the ESP mid-apply, and the removal would then delete
+        # directories the new loader has just written.
+        for stale in sorted(items & set(_MARKERS)):
+            if stale != self._desired():
+                self._uninstall(stale)
+        if self._desired() in items:
             self._install()                 # writes both entries for sd-boot
-        if _FALLBACK_ITEM in items and not os.path.exists(self._p(_FALLBACK_ENTRY)):
+        if _FALLBACK_ITEM in items and self._is_sdboot() \
+                and not os.path.exists(self._p(_FALLBACK_ENTRY)):
             self._write_fallback_entry()
 
     def import_state(self, managed=None) -> dict:
@@ -143,7 +201,70 @@ class BootloaderAction(AbstractAction):
         self.apply(self.plan(managed=[]))
 
     def verify(self) -> bool:
-        return self._installed()
+        # A stale loader still on the ESP is not a converged bootloader domain:
+        # the firmware can still boot it.
+        return self._installed_loaders() == {self._desired()}
+
+    # --- uninstalling a loader we switched away from ------------------- #
+
+    def _rm(self, canonical: str) -> None:
+        path = self._p(canonical)
+        if os.path.isdir(path) and not os.path.islink(path):
+            shutil.rmtree(path, ignore_errors=True)
+        elif os.path.lexists(path):
+            os.remove(path)
+
+    def _best_effort(self, cmd: str, args: List[str]):
+        """Run a firmware command that is allowed to fail.
+
+        A chroot without ``efivars`` (container, VM build, `--target /` on a
+        BIOS box) cannot touch NVRAM, and that must not abort an otherwise-good
+        install: the on-ESP files are removed either way. Only NVRAM work goes
+        through here — file removal is not best-effort.
+        """
+        try:
+            return Command.execute(cmd, args, target=self._target(), check=True)
+        except (CommandExecutionError, CommandNotFoundException) as exc:
+            run_logger.get().warning(
+                f"could not update firmware boot entries via {cmd}", detail=str(exc))
+            return None
+
+    @staticmethod
+    def _decode(out) -> str:
+        if isinstance(out, bytes):
+            return out.decode("utf-8", errors="replace")
+        return out or ""
+
+    def _nvram_entries(self, label: str) -> List[str]:
+        """Boot entry numbers whose label is exactly *label*."""
+        result = self._best_effort("efibootmgr", [])
+        if result is None:
+            return []
+        found = []
+        for line in self._decode(getattr(result, "stdout", "")).splitlines():
+            m = _EFIBOOTMGR_LINE.match(line)
+            # The label runs up to the tab that precedes the device path.
+            if m and m.group(2).split("\t")[0].strip() == label:
+                found.append(m.group(1))
+        return found
+
+    def _uninstall(self, loader: str) -> None:
+        """Remove *loader* from the ESP and from the firmware's boot menu."""
+        if loader == _SDBOOT:
+            # bootctl clears both the EFI binaries and the "Linux Boot Manager"
+            # NVRAM entry; it leaves loader.conf and entries/*.conf behind, and
+            # it fails without efivars — so the files are removed explicitly
+            # afterwards, which is also what makes the marker deterministically
+            # gone.
+            self._best_effort("bootctl", ["remove"])
+            leftovers: tuple = _SDBOOT_LEFTOVERS
+        else:
+            leftovers = _GRUB_LEFTOVERS
+        for path in leftovers:
+            self._rm(path)
+        if loader == _GRUB:
+            for num in self._nvram_entries(_GRUB_NVRAM_LABEL):
+                self._best_effort("efibootmgr", ["-b", num, "-B"])
 
     # --- destructive install (mocked in tests) ------------------------ #
 

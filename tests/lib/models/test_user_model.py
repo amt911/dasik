@@ -28,3 +28,26 @@ def test_json_model_remove_home_on_delete_defaults_false():
         hostname="arch",
     )
     assert m.remove_home_on_delete is False
+
+
+# ---------------------------------------------------------------------- #
+#  root: password only — shell/groups are not managed for it              #
+# ---------------------------------------------------------------------- #
+
+
+def test_accepts_root_with_only_a_password():
+    m = UserModel(username="root", hashed_password=_HASH)
+    assert m.username == "root"
+
+
+@pytest.mark.parametrize("extra", [{"shell": "/bin/zsh"}, {"groups": ["wheel"]}])
+def test_rejects_root_with_shell_or_groups(extra):
+    """UsersAction.apply() runs only `usermod -p` for root, so a shell or a
+    group list would be accepted and then silently ignored."""
+    with pytest.raises(ValueError, match="root"):
+        UserModel(username="root", hashed_password=_HASH, **extra)
+
+
+def test_accepts_root_with_explicit_default_shell_and_no_groups():
+    m = UserModel(username="root", hashed_password=_HASH, shell="/bin/bash", groups=[])
+    assert m.shell == "/bin/bash"

@@ -432,3 +432,53 @@ def test_apply_userdel_failure_propagates():
     with patch("dasik.lib.actions.users_action.Command.execute", side_effect=boom):
         with pytest.raises(CommandExecutionError):
             a.apply([Change("users", Op.DELETE, "old")])
+
+
+# ---------------------------------------------------------------------- #
+#  root password: sync captures it from /etc/shadow                       #
+# ---------------------------------------------------------------------- #
+
+
+def test_import_state_captures_undeclared_root_password():
+    """A root password nobody declared is still the machine's reality, and sync
+    reports reality — otherwise re-applying a captured config silently drops it."""
+    a = _v3([], actual=[], hashes={"root": "$y$j9T$real"})
+    frag = a.import_state(managed=[])
+    users = {u["username"]: u for u in frag["users"]}
+    assert users["root"]["hashed_password"] == "$y$j9T$real"
+
+
+def test_import_state_refreshes_declared_root_password():
+    a = _v3([{"username": "root", "hashed_password": "$6$OLD$h"}],
+            actual=[], hashes={"root": "$6$NEW$h"})
+    frag = a.import_state(managed=[])
+    users = {u["username"]: u for u in frag["users"]}
+    assert users["root"]["hashed_password"] == "$6$NEW$h"
+
+
+def test_import_state_root_entry_carries_no_shell_or_groups():
+    """apply() manages neither for root, so capturing them would describe state
+    dasik never reconciles."""
+    a = _v3([], actual=[], hashes={"root": "$6$r$h"},
+            shells={"root": "/bin/zsh"}, groups={"root": ["wheel"]})
+    frag = a.import_state(managed=[])
+    root = next(u for u in frag["users"] if u["username"] == "root")
+    assert set(root) == {"username", "hashed_password"}
+
+
+@pytest.mark.parametrize("field", ["!", "*", "!*", "!$6$x$y", ""])
+def test_import_state_drops_declared_root_when_password_not_set(field):
+    """A locked or absent root password is not a password. Keeping the
+    declaration would make sync describe something the machine does not have."""
+    a = _v3([{"username": "root", "hashed_password": "$6$OLD$h"}],
+            actual=[], hashes={"root": field})
+    frag = a.import_state(managed=[])
+    assert [u["username"] for u in frag["users"]] == []
+
+
+def test_import_state_keeps_non_root_users_when_root_is_locked():
+    a = _v3([{"username": "alice", "hashed_password": "$6$a$h"}],
+            actual=["alice"], shells={"alice": "/bin/bash"},
+            groups={"alice": []}, hashes={"alice": "$6$a$h", "root": "!"})
+    frag = a.import_state(managed=["alice"])
+    assert [u["username"] for u in frag["users"]] == ["alice"]

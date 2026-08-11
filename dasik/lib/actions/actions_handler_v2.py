@@ -55,14 +55,28 @@ def setup_actions() -> None:
     from .bootloader_action import BootloaderAction
     from .ms_fonts_action import MicrosoftFontsAction
     from .zram_action import ZramAction
+    from .systemd_conf_action import (
+        OomdAction, SystemdSystemConfAction, SystemdUserConfAction,
+    )
     from .pacman_hooks_action import PacmanHooksAction
     from .cpu_action import CpuAction
     from .reflector_action import ReflectorAction
+    from .plymouth_action import PlymouthAction
+    from .luks_keyfile_action import LuksKeyfileAction
 
     # === Phase 1: disk & base install =====================================
     register_action(
         action_class=DiskPartitionAction,
         config_key='disks',
+        is_optional=True,
+    )
+    # The pendrive/embedded unlock keyfile. Right after the disks: the LUKS
+    # volumes are open by now (so the device to add the key to is known), and it
+    # must be enrolled before the initramfs and the bootloader entry are built
+    # around an rd.luks.key that would otherwise open nothing.
+    register_action(
+        action_class=LuksKeyfileAction,
+        config_key='__root__',   # reads `disks` — the unlock lives per partition
         is_optional=True,
     )
     # dasik-owned pacman hooks (today: the mkinitcpio neutralizers). MUST come
@@ -177,6 +191,16 @@ def setup_actions() -> None:
         config_key='__root__',  # reads root-level `zram` mapping
         is_optional=True,
     )
+    # The pacman-owned /etc/systemd/*.conf files. DropFilesAction cannot own
+    # them (its discovery skips package-owned paths, and /etc/systemd is not one
+    # of its sections), so a setting like DefaultMemoryPressureDurationSec=20s
+    # was invisible to both plan and sync.
+    for _conf_action in (OomdAction, SystemdSystemConfAction, SystemdUserConfAction):
+        register_action(
+            action_class=_conf_action,
+            config_key='__root__',  # reads its own root-level mapping
+            is_optional=True,
+        )
     # Capture-only (plan() is empty by design): CPU scaling and the reflector
     # policy converge through the expand toggles (packages, units, files) and
     # the kernel cmdline, but nothing captured them BACK — a synced config lost
@@ -190,6 +214,11 @@ def setup_actions() -> None:
     register_action(
         action_class=ReflectorAction,
         config_key='__root__',  # reads root-level `reflector`
+        is_optional=True,
+    )
+    register_action(
+        action_class=PlymouthAction,
+        config_key='__root__',  # reads root-level `plymouth`
         is_optional=True,
     )
 

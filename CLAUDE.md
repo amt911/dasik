@@ -216,6 +216,45 @@ Watch out for two legitimate reasons a key is absent from a synced config:
 re-derives it), and `_cmd_sync` drops newly-added empty values. Assert
 reproducibility (`expand_config(captured)`), not literal presence.
 
+### …and exercised through EVERY verb before it is called done
+
+**A feature is not finished until it has been driven through all of
+`check`, `plan`, `apply`, `sync`, `generations` and `rollback`.** The unit suite
+passing is not the same thing: each verb enters the code by a different door, and
+the bugs found this way were invisible to a green suite.
+
+| Verb | What only this verb proves |
+| --- | --- |
+| `check` | the sample config still validates, and — the one that keeps being missed — **a config `sync` just produced does too**. A capture the tool then refuses is a broken capture. |
+| `plan` | the domain is visible at all, in both directions (missing ⇒ planned, present ⇒ silent), and it **converges**: plan → apply → plan must be empty the second time. |
+| `apply` | the change is written where it was announced, and re-running writes nothing. Never against real hardware — assert the intent (mocked `Command.execute`, a scratch root). |
+| `sync` | the feature reads back as its own block, and nothing is invented on a machine that lacks it. |
+| `generations` / `rollback` | the manifest records the domain, and a restored generation re-plans to nothing. `rollback` re-applies: same destructive limits as `apply`. |
+
+The pairs matter more than the verbs alone — run them as round trips:
+**`sync` → `check` → `plan` must end in silence**, and **`plan` → `apply` →
+`plan` must too.** Real defects that only these round trips catch:
+
+- a domain that plans a change, applies it, and plans the *same* change forever
+  (a systemd drop-in that another file outranks — `apply` reported success every
+  time);
+- a `sync` that reported the config back instead of the machine, so the captured
+  file described a setting nobody had applied;
+- a `sync` whose output `check` then rejected, because the capture omitted the
+  package behind an enabled unit;
+- an *undeclared* domain planning a destructive MODIFY — `ln -sf
+  /usr/share/zoneinfo/None/None`, or commenting out every locale — reached by
+  dropping a block a previous generation owned.
+
+That last one is the general trap: **also exercise the domain with its config
+block removed.** The reconciler hands an action its *empty* config when a
+previous generation owned the domain, and an empty config is not the same thing
+as "the empty value".
+
+`apply` and `rollback` are destructive and must never run for real; drive them
+against a scratch root or with `Command.execute` mocked, and say plainly in the
+verdict which verbs were exercised for real and which were asserted.
+
 ### Running commands
 
 Use `Command.execute(cmd, args, run_as_chroot=False)` (`dasik/lib/command_worker/command_worker.py`) rather than calling `subprocess` directly — it locates the binary (raising `CommandNotFoundException`) and optionally prefixes `arch-chroot /mnt`. Custom exceptions live in `dasik/lib/exceptions/exceptions.py`.
@@ -334,6 +373,7 @@ that crashes before it ever reaches `is_needed()`.
 - **Preserve idempotency** — any new action must implement a real `is_needed()` that reads system state. A re-run of the same JSON must be a no-op.
 - **Every feature must be detectable by `plan`** — missing ⇒ planned, present ⇒ silent, owned-but-undeclared ⇒ removed. Assert all of them; a quiet plan is not evidence. See [Every feature must be detectable by `plan`/`apply`](#every-feature-must-be-detectable-by-planapply).
 - **…and capturable by `sync`** — every feature needs an `import_state` that reads it back as its own block, and `sync` → `plan` must be a no-op. A feature delivered only by an expand toggle has no owner on the way back until you add one. See […and capturable by `sync`](#and-capturable-by-sync).
+- **…and exercised through EVERY verb before you call it done** — `check`, `plan`, `apply`, `sync`, `generations`, `rollback`, as round trips (`sync` → `check` → `plan` silent; `plan` → `apply` → `plan` silent), *including with the config block removed*. A green unit suite is not this. `apply`/`rollback` never run for real — scratch root or mocked `Command.execute`, and say which verbs were real. See […and exercised through EVERY verb](#and-exercised-through-every-verb-before-it-is-called-done).
 - **Keep sections optional** — config has many optional blocks (disks, kvm, cups, wireguard, …), not just disks. New top-level fields should be `Optional`/defaulted in `JsonModel`.
 - **The legacy handler is gone** — the monolithic `actions_handler.py` and the no-verb `dasik <config>` fallback were removed (PR #151). Put all behavior in the v2/v3 registry/action path (`setup_actions()` + `plan()/apply()/import_state()`).
 - **Entry point is on v3** — `__main__`'s verbs (`plan`/`apply`/`sync`/`generations`/`rollback`) use the reconciler. A bare `dasik <config>` (no verb) is rejected with a pointer to `plan`/`apply`.

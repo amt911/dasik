@@ -113,3 +113,36 @@ def test_import_state_output_reapplies_as_noop(tmp_path):
     # feed the captured stanza back as config -> plans to nothing
     b = ZramAction(captured, _ctx(str(tmp_path)))
     assert b.plan(managed=[]) == []
+
+
+# --- sync reports reality, never the config -------------------------------
+
+def test_import_state_clears_a_declared_conf_the_machine_does_not_have(tmp_path):
+    """ScalarV3Action falls back to the DESIRED value when the target reads as
+    nothing. That is right where "nothing read" is a failure rather than a state
+    (a machine always has a timezone) and wrong here: no
+    /etc/systemd/zram-generator.conf IS the unset state, so the fallback made
+    sync report a zram device nobody configured.
+
+    The block is CLEARED, not omitted: ConfigWriter.merge overwrites keys and
+    never deletes them, so an omitted block leaves the stale declaration."""
+    declared = {"zram": {"zram0": {"zram-size": "ram / 2"}}}
+    a = ZramAction(declared, _ctx(str(tmp_path)))
+
+    assert a.import_state(managed=[]) == {"zram": {}}
+
+
+def test_import_state_reports_the_file_over_the_config(tmp_path):
+    conf = tmp_path / "etc/systemd/zram-generator.conf"
+    conf.parent.mkdir(parents=True)
+    conf.write_text("[zram0]\nzram-size = 4096\n")
+    declared = {"zram": {"zram0": {"zram-size": "ram / 2"}}}
+
+    frag = ZramAction(declared, _ctx(str(tmp_path))).import_state(managed=[])
+
+    assert frag == {"zram": {"zram0": {"zram-size": "4096"}}}
+
+
+def test_import_state_still_invents_nothing_on_an_undeclared_machine(tmp_path):
+    """A bootstrap sync must not add an empty zram block to every config."""
+    assert ZramAction({}, _ctx(str(tmp_path))).import_state(managed=[]) == {}

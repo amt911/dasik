@@ -308,7 +308,9 @@ enabled and no `sddm` to enable, and `dasik check` rejected it with
 `unit_without_provider`. The provider is found by asking pacman who owns the unit
 file (`systemctl show -p FragmentPath` → `pacman -Qqo`), so there is no unit→package
 table to keep up to date. Units under `/etc/systemd/system` are yours, not a
-package's, and capture nothing.
+package's, and capture nothing — and neither does `base` or one of its direct
+dependencies, since dasik pacstraps `base` on every machine it builds and the
+entry would change nothing.
 
 #### `optional: true` — a failure that must not stop the install
 

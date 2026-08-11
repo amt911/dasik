@@ -24,7 +24,7 @@ def _ctx(root: str = "/") -> ActionContext:
 
 
 def _probes(explicit=b"", installed=None, enabled=b"", fragments=b"", owners=b"",
-            fail=()):
+            base_info=b"", fail=()):
     """Fake `Command.execute` answering each probe import_state makes."""
     installed = explicit if installed is None else installed
 
@@ -35,7 +35,7 @@ def _probes(explicit=b"", installed=None, enabled=b"", fragments=b"", owners=b""
             raise OSError(f"no {cmd}")
         if cmd == "pacman":
             out = {"-Qqe": explicit, "-Qq": installed, "-Qqm": b"",
-                   "-Qqo": owners}.get(head, b"")
+                   "-Qqo": owners, "-Qi": base_info}.get(head, b"")
         elif cmd == "systemctl":
             out = {"list-unit-files": enabled, "show": fragments}.get(head, b"")
         else:
@@ -139,6 +139,66 @@ def test_a_provider_that_is_not_installed_is_not_captured():
         owners=b"sddm\n")
 
     assert fragment["packages"] == ["plasma-meta"]
+
+
+# --- what the base install already guarantees ------------------------------ #
+#
+# dasik pacstraps `base` itself, so `base` and its dependencies are on every
+# machine it builds whether or not the config names them. Capturing them adds
+# entries that change nothing — `systemd` and `util-linux` turned up that way on
+# the host this came from, because systemd-oomd.service and fstrim.timer live in
+# them.
+
+_BASE_INFO = (b"Name            : base\n"
+              b"Version         : 3-2\n"
+              b"Depends On      : filesystem  glibc>=2.3  util-linux  systemd\n"
+              b"Optional Deps   : linux: bare metal support [installed]\n")
+
+
+def test_a_provider_the_base_install_guarantees_is_not_captured():
+    fragment, _ = _captured(
+        explicit=b"plasma-meta\n", installed=b"plasma-meta\nsystemd\n",
+        enabled=b"systemd-oomd.service enabled enabled\n",
+        fragments=b"/usr/lib/systemd/system/systemd-oomd.service\n",
+        owners=b"systemd\n", base_info=_BASE_INFO)
+
+    assert fragment["packages"] == ["plasma-meta"]
+
+
+def test_a_version_constraint_does_not_hide_a_base_dependency():
+    """`glibc>=2.3` in Depends On is still the package `glibc`."""
+    fragment, _ = _captured(
+        explicit=b"plasma-meta\n", installed=b"plasma-meta\nglibc\n",
+        enabled=b"ldconfig.service enabled enabled\n",
+        fragments=b"/usr/lib/systemd/system/ldconfig.service\n",
+        owners=b"glibc\n", base_info=_BASE_INFO)
+
+    assert fragment["packages"] == ["plasma-meta"]
+
+
+def test_base_itself_is_not_captured():
+    fragment, _ = _captured(
+        explicit=b"plasma-meta\n", installed=b"plasma-meta\nbase\n",
+        enabled=b"whatever.service enabled enabled\n",
+        fragments=b"/usr/lib/systemd/system/whatever.service\n",
+        owners=b"base\n", base_info=_BASE_INFO)
+
+    assert fragment["packages"] == ["plasma-meta"]
+
+
+def test_a_package_outside_base_is_still_captured():
+    """The filter must not swallow the packages that motivated the capture."""
+    fragment, _ = _captured(base_info=_BASE_INFO, **_SDDM)
+
+    assert {"name": "sddm", "reason": "dep"} in fragment["packages"]
+
+
+def test_an_unreadable_base_query_captures_rather_than_drops():
+    """Without the base list the filter cannot run; capturing a redundant entry
+    beats losing a real provider."""
+    fragment, _ = _captured(**_SDDM)      # no base_info at all
+
+    assert {"name": "sddm", "reason": "dep"} in fragment["packages"]
 
 
 def test_a_failing_probe_leaves_the_capture_alone():

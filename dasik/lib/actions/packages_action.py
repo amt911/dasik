@@ -363,6 +363,39 @@ class PackagesAction(AbstractAction):
         units = [line.split()[0] for line in stdout.splitlines() if line.split()]
         return [u for u in units if "@." not in u]
 
+    def _base_guaranteed(self) -> set[str]:
+        """`base` and its direct dependencies.
+
+        BaseInstallAction pacstraps `base` on every machine dasik builds, so
+        these are present whether or not the config names them — capturing one
+        adds an entry that changes nothing. Direct dependencies only: it is one
+        cheap query and it covers what actually owns units (`systemd` owns
+        systemd-oomd.service, `util-linux` owns fstrim.timer). An unreadable
+        answer filters nothing, because capturing a redundant entry is a smaller
+        error than dropping a real provider.
+        """
+        target = getattr(self.context, "target", None) if self.context else None
+        if target is None:
+            return set()
+        try:
+            result = Command.execute("pacman", ["-Qi", "base"], target=target)
+            out = getattr(result, "stdout", b"") or b""
+            if isinstance(out, bytes):
+                out = out.decode("utf-8", errors="replace")
+        except Exception:   # noqa: BLE001 - no base metapackage, no filtering
+            return set()
+        deps: set[str] = {"base"}
+        for line in out.splitlines():
+            field, _, value = line.partition(":")
+            if field.strip() != "Depends On":
+                continue
+            for dep in value.split():
+                # "glibc>=2.3" is still the package glibc.
+                name = re.split(r"[<>=]", dep, maxsplit=1)[0]
+                if name and name != "None":
+                    deps.add(name)
+        return deps
+
     def _unit_provider_packages(self) -> set[str]:
         """Packages owning the unit file of an enabled unit.
 
@@ -404,7 +437,7 @@ class PackagesAction(AbstractAction):
             names = {line.strip() for line in out.splitlines() if line.strip()}
         except Exception:   # noqa: BLE001 - a probe failure must not lose packages
             return set()
-        return names & self._installed_all()
+        return (names & self._installed_all()) - self._base_guaranteed()
 
     def plan(self, managed):
         """Compute INSTALL/REMOVE/MODIFY over the desired (bare) package set.

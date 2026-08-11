@@ -1,17 +1,27 @@
-"""mkinitcpio backend: derive HOOKS/MODULES/FILES from the config + run mkinitcpio -P."""
+"""mkinitcpio backend: HOOKS in the main conf + a dasik drop-in, then mkinitcpio -P."""
 from __future__ import annotations
+import os
 import re
 from typing import List, Optional
 from .base import InitramfsBackend
 from ...command_worker.command_worker import Command
 
 _CONF = "/etc/mkinitcpio.conf"
+# mkinitcpio reads /etc/mkinitcpio.conf.d/*.conf as drop-ins (Arch wiki,
+# mkinitcpio#Configuration). dasik owns this one file entirely, which is what
+# makes its additions removable.
+_DROPIN = "/etc/mkinitcpio.conf.d/dasik.conf"
+_DROPIN_HEADER = "# Managed by dasik\n"
 _DEFAULT_HOOKS = ["base", "udev", "autodetect", "modconf", "kms",
                   "keyboard", "keymap", "consolefont", "block",
                   "filesystems", "fsck"]
-# Directives dasik manages, in the order they are rendered. HOOKS is always
-# present; the other two only when the config gives them content.
-_MANAGED = ("HOOKS", "MODULES", "FILES")
+# Filesystem -> the modules the initramfs needs to mount it. FAT is the odd one:
+# without its NLS charset modules the mount fails with "IO charset cp437 not
+# found", so a pendrive keyfile on the commonest filesystem would be unreadable.
+_FS_MODULES = {
+    "vfat": ["vfat", "nls_cp437", "nls_iso8859-1"],
+    "exfat": ["exfat", "nls_utf8"],
+}
 
 
 class MkinitcpioBackend(InitramfsBackend):
@@ -109,66 +119,103 @@ class MkinitcpioBackend(InitramfsBackend):
                 deduped.append(h)
         return deduped
 
-    def _entries(self, directive: str) -> List[str]:
-        """The words dasik wants inside `DIRECTIVE=(…)`."""
-        if directive == "HOOKS":
-            return self._compute(self._raw_hooks() or _DEFAULT_HOOKS)
-        if directive == "MODULES":
-            # The key device's filesystem module: without it the initramfs
-            # cannot read the pendrive the keyfile lives on.
-            return self._merge(self._raw_entries("MODULES"), self.keydev_filesystems)
-        # FILES: a keyfile with no key device only exists at boot if it travels
-        # inside the image.
-        return self._merge(self._raw_entries("FILES"), self.embedded_keyfiles)
+    def _modules(self) -> List[str]:
+        """Kernel modules the image needs beyond what the conf already declares.
+
+        Today: the key device's filesystem, without which the initramfs cannot
+        read the pendrive the keyfile lives on. FAT also needs its NLS charset
+        modules — mounting vfat without them fails with "IO charset cp437 not
+        found" (dracut's fs-lib pulls them in on its own).
+        """
+        modules: List[str] = []
+        for fs in self.keydev_filesystems:
+            for module in _FS_MODULES.get(fs, [fs]):
+                if module not in modules:
+                    modules.append(module)
+        return modules
+
+    def _dropin(self) -> str:
+        """dasik's own /etc/mkinitcpio.conf.d fragment.
+
+        Additions live in a drop-in rather than in the user's arrays for one
+        reason: they can be taken BACK. Merging into ``MODULES=()`` in the main
+        conf leaves the module — and, far worse, a ``FILES=(/keyfile)`` that
+        keeps baking a LUKS key into every image — behind forever once the
+        unlock is un-declared, because nothing records which entries were ours.
+        """
+        lines: List[str] = []
+        modules = self._modules()
+        if modules:
+            lines.append(f"MODULES+=({' '.join(modules)})")
+        if self.embedded_keyfiles:
+            lines.append(f"FILES+=({' '.join(self.embedded_keyfiles)})")
+        if self.plymouth_theme:
+            # Not a directive — a fingerprint. A theme change rewrites only
+            # plymouthd.conf, so without something here the value would be
+            # unchanged, the plan silent, and `mkinitcpio -P` never re-run,
+            # leaving the old theme in the image (the wiki requires a rebuild).
+            lines.append(f"# plymouth theme: {self.plymouth_theme}")
+        if not lines:
+            return ""
+        return _DROPIN_HEADER + "\n".join(lines) + "\n"
 
     @staticmethod
     def _render(directive: str, entries: List[str]) -> str:
         return f"{directive}=({' '.join(entries)})"
 
+    def _read_dropin(self) -> str:
+        try:
+            with open(self._path(_DROPIN), "r") as f:
+                return f.read()
+        except FileNotFoundError:
+            return ""
+
     def desired_value(self) -> str:
-        lines = [self._render("HOOKS", self._entries("HOOKS"))]
-        for directive in ("MODULES", "FILES"):
-            entries = self._entries(directive)
-            if entries:
-                lines.append(self._render(directive, entries))
-        return "\n".join(lines)
+        hooks = self._render("HOOKS", self._compute(self._raw_hooks() or _DEFAULT_HOOKS))
+        dropin = self._dropin()
+        return f"{hooks}\n{dropin}" if dropin else hooks
 
     def actual_value(self) -> Optional[str]:
         raw_hooks = self._raw_hooks()
         if raw_hooks is None:
             return None
-        lines = [self._render("HOOKS", raw_hooks)]
-        for directive in ("MODULES", "FILES"):
-            entries = self._raw_entries(directive)
-            if entries:
-                lines.append(self._render(directive, entries))
-        return "\n".join(lines)
+        hooks = self._render("HOOKS", raw_hooks)
+        dropin = self._read_dropin()
+        return f"{hooks}\n{dropin}" if dropin else hooks
 
     def apply(self) -> None:
-        desired = {d: self._entries(d) for d in _MANAGED}
+        hooks = self._compute(self._raw_hooks() or _DEFAULT_HOOKS)
         path = self._path(_CONF)
         try:
             with open(path, "r") as f:
                 lines = f.readlines()
         except FileNotFoundError:
             lines = []
-        written: set = set()
+        found = False
         with open(path, "w") as f:
             for line in lines:
-                directive = next((d for d in _MANAGED
-                                  if re.match(rf"^{d}=", line)), None)
-                if directive is None:
+                if re.match(r"^HOOKS=", line):
+                    f.write(f"# {line}")
+                    f.write(self._render("HOOKS", hooks) + "\n")
+                    found = True
+                else:
                     f.write(line)
-                    continue
-                # Keep the previous value visible, commented out, exactly as the
-                # HOOKS rewrite has always done.
-                f.write(f"# {line}")
-                if desired[directive]:
-                    f.write(self._render(directive, desired[directive]) + "\n")
-                written.add(directive)
-            for directive in _MANAGED:
-                if directive not in written and desired[directive]:
-                    f.write(self._render(directive, desired[directive]) + "\n")
+            if not found:                      # no existing HOOKS line → add one
+                f.write(self._render("HOOKS", hooks) + "\n")
+
+        # The drop-in is dasik's alone, so it is written — or REMOVED — whole.
+        dropin_path = self._path(_DROPIN)
+        dropin = self._dropin()
+        if dropin:
+            os.makedirs(os.path.dirname(dropin_path), exist_ok=True)
+            with open(dropin_path, "w") as f:
+                f.write(dropin)
+        else:
+            try:
+                os.remove(dropin_path)
+            except OSError:
+                pass
+
         if self.target is not None:
             Command.execute("mkinitcpio", ["-P"], target=self.target, check=True)
         else:

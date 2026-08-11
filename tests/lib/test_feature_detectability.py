@@ -281,7 +281,7 @@ def test_the_key_device_module_is_planned_in_the_initramfs(tmp_path):
     action = InitramfsAction(_PENDRIVE, _ctx(tmp_path))
 
     assert [c.op.name for c in action.plan(managed=[])] == ["MODIFY"]
-    assert "MODULES=(vfat)" in action._backend.desired_value()
+    assert "MODULES+=(vfat" in action._backend.desired_value()
 
 
 # --- helper ---------------------------------------------------------------- #

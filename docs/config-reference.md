@@ -187,9 +187,25 @@ the passphrase when it is not. What dasik does with that declaration:
   optional: without it a boot with the key device absent waits forever instead
   of asking for the passphrase. Declare your own `keyfile-timeout=…` in
   `luks_options` to override it.
-* **puts `unlock_keydev_fs` in the initramfs** (mkinitcpio `MODULES`, dracut
-  `filesystems+=`), or an embedded keyfile into the image itself (mkinitcpio
-  `FILES`, dracut `install_items+=`) when there is no key device.
+* **puts `unlock_keydev_fs` in the initramfs** — dracut `filesystems+=` in
+  `/etc/dracut.conf.d/dasik.conf`, mkinitcpio `MODULES+=` (plus FAT's
+  `nls_cp437`/`nls_iso8859-1`, without which the mount fails with "IO charset
+  cp437 not found") in `/etc/mkinitcpio.conf.d/dasik.conf`. An embedded keyfile
+  goes into the image itself the same way (`install_items+=` / `FILES+=`). Both
+  live in a dasik-owned drop-in so they can be taken back — your own `MODULES`
+  and `FILES` arrays are never touched.
+
+Two caveats worth knowing:
+
+* **`plan` mounts the key device read-only.** Whether the key is enrolled can
+  only be answered by reading it, so this is the one place the dry run touches
+  anything; the mount is read-only, lives under `/run`, and is always
+  unmounted. Without the device attached, the plan says so rather than
+  pretending the unlock exists.
+* **An `unlock_keyfile` with no `unlock_keydev` is baked into the initramfs,
+  which lives on the unencrypted ESP** — the LUKS key then ships next to the
+  disk it opens. `preflight` warns about it; it only defends against a disk
+  pulled from a powered-off machine *without* its ESP.
 
 `sync` reads all three fields back from the live `rd.luks.key`, and probes the
 device's filesystem with `lsblk`.

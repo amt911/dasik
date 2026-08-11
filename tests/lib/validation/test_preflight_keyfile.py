@@ -39,7 +39,7 @@ def test_a_fully_declared_pendrive_unlock_is_quiet():
     assert not [i for i in issues if i.code.startswith("keydev_")]
 
 
-def test_an_embedded_keyfile_needs_no_key_device():
+def test_an_embedded_keyfile_needs_no_key_device():  # noqa: D401
     """No `unlock_keydev` at all: the keyfile travels inside the initramfs."""
     issues = preflight(_cfg(unlock_keyfile="/etc/keyfile"), efi_boot=True)
 
@@ -49,3 +49,18 @@ def test_an_embedded_keyfile_needs_no_key_device():
 def test_a_config_without_disks_is_quiet():
     assert not [i for i in preflight({"bootloader": "sd-boot"}, efi_boot=True)
                 if i.code.startswith("keydev_")]
+
+
+def test_an_embedded_keyfile_warns_that_the_key_lands_on_the_esp():
+    """No key device means the key is baked into the initramfs, which lives on
+    the unencrypted ESP — full-disk encryption whose key ships next to it."""
+    issues = preflight(_cfg(unlock_keyfile="/etc/keyfile"), efi_boot=True)
+
+    assert "keyfile_embedded_in_initramfs" in _codes(issues, "warning")
+
+
+def test_a_pendrive_unlock_does_not_get_the_esp_warning():
+    issues = preflight(_cfg(unlock_keyfile="/keyfile", unlock_keydev="1234-ABCD",
+                            unlock_keydev_fs="vfat"), efi_boot=True)
+
+    assert "keyfile_embedded_in_initramfs" not in _codes(issues, "warning")

@@ -356,6 +356,15 @@ def _check_unlock_keyfile(config: Dict[str, Any]) -> List[Issue]:
                     f"partition {label!r} declares unlock_keydev={keydev!r} but no "
                     "unlock_keyfile: there is no key to look for on that device, "
                     "so no rd.luks.key is emitted and the unlock never happens."))
+            elif keyfile and not keydev:
+                issues.append(Issue(
+                    "warning", "keyfile_embedded_in_initramfs",
+                    f"partition {label!r} declares unlock_keyfile={keyfile!r} with no "
+                    "unlock_keydev, so the key is baked into the initramfs — which "
+                    "lives on the UNENCRYPTED ESP. Anyone with the disk can read it. "
+                    "Put the keyfile on a removable device (unlock_keydev) unless "
+                    "you deliberately only want to defend against a disk pulled from "
+                    "a powered-off machine without its ESP."))
             elif keyfile and keydev and not part.get("unlock_keydev_fs"):
                 issues.append(Issue(
                     "warning", "keydev_without_filesystem",

@@ -119,6 +119,16 @@ def detect_plymouth(cfg: Dict[str, Any]) -> bool:
     return cfg.get("plymouth") is not None
 
 
+def detect_plymouth_theme(cfg: Dict[str, Any]) -> Optional[str]:
+    """The declared plymouth theme, if any. The image has to be rebuilt whenever
+    it changes, so the backends fold it into the value they compare."""
+    block = cfg.get("plymouth")
+    if isinstance(block, dict):
+        theme = block.get("theme")
+        return str(theme) if theme else None
+    return None
+
+
 def detect_bluetooth_in_initramfs(cfg: Dict[str, Any]) -> bool:
     bt = cfg.get("bluetooth")
     return bool(isinstance(bt, dict) and bt.get("in_initramfs"))
@@ -137,6 +147,7 @@ class InitramfsBackend:
         self.bluetooth_in_initramfs = detect_bluetooth_in_initramfs(self.config)
         self.has_hibernation = detect_hibernation(self.config)
         self.has_plymouth = detect_plymouth(self.config)
+        self.plymouth_theme = detect_plymouth_theme(self.config)
         self.keydev_filesystems = detect_keydev_filesystems(self.config)
         self.embedded_keyfiles = detect_embedded_keyfiles(self.config)
 

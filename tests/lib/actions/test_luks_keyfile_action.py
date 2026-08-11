@@ -225,3 +225,51 @@ def test_a_probe_that_blows_up_reads_as_not_enrolled():
     with patch("dasik.lib.actions.luks_keyfile_action.Command.execute",
                side_effect=OSError("boom")):
         assert LuksKeyfileAction._key_works("/dev/vda2", "/run/k/keyfile") is False
+
+
+# --- review fixes: a mount that silently fails writes the key to a tmpfs ---- #
+
+def test_the_key_device_mount_is_checked():
+    """Without check=True a failed mount looks like success: the keyfile lands
+    on the /run tmpfs, is enrolled as a real keyslot, and vanishes on reboot —
+    leaving a machine that trusts a key nobody has."""
+    action = _action()
+    part = action._declared()[0][0]
+    with patch("dasik.lib.actions.luks_keyfile_action.Command.execute") as run, \
+         patch("os.makedirs"):
+        action._mount_keydev(part)
+
+    assert run.call_args.kwargs.get("check") is True
+
+
+def test_a_fat_key_device_is_mounted_with_a_root_only_umask():
+    """vfat has no permission bits: chmod 600 cannot work there, so the mode has
+    to come from the mount instead — otherwise the LUKS key is world-readable."""
+    action = _action()
+    part = action._declared()[0][0]
+    with patch("dasik.lib.actions.luks_keyfile_action.Command.execute") as run, \
+         patch("os.makedirs"):
+        action._mount_keydev(part)
+
+    assert "umask=0077" in ",".join(run.call_args.args[1])
+
+
+def test_a_read_only_probe_mount_says_so():
+    action = _action()
+    part = action._declared()[0][0]
+    with patch("dasik.lib.actions.luks_keyfile_action.Command.execute") as run, \
+         patch("os.makedirs"):
+        action._mount_keydev(part, read_only=True)
+
+    assert "ro" in ",".join(run.call_args.args[1]).split(",")
+
+
+def test_chmod_failing_on_a_filesystem_without_modes_is_not_fatal():
+    """The kernel returns EPERM for chmod on vfat. Aborting there would leave a
+    freshly created keyfile that was never enrolled."""
+    action = _action()
+    with patch("dasik.lib.actions.luks_keyfile_action.Command.execute"), \
+         patch("os.path.exists", return_value=False), \
+         patch("os.makedirs"), \
+         patch("os.chmod", side_effect=PermissionError("fat")):
+        action._create_keyfile("/run/dasik-key/keyfile")     # must not raise

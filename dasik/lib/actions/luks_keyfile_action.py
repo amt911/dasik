@@ -27,6 +27,7 @@ from .abstract_action import AbstractAction
 from ..command_worker.command_worker import Command
 from ..exceptions.exceptions import CommandExecutionError
 from ..state.change import Change, Op
+from .partition_utils import keydev_path
 
 # Where a key device is mounted while the keyfile is created/read. Under /run so
 # nothing survives a reboot and the target root is never polluted.
@@ -34,6 +35,9 @@ _MOUNTPOINT = "/run/dasik-keydev"
 # The wiki's recipe: 4 × 512 random bytes, readable only by root.
 _KEYFILE_BS = "512"
 _KEYFILE_COUNT = "4"
+# Filesystems with no permission bits at all: the key's mode has to come from
+# the mount (umask=), because chmod there returns EPERM.
+_MODELESS_FILESYSTEMS = {"vfat", "exfat"}
 
 
 class LuksKeyfileAction(AbstractAction):
@@ -82,22 +86,7 @@ class LuksKeyfileAction(AbstractAction):
 
     # --- probes ----------------------------------------------------------- #
 
-    @staticmethod
-    def _keydev_path(spec: str) -> str:
-        """Block device for an ``unlock_keydev`` spec.
-
-        Accepts what the kernel accepts: a bare UUID (the documented form), an
-        explicit ``UUID=``/``PARTUUID=``/``LABEL=``, or a device path.
-        """
-        spec = str(spec).strip()
-        if spec.startswith("/dev/"):
-            return spec
-        kind, sep, value = spec.partition("=")
-        if not sep:
-            return f"/dev/disk/by-uuid/{spec}"
-        by = {"UUID": "by-uuid", "PARTUUID": "by-partuuid",
-              "PARTLABEL": "by-partlabel", "LABEL": "by-label"}.get(kind.upper())
-        return f"/dev/disk/{by}/{value}" if by else value
+    _keydev_path = staticmethod(keydev_path)
 
     def _key_device_present(self, part: Dict[str, Any]) -> bool:
         """Whether the key device is attached (always True with no key device:
@@ -144,13 +133,27 @@ class LuksKeyfileAction(AbstractAction):
 
     def _mount_keydev(self, part: Dict[str, Any], read_only: bool = False) -> Optional[str]:
         """Mount the key device and return its mountpoint, or None when the
-        keyfile lives in the target root (nothing to mount)."""
+        keyfile lives in the target root (nothing to mount).
+
+        ``check=True`` is load-bearing: a mount that failed silently would leave
+        ``_MOUNTPOINT`` an empty directory on the /run tmpfs, and the keyfile
+        would be written THERE and enrolled as a real keyslot — a machine
+        trusting a key that disappears on the next reboot, plus a junk keyslot
+        added on every apply.
+
+        FAT has no permission bits (``chmod`` returns EPERM), so the "only root
+        may read this key" part has to come from the mount instead.
+        """
         keydev = part.get("unlock_keydev")
         if not keydev:
             return None
         os.makedirs(_MOUNTPOINT, exist_ok=True)
-        args = ["-o", "ro"] if read_only else []
-        Command.execute("mount", [*args, self._keydev_path(keydev), _MOUNTPOINT])
+        options = ["ro"] if read_only else []
+        if part.get("unlock_keydev_fs") in _MODELESS_FILESYSTEMS:
+            options.append("umask=0077")
+        args = ["-o", ",".join(options)] if options else []
+        Command.execute("mount", [*args, self._keydev_path(keydev), _MOUNTPOINT],
+                        check=True)
         return _MOUNTPOINT
 
     @staticmethod
@@ -250,7 +253,13 @@ class LuksKeyfileAction(AbstractAction):
         Command.execute("dd", [f"bs={_KEYFILE_BS}", f"count={_KEYFILE_COUNT}",
                                "if=/dev/random", f"of={local}", "iflag=fullblock"],
                         check=True)
-        os.chmod(local, 0o600)
+        try:
+            os.chmod(local, 0o600)
+        except OSError:
+            # FAT rejects a mode change outright (EPERM). The mount already
+            # carries umask=0077 there, so the key is still root-only; aborting
+            # here would leave a fresh keyfile that was never enrolled.
+            pass
 
     @staticmethod
     def _enroll(device: str, local: str, part: Dict[str, Any]) -> None:

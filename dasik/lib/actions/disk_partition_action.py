@@ -16,6 +16,7 @@ from dasik.lib.models.disk_model import (
 from dasik.lib.command_worker.command_worker import Command
 from dasik.lib.exceptions.exceptions import CommandExecutionError
 from dasik.lib.state.change import Change, Op
+from dasik.lib.actions.partition_utils import keydev_path
 
 # lsblk FSTYPE -> dasik filesystem. Anything absent (ntfs, None, crypto_LUKS
 # handled separately, …) is UNREPRESENTABLE and its partition is skipped during
@@ -248,15 +249,15 @@ class DiskPartitionAction(AbstractAction):
     def _keydev_filesystem(self, spec: str) -> "Optional[str]":
         """Filesystem of the key device, so the captured config can put the
         right module in the initramfs. Best-effort: an unprobeable device still
-        captures the unlock itself, just without this detail."""
-        kind, sep, value = spec.partition("=")
-        if not sep:
-            return None
-        flag = {"UUID": "-U", "LABEL": "-L"}.get(kind.upper())
-        if not flag:
-            return None
+        captures the unlock itself, just without this detail.
+
+        Asked through the /dev/disk/by-* node rather than `lsblk -U`, which is
+        not an option lsblk has ("lsblk: invalid option -- 'U'") — that spelling
+        silently returned nothing, so the module never made it into a synced
+        config.
+        """
         try:
-            result = Command.execute("lsblk", ["-no", "FSTYPE", flag, value],
+            result = Command.execute("lsblk", ["-no", "FSTYPE", keydev_path(spec)],
                                      target=self._target())
         except Exception:            # noqa: BLE001 - probing is never fatal
             return None

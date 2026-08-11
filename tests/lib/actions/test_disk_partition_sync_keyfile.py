@@ -43,6 +43,10 @@ def _captured(cmdline, fstype="vfat"):
 
     def fake(cmd, args=None, *rest, **kw):
         if cmd == "lsblk":
+            # Answer only for the real invocation. `lsblk -U` does not exist
+            # ("invalid option -- 'U'"), and a fake that ignores its arguments
+            # happily hid exactly that bug.
+            assert args == ["-no", "FSTYPE", "/dev/disk/by-uuid/1234-ABCD"], args
             return MagicMock(stdout=f"{fstype}\n".encode(), returncode=0)
         return _fake_cryptsetup(cmd, args, *rest, **kw)
 

@@ -47,27 +47,76 @@ def test_only_a_keyfile_without_a_key_device_counts_as_embedded():
 # --- mkinitcpio ------------------------------------------------------------ #
 
 def test_mkinitcpio_declares_the_module_for_the_key_device():
-    assert "MODULES=(vfat)" in MkinitcpioBackend(_PEN).desired_value()
+    assert "MODULES+=(vfat nls_cp437 nls_iso8859-1)" in MkinitcpioBackend(_PEN).desired_value()
+
+
+def test_fat_gets_its_nls_charset_modules():
+    """Mounting vfat without them fails with "IO charset cp437 not found", so
+    the key on the commonest pendrive filesystem would be unreadable."""
+    value = MkinitcpioBackend(_PEN).desired_value()
+    assert "nls_cp437" in value
 
 
 def test_mkinitcpio_embeds_a_keyfile_that_has_no_key_device():
-    assert "FILES=(/etc/keyfile)" in MkinitcpioBackend(_EMBEDDED).desired_value()
+    assert "FILES+=(/etc/keyfile)" in MkinitcpioBackend(_EMBEDDED).desired_value()
 
 
 def test_mkinitcpio_without_a_keyfile_declares_neither():
     value = MkinitcpioBackend({}).desired_value()
-    assert "MODULES=" not in value
-    assert "FILES=" not in value
+    assert "MODULES" not in value
+    assert "FILES" not in value
 
 
-def test_mkinitcpio_keeps_the_modules_already_in_the_file(tmp_path):
-    """A user's own MODULES list is not dasik's to drop."""
+def test_the_additions_live_in_a_dasik_owned_dropin(tmp_path):
+    """A user's own MODULES/FILES arrays are never touched, and dasik's own
+    additions can therefore be taken BACK — merging into the main conf leaves a
+    FILES=(/keyfile) baking a LUKS key into every image forever."""
     (tmp_path / "etc").mkdir()
     (tmp_path / "etc/mkinitcpio.conf").write_text(
         "MODULES=(i915)\nHOOKS=(base udev autodetect block filesystems fsck)\n")
-    value = MkinitcpioBackend(_PEN, Target(root=str(tmp_path))).desired_value()
-    modules = [line for line in value.splitlines() if line.startswith("MODULES=")][0]
-    assert "i915" in modules and "vfat" in modules
+    from unittest.mock import patch
+    target = Target(root=str(tmp_path))
+    with patch("dasik.lib.actions.initramfs.mkinitcpio.Command.execute"):
+        MkinitcpioBackend(_PEN, target).apply()
+
+    assert "MODULES=(i915)" in (tmp_path / "etc/mkinitcpio.conf").read_text()
+    dropin = tmp_path / "etc/mkinitcpio.conf.d/dasik.conf"
+    assert "MODULES+=(vfat" in dropin.read_text()
+
+
+def test_un_declaring_the_unlock_removes_the_dropin(tmp_path):
+    """The REMOVE direction: an embedded keyfile must stop being baked into the
+    image the moment the config stops asking for it."""
+    (tmp_path / "etc/mkinitcpio.conf.d").mkdir(parents=True)
+    (tmp_path / "etc/mkinitcpio.conf").write_text(
+        "HOOKS=(base udev autodetect block filesystems fsck)\n")
+    dropin = tmp_path / "etc/mkinitcpio.conf.d/dasik.conf"
+    dropin.write_text("# Managed by dasik\nFILES+=(/etc/keyfile)\n")
+    from unittest.mock import patch
+    target = Target(root=str(tmp_path))
+
+    assert MkinitcpioBackend({}, target).actual_value() != \
+        MkinitcpioBackend({}, target).desired_value()          # the drift is visible
+    with patch("dasik.lib.actions.initramfs.mkinitcpio.Command.execute"):
+        MkinitcpioBackend({}, target).apply()
+
+    assert not dropin.exists()
+
+
+def test_a_theme_change_is_visible_to_mkinitcpio(tmp_path):
+    """mkinitcpio compares its own directives, so a theme change (which only
+    rewrites plymouthd.conf) would otherwise be invisible and the image would
+    keep the old splash."""
+    (tmp_path / "etc").mkdir()
+    (tmp_path / "etc/mkinitcpio.conf").write_text(
+        "HOOKS=(base udev autodetect block filesystems fsck)\n")
+    target = Target(root=str(tmp_path))
+    from unittest.mock import patch
+    with patch("dasik.lib.actions.initramfs.mkinitcpio.Command.execute"):
+        MkinitcpioBackend({"plymouth": {"theme": "bgrt"}}, target).apply()
+
+    later = MkinitcpioBackend({"plymouth": {"theme": "spinner"}}, target)
+    assert later.actual_value() != later.desired_value()
 
 
 def test_mkinitcpio_is_idempotent_against_what_it_wrote(tmp_path):

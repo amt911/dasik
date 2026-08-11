@@ -3,14 +3,15 @@ import json
 import os
 import re
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 from dasik.lib.actions.abstract_action import AbstractAction
 from dasik.lib.models.disk_model import (
     DisksConfiguration,
     DiskLayout,
     Partition,
     FileSystemType,
-    BtrfsSubvolume
+    BtrfsSubvolume,
+    _KEYDEV_FILESYSTEMS,
 )
 from dasik.lib.command_worker.command_worker import Command
 from dasik.lib.exceptions.exceptions import CommandExecutionError
@@ -24,6 +25,12 @@ _DISCOVER_FS = {
     "vfat": "fat32", "fat32": "fat32", "swap": "swap",
 }
 _LABEL_OK = re.compile(r"[A-Za-z0-9_.-]{1,36}")
+# Device-spec prefixes `rd.luks.key=<uuid>=/path:<spec>` may carry, used to tell
+# a key device apart from a path that merely contains a colon.
+_KEYDEV_SPEC_KINDS = {"UUID", "PARTUUID", "PARTLABEL", "LABEL"}
+# The keyfile-timeout KernelCmdlineAction derives for a key-device unlock; sync
+# must not capture it back as if the user had written it.
+_KEYFILE_TIMEOUT = "keyfile-timeout=10s"
 
 
 # Mountpoints whose permissions are NOT the mkdir default. `mkdir` yields 0755,
@@ -202,15 +209,72 @@ class DiskPartitionAction(AbstractAction):
             return ""
 
     def _read_luks_options(self, uuid: str) -> "List[str]":
-        """Extra rd.luks.options tokens for <uuid> beyond the auto-derived
-        fido2-device=auto / tpm2-device=auto (e.g. token-timeout=10s), so sync
-        recovers luks_options from the live kernel cmdline."""
+        """Extra rd.luks.options tokens for <uuid> beyond what dasik derives
+        itself, so sync recovers luks_options from the live kernel cmdline.
+
+        Derived, and therefore subtracted: fido2-device=auto / tpm2-device=auto,
+        and — when this volume unlocks from a key DEVICE — the default
+        keyfile-timeout dasik adds so a missing pendrive falls back to the
+        passphrase. A different timeout is the user's and survives.
+        """
         auto = {"fido2-device=auto", "tpm2-device=auto"}
+        _keyfile, keydev = self._read_luks_keyfile(uuid)
+        if keydev:
+            auto.add(_KEYFILE_TIMEOUT)
         for tok in self._kernel_cmdline_text().split():
             if tok.startswith(f"rd.luks.options={uuid}="):
                 opts = tok.split("=", 2)[2].split(",")
                 return [o for o in opts if o and o not in auto]
         return []
+
+    def _read_luks_keyfile(self, uuid: str) -> "Tuple[Optional[str], Optional[str]]":
+        """``(keyfile path, key device spec)`` for <uuid> from the live cmdline.
+
+        ``rd.luks.key=<uuid>=/path[:<device spec>]``. The device spec is split
+        off the LAST colon and only when it looks like one, so a path containing
+        a colon is not mangled into a device.
+        """
+        for tok in self._kernel_cmdline_text().split():
+            if not tok.startswith(f"rd.luks.key={uuid}="):
+                continue
+            value = tok.split("=", 2)[2]
+            head, sep, tail = value.rpartition(":")
+            if sep and (tail.startswith("/dev/")
+                        or tail.split("=")[0].upper() in _KEYDEV_SPEC_KINDS):
+                return head, tail
+            return value, None
+        return None, None
+
+    def _keydev_filesystem(self, spec: str) -> "Optional[str]":
+        """Filesystem of the key device, so the captured config can put the
+        right module in the initramfs. Best-effort: an unprobeable device still
+        captures the unlock itself, just without this detail."""
+        kind, sep, value = spec.partition("=")
+        if not sep:
+            return None
+        flag = {"UUID": "-U", "LABEL": "-L"}.get(kind.upper())
+        if not flag:
+            return None
+        try:
+            result = Command.execute("lsblk", ["-no", "FSTYPE", flag, value],
+                                     target=self._target())
+        except Exception:            # noqa: BLE001 - probing is never fatal
+            return None
+        fstype = self._decode(getattr(result, "stdout", b"")).strip().splitlines()
+        return fstype[0].strip() if fstype and fstype[0].strip() else None
+
+    def _capture_unlock_keyfile(self, part: dict, uuid: str) -> None:
+        """Write the keyfile unlock this volume boots with into *part*."""
+        keyfile, keydev = self._read_luks_keyfile(uuid)
+        if not keyfile:
+            return
+        part["unlock_keyfile"] = keyfile
+        if not keydev:
+            return
+        part["unlock_keydev"] = keydev
+        fstype = self._keydev_filesystem(keydev)
+        if fstype in _KEYDEV_FILESYSTEMS:
+            part["unlock_keydev_fs"] = fstype
 
     def _read_luks_tokens(self, luks_name: str) -> set:
         """Which hardware-token unlock methods are enrolled in the LUKS header:
@@ -265,6 +329,7 @@ class DiskPartitionAction(AbstractAction):
                         extra = self._read_luks_options(uuid)
                         if extra:
                             p["luks_options"] = extra
+                        self._capture_unlock_keyfile(p, uuid)
             disks_out.append(d)
         return {"disks": {"disks": disks_out}}
 
@@ -478,6 +543,7 @@ class DiskPartitionAction(AbstractAction):
                 extra = self._read_luks_options(luks_uuid)
                 if extra:
                     part["luks_options"] = extra
+                self._capture_unlock_keyfile(part, luks_uuid)
         return part
 
     def _discover_disks(self) -> "List[dict]":

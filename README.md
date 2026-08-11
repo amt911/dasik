@@ -24,19 +24,21 @@ dasik rollback                       # restore + re-apply a previous generation
 The bare `dasik <config>` form (no verb) was **removed** — it now errors and
 points you at `dasik plan` / `dasik apply`.
 
-`plan`, `apply` and `sync` run the **same validation as `check`** before doing
-anything: the pydantic schema, then cross-field preflight checks (a user in a
-group no package creates, a display-manager unit no package provides, a bad or
-destructive `/etc/crypttab` entry). Errors abort before the first mutation;
-warnings are printed and do not block.
+`plan`, `apply` and `sync` validate the config before reaching the reconciler;
+`check`, `plan` and `apply` also run cross-field preflight on the expanded config.
+Preflight catches coherence problems such as a user group with no declared
+provider, a display-manager unit with no package provider, or a bad/destructive
+`/etc/crypttab` entry before mutation. Warnings inform but do not block.
 
-> 📖 **[Config reference — every option](docs/config-reference.md)** — the full set
-> of config fields (disks, users, packages, services, files, feature toggles, …),
-> with types, defaults, and which ones `sync` captures. It also covers
-> **[splitting a config across files](docs/config-reference.md#splitting-a-config-across-files)**
-> (`$include` / `$include_text` / `$concat`), so a 400-line config becomes a
-> handful of readable ones — working example in
-> [`config/split-example/`](config/split-example/).
+## Documentation
+
+> 📚 **[User wiki](docs/wiki/README.md)** — start here for the current implementation:
+> - **[CLI reference](docs/wiki/cli.md)** — every verb, flag, default target and safety note;
+> - **[JSON configuration reference](docs/wiki/configuration.md)** — every modeled field, nested parameter, default, enum and validation rule;
+> - **[Config splitting and secrets](docs/wiki/config-splitting.md)** — `$include`, `$include_text`, `$include_line` and `$concat`;
+> - **[Workflows and state](docs/wiki/workflows.md)** — `check → plan → apply`, `sync`, ownership/idempotency, generations, partial generations and rollback.
+>
+> 📖 **[Existing single-page config reference](docs/config-reference.md)** — the older long-form field reference remains available for established links. The wiki is organized by task and is cross-checked against the current CLI/models.
 >
 > 📖 **[Copy your running system into a config and test it in a VM](docs/copy-your-config-and-test.md)**
 > — step-by-step for `sync` (capture your system), making the `disks` block
@@ -46,7 +48,7 @@ warnings are printed and do not block.
 
 ## Configuration
 
-Place your configuration files in the `config/` directory and reference them when running the tool.
+Place your configuration files in the `config/` directory and reference them when running the tool. For large machine configs, a directory with `main.json` plus fragments is supported; run `dasik check <path>/main.json` to assemble and validate it before planning.
 
 ## Development
 

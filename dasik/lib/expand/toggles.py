@@ -263,6 +263,29 @@ def expand_reflector(config: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+PLYMOUTHD_CONF = "/etc/plymouth/plymouthd.conf"
+
+
+def expand_plymouth(config: Dict[str, Any]) -> Dict[str, Any]:
+    """Boot splash: the package, plus the daemon config when a theme is declared.
+
+    The old installer built plymouth from the AUR with `yay`; it lives in
+    `extra` today, so a plain package is enough. The theme also has to reach the
+    initramfs image — the wiki is explicit that a theme change requires
+    regenerating it — which the initramfs backends handle (they add the
+    hook/module and treat this file as an input to the image freshness check).
+    """
+    cfg = config.get("plymouth")
+    if cfg is None:
+        return {}
+    out: Dict[str, Any] = {"packages": ["plymouth"]}
+    theme = (cfg or {}).get("theme")
+    if theme:
+        out["files"] = [{"path": PLYMOUTHD_CONF,
+                         "content": f"# Managed by dasik\n[Daemon]\nTheme={theme}\n"}]
+    return out
+
+
 def expand_sdboot_update(config: Dict[str, Any]) -> Dict[str, Any]:
     # systemd ships this unit itself: it runs `bootctl update` when the ESP's
     # loader is older than the installed systemd. The old imperative installer
@@ -278,5 +301,5 @@ TOGGLES = [
     expand_bluetooth, expand_cups, expand_trim, expand_kvm,
     expand_wireguard, expand_firewall, expand_hwaccel, expand_snapper,
     expand_drivers, expand_initramfs, expand_zram, expand_cpu,
-    expand_sdboot_update, expand_reflector,
+    expand_sdboot_update, expand_reflector, expand_plymouth,
 ]

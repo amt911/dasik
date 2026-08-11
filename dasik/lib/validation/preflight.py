@@ -330,6 +330,51 @@ def _check_crypttab(config: Dict[str, Any]) -> List[Issue]:
     return issues
 
 
+def _check_unlock_keyfile(config: Dict[str, Any]) -> List[Issue]:
+    """Coherence of the keyfile unlock (`rd.luks.key`).
+
+    Two ways to declare something that cannot work:
+
+    * a key device with no keyfile on it — no ``rd.luks.key`` is ever emitted,
+      so the declaration silently does nothing (error: provable from the config);
+    * a key device whose filesystem is not declared — the initramfs may well
+      lack the module and be unable to read the pendrive at boot, which is only
+      a smell, because the root filesystem may happen to provide it (warning).
+    """
+    issues: List[Issue] = []
+    disks = config.get("disks", {})
+    if not isinstance(disks, dict):
+        return issues
+    for disk in disks.get("disks", []):
+        for part in disk.get("partitions", []):
+            keyfile = part.get("unlock_keyfile")
+            keydev = part.get("unlock_keydev")
+            label = part.get("label", "?")
+            if keydev and not keyfile:
+                issues.append(Issue(
+                    "error", "keydev_without_keyfile",
+                    f"partition {label!r} declares unlock_keydev={keydev!r} but no "
+                    "unlock_keyfile: there is no key to look for on that device, "
+                    "so no rd.luks.key is emitted and the unlock never happens."))
+            elif keyfile and not keydev:
+                issues.append(Issue(
+                    "warning", "keyfile_embedded_in_initramfs",
+                    f"partition {label!r} declares unlock_keyfile={keyfile!r} with no "
+                    "unlock_keydev, so the key is baked into the initramfs — which "
+                    "lives on the UNENCRYPTED ESP. Anyone with the disk can read it. "
+                    "Put the keyfile on a removable device (unlock_keydev) unless "
+                    "you deliberately only want to defend against a disk pulled from "
+                    "a powered-off machine without its ESP."))
+            elif keyfile and keydev and not part.get("unlock_keydev_fs"):
+                issues.append(Issue(
+                    "warning", "keydev_without_filesystem",
+                    f"partition {label!r} unlocks from a key device but declares no "
+                    "unlock_keydev_fs; unless the root filesystem already provides "
+                    "that module, the initramfs cannot read the device and the "
+                    "boot falls back to the passphrase."))
+    return issues
+
+
 # Both bootloaders dasik knows how to install are EFI-only: `bootctl install`,
 # and `grub-install --target=x86_64-efi --efi-directory=/boot`.
 _EFI_BOOTLOADERS = {"sd-boot", "systemd-boot", "grub"}
@@ -377,5 +422,6 @@ def preflight(config: Dict[str, Any],
     issues += _check_sudo(config, packages)
     issues += _check_cpu(config, packages)
     issues += _check_crypttab(config)
+    issues += _check_unlock_keyfile(config)
     issues += _check_efi(config, efi_boot)
     return issues

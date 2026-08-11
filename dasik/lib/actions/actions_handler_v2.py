@@ -58,11 +58,22 @@ def setup_actions() -> None:
     from .pacman_hooks_action import PacmanHooksAction
     from .cpu_action import CpuAction
     from .reflector_action import ReflectorAction
+    from .plymouth_action import PlymouthAction
+    from .luks_keyfile_action import LuksKeyfileAction
 
     # === Phase 1: disk & base install =====================================
     register_action(
         action_class=DiskPartitionAction,
         config_key='disks',
+        is_optional=True,
+    )
+    # The pendrive/embedded unlock keyfile. Right after the disks: the LUKS
+    # volumes are open by now (so the device to add the key to is known), and it
+    # must be enrolled before the initramfs and the bootloader entry are built
+    # around an rd.luks.key that would otherwise open nothing.
+    register_action(
+        action_class=LuksKeyfileAction,
+        config_key='__root__',   # reads `disks` — the unlock lives per partition
         is_optional=True,
     )
     # dasik-owned pacman hooks (today: the mkinitcpio neutralizers). MUST come
@@ -190,6 +201,11 @@ def setup_actions() -> None:
     register_action(
         action_class=ReflectorAction,
         config_key='__root__',  # reads root-level `reflector`
+        is_optional=True,
+    )
+    register_action(
+        action_class=PlymouthAction,
+        config_key='__root__',  # reads root-level `plymouth`
         is_optional=True,
     )
 

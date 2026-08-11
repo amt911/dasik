@@ -12,6 +12,10 @@ _LUKS_NAME_RE = re.compile(r"[A-Za-z0-9_-]+")
 # Keep it a plain token (no whitespace/newline/slash) within a length most
 # filesystems accept.
 _LABEL_RE = re.compile(r"[A-Za-z0-9_.-]{1,36}")
+# Filesystems a LUKS key device may carry. Each name doubles as the kernel
+# module the initramfs must load to read it, so the set is closed rather than
+# free-form.
+_KEYDEV_FILESYSTEMS = {"vfat", "exfat", "ext4", "btrfs", "xfs"}
 
 
 class PartitionTableType(str, Enum):
@@ -95,6 +99,12 @@ class Partition(BaseModel):
         description="Filesystem UUID of the device holding unlock_keyfile (e.g. a "
                     "USB pendrive); appended to rd.luks.key so the initramfs finds it."
     )
+    unlock_keydev_fs: Optional[str] = Field(
+        None,
+        description="Filesystem of unlock_keydev (vfat, exfat, ext4, btrfs, "
+                    "xfs). The initramfs needs that module to read the key "
+                    "device at boot when it differs from the root filesystem."
+    )
     unlock_tpm2: bool = Field(
         default=False,
         description="Enroll a TPM2 keyslot for automatic (passwordless) unlock."
@@ -159,6 +169,20 @@ class Partition(BaseModel):
                 f"or be a percentage (e.g., '50%') or 'rest'"
             )
         
+        return v
+
+    @field_validator('unlock_keydev_fs')
+    @classmethod
+    def validate_unlock_keydev_fs(cls, v: Optional[str]) -> Optional[str]:
+        """The value becomes a kernel module name inside the initramfs, so it is
+        restricted to the filesystems a key device plausibly carries rather than
+        passed through verbatim."""
+        if v is not None and v not in _KEYDEV_FILESYSTEMS:
+            raise ValueError(
+                f"Invalid unlock_keydev_fs {v!r}: must be one of "
+                f"{', '.join(sorted(_KEYDEV_FILESYSTEMS))} (it names the kernel "
+                f"module the initramfs loads to read the key device)."
+            )
         return v
 
     @model_validator(mode='after')

@@ -110,6 +110,7 @@ result back by hand.
 | `sudo` | object | `/etc/sudoers.d/10-dasik` — wheel access + extra rules |
 | `cpu` | object | CPU scaling driver, power-profiles-daemon, cpupower governor |
 | `reflector` | object | `/etc/xdg/reflector/reflector.conf` + `reflector.timer` |
+| `plymouth` | object | Boot splash: package, theme, initramfs hook/module, `splash` |
 | `bluetooth`, `hardware_acceleration`, `kvm`, `cups`, `microsoft_fonts`, `firewall`, `wireguard`, `snapper` | object | Feature toggles |
 | `enable_trim`, `enable_microcode`, `remove_home_on_delete`, `sysrq` | bool | Simple toggles |
 | `metadata`, `notes` | object / string | Free-form; not applied |
@@ -146,8 +147,9 @@ for making a captured layout portable.
 | `luks_password` | string | `null` | Passphrase, **plaintext** in config. Omit → cryptsetup prompts at install. |
 | `luks_keyfile` | string | `null` | Path to a key file (instead of a passphrase). |
 | `luks_uuid` | string | `null` | Explicit LUKS header UUID. Unset → deterministic UUID (header ↔ cmdline agree). `sync` bakes the real one. |
-| `unlock_keyfile` | string | `null` | Key file added as an extra LUKS key for auto boot-unlock (`rd.luks.key`). |
-| `unlock_keydev` | string | `null` | FS UUID of the device holding `unlock_keyfile` (e.g. a USB pendrive). |
+| `unlock_keyfile` | string | `null` | Key file added as an extra LUKS key for auto boot-unlock (`rd.luks.key`). dasik creates it if missing. **With** `unlock_keydev` the path is relative to that device's root; **without** it, an absolute path inside the target, embedded into the initramfs. |
+| `unlock_keydev` | string | `null` | Device holding `unlock_keyfile` (e.g. a USB pendrive): a bare FS UUID, or an explicit `UUID=`/`PARTUUID=`/`LABEL=`/`/dev/…`. |
+| `unlock_keydev_fs` | string | `null` | Filesystem of `unlock_keydev` (`vfat`, `exfat`, `ext4`, `btrfs`, `xfs`) — the module the initramfs needs to read it. |
 | `unlock_tpm2` | bool | `false` | Enroll a TPM2 keyslot (passwordless). |
 | `unlock_fido2` | bool | `false` | Enroll a FIDO2 token (needs the physical key at enroll **and** boot). |
 | `luks_options` | list[str] | `[]` | Extra verbatim `rd.luks.options` tokens (e.g. `token-timeout=10s`). |
@@ -161,6 +163,57 @@ for making a captured layout portable.
 | `name` | string | — | e.g. `@`, `@home`. |
 | `mountpoint` | string | — | e.g. `/`, `/home`. |
 | `mount_options` | list[str] | `["compress-force=zstd"]` | |
+
+### Unlocking from a keyfile (a pendrive)  *(sync ✓)*
+
+```json
+{ "encrypt": true, "luks_name": "cryptroot", "luks_password": "…",
+  "unlock_keyfile": "/keyfile-tuxedo", "unlock_keydev": "1234-ABCD",
+  "unlock_keydev_fs": "vfat" }
+```
+
+The volume opens by itself when the key device is attached, and still accepts
+the passphrase when it is not. What dasik does with that declaration:
+
+* **creates the keyfile** if it is missing (512 × 4 bytes from `/dev/random`,
+  mode `0600`) and **enrolls it** as an extra keyslot, authorised by
+  `luks_password`/`luks_keyfile`. An existing file is never overwritten — the
+  pendrive may already carry another machine's key.
+* **is idempotent**: the check is `cryptsetup open --test-passphrase`, so a
+  converged machine plans nothing, and a machine that gains a pendrive later
+  gets it on the next `apply` (this no longer rides the disk format).
+* **writes `rd.luks.key=<luks-uuid>=<path>:UUID=<fs-uuid>`** plus
+  `rd.luks.options=<luks-uuid>=keyfile-timeout=10s`. That timeout is not
+  optional: without it a boot with the key device absent waits forever instead
+  of asking for the passphrase. Declare your own `keyfile-timeout=…` in
+  `luks_options` to override it.
+* **puts `unlock_keydev_fs` in the initramfs** — dracut `filesystems+=` in
+  `/etc/dracut.conf.d/dasik.conf`, mkinitcpio `MODULES+=` (plus FAT's
+  `nls_cp437`/`nls_iso8859-1`, without which the mount fails with "IO charset
+  cp437 not found") in `/etc/mkinitcpio.conf.d/dasik.conf`. An embedded keyfile
+  goes into the image itself the same way (`install_items+=` / `FILES+=`). Both
+  live in a dasik-owned drop-in so they can be taken back — your own `MODULES`
+  and `FILES` arrays are never touched.
+
+Two caveats worth knowing:
+
+* **`plan` mounts the key device read-only.** Whether the key is enrolled can
+  only be answered by reading it, so this is the one place the dry run touches
+  anything; the mount is read-only, lives under `/run`, and is always
+  unmounted. Without the device attached, the plan says so rather than
+  pretending the unlock exists.
+* **An `unlock_keyfile` with no `unlock_keydev` is baked into the initramfs,
+  which lives on the unencrypted ESP** — the LUKS key then ships next to the
+  disk it opens. `preflight` warns about it; it only defends against a disk
+  pulled from a powered-off machine *without* its ESP.
+
+`sync` reads all three fields back from the live `rd.luks.key`, and probes the
+device's filesystem with `lsblk`.
+
+**Un-declaring removes the kernel parameter, not the keyslot.** `luksKillSlot`
+on the wrong slot destroys access to the volume, so dasik reports the keyslot it
+is leaving behind and you remove it yourself with `cryptsetup luksRemoveKey`
+once you are sure of your other way in.
 
 ---
 
@@ -199,6 +252,26 @@ List of accounts:
 | `hashed_password` | string | — | Crypt hash; `dasik hash-password` prints yescrypt (`$y$…`), the format Arch's `passwd` writes and `sync` captures. `--method sha512` gives the older `$6$…`. |
 | `shell` | string | `/bin/bash` | |
 | `groups` | list[str] | `[]` | Supplementary groups. |
+
+**The root password is an entry in this list**, with `username: "root"`:
+
+```json
+"users": [
+  { "username": "root", "hashed_password": "$y$j9T$…" },
+  { "username": "andres", "hashed_password": "$y$j9T$…", "groups": ["wheel"] }
+]
+```
+
+Root is special-cased throughout: it is never created or deleted (the account
+always exists), only its password is reconciled — `plan` shows
+`~ [users] root (password)` and `apply` runs `usermod -p` and nothing else.
+Because of that, a root entry **may not declare `shell` or `groups`**; the model
+rejects them rather than accepting values that would be silently ignored.
+
+Omitting root entirely means *dasik does not manage the root password* — it is
+left exactly as it is, never locked. `sync` reads the real hash out of
+`/etc/shadow`, and captures nothing when root is locked (`!`, `*`, `!$6$…`),
+clearing a declaration the machine does not back.
 
 ---
 
@@ -300,7 +373,7 @@ protects reproducibility, but a PKGBUILD is still third-party code you must trus
 
 `list[str]` — GPU driver selection (e.g. NVIDIA). Expanded into packages + config.
 
-### `bootloader`
+### `bootloader`  *(sync ✓)*
 
 `string` — `grub` (default) or `sd-boot` (a.k.a. `systemd-boot`).
 
@@ -310,6 +383,26 @@ mkinitcpio built one and the same image as the main entry otherwise (dracut
 builds no fallback). Every `kernel_cmdline` parameter is written to both. It also
 enables systemd's own `systemd-boot-update.service`, which keeps the loader on
 the ESP up to date.
+
+**Switching bootloader removes the old one.** Change the value and the next plan
+shows the removal alongside the install:
+
+```text
++ [bootloader] install sd-boot        (install bootloader)
+- [bootloader] remove grub            (switched to sd-boot)
+```
+
+`apply` uninstalls first, then installs. Leaving GRUB means `/boot/grub`,
+`/boot/EFI/GRUB` and the `GRUB` NVRAM entry go; leaving systemd-boot runs
+`bootctl remove` and clears `/boot/EFI/systemd` and `/boot/loader`
+(`loader.conf`, `entries/`, `random-seed`). The **package** is not touched —
+drop `grub` from `packages` yourself if you want it gone.
+
+The stale loader is removed whether or not dasik installed it: two loaders on
+one ESP is not a state anyone wants, and after a `sync` the manifest is empty,
+so an ownership-gated cleanup would never fire. The firmware (NVRAM) part is
+best-effort — a chroot without `efivars` logs a warning instead of aborting the
+install — while the on-ESP files always go.
 
 ### `initramfs`  *(sync ✓)*
 
@@ -473,6 +566,42 @@ Periodic pacman mirrorlist refresh: installs `reflector`, enables
 
 ---
 
+## `plymouth`  *(sync ✓)*
+
+Graphical boot splash. The block is a declaration on its own: `"plymouth": {}`
+means the splash with plymouth's default theme; **omitting the block means no
+splash at all**.
+
+| Field | Type | Default |
+| --- | --- | --- |
+| `theme` | string | `null` — leave plymouth's own default (Arch ships `bgrt`) |
+
+```json
+"plymouth": { "theme": "bgrt" }
+```
+
+What it converges, across four owners:
+
+* the `plymouth` package (it lives in `extra`; the old imperative installer
+  still built it from the AUR),
+* `/etc/plymouth/plymouthd.conf` with `[Daemon] Theme=…`, when a theme is set,
+* `splash` on the kernel cmdline,
+* the splash **inside the initramfs** — the `plymouth` hook for mkinitcpio
+  (placed after `systemd`/`udev` and before `sd-encrypt`, or it never takes over
+  the passphrase prompt), the forced `plymouth` module for dracut.
+
+Changing only the theme rewrites `plymouthd.conf` and nothing else, so that file
+counts as an input to the image freshness check: a theme change shows up in
+`plan` and rebuilds the initramfs, as the Arch wiki requires.
+
+`sync` captures the block when `/usr/bin/plymouthd` exists on the target, with
+the theme read back from `plymouthd.conf`. `splash` is subtracted from the
+captured `kernel_cmdline` **only** when plymouth is installed — on a machine
+that carries `splash` without plymouth the parameter is somebody else's and
+stays a plain entry.
+
+---
+
 ## Feature toggles
 
 ### `bluetooth`  *(sync ✓ for `in_initramfs`)*
@@ -613,6 +742,7 @@ One config exercising every section — validate a copy with `dasik check`
            "power_profiles_daemon": true, "governor": null },
   "reflector": { "countries": ["ES"], "protocols": ["https"],
                  "latest": 20, "sort": "rate", "save": "/etc/pacman.d/mirrorlist" },
+  "plymouth": { "theme": "bgrt" },
   "systemd": {
     "enable_units": ["sshd.service", "fstrim.timer"],
     "enable_sockets": ["cups.socket"],

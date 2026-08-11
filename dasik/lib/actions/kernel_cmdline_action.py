@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 import re
 import subprocess
-from .partition_utils import mounts_root
+from .partition_utils import keydev_spec, mounts_root
 from typing import Any, Dict, List, Optional
 from .abstract_action import AbstractAction
 from ..command_worker.command_worker import Command
@@ -21,6 +21,10 @@ _CPUINFO = "/proc/cpuinfo"
 _INTEL_MODES = ("active", "passive", "disable")
 
 _SYSRQ_PARAM = "sysrq_always_enabled=1"
+_SPLASH_PARAM = "splash"
+# Fallback to the passphrase prompt when the key device is absent. Arch wiki:
+# rd.luks.key with a keyfile on another device does NOT fall back on its own.
+_KEYFILE_TIMEOUT = "keyfile-timeout=10s"
 # Parameter NAMES a config block owns: on import they are never captured as
 # hand-set `kernel_cmdline` entries, because `sysrq` (here) and `cpu`
 # (CpuAction) declare them. See import_state.
@@ -104,12 +108,13 @@ class KernelCmdlineAction(AbstractAction):
                     if mounts_root(part):
                         params.append(f"root=/dev/mapper/{dm_name} rw")
                     keyfile = part.get("unlock_keyfile")
+                    keydev = part.get("unlock_keydev")
                     if keyfile:
                         # Automatic unlock via a keyfile (e.g. on a pendrive);
-                        # append the key device UUID when given so the initramfs
+                        # append the key device spec when given so the initramfs
                         # locates it. The passphrase still works as a fallback.
-                        keydev = part.get("unlock_keydev")
-                        key = f"{keyfile}:{keydev}" if keydev else keyfile
+                        key = (f"{keyfile}:{self._keydev_spec(keydev)}"
+                               if keydev else keyfile)
                         params.append(f"rd.luks.key={uuid}={key}")
                     # Hardware-backed auto-unlock (sd-encrypt reads these options).
                     opts = []
@@ -119,6 +124,13 @@ class KernelCmdlineAction(AbstractAction):
                         opts.append("fido2-device=auto")
                     # Extra verbatim rd.luks.options (e.g. "token-timeout=10s").
                     opts.extend(part.get("luks_options", []) or [])
+                    # A keyfile on ANOTHER device does not fall back to the
+                    # passphrase prompt by itself: without keyfile-timeout a
+                    # boot with the pendrive unplugged waits forever for a
+                    # device that is not there. The user's own value wins.
+                    if keyfile and keydev and not any(
+                            str(o).startswith("keyfile-timeout=") for o in opts):
+                        opts.append(_KEYFILE_TIMEOUT)
                     # TRIM has to be passed THROUGH the mapping: without
                     # `discard` the fstrim.timer that `enable_trim` schedules
                     # runs against a LUKS volume that swallows every discard.
@@ -197,9 +209,25 @@ class KernelCmdlineAction(AbstractAction):
             params.append("sysrq_always_enabled=1")
         return params
 
+    # Shared with the crypttab the dracut backend composes: the kernel parameter
+    # and the crypttab line must name the SAME device or one of them silently
+    # points nowhere.
+    _keydev_spec = staticmethod(keydev_spec)
+
+    def _derive_from_plymouth(self) -> List[str]:
+        """`splash` for a declared `plymouth` block.
+
+        `quiet` is deliberately NOT derived: hiding the kernel's own messages is
+        the user's policy and `kernel_cmdline` already spells it. An EMPTY block
+        still derives the parameter — it declares the splash with plymouth's
+        default theme; only an absent block means no splash.
+        """
+        return ["splash"] if self._cfg.get("plymouth") is not None else []
+
     def _derived(self) -> List[str]:
         """Everything dasik derives itself — never captured back by `sync`."""
-        return self._derive_from_disks() + self._derive_from_cpu()
+        return (self._derive_from_disks() + self._derive_from_cpu()
+                + self._derive_from_plymouth())
 
     # Kernel parameters that may appear MORE THAN ONCE, one per device. For
     # these the whole token identifies the entry — keying on the name alone made
@@ -356,6 +384,14 @@ class KernelCmdlineAction(AbstractAction):
             return {self._DOMAIN: list(self.explicit_params)}
 
         derived_keys = set(_BLOCK_OWNED_PARAMS)
+        # `splash` is block-owned only when plymouth is actually installed: it
+        # is then re-derived from the `plymouth` block PlymouthAction captures.
+        # On a machine that carries `splash` without plymouth the parameter is
+        # somebody else's, and swallowing it would silently drop it from the
+        # captured config — sync reports reality.
+        from .plymouth_action import plymouth_installed
+        if plymouth_installed(self._target()):
+            derived_keys.add(_SPLASH_PARAM)
         for token in self._tokens(self._derived()):
             name = token.split("=")[0] if "=" in token else token
             derived_keys.add(token if name in self._REPEATABLE else name)

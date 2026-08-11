@@ -18,6 +18,7 @@ from dasik.lib.actions.drop_files_action import DropFilesAction
 from dasik.lib.actions.kernel_cmdline_action import KernelCmdlineAction
 from dasik.lib.actions.sudo_action import SudoAction
 from dasik.lib.actions.systemd_action import SystemdAction
+from dasik.lib.actions.users_action import UsersAction
 from dasik.lib.expand import expand_config
 from dasik.lib.target.target import Target
 
@@ -120,6 +121,20 @@ def test_systemd_boot_update_is_not_planned_on_grub():
     assert _units_planned(config) == []
 
 
+def test_switching_to_grub_disables_the_unit_sd_boot_owned():
+    """The disable direction of the switch: `systemd-boot-update.service` is
+    derived by the sd-boot toggle, so declaring grub stops deriving it and the
+    units domain plans its DISABLE off its own set-math — no bootloader code."""
+    config = expand_config({"bootloader": "grub"})
+    enabled = MagicMock(stdout=b"enabled", returncode=0)
+    with patch("dasik.lib.actions.systemd_action.Command.execute",
+               return_value=enabled):
+        action = SystemdAction(config.get("systemd", {}), _ctx("/mnt"))
+        changes = action.plan(managed=["systemd-boot-update.service"])
+    assert [(c.op.name, c.item) for c in changes] == [
+        ("DISABLE", "systemd-boot-update.service")]
+
+
 # --- sudo ------------------------------------------------------------------ #
 
 def test_a_missing_sudoers_fragment_is_planned(tmp_path):
@@ -137,6 +152,153 @@ def test_an_applied_sudoers_fragment_plans_nothing(tmp_path):
     assert action.plan(managed=[]) == []
 
 
+# --- plymouth -------------------------------------------------------------- #
+
+def test_splash_missing_from_the_entry_is_planned(tmp_path):
+    assert _cmdline_plan(tmp_path, {"plymouth": {}}, "root=LABEL=root rw") == [
+        ("INSTALL", "splash")]
+
+
+def test_splash_already_on_the_entry_plans_nothing(tmp_path):
+    assert _cmdline_plan(tmp_path, {"plymouth": {}}, "root=LABEL=root rw splash") == []
+
+
+def test_dropping_the_plymouth_block_removes_splash(tmp_path):
+    """The disable direction: an undeclared block whose parameter dasik owns is
+    a REMOVE, not a silent leftover."""
+    assert _cmdline_plan(tmp_path, {}, "root=LABEL=root rw splash",
+                         managed=["splash"]) == [("REMOVE", "splash")]
+
+
+def test_an_unowned_splash_is_left_alone(tmp_path):
+    assert _cmdline_plan(tmp_path, {}, "root=LABEL=root rw splash") == []
+
+
+def test_the_plymouth_package_is_planned():
+    assert "plymouth" in expand_config({"plymouth": {}})["packages"]
+
+
+def test_the_plymouth_theme_file_is_planned(tmp_path):
+    config = expand_config({"plymouth": {"theme": "bgrt"}})
+    action = DropFilesAction(config, _ctx(tmp_path))
+
+    planned = [c.item for c in action.plan(managed=[])]
+
+    assert "/etc/plymouth/plymouthd.conf" in planned
+
+
+def test_the_plymouth_hook_is_planned_in_the_initramfs(tmp_path):
+    """The splash also has to be IN the image — a plan that only showed the
+    package and the parameter would hide the half that makes it work."""
+    from dasik.lib.actions.initramfs_action import InitramfsAction
+
+    (tmp_path / "etc").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "etc/mkinitcpio.conf").write_text(
+        "HOOKS=(base udev autodetect modconf block filesystems fsck)\n")
+    action = InitramfsAction({"plymouth": {}}, _ctx(tmp_path))
+
+    assert [c.op.name for c in action.plan(managed=[])] == ["MODIFY"]
+
+
+def test_an_initramfs_that_already_has_the_hook_plans_nothing(tmp_path):
+    from dasik.lib.actions.initramfs_action import InitramfsAction
+
+    (tmp_path / "etc").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "etc/mkinitcpio.conf").write_text(
+        "HOOKS=(base udev plymouth autodetect modconf block filesystems fsck)\n")
+    action = InitramfsAction({"plymouth": {}}, _ctx(tmp_path))
+
+    assert action.plan(managed=[]) == []
+
+
+# --- pendrive LUKS keyfile ------------------------------------------------- #
+
+_PENDRIVE = {"disks": {"disks": [{"device": "/dev/vda", "partitions": [
+    {"label": "root", "size": "rest", "filesystem": "ext4", "mountpoint": "/",
+     "encrypt": True, "luks_name": "cryptroot", "luks_password": "pw",
+     "unlock_keyfile": "/keyfile", "unlock_keydev": "1234-ABCD",
+     "unlock_keydev_fs": "vfat"}]}]}}
+
+
+def _luks_uuid():
+    from dasik.lib.actions.luks_uuid import luks_uuid
+    return luks_uuid("cryptroot")
+
+
+def test_the_pendrive_unlock_is_planned_on_the_cmdline(tmp_path):
+    planned = _cmdline_plan(tmp_path, _PENDRIVE, "root=/dev/mapper/cryptroot rw")
+
+    items = [item for _op, item in planned]
+    assert f"rd.luks.key={_luks_uuid()}=/keyfile:UUID=1234-ABCD" in items
+    assert any("keyfile-timeout=10s" in item for item in items)
+
+
+def test_the_pendrive_unlock_already_on_the_entry_plans_nothing(tmp_path):
+    uuid = _luks_uuid()
+    entry = (f"rd.luks.name={uuid}=cryptroot root=/dev/mapper/cryptroot rw "
+             f"rd.luks.key={uuid}=/keyfile:UUID=1234-ABCD "
+             f"rd.luks.options={uuid}=keyfile-timeout=10s")
+
+    assert _cmdline_plan(tmp_path, _PENDRIVE, entry) == []
+
+
+def test_dropping_the_pendrive_unlock_removes_the_parameter(tmp_path):
+    uuid = _luks_uuid()
+    token = f"rd.luks.key={uuid}=/keyfile:UUID=1234-ABCD"
+    plain = {"disks": {"disks": [{"device": "/dev/vda", "partitions": [
+        {"label": "root", "size": "rest", "filesystem": "ext4", "mountpoint": "/",
+         "encrypt": True, "luks_name": "cryptroot", "luks_password": "pw"}]}]}}
+
+    planned = _cmdline_plan(tmp_path, plain,
+                            f"rd.luks.name={uuid}=cryptroot root=/dev/mapper/cryptroot "
+                            f"rw {token}", managed=[token])
+
+    assert ("REMOVE", token) in planned
+
+
+def test_the_keyfile_enrollment_is_planned(tmp_path):
+    """The key material has its own domain — the cmdline alone would announce
+    an unlock whose keyslot may not exist."""
+    from dasik.lib.actions.luks_keyfile_action import LuksKeyfileAction
+
+    action = LuksKeyfileAction(_PENDRIVE, _ctx(tmp_path))
+    with patch.object(LuksKeyfileAction, "_key_device_present", return_value=True), \
+         patch.object(LuksKeyfileAction, "_mount_keydev", return_value=str(tmp_path)), \
+         patch.object(LuksKeyfileAction, "_umount_keydev"), \
+         patch.object(LuksKeyfileAction, "_luks_device", return_value="/dev/vda2"), \
+         patch.object(LuksKeyfileAction, "_key_works", return_value=False):
+        planned = [(c.op.name, c.item) for c in action.plan(managed=[])]
+
+    assert planned == [("INSTALL", "cryptroot:/keyfile")]
+
+
+def test_an_enrolled_keyfile_plans_nothing(tmp_path):
+    from dasik.lib.actions.luks_keyfile_action import LuksKeyfileAction
+
+    (tmp_path / "keyfile").write_text("key")
+    action = LuksKeyfileAction(_PENDRIVE, _ctx(tmp_path))
+    with patch.object(LuksKeyfileAction, "_key_device_present", return_value=True), \
+         patch.object(LuksKeyfileAction, "_mount_keydev", return_value=str(tmp_path)), \
+         patch.object(LuksKeyfileAction, "_umount_keydev"), \
+         patch.object(LuksKeyfileAction, "_luks_device", return_value="/dev/vda2"), \
+         patch.object(LuksKeyfileAction, "_key_works", return_value=True):
+        assert action.plan(managed=[]) == []
+
+
+def test_the_key_device_module_is_planned_in_the_initramfs(tmp_path):
+    """Without it the initramfs cannot read the pendrive, so the unlock the
+    cmdline announces would never happen."""
+    from dasik.lib.actions.initramfs_action import InitramfsAction
+
+    (tmp_path / "etc").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "etc/mkinitcpio.conf").write_text(
+        "MODULES=()\nHOOKS=(base udev autodetect modconf block filesystems fsck)\n")
+    action = InitramfsAction(_PENDRIVE, _ctx(tmp_path))
+
+    assert [c.op.name for c in action.plan(managed=[])] == ["MODIFY"]
+    assert "MODULES+=(vfat" in action._backend.desired_value()
+
+
 # --- helper ---------------------------------------------------------------- #
 
 def _units_planned(config):
@@ -146,3 +308,37 @@ def _units_planned(config):
                return_value=nothing_enabled):
         action = SystemdAction(config.get("systemd", {}), _ctx("/mnt"))
         return [c.item for c in action.plan(managed=[])]
+
+
+# --- root password --------------------------------------------------------- #
+
+def _users_plan(tmp_path, users, shadow, managed=()):
+    etc = tmp_path / "etc"
+    etc.mkdir(parents=True, exist_ok=True)
+    (etc / "passwd").write_text("root:x:0:0::/root:/bin/bash\n")
+    (etc / "group").write_text("wheel:x:998:\n")
+    (etc / "shadow").write_text(shadow)
+    action = UsersAction({"users": users}, _ctx(tmp_path))
+    return [(c.op.name, c.item) for c in action.plan(managed=list(managed))]
+
+
+def test_root_password_missing_from_shadow_is_planned(tmp_path):
+    assert _users_plan(
+        tmp_path,
+        [{"username": "root", "hashed_password": "$6$NEW$h"}],
+        "root:!:19000:0:99999:7:::\n",
+    ) == [("MODIFY", "root")]
+
+
+def test_root_password_already_set_plans_nothing(tmp_path):
+    assert _users_plan(
+        tmp_path,
+        [{"username": "root", "hashed_password": "$6$NEW$h"}],
+        "root:$6$NEW$h:19000:0:99999:7:::\n",
+    ) == []
+
+
+def test_an_undeclared_root_password_is_left_alone(tmp_path):
+    """Declaring no root password means "dasik does not manage it", not "lock
+    root" — the account is never created or deleted by the users domain."""
+    assert _users_plan(tmp_path, [], "root:$6$SET$h:19000:0:99999:7:::\n") == []

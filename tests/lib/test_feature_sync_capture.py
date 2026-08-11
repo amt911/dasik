@@ -390,6 +390,19 @@ def test_the_captured_oomd_config_validates(tmp_path):
         tmp_path, "[OOM]\nDefaultMemoryPressureDurationSec=20s\n")))
 
 
+def test_sync_clears_a_declared_setting_the_machine_does_not_have(tmp_path):
+    """A declaration is not evidence — sync reports the machine.
+
+    Otherwise a hand-removed drop-in stays in the captured config forever, and
+    re-applying it looks like a no-op when it is really a change.
+    """
+    captured = _synced(_with_oomd(tmp_path, _STOCK_OOMD),
+                       seed={"bootloader": "sd-boot",
+                             "oomd": {"SwapUsedLimit": "90%"}})
+
+    assert captured["oomd"] == {}
+
+
 def test_replanning_the_captured_oomd_config_is_a_no_op(tmp_path):
     machine = _with_oomd(tmp_path, "[OOM]\nDefaultMemoryPressureDurationSec=20s\n")
     captured = _synced(machine)

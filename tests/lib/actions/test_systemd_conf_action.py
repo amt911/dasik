@@ -17,6 +17,7 @@ from dasik.lib.actions.action_context import ActionContext
 from dasik.lib.actions.systemd_conf_action import (
     OomdAction, SystemdSystemConfAction, SystemdUserConfAction,
 )
+from dasik.lib.exceptions.exceptions import ConfigValidationError
 from dasik.lib.state.change import Op
 from dasik.lib.target.target import Target
 
@@ -213,3 +214,96 @@ def test_removal_never_touches_the_package_file(tmp_path):
 def test_nothing_to_remove_when_there_is_no_drop_in(tmp_path):
     action = OomdAction({}, _ctx(tmp_path))
     assert action.plan(managed=["[OOM]\nSwapUsedLimit = 80%\n"]) == []
+
+
+# --- a drop-in that outranks ours ------------------------------------------ #
+#
+# dasik always writes 10-dasik.conf, and systemd applies drop-ins in
+# lexicographic order. A foreign 99-user.conf setting the same key therefore
+# wins forever: apply writes our file, the effective value stays theirs, and the
+# next plan proposes the very same change again. Convergence is impossible, so
+# the honest move is to refuse before mutating anything.
+
+def test_a_later_drop_in_holding_the_same_key_is_refused(tmp_path):
+    _write(tmp_path, "/etc/systemd/oomd.conf.d/99-user.conf",
+           "[OOM]\nSwapUsedLimit=99%\n")
+    action = OomdAction({"oomd": {"SwapUsedLimit": "90%"}}, _ctx(tmp_path))
+
+    with pytest.raises(ConfigValidationError) as excinfo:
+        action.plan(managed=[])
+
+    message = str(excinfo.value)
+    assert "99-user.conf" in message      # names the file to fix
+    assert "SwapUsedLimit" in message     # names the key in conflict
+    assert "10-dasik.conf" in message     # explains why it loses
+
+
+def test_an_earlier_drop_in_is_not_a_conflict(tmp_path):
+    """05-other.conf loses to 10-dasik.conf, so the declared value applies."""
+    _write(tmp_path, "/etc/systemd/oomd.conf.d/05-other.conf",
+           "[OOM]\nSwapUsedLimit=99%\n")
+    action = OomdAction({"oomd": {"SwapUsedLimit": "90%"}}, _ctx(tmp_path))
+
+    assert [c.op for c in action.plan(managed=[])] == [Op.MODIFY]
+
+
+def test_a_later_drop_in_holding_other_keys_is_not_a_conflict(tmp_path):
+    """Only a key dasik declares can be stolen from it."""
+    _write(tmp_path, "/etc/systemd/oomd.conf.d/99-user.conf",
+           "[OOM]\nDefaultMemoryPressureLimit=60%\n")
+    action = OomdAction({"oomd": {"SwapUsedLimit": "90%"}}, _ctx(tmp_path))
+
+    assert [c.op for c in action.plan(managed=[])] == [Op.MODIFY]
+
+
+def test_a_later_drop_in_agreeing_with_the_config_is_not_a_conflict(tmp_path):
+    """It already holds the declared value — the machine is where it should be."""
+    _write(tmp_path, "/etc/systemd/oomd.conf.d/99-user.conf",
+           "[OOM]\nSwapUsedLimit=90%\n")
+    action = OomdAction({"oomd": {"SwapUsedLimit": "90%"}}, _ctx(tmp_path))
+
+    assert action.plan(managed=[]) == []
+
+
+def test_a_later_drop_in_is_not_a_conflict_when_nothing_is_declared(tmp_path):
+    """No declared block, nothing to lose — and the file is not dasik's."""
+    _write(tmp_path, "/etc/systemd/oomd.conf.d/99-user.conf",
+           "[OOM]\nSwapUsedLimit=99%\n")
+
+    assert OomdAction({}, _ctx(tmp_path)).plan(managed=[]) == []
+
+
+def test_the_conflict_is_reported_per_file(tmp_path):
+    """The system and user managers share a section name but not their files."""
+    _write(tmp_path, "/etc/systemd/system.conf.d/99-user.conf",
+           "[Manager]\nDefaultTimeoutStopSec=99s\n")
+    config = {"systemd_system_conf": {"DefaultTimeoutStopSec": "10s"},
+              "systemd_user_conf": {"DefaultTimeoutStopSec": "10s"}}
+
+    with pytest.raises(ConfigValidationError):
+        SystemdSystemConfAction(config, _ctx(tmp_path)).plan(managed=[])
+
+    assert [c.op for c in SystemdUserConfAction(config, _ctx(tmp_path))
+            .plan(managed=[])] == [Op.MODIFY]
+
+
+# --- sync reports reality, never the config -------------------------------- #
+
+def test_sync_does_not_report_a_declared_setting_the_machine_lacks(tmp_path):
+    """ScalarV3Action falls back to the desired value when the target reads as
+    nothing. That is right where "unreadable" is not a state (a machine always
+    has a timezone) and wrong here: a stock oomd.conf IS the unset state, so the
+    fallback would report a setting nobody applied."""
+    _write(tmp_path, "/etc/systemd/oomd.conf", _STOCK_OOMD)
+    action = OomdAction({"oomd": {"SwapUsedLimit": "90%"}}, _ctx(tmp_path))
+
+    # The block is CLEARED, not omitted: ConfigWriter.merge overwrites keys and
+    # never deletes them, so an omitted block leaves the stale declaration.
+    assert action.import_state(managed=[]) == {"oomd": {}}
+
+
+def test_sync_reports_what_the_machine_has_over_what_the_config_asks_for(tmp_path):
+    _write(tmp_path, "/etc/systemd/oomd.conf", "[OOM]\nSwapUsedLimit=70%\n")
+    action = OomdAction({"oomd": {"SwapUsedLimit": "90%"}}, _ctx(tmp_path))
+
+    assert action.import_state(managed=[]) == {"oomd": {"SwapUsedLimit": "70%"}}

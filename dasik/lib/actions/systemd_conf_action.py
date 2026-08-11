@@ -31,6 +31,7 @@ import glob
 import os
 from typing import Any, Dict, List, Optional
 from .scalar_action import ScalarV3Action
+from ..exceptions.exceptions import ConfigValidationError
 from ..state.change import Change, Op
 
 _DROPIN_NAME = "10-dasik.conf"
@@ -123,6 +124,61 @@ class SystemdConfAction(ScalarV3Action):
         settings = _parse_section(value, self._SECTION)
         return {self._KEY: settings} if settings else {}
 
+    def import_state(self, managed=None) -> dict:
+        """Report the machine, never the config.
+
+        ScalarV3Action falls back to the DESIRED value when the target reads as
+        nothing, which is right for a domain where "nothing read" is a failure
+        rather than a state — a machine always has a timezone. Here it is a
+        state: a stock oomd.conf is exactly "no setting". Keeping the fallback
+        would let sync report a value nobody ever applied, and re-applying that
+        captured config would then look like a no-op it is not.
+        """
+        value = self._actual_value()
+        if value:
+            return self._import_fragment(value)
+        # Declared, but the machine has nothing: report that by CLEARING the
+        # block. ConfigWriter.merge only ever overwrites a key — it cannot
+        # delete one — so staying silent here would leave the stale declaration
+        # standing in the captured config. An undeclared domain still captures
+        # nothing, so a bootstrap sync invents no empty blocks.
+        return {self._KEY: {}} if self._settings else {}
+
+    # --- a drop-in that outranks ours ---------------------------------- #
+
+    def _later_dropins(self) -> List[str]:
+        """Drop-ins systemd applies AFTER dasik's — they override it."""
+        return sorted(
+            path for path in glob.glob(self._p(f"{self._MAIN}.d/*.conf"))
+            if os.path.basename(path) > _DROPIN_NAME)
+
+    def _refuse_if_outranked(self) -> None:
+        """dasik writes ``10-dasik.conf`` and systemd applies drop-ins in
+        lexicographic order, so a foreign ``99-user.conf`` holding one of the
+        declared keys wins forever: apply writes our file, the effective value
+        stays theirs, and the next plan proposes the same change again. That is
+        the one thing this tool promises not to do, and no file dasik does not
+        own can fix it — so refuse before mutating anything, and say which file
+        and which key.
+        """
+        if not self._settings:
+            return
+        for path in self._later_dropins():
+            try:
+                with open(path, "r") as f:
+                    theirs = _parse_section(f.read(), self._SECTION)
+            except (OSError, configparser.Error, UnicodeDecodeError):
+                continue
+            stolen = sorted(key for key, value in theirs.items()
+                            if key in self._settings
+                            and value != str(self._settings[key]))
+            if stolen:
+                raise ConfigValidationError(
+                    f"{path} sets {', '.join(stolen)} and systemd applies it "
+                    f"AFTER dasik's {_DROPIN_NAME}, so the declared value could "
+                    f"never take effect. Rename or remove that drop-in (or drop "
+                    f"the key from the `{self._KEY}` block).")
+
     # --- the disable direction ----------------------------------------- #
     #
     # ScalarV3Action has no removal — a scalar is set or replaced. That leaves
@@ -132,6 +188,7 @@ class SystemdConfAction(ScalarV3Action):
     # delete.
 
     def plan(self, managed: Any):
+        self._refuse_if_outranked()
         changes = super().plan(managed)
         if not self._settings and managed and os.path.exists(self._dropin_path()):
             changes.append(Change(self._DOMAIN, Op.REMOVE, _DROPIN_ITEM,

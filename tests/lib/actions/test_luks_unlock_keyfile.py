@@ -47,13 +47,15 @@ def test_add_key_with_existing_keyfile():
     assert calls[0].args[1] == ["luksAddKey", "--key-file", "/old.key", "/dev/vda2", "/k.key"]
 
 
-def _cmdline(unlock_keyfile=None, unlock_keydev=None):
+def _cmdline(unlock_keyfile=None, unlock_keydev=None, luks_options=None):
     part = {"mountpoint": "/", "filesystem": "ext4", "encrypt": True,
             "luks_name": "cryptroot"}
     if unlock_keyfile:
         part["unlock_keyfile"] = unlock_keyfile
     if unlock_keydev:
         part["unlock_keydev"] = unlock_keydev
+    if luks_options:
+        part["luks_options"] = luks_options
     cfg = {"bootloader": "sd-boot", "disks": {"disks": [{"partitions": [part]}]}}
     a = KernelCmdlineAction(cfg, context=SimpleNamespace(target=None))
     return a._derive_from_disks()
@@ -70,6 +72,47 @@ def test_keyfile_emits_rd_luks_key():
 
 
 def test_pendrive_keyfile_appends_keydev_uuid():
+    """A bare UUID is normalized to `UUID=<uuid>`.
+
+    Arch wiki: `rd.luks.key=<luks-uuid>=/path:UUID=<fs-uuid>`. Emitting the raw
+    value — which is exactly what the field documents you should write — gives
+    systemd-cryptsetup a device spec it cannot resolve, so the machine waits for
+    a key device it will never find.
+    """
     u = luks_uuid("cryptroot")
     tokens = _cmdline(unlock_keyfile="/root.key", unlock_keydev="1234-ABCD")
-    assert f"rd.luks.key={u}=/root.key:1234-ABCD" in tokens
+    assert f"rd.luks.key={u}=/root.key:UUID=1234-ABCD" in tokens
+
+
+def test_an_explicit_device_spec_is_passed_through():
+    u = luks_uuid("cryptroot")
+    for spec in ("UUID=1234-ABCD", "PARTUUID=abcd-0001", "LABEL=pen"):
+        tokens = _cmdline(unlock_keyfile="/root.key", unlock_keydev=spec)
+        assert f"rd.luks.key={u}=/root.key:{spec}" in tokens
+
+
+def test_a_key_device_unlock_gets_a_keyfile_timeout():
+    """Same wiki page: `rd.luks.key` with a keyfile on another device does NOT
+    fall back to asking for a password when that device is absent. Without
+    keyfile-timeout, booting without the pendrive hangs forever."""
+    tokens = _cmdline(unlock_keyfile="/root.key", unlock_keydev="1234-ABCD")
+    options = [t for t in tokens if t.startswith("rd.luks.options=")]
+    assert options and "keyfile-timeout=10s" in options[0]
+
+
+def test_an_explicit_keyfile_timeout_wins():
+    tokens = _cmdline(unlock_keyfile="/root.key", unlock_keydev="1234-ABCD",
+                      luks_options=["keyfile-timeout=30s"])
+    options = [t for t in tokens if t.startswith("rd.luks.options=")]
+    assert "keyfile-timeout=30s" in options[0]
+    assert "keyfile-timeout=10s" not in options[0]
+
+
+def test_an_embedded_keyfile_gets_no_timeout():
+    """No key device to wait for: the keyfile travels inside the initramfs."""
+    tokens = _cmdline(unlock_keyfile="/etc/keyfile")
+    assert not any("keyfile-timeout" in t for t in tokens)
+
+
+def test_a_partition_without_a_keyfile_gets_no_timeout():
+    assert not any("keyfile-timeout" in t for t in _cmdline())

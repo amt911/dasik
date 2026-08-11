@@ -22,6 +22,9 @@ _INTEL_MODES = ("active", "passive", "disable")
 
 _SYSRQ_PARAM = "sysrq_always_enabled=1"
 _SPLASH_PARAM = "splash"
+# Fallback to the passphrase prompt when the key device is absent. Arch wiki:
+# rd.luks.key with a keyfile on another device does NOT fall back on its own.
+_KEYFILE_TIMEOUT = "keyfile-timeout=10s"
 # Parameter NAMES a config block owns: on import they are never captured as
 # hand-set `kernel_cmdline` entries, because `sysrq` (here) and `cpu`
 # (CpuAction) declare them. See import_state.
@@ -105,12 +108,13 @@ class KernelCmdlineAction(AbstractAction):
                     if mounts_root(part):
                         params.append(f"root=/dev/mapper/{dm_name} rw")
                     keyfile = part.get("unlock_keyfile")
+                    keydev = part.get("unlock_keydev")
                     if keyfile:
                         # Automatic unlock via a keyfile (e.g. on a pendrive);
-                        # append the key device UUID when given so the initramfs
+                        # append the key device spec when given so the initramfs
                         # locates it. The passphrase still works as a fallback.
-                        keydev = part.get("unlock_keydev")
-                        key = f"{keyfile}:{keydev}" if keydev else keyfile
+                        key = (f"{keyfile}:{self._keydev_spec(keydev)}"
+                               if keydev else keyfile)
                         params.append(f"rd.luks.key={uuid}={key}")
                     # Hardware-backed auto-unlock (sd-encrypt reads these options).
                     opts = []
@@ -120,6 +124,13 @@ class KernelCmdlineAction(AbstractAction):
                         opts.append("fido2-device=auto")
                     # Extra verbatim rd.luks.options (e.g. "token-timeout=10s").
                     opts.extend(part.get("luks_options", []) or [])
+                    # A keyfile on ANOTHER device does not fall back to the
+                    # passphrase prompt by itself: without keyfile-timeout a
+                    # boot with the pendrive unplugged waits forever for a
+                    # device that is not there. The user's own value wins.
+                    if keyfile and keydev and not any(
+                            str(o).startswith("keyfile-timeout=") for o in opts):
+                        opts.append(_KEYFILE_TIMEOUT)
                     # TRIM has to be passed THROUGH the mapping: without
                     # `discard` the fstrim.timer that `enable_trim` schedules
                     # runs against a LUKS volume that swallows every discard.
@@ -197,6 +208,17 @@ class KernelCmdlineAction(AbstractAction):
         if self._cfg.get("sysrq"):
             params.append("sysrq_always_enabled=1")
         return params
+
+    @staticmethod
+    def _keydev_spec(value: str) -> str:
+        """Normalize ``unlock_keydev`` into a device spec the kernel resolves.
+
+        The field documents a filesystem UUID, and that bare value is what a
+        user writes — but ``rd.luks.key`` needs ``UUID=<uuid>`` (or an explicit
+        ``PARTUUID=``/``LABEL=``/``/dev/…``, which is passed through untouched).
+        """
+        value = str(value).strip()
+        return value if "=" in value or value.startswith("/dev/") else f"UUID={value}"
 
     def _derive_from_plymouth(self) -> List[str]:
         """`splash` for a declared `plymouth` block.

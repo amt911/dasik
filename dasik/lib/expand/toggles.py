@@ -209,6 +209,15 @@ def expand_zram(config: Dict[str, Any]) -> Dict[str, Any]:
     return {"packages": ["zram-generator"]}
 
 
+def expand_oomd(config: Dict[str, Any]) -> Dict[str, Any]:
+    # Declared oomd settings need the daemon that reads them; systemd ships it,
+    # so there is no package — only the unit. system.conf/user.conf configure
+    # the managers themselves and need nothing enabled.
+    if not (config.get("oomd") or {}):
+        return {}
+    return {"units": ["systemd-oomd.service"]}
+
+
 _CPUPOWER_CONF = "/etc/default/cpupower"
 
 
@@ -300,6 +309,6 @@ def expand_sdboot_update(config: Dict[str, Any]) -> Dict[str, Any]:
 TOGGLES = [
     expand_bluetooth, expand_cups, expand_trim, expand_kvm,
     expand_wireguard, expand_firewall, expand_hwaccel, expand_snapper,
-    expand_drivers, expand_initramfs, expand_zram, expand_cpu,
+    expand_drivers, expand_initramfs, expand_zram, expand_oomd, expand_cpu,
     expand_sdboot_update, expand_reflector, expand_plymouth,
 ]

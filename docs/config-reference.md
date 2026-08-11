@@ -513,6 +513,64 @@ captures nothing.
 
 ---
 
+## `oomd`, `systemd_system_conf`, `systemd_user_conf`  *(sync ✓)*
+
+The three pacman-owned `/etc/systemd/*.conf` files, one block per file, each
+holding that file's single section:
+
+| Block | File | Section |
+| --- | --- | --- |
+| `oomd` | `/etc/systemd/oomd.conf` | `[OOM]` |
+| `systemd_system_conf` | `/etc/systemd/system.conf` | `[Manager]` |
+| `systemd_user_conf` | `/etc/systemd/user.conf` | `[Manager]` |
+
+```json
+"oomd": { "DefaultMemoryPressureDurationSec": "20s", "SwapUsedLimit": "90%" },
+"systemd_system_conf": { "DefaultTimeoutStopSec": "10s" }
+```
+
+Keys are systemd directive names verbatim; values are strings or numbers (a
+number is written as-is). A declared `oomd` block enables `systemd-oomd.service`
+— the settings do nothing without the daemon.
+
+Reads and writes are deliberately asymmetric. dasik **writes** a drop-in,
+`<conf>.d/10-dasik.conf`, never the package file — that is systemd's supported
+override mechanism and it keeps `.pacnew` handling out of the picture. It
+**reads** the effective configuration: the package file first, then every
+`<conf>.d/*.conf` in lexicographic order, exactly as systemd applies them. That
+asymmetry is the point: a value someone set by editing `oomd.conf` itself is
+still "the machine has it", so `plan` stays silent and `sync` captures it.
+
+Commented-out defaults are documentation, not configuration — a stock file
+captures nothing. Dropping a block removes the drop-in **dasik owns**; a
+drop-in no generation recorded is left alone.
+
+`sync` reports the machine, not the config: if a declared setting is not in the
+effective configuration (someone deleted the drop-in by hand), the block is
+captured **empty** rather than echoed back. An undeclared block still captures
+nothing, so a bootstrap `sync` invents no empty sections.
+
+Because dasik always writes `10-dasik.conf` and systemd applies drop-ins in
+lexicographic order, a foreign drop-in that sorts later — `99-user.conf` is the
+conventional admin name — would override the declared value forever. `plan`
+refuses in that case, naming the file and the key, instead of proposing the same
+change on every run:
+
+```text
+Error: /etc/systemd/oomd.conf.d/99-user.conf sets SwapUsedLimit and systemd
+applies it AFTER dasik's 10-dasik.conf, so the declared value could never take
+effect. Rename or remove that drop-in (or drop the key from the `oomd` block).
+```
+
+A later drop-in holding *other* keys, or already holding the declared value, is
+not a conflict.
+
+These files could not be covered by the `files` block or the `/etc` snippet
+sections: `DropFilesAction` discovery deliberately skips package-owned paths,
+which is why a setting here used to survive `apply` and vanish on `sync`.
+
+---
+
 ## `sudo`  *(sync ✓)*
 
 Writes `/etc/sudoers.d/10-dasik` (mode `0440`), validated with `visudo -cf`

@@ -58,6 +58,7 @@ def setup_actions() -> None:
     from .pacman_hooks_action import PacmanHooksAction
     from .cpu_action import CpuAction
     from .reflector_action import ReflectorAction
+    from .plymouth_action import PlymouthAction
 
     # === Phase 1: disk & base install =====================================
     register_action(
@@ -190,6 +191,11 @@ def setup_actions() -> None:
     register_action(
         action_class=ReflectorAction,
         config_key='__root__',  # reads root-level `reflector`
+        is_optional=True,
+    )
+    register_action(
+        action_class=PlymouthAction,
+        config_key='__root__',  # reads root-level `plymouth`
         is_optional=True,
     )
 

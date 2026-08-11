@@ -21,6 +21,7 @@ _CPUINFO = "/proc/cpuinfo"
 _INTEL_MODES = ("active", "passive", "disable")
 
 _SYSRQ_PARAM = "sysrq_always_enabled=1"
+_SPLASH_PARAM = "splash"
 # Parameter NAMES a config block owns: on import they are never captured as
 # hand-set `kernel_cmdline` entries, because `sysrq` (here) and `cpu`
 # (CpuAction) declare them. See import_state.
@@ -367,6 +368,14 @@ class KernelCmdlineAction(AbstractAction):
             return {self._DOMAIN: list(self.explicit_params)}
 
         derived_keys = set(_BLOCK_OWNED_PARAMS)
+        # `splash` is block-owned only when plymouth is actually installed: it
+        # is then re-derived from the `plymouth` block PlymouthAction captures.
+        # On a machine that carries `splash` without plymouth the parameter is
+        # somebody else's, and swallowing it would silently drop it from the
+        # captured config — sync reports reality.
+        from .plymouth_action import plymouth_installed
+        if plymouth_installed(self._target()):
+            derived_keys.add(_SPLASH_PARAM)
         for token in self._tokens(self._derived()):
             name = token.split("=")[0] if "=" in token else token
             derived_keys.add(token if name in self._REPEATABLE else name)

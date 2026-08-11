@@ -101,3 +101,39 @@ def test_no_verb_form_is_rejected_with_pointer_to_verbs(tmp_path, capsys):
     err = capsys.readouterr().err
     assert "no longer supported" in err.lower()
     assert "dasik apply" in err and "dasik plan" in err
+
+
+def test_plan_and_apply_read_the_same_ownership(tmp_path):
+    """The dry run must see what apply sees.
+
+    Every REMOVE is set-math over the MANIFEST (M \\ D). `plan` built its
+    Reconciler with `manifest=None`, so M was always empty and **no removal
+    could ever appear in the dry run** — while `apply`, which loads the real
+    manifest, would carry them out unannounced. On a machine whose manifest a
+    `sync` had filled, `plan` showed 4 changes and `apply` proposed 312 package
+    removals from the same config.
+    """
+    state = tmp_path / "var/lib/dasik/state.json"
+    state.parent.mkdir(parents=True)
+    state.write_text(json.dumps({"version": 2, "generation": 3,
+                                 "managed": {"packages": ["git", "htop"]}}))
+    cfg = _write_config(tmp_path, {"packages": ["git"]})
+
+    def _manifest_seen_by(verb):
+        fake = MagicMock()
+        fake.return_value.build_plan.return_value = _empty_plan()
+        argv = [verb, str(cfg), "--target", str(tmp_path)]
+        if verb == "apply":
+            argv.append("--yes")
+        with patch("dasik.__main__.Reconciler", fake), \
+             patch("dasik.__main__.setup_actions", lambda: None), \
+             patch("dasik.__main__.get_default_registry") as reg:
+            reg.return_value.get_all_actions.return_value = []
+            assert cli.main(argv) == 0
+        return fake.call_args.kwargs["manifest"]
+
+    from_plan = _manifest_seen_by("plan")
+    from_apply = _manifest_seen_by("apply")
+
+    assert from_plan == from_apply
+    assert from_plan["managed"] == {"packages": ["git", "htop"]}

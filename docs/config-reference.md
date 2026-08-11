@@ -110,6 +110,7 @@ result back by hand.
 | `sudo` | object | `/etc/sudoers.d/10-dasik` — wheel access + extra rules |
 | `cpu` | object | CPU scaling driver, power-profiles-daemon, cpupower governor |
 | `reflector` | object | `/etc/xdg/reflector/reflector.conf` + `reflector.timer` |
+| `plymouth` | object | Boot splash: package, theme, initramfs hook/module, `splash` |
 | `bluetooth`, `hardware_acceleration`, `kvm`, `cups`, `microsoft_fonts`, `firewall`, `wireguard`, `snapper` | object | Feature toggles |
 | `enable_trim`, `enable_microcode`, `remove_home_on_delete`, `sysrq` | bool | Simple toggles |
 | `metadata`, `notes` | object / string | Free-form; not applied |
@@ -473,6 +474,42 @@ Periodic pacman mirrorlist refresh: installs `reflector`, enables
 
 ---
 
+## `plymouth`  *(sync ✓)*
+
+Graphical boot splash. The block is a declaration on its own: `"plymouth": {}`
+means the splash with plymouth's default theme; **omitting the block means no
+splash at all**.
+
+| Field | Type | Default |
+| --- | --- | --- |
+| `theme` | string | `null` — leave plymouth's own default (Arch ships `bgrt`) |
+
+```json
+"plymouth": { "theme": "bgrt" }
+```
+
+What it converges, across four owners:
+
+* the `plymouth` package (it lives in `extra`; the old imperative installer
+  still built it from the AUR),
+* `/etc/plymouth/plymouthd.conf` with `[Daemon] Theme=…`, when a theme is set,
+* `splash` on the kernel cmdline,
+* the splash **inside the initramfs** — the `plymouth` hook for mkinitcpio
+  (placed after `systemd`/`udev` and before `sd-encrypt`, or it never takes over
+  the passphrase prompt), the forced `plymouth` module for dracut.
+
+Changing only the theme rewrites `plymouthd.conf` and nothing else, so that file
+counts as an input to the image freshness check: a theme change shows up in
+`plan` and rebuilds the initramfs, as the Arch wiki requires.
+
+`sync` captures the block when `/usr/bin/plymouthd` exists on the target, with
+the theme read back from `plymouthd.conf`. `splash` is subtracted from the
+captured `kernel_cmdline` **only** when plymouth is installed — on a machine
+that carries `splash` without plymouth the parameter is somebody else's and
+stays a plain entry.
+
+---
+
 ## Feature toggles
 
 ### `bluetooth`  *(sync ✓ for `in_initramfs`)*
@@ -613,6 +650,7 @@ One config exercising every section — validate a copy with `dasik check`
            "power_profiles_daemon": true, "governor": null },
   "reflector": { "countries": ["ES"], "protocols": ["https"],
                  "latest": 20, "sort": "rate", "save": "/etc/pacman.d/mirrorlist" },
+  "plymouth": { "theme": "bgrt" },
   "systemd": {
     "enable_units": ["sshd.service", "fstrim.timer"],
     "enable_sockets": ["cups.socket"],

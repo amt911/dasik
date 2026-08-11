@@ -137,6 +137,65 @@ def test_an_applied_sudoers_fragment_plans_nothing(tmp_path):
     assert action.plan(managed=[]) == []
 
 
+# --- plymouth -------------------------------------------------------------- #
+
+def test_splash_missing_from_the_entry_is_planned(tmp_path):
+    assert _cmdline_plan(tmp_path, {"plymouth": {}}, "root=LABEL=root rw") == [
+        ("INSTALL", "splash")]
+
+
+def test_splash_already_on_the_entry_plans_nothing(tmp_path):
+    assert _cmdline_plan(tmp_path, {"plymouth": {}}, "root=LABEL=root rw splash") == []
+
+
+def test_dropping_the_plymouth_block_removes_splash(tmp_path):
+    """The disable direction: an undeclared block whose parameter dasik owns is
+    a REMOVE, not a silent leftover."""
+    assert _cmdline_plan(tmp_path, {}, "root=LABEL=root rw splash",
+                         managed=["splash"]) == [("REMOVE", "splash")]
+
+
+def test_an_unowned_splash_is_left_alone(tmp_path):
+    assert _cmdline_plan(tmp_path, {}, "root=LABEL=root rw splash") == []
+
+
+def test_the_plymouth_package_is_planned():
+    assert "plymouth" in expand_config({"plymouth": {}})["packages"]
+
+
+def test_the_plymouth_theme_file_is_planned(tmp_path):
+    config = expand_config({"plymouth": {"theme": "bgrt"}})
+    action = DropFilesAction(config, _ctx(tmp_path))
+
+    planned = [c.item for c in action.plan(managed=[])]
+
+    assert "/etc/plymouth/plymouthd.conf" in planned
+
+
+def test_the_plymouth_hook_is_planned_in_the_initramfs(tmp_path):
+    """The splash also has to be IN the image — a plan that only showed the
+    package and the parameter would hide the half that makes it work."""
+    from dasik.lib.actions.initramfs_action import InitramfsAction
+
+    (tmp_path / "etc").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "etc/mkinitcpio.conf").write_text(
+        "HOOKS=(base udev autodetect modconf block filesystems fsck)\n")
+    action = InitramfsAction({"plymouth": {}}, _ctx(tmp_path))
+
+    assert [c.op.name for c in action.plan(managed=[])] == ["MODIFY"]
+
+
+def test_an_initramfs_that_already_has_the_hook_plans_nothing(tmp_path):
+    from dasik.lib.actions.initramfs_action import InitramfsAction
+
+    (tmp_path / "etc").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "etc/mkinitcpio.conf").write_text(
+        "HOOKS=(base udev plymouth autodetect modconf block filesystems fsck)\n")
+    action = InitramfsAction({"plymouth": {}}, _ctx(tmp_path))
+
+    assert action.plan(managed=[]) == []
+
+
 # --- helper ---------------------------------------------------------------- #
 
 def _units_planned(config):

@@ -29,6 +29,7 @@
   "locales": {"selected_locales": ["en_US.UTF-8 UTF-8"], "desired_locale": "en_US.UTF-8", "desired_tty_layout": "us"},
   "network": {"type": "systemd-networkd"},
   "bluetooth": {"enable": true, "in_initramfs": true},
+  "plymouth": {"theme": "bgrt"},
   "packages": ["base", "linux", "linux-firmware", "btrfs-progs", "python", "python-pydantic", "python-colorama"],
   "files": [
     {"path": "/etc/systemd/system/serial-getty@ttyS0.service.d/autologin.conf",

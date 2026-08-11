@@ -27,11 +27,12 @@ from dasik.lib.reconciler.reconciler import Reconciler
 from dasik.lib.target.target import Target
 
 _ENTRY = ("root=/dev/mapper/cryptroot rw amd_pstate=active "
-          "sysrq_always_enabled=1 resume=/dev/mapper/cryptswap quiet")
+          "sysrq_always_enabled=1 resume=/dev/mapper/cryptswap quiet splash")
 
 
-def _machine(tmp_path, entry=_ENTRY, reflector=True, governor=True, sudoers=True):
-    """A fake target root carrying (some of) the block-A features."""
+def _machine(tmp_path, entry=_ENTRY, reflector=True, governor=True, sudoers=True,
+             plymouth=True):
+    """A fake target root carrying (some of) the block-A/B features."""
     (tmp_path / "boot/loader/entries").mkdir(parents=True)
     (tmp_path / "boot/loader/loader.conf").write_text("default arch\n")
     (tmp_path / "boot/loader/entries/arch.conf").write_text(
@@ -48,6 +49,12 @@ def _machine(tmp_path, entry=_ENTRY, reflector=True, governor=True, sudoers=True
         (tmp_path / "etc/sudoers.d").mkdir(parents=True, exist_ok=True)
         (tmp_path / "etc/sudoers.d/10-dasik").write_text(
             "# Managed by dasik\n%wheel ALL=(ALL:ALL) ALL\n")
+    if plymouth:
+        (tmp_path / "usr/bin").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "usr/bin/plymouthd").write_text("")
+        (tmp_path / "etc/plymouth").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "etc/plymouth/plymouthd.conf").write_text(
+            "# Managed by dasik\n[Daemon]\nTheme=bgrt\n")
     return tmp_path
 
 
@@ -77,6 +84,7 @@ def _synced(tmp_path, seed=None):
     ("reflector", {"countries": ["ES"], "protocols": ["https"], "latest": 20,
                    "sort": "rate", "save": "/etc/pacman.d/mirrorlist"}),
     ("sudo", {"wheel": True, "nopasswd": False, "rules": []}),
+    ("plymouth", {"theme": "bgrt"}),
 ])
 def test_sync_captures_the_feature(tmp_path, key, expected):
     captured = _synced(_machine(tmp_path))
@@ -91,6 +99,8 @@ def test_sync_leaves_the_derived_parameters_out_of_kernel_cmdline(tmp_path):
 
     assert "amd_pstate=active" not in captured["kernel_cmdline"]
     assert "sysrq_always_enabled=1" not in captured["kernel_cmdline"]
+    # `splash` too: the machine has plymouth, so the block owns the parameter.
+    assert "splash" not in captured["kernel_cmdline"]
     # …while what somebody really set by hand survives.
     assert "resume=/dev/mapper/cryptswap" in captured["kernel_cmdline"]
     assert "quiet" in captured["kernel_cmdline"]
@@ -100,7 +110,7 @@ def test_sync_leaves_the_derived_parameters_out_of_kernel_cmdline(tmp_path):
 
 def test_sync_does_not_invent_features_the_machine_lacks(tmp_path):
     bare = _machine(tmp_path, entry="root=LABEL=root rw quiet",
-                    reflector=False, governor=False, sudoers=False)
+                    reflector=False, governor=False, sudoers=False, plymouth=False)
 
     captured = _synced(bare)
 
@@ -108,13 +118,26 @@ def test_sync_does_not_invent_features_the_machine_lacks(tmp_path):
     assert "cpu" not in captured
     assert "reflector" not in captured
     assert "sudo" not in captured
+    assert "plymouth" not in captured
+
+
+def test_a_splash_nobody_owns_survives_as_a_plain_parameter(tmp_path):
+    """No plymouth on the machine ⇒ `splash` is somebody else's parameter, and
+    a capture that swallowed it would silently drop it on the next apply."""
+    bare = _machine(tmp_path, entry="root=LABEL=root rw splash",
+                    reflector=False, governor=False, sudoers=False, plymouth=False)
+
+    captured = _synced(bare)
+
+    assert "splash" in captured["kernel_cmdline"]
+    assert "plymouth" not in captured
 
 
 def test_sync_clears_a_flag_the_machine_does_not_carry(tmp_path):
     """A seed that declares sysrq against a machine without it captures False —
     sync reports reality, it does not preserve the declaration."""
     bare = _machine(tmp_path, entry="root=LABEL=root rw quiet",
-                    reflector=False, governor=False, sudoers=False)
+                    reflector=False, governor=False, sudoers=False, plymouth=False)
 
     captured = _synced(bare, seed={"bootloader": "sd-boot", "sysrq": True})
 

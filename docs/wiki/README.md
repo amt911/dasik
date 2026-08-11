@@ -1,76 +1,139 @@
-# dasik wiki
+# dasik
 
-This wiki documents the **current declarative implementation** of dasik: the `dasik/` package at the repository root. The old material under `archinstall/` is reference/legacy material and does not define the current config format.
+**d**eclarative **a**rch linux **s**cript **i**nstaller **(k**inda**)**.
 
-## Start here
+Describe the machine you want in one JSON file. Run `dasik apply config.json`.
+Run it again and nothing happens, because nothing has to. That second property —
+idempotency — is the whole point: dasik is a *converger*, not a script that
+replays.
 
-| I want to… | Read |
+```text
+config.json  ──  check → plan → apply ──▶  the machine
+config.json  ◀──────────  sync  ─────────  the machine
+```
+
+It installs Arch from the live ISO onto `/mnt`, and it manages the machine you
+are already running (`--target /`). Same config, same verbs.
+
+---
+
+## Pick your entry point
+
+| I want to… | Page |
 | --- | --- |
-| See every command and flag | [CLI reference](cli.md) |
-| See every JSON field and allowed value | [Configuration reference](configuration.md) |
-| Split one large JSON into several files | [Config splitting and secrets](config-splitting.md) |
-| Understand `check → plan → apply`, `sync`, generations and rollback | [Workflows and state](workflows.md) |
-| Capture a real Arch system and test it in a VM | [Copy your config and test it](../copy-your-config-and-test.md) |
-| Look up the older single-page field reference | [Legacy config reference](../config-reference.md) |
+| Install dasik and know what it needs | **[Installation](Installation.md)** |
+| Install a machine from the ISO, start to finish | **[Quickstart](Quickstart.md)** |
+| Look up a verb, a flag, an exit code | **[CLI reference](CLI.md)** |
+| Look up **every** JSON field there is | **[Configuration reference](Configuration.md)** |
+| Partition, encrypt with LUKS, lay out btrfs subvolumes | **[Disks and encryption](Disks.md)** |
+| Choose a bootloader, an initramfs, kernel parameters, a splash | **[Boot chain](Boot.md)** |
+| Declare packages, AUR packages, a Git PKGBUILD, mirrors | **[Packages](Packages.md)** |
+| Know what each feature block actually installs | **[Feature blocks](Features.md)** |
+| Split a 400-line config into readable files, keep secrets out | **[Config splitting](Config-splitting.md)** |
+| Understand plan/apply/ownership/generations/rollback | **[Workflows and state](Workflows.md)** |
+| Know exactly what `sync` can and cannot capture | **[Sync](Sync.md)** |
+| Understand a preflight error before it aborts an install | **[Validation](Validation.md)** |
+| Copy a working config and adapt it | **[Recipes](Recipes.md)** |
+| Fix a boot that hangs, an apply that failed | **[Troubleshooting](Troubleshooting.md)** |
+| Hack on dasik itself | **[Development](Development.md)** |
+
+---
 
 ## The mental model in one minute
 
-Dasik has two directions:
+dasik owns **domains**, not files. A domain is one slice of the machine —
+`packages`, `users`, `disks`, `kernel_cmdline`, `files`, `bootloader`, … Each
+domain has one action that can do three things:
+
+| Method | Question it answers |
+| --- | --- |
+| `plan()` | What differs between what you declared and what the machine actually has? |
+| `apply()` | Make exactly those differences go away. |
+| `import_state()` | What does the machine actually have? (this is `sync`) |
+
+`plan()` reads real state — `pacman -Qq`, `/etc/shadow`, `lsblk`,
+`/boot/loader/entries`, `cryptsetup luksDump` — never a cached belief. So a
+converged machine plans nothing, and a re-run is silent.
+
+### Ownership: why `plan` can say "remove"
+
+After every successful `apply`, dasik records a **manifest** of what it owns, at
+`/var/lib/dasik/state.json` under the target. The next plan is set math:
 
 ```text
-config JSON  -- check/plan/apply -->  system
-system       -------- sync ------->  config JSON
+INSTALL = declared \ actual          # you asked for it, it isn't there
+REMOVE  = (owned ∩ actual) \ declared # dasik installed it, you stopped asking
 ```
 
-- `check` validates JSON, the Pydantic schema and cross-field coherence without touching the system.
-- `plan` is the dry run. It compares declared state with reality and prints what would change.
-- `apply` converges the target to the config. It can partition/format disks, install/remove packages and rewrite system configuration, so treat it as destructive.
-- `sync` reads reality back into the config. It is non-destructive to the system, but it **rewrites the JSON file** and creates a `.bak` next to it when it changes.
-- Successful applies record generations. A failed apply can record a **partial generation** so completed progress is not mistaken for convergence.
-- `rollback` restores a previous complete config generation and applies it; it is therefore also destructive.
+That middle term is what keeps dasik from fighting the rest of the system: a
+package you installed by hand is not in the manifest, so dropping it from the
+config removes nothing. dasik only takes back what it put there.
 
-## Target roots matter
+### Two directions, never one
 
-Dasik was designed first for installing from an Arch ISO, where the target system is mounted at `/mnt`.
+Every feature must be **visible to `plan`** (missing ⇒ planned, present ⇒
+silent, owned-but-undeclared ⇒ removed) *and* **capturable by `sync`** (the
+machine's reality reads back as its own config block). A feature that applies
+but cannot be captured is a one-way street: capture the machine, re-apply the
+capture, and the feature silently disappears. See [Sync](Sync.md).
 
-- `plan` and `apply` default to `--target /mnt`.
-- `sync`, `generations` and `rollback` default to `--target /`.
-- Any target other than `/` requires `arch-chroot` from `arch-install-scripts`.
+---
 
-For day-2 management of the machine you are currently booted into, the usual command is therefore:
+## Target roots: the one thing everybody trips on
+
+dasik was built to install from the Arch ISO, where the new system is mounted at
+`/mnt`. So the defaults differ per verb:
+
+| Verb | Default `--target` |
+| --- | --- |
+| `plan`, `apply` | `/mnt` — the install target |
+| `sync`, `generations`, `rollback` | `/` — the running host |
+
+Any target other than `/` runs every command through `arch-chroot`, which lives
+in `arch-install-scripts` (on the ISO; rarely on an installed system). To manage
+the machine you are booted into, always pass it explicitly:
 
 ```bash
 dasik plan my-system.json --target /
 ```
 
-not a bare `dasik plan my-system.json`, which would target `/mnt`.
+A bare `dasik plan my-system.json` targets `/mnt` and, on a normal host, stops
+immediately with an actionable message rather than half-probing a chroot that
+does not exist.
 
-## What is the source of truth?
-
-The docs intentionally follow the code rather than historical examples:
-
-1. `dasik/__main__.py` — CLI verbs, flags and defaults.
-2. `dasik/lib/models/` — JSON fields, types, defaults and model validation.
-3. `dasik/lib/json_parser/includes.py` — config-split directives.
-4. `dasik/lib/expand/` — feature blocks that derive packages, units, files or other state.
-5. `dasik/lib/validation/preflight.py` — cross-field errors/warnings.
-6. actions/reconciler/state code — plan/apply/sync/generation behavior.
-
-If a prose document and the implementation disagree, treat the implementation as authoritative and file/fix the documentation drift.
+---
 
 ## Safe first commands
 
-These do not mutate the system:
+None of these mutate anything:
 
 ```bash
-# Schema + coherence only
-dasik check config/install-megamix.json
-
-# Preview day-2 changes on the running host
-dasik plan config/install-megamix.json --target /
-
-# Show the command surface
+dasik check config/install-megamix.json      # JSON + schema + coherence
+dasik plan  config/install-megamix.json --target /   # the dry run
+dasik generations --target /                 # what has been applied here
 dasik --help
 ```
 
-Do not use a real `apply` or `rollback` as a documentation smoke test. Disk actions can wipe and format devices.
+`apply` and `rollback` **are** destructive: they partition disks, run `mkfs`,
+and drive `pacman`. Never point them at hardware you care about while learning —
+use a VM ([Development](Development.md#testing-in-a-vm)).
+
+---
+
+## Where truth lives
+
+This wiki documents the `dasik/` package at the repository root. When prose and
+code disagree, the code wins — and the doc is the bug. The sources behind each
+page:
+
+| Page | Code it documents |
+| --- | --- |
+| [CLI](CLI.md) | `dasik/__main__.py` |
+| [Configuration](Configuration.md) | `dasik/lib/models/` |
+| [Features](Features.md) | `dasik/lib/expand/toggles.py` |
+| [Config splitting](Config-splitting.md) | `dasik/lib/json_parser/includes.py` |
+| [Validation](Validation.md) | `dasik/lib/validation/preflight.py` |
+| [Workflows](Workflows.md), [Sync](Sync.md) | `dasik/lib/reconciler/`, `dasik/lib/state/`, `dasik/lib/actions/` |
+
+`archinstall/` and the legacy shell scripts in the repo root are historical
+reference. They do not define the current config format.

@@ -59,6 +59,13 @@ class TimezoneAction(ScalarV3Action):
     # --- scalar hooks ------------------------------------------------- #
 
     def _desired_value(self) -> Optional[str]:
+        # Not declared is not the timezone "None/None": f-stringing the defaults
+        # produced a truthy value that plan proposed as a MODIFY (apply would
+        # `ln -sf /usr/share/zoneinfo/None/None`) and that sync captured as
+        # {"region": "None", "city": "None"} on any target without an
+        # /etc/localtime to read instead.
+        if not self.region or not self.city:
+            return None
         return f"{self.region}/{self.city}"
 
     def _actual_value(self) -> Optional[str]:

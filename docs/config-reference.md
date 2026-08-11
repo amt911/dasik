@@ -226,6 +226,11 @@ once you are sure of your other way in.
 | `region` | string | — (e.g. `Europe`) |
 | `city` | string | — (e.g. `Madrid`) |
 
+Both or neither: with one missing the section is treated as undeclared, so
+`plan` proposes nothing and `sync` captures nothing rather than inventing the
+timezone `None/None`. There is no "unset the timezone" operation — dropping the
+block leaves the machine's `/etc/localtime` alone.
+
 ### `locales`  *(sync ✓)*
 
 | Field | Type | Default |
@@ -487,6 +492,11 @@ Mirrors `/etc/systemd/zram-generator.conf` as `{device: {option: value}}`:
 ```
 
 Pulls in `zram-generator`.
+
+`sync` reports the file, not the config: no `/etc/systemd/zram-generator.conf`
+on the target means no zram, so a declared block the machine does not have is
+captured **empty** rather than echoed back. A target that never had zram still
+captures nothing.
 
 ---
 

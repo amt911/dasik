@@ -168,3 +168,31 @@ def test_import_state_captures_actual_from_empty_config():
                return_value=_link(target="/usr/share/zoneinfo/Asia/Tokyo")):
         assert a.import_state() == {
             "timezone": {"region": "Asia", "city": "Tokyo"}}
+
+
+# --- an undeclared timezone is not the timezone "None/None" ----------------
+
+def test_an_undeclared_timezone_has_no_desired_value(tmp_path):
+    """region/city default to None, and f"{None}/{None}" is the string
+    "None/None" — truthy, so it flowed into plan and sync as if declared."""
+    a = TimezoneAction(TimezoneAction.empty_config(), _ctx(str(tmp_path)))
+
+    assert a._desired_value() is None
+
+
+def test_an_undeclared_timezone_plans_nothing(tmp_path):
+    """Reached when a previous generation owned the domain and the block is
+    dropped: `ln -sf /usr/share/zoneinfo/None/None` would break /etc/localtime.
+    There is no "unset the timezone" operation, so leave the machine alone."""
+    a = TimezoneAction(TimezoneAction.empty_config(), _ctx(str(tmp_path)))
+
+    assert a.plan(managed=["Europe/Madrid"]) == []
+
+
+def test_sync_invents_no_timezone_when_the_target_has_no_localtime(tmp_path):
+    """A target without /etc/localtime (a half-built /mnt) captured
+    {"region": "None", "city": "None"} — a config that applies a broken
+    symlink."""
+    a = TimezoneAction(TimezoneAction.empty_config(), _ctx(str(tmp_path)))
+
+    assert a.import_state(managed=[]) == {}

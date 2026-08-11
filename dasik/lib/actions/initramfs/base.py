@@ -71,6 +71,14 @@ def detect_hibernation(cfg: Dict[str, Any]) -> bool:
     return False
 
 
+def detect_plymouth(cfg: Dict[str, Any]) -> bool:
+    """True when the config declares a boot splash.
+
+    An EMPTY block counts: it declares the splash with plymouth's own theme.
+    """
+    return cfg.get("plymouth") is not None
+
+
 def detect_bluetooth_in_initramfs(cfg: Dict[str, Any]) -> bool:
     bt = cfg.get("bluetooth")
     return bool(isinstance(bt, dict) and bt.get("in_initramfs"))
@@ -88,6 +96,7 @@ class InitramfsBackend:
         self.has_tpm2 = detect_tpm2(self.config)
         self.bluetooth_in_initramfs = detect_bluetooth_in_initramfs(self.config)
         self.has_hibernation = detect_hibernation(self.config)
+        self.has_plymouth = detect_plymouth(self.config)
 
     def _path(self, canonical: str) -> str:
         if self.target is not None:

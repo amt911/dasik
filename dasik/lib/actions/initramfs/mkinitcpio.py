@@ -69,6 +69,17 @@ class MkinitcpioBackend(InitramfsBackend):
         if self.has_hibernation and "resume" not in hooks:
             anchor = next((h for h in ("filesystems", "fsck") if h in hooks), None)
             hooks.insert(hooks.index(anchor) if anchor else len(hooks), "resume")
+        # Plymouth: after systemd/udev (it needs the device manager up) and
+        # BEFORE sd-encrypt/encrypt — the wiki is explicit that a plymouth hook
+        # placed after the crypt hook never takes over the passphrase prompt,
+        # which on an encrypted machine means it cannot be unlocked at all.
+        if self.has_plymouth and "plymouth" not in hooks:
+            after = next((h for h in ("systemd", "udev", "base") if h in hooks), None)
+            index = hooks.index(after) + 1 if after else 0
+            for blocker in ("sd-encrypt", "encrypt"):
+                if blocker in hooks:
+                    index = min(index, hooks.index(blocker))
+            hooks.insert(index, "plymouth")
 
         seen: set = set()
         deduped: List[str] = []

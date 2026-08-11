@@ -11,6 +11,10 @@ from ..partition_utils import mounts_root
 _CONF = "/etc/dracut.conf.d/dasik.conf"
 _CRYPTTAB = "/etc/crypttab"
 _FSTAB = "/etc/fstab"
+# Written by the `plymouth` expand toggle; an input to the image, not to this
+# file's own content (kept as a literal so the backend stays free of imports
+# from the expand layer).
+_PLYMOUTHD_CONF = "/etc/plymouth/plymouthd.conf"
 
 
 class DracutBackend(InitramfsBackend):
@@ -62,6 +66,12 @@ class DracutBackend(InitramfsBackend):
         # stayed 0:0, and the boot after `systemctl hibernate` was a COLD one.
         if self.has_hibernation:
             mods.append("resume")
+        # Plymouth: dracut auto-detects it, but that detection runs in the same
+        # chroot where it already dropped systemd-cryptsetup and resume. A
+        # declared splash that silently never made it into the image is exactly
+        # the failure this file exists to prevent, so force it.
+        if self.has_plymouth:
+            mods.append("plymouth")
         # dedupe, preserve order
         seen: set = set()
         deduped: List[str] = []
@@ -180,7 +190,14 @@ class DracutBackend(InitramfsBackend):
         # converged: the conf/crypttab are written BEFORE dracut runs, so a crash
         # (or an image later clobbered by mkinitcpio) left the next plan empty
         # while /boot held a stale — or no — initramfs for the declared kernel.
-        if not self._images_current(self._path(_CONF)):
+        inputs = [self._path(_CONF)]
+        if self.has_plymouth:
+            # A theme change rewrites plymouthd.conf and nothing else: dasik.conf
+            # is identical, so without counting the theme file as an input the
+            # plan is silent and the image keeps the previous theme. The wiki
+            # states the rule outright — rebuild on every theme change.
+            inputs.append(self._path(_PLYMOUTHD_CONF))
+        if not self._images_current(*inputs):
             return None
         return conf
 

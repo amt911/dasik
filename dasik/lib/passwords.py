@@ -2,9 +2,14 @@
 
 Arch ships ``ENCRYPT_METHOD YESCRYPT`` in /etc/login.defs, so ``passwd`` and
 ``useradd`` write ``$y$j9T$…`` — and that is what ``dasik sync`` reads back out
-of /etc/shadow. Hashes are produced through **libxcrypt** (``libcrypt.so.2``),
-the very library shadow uses, rather than ``openssl passwd``: openssl knows
-nothing about yescrypt and would silently hand back sha512crypt.
+of /etc/shadow. Hashes are produced through **libxcrypt**, the very library
+shadow uses, rather than ``openssl passwd``: openssl knows nothing about
+yescrypt and would silently hand back sha512crypt.
+
+libxcrypt's soname is distribution-specific — ``libcrypt.so.2`` on Arch (and on
+the install ISO), ``libcrypt.so.1`` on Debian/Ubuntu, which is why the candidates
+are tried in order instead of pinned. A ``libcrypt.so.1`` that turns out to be
+glibc's own (no ``crypt_gensalt``) is skipped, not half-bound.
 
 Python's own ``crypt`` module was removed in 3.13, hence the ctypes binding.
 """
@@ -23,21 +28,32 @@ SHA512 = "sha512"
 # crypt(3) setting prefixes; the prefix is what selects the algorithm.
 _PREFIXES = {YESCRYPT: b"$y$", SHA512: b"$6$"}
 _SALT_BYTES = 16
-_LIBCRYPT = "libcrypt.so.2"
+# Arch/ISO first — that is the target this tool installs; then Debian/Ubuntu,
+# which is what CI and many dev boxes run.
+_LIBCRYPT_SONAMES = ("libcrypt.so.2", "libcrypt.so.1")
+_LIBCRYPT = " / ".join(_LIBCRYPT_SONAMES)
 
 
 def _libcrypt() -> Optional[ctypes.CDLL]:
     """libxcrypt with its two entry points bound, or None if unavailable."""
-    try:
-        lib = ctypes.CDLL(_LIBCRYPT, use_errno=True)
-    except OSError:
-        return None
-    lib.crypt_gensalt.restype = ctypes.c_char_p
-    lib.crypt_gensalt.argtypes = [ctypes.c_char_p, ctypes.c_ulong,
-                                  ctypes.c_char_p, ctypes.c_int]
-    lib.crypt.restype = ctypes.c_char_p
-    lib.crypt.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
-    return lib
+    for soname in _LIBCRYPT_SONAMES:
+        try:
+            lib = ctypes.CDLL(soname, use_errno=True)
+        except OSError:
+            continue
+        try:
+            gensalt = lib.crypt_gensalt
+        except AttributeError:
+            # glibc's own libcrypt carries soname 1 and offers crypt() only; it
+            # cannot generate a yescrypt setting, so it is not what we want.
+            continue
+        gensalt.restype = ctypes.c_char_p
+        gensalt.argtypes = [ctypes.c_char_p, ctypes.c_ulong,
+                            ctypes.c_char_p, ctypes.c_int]
+        lib.crypt.restype = ctypes.c_char_p
+        lib.crypt.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
+        return lib
+    return None
 
 
 def _openssl_sha512(password: str) -> str:

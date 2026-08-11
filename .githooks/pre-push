@@ -34,6 +34,18 @@ command -v mypy    >/dev/null 2>&1 || fail "mypy not found — pip install -e '.
 command -v bandit  >/dev/null 2>&1 || fail "bandit not found — pip install -e '.[dev]'"
 command -v mutmut  >/dev/null 2>&1 || fail "mutmut not found — pip install -e '.[dev,mut]'"
 
+# The suite must exercise THIS working tree. A plain `pip install .` (notably a
+# `sudo pip install .` while testing against a real target) replaces the editable
+# install with a snapshot copy in site-packages, which then shadows the checkout:
+# pytest imports that stale copy and the gate fails with dozens of unrelated
+# errors that no source change can fix. Catch it here with a clear remedy.
+IMPORTED_FROM="$(python -c 'import dasik, os; print(os.path.dirname(os.path.dirname(os.path.abspath(dasik.__file__))))' 2>/dev/null || true)"
+if [ "$IMPORTED_FROM" != "$PWD" ]; then
+  fail "python imports dasik from '${IMPORTED_FROM:-<import failed>}', not this checkout ($PWD) —
+  the venv holds a non-editable install that shadows your changes.
+  Fix:  pip install -e '.[dev,mut]'"
+fi
+
 GATE_LOG="$(mktemp "${TMPDIR:-/tmp}/dasik-prepush.XXXXXX.log")"
 trap 'rm -f "$GATE_LOG"' EXIT
 

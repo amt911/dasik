@@ -106,5 +106,11 @@ PY
 esac
 
 echo ">> Running mutation testing on the idempotency core (set_math.py)..."
+# Always start from a fresh copy (tier 2 does the same). mutmut mutates a COPY of
+# the tree under mutants/ and does not resync files it already has, so a stale
+# mutants/ left by an earlier run keeps serving old source to the tests — which
+# then fail to even collect ("cannot import name X from dasik.lib...") and the
+# gate reports a failure that has nothing to do with the code being pushed.
+rm -rf mutants .mutmut-cache
 mutmut run
 report_survivors

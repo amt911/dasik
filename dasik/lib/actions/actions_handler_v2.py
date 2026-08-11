@@ -44,6 +44,7 @@ def setup_actions() -> None:
     from .network_action import NetworkAction
     from .pacman_action import PacmanAction
     from .users_action import UsersAction
+    from .sudo_action import SudoAction
     from .packages_action import PackagesAction
     from .systemd_action import SystemdAction
     from .firewall_action import FirewallAction
@@ -55,6 +56,8 @@ def setup_actions() -> None:
     from .ms_fonts_action import MicrosoftFontsAction
     from .zram_action import ZramAction
     from .pacman_hooks_action import PacmanHooksAction
+    from .cpu_action import CpuAction
+    from .reflector_action import ReflectorAction
 
     # === Phase 1: disk & base install =====================================
     register_action(
@@ -137,6 +140,13 @@ def setup_actions() -> None:
         config_key='__root__',
         is_optional=True,
     )
+    # Sudo comes after Users: the wheel group has members by now, and
+    # PackagesAction has installed `sudo` (so `visudo` exists in the target).
+    register_action(
+        action_class=SudoAction,
+        config_key='__root__',   # reads `sudo` plus `users` for the implicit default
+        is_optional=True,
+    )
 
     # === Phase 4: system services & files =================================
     register_action(
@@ -165,6 +175,21 @@ def setup_actions() -> None:
     register_action(
         action_class=ZramAction,
         config_key='__root__',  # reads root-level `zram` mapping
+        is_optional=True,
+    )
+    # Capture-only (plan() is empty by design): CPU scaling and the reflector
+    # policy converge through the expand toggles (packages, units, files) and
+    # the kernel cmdline, but nothing captured them BACK — a synced config lost
+    # the `reflector` block outright and spelled `cpu` as a hand-set kernel
+    # parameter. `sync` only visits registered v3 actions, hence these entries.
+    register_action(
+        action_class=CpuAction,
+        config_key='__root__',  # reads root-level `cpu` + `bootloader`
+        is_optional=True,
+    )
+    register_action(
+        action_class=ReflectorAction,
+        config_key='__root__',  # reads root-level `reflector`
         is_optional=True,
     )
 

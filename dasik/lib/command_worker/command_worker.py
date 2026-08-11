@@ -56,6 +56,25 @@ class Command:
         return path
 
     @staticmethod
+    def _locate_chroot() -> str:
+        """arch-chroot, or a failure that says how to fix it.
+
+        Every command against a target rooted anywhere but "/" runs inside
+        arch-chroot, which ships in `arch-install-scripts` — present on the
+        install ISO, usually absent on an installed system. The bare
+        "Binary not found: arch-chroot" left day-2 users with no clue that
+        `--target /` is the flag they wanted (the CLI gates on this up front;
+        this covers callers that bypass it)."""
+        path = which("arch-chroot")
+        if not path:
+            raise CommandNotFoundException(
+                "Binary not found: arch-chroot — install it with "
+                "`pacman -S arch-install-scripts`, or use --target / to manage "
+                "the running system instead of a mounted install target."
+            )
+        return path
+
+    @staticmethod
     def execute(cmd: str, args: list[str], run_as_chroot: bool = False,
                 target: "Target | None" = None, input: "bytes | None" = None,
                 env: "dict[str, str] | None" = None, check: bool = False,
@@ -91,11 +110,9 @@ class Command:
         chroot_cmd: list[str] = []
         if target is not None:
             if target.is_chroot:
-                chroot_path = Command._locate_binary("arch-chroot")
-                chroot_cmd = [chroot_path, target.root]
+                chroot_cmd = [Command._locate_chroot(), target.root]
         elif run_as_chroot:
-            chroot_path = Command._locate_binary("arch-chroot")
-            chroot_cmd = [chroot_path, "/mnt"]
+            chroot_cmd = [Command._locate_chroot(), "/mnt"]
 
         argv = chroot_cmd + [cmd, *args]
 

@@ -209,9 +209,74 @@ def expand_zram(config: Dict[str, Any]) -> Dict[str, Any]:
     return {"packages": ["zram-generator"]}
 
 
+_CPUPOWER_CONF = "/etc/default/cpupower"
+
+
+def expand_cpu(config: Dict[str, Any]) -> Dict[str, Any]:
+    cfg = config.get("cpu") or {}
+    if not cfg:
+        return {}
+    packages: list = []
+    units: list = []
+    files: list = []
+    if cfg.get("power_profiles_daemon", True):
+        packages.append("power-profiles-daemon")
+        units.append("power-profiles-daemon.service")
+    governor = cfg.get("governor")
+    if governor:
+        # cpupower applies a fixed governor; power-profiles-daemon would fight
+        # it, which is why preflight warns when both are declared.
+        packages.append("cpupower")
+        units.append("cpupower.service")
+        files.append({"path": _CPUPOWER_CONF,
+                      "content": f'# Managed by dasik\ngovernor="{governor}"\n'})
+    out: Dict[str, Any] = {}
+    if packages:
+        out["packages"] = packages
+    if units:
+        out["units"] = units
+    if files:
+        out["files"] = files
+    return out
+
+
+_REFLECTOR_CONF = "/etc/xdg/reflector/reflector.conf"
+
+
+def expand_reflector(config: Dict[str, Any]) -> Dict[str, Any]:
+    cfg = config.get("reflector") or {}
+    if not cfg:
+        return {}
+    lines = ["# Managed by dasik"]
+    lines += [f"--country {c}" for c in cfg.get("countries") or []]
+    lines += [f"--protocol {p}" for p in cfg.get("protocols") or ["https"]]
+    latest = cfg.get("latest", 20)
+    if latest:
+        lines.append(f"--latest {latest}")
+    lines.append(f"--sort {cfg.get('sort', 'rate')}")
+    lines.append(f"--save {cfg.get('save', '/etc/pacman.d/mirrorlist')}")
+    return {
+        "packages": ["reflector"],
+        # Only the timer: the one-shot service is what the timer triggers.
+        "units": ["reflector.timer"],
+        "files": [{"path": _REFLECTOR_CONF, "content": "\n".join(lines) + "\n"}],
+    }
+
+
+def expand_sdboot_update(config: Dict[str, Any]) -> Dict[str, Any]:
+    # systemd ships this unit itself: it runs `bootctl update` when the ESP's
+    # loader is older than the installed systemd. The old imperative installer
+    # built the AUR `systemd-boot-pacman-hook` for the same job; the native unit
+    # needs no package at all.
+    if config.get("bootloader") not in ("sd-boot", "systemd-boot"):
+        return {}
+    return {"units": ["systemd-boot-update.service"]}
+
+
 # Order matters only for deterministic output; aggregation de-dups.
 TOGGLES = [
     expand_bluetooth, expand_cups, expand_trim, expand_kvm,
     expand_wireguard, expand_firewall, expand_hwaccel, expand_snapper,
-    expand_drivers, expand_initramfs, expand_zram,
+    expand_drivers, expand_initramfs, expand_zram, expand_cpu,
+    expand_sdboot_update, expand_reflector,
 ]

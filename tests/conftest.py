@@ -23,6 +23,20 @@ def _run_log_in_tmp(tmp_path, monkeypatch):
     )
 
 
+@pytest.fixture(autouse=True)
+def _arch_chroot_present(monkeypatch):
+    """Pretend `arch-chroot` is installed for every test that drives the CLI.
+
+    The verbs gate on it (``target_check.check_target``) because a chroot target
+    is unusable without it, but no test ever chroots — every command is mocked —
+    and the dev/CI host is not an install ISO, so without this the whole CLI
+    suite would fail on a missing binary. Tests that exercise the gate itself
+    re-patch ``which`` and win, being set up after this autouse fixture.
+    """
+    monkeypatch.setattr("dasik.lib.target.target_check.which",
+                        lambda name: f"/usr/bin/{name}")
+
+
 @pytest.fixture
 def tmp_target(tmp_path):
     """A Target rooted at a temporary directory.

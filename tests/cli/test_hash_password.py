@@ -1,37 +1,40 @@
-"""`dasik hash-password` — prompt for a password, print its sha512crypt hash.
+"""`dasik hash-password` — prompt for a password, print the hash Arch would write.
 
-Lets users generate the `hashed_password` value a UserModel expects without
-leaving the tool. The password is fed to `openssl passwd -6` over **stdin**,
-never on argv (argv is world-readable via /proc). Referenced by CLAUDE.md's
+Arch's login.defs sets ENCRYPT_METHOD YESCRYPT, so the default output is
+`$y$j9T$…`, matching both /etc/shadow and what `dasik sync` captures from it.
+`--method sha512` keeps the old `$6$…` for a target that wants it. The password
+never reaches argv (world-readable via /proc). Referenced by CLAUDE.md's
 agentic-verification smoke list.
 """
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 from dasik.__main__ import _cmd_hash_password, main
+from dasik.lib.exceptions.exceptions import PasswordHashError
 
 
-def test_hash_password_prints_hash(capsys):
-    with patch("dasik.__main__.getpass.getpass", side_effect=["secret", "secret"]), \
-         patch("dasik.__main__.subprocess.run",
-               return_value=MagicMock(returncode=0, stdout=b"$6$abc$def\n", stderr=b"")):
+def test_hash_password_prints_an_arch_native_yescrypt_hash(capsys):
+    with patch("dasik.__main__.getpass.getpass", side_effect=["secret", "secret"]):
         rc = _cmd_hash_password()
+
     assert rc == 0
-    assert "$6$abc$def" in capsys.readouterr().out
+    assert capsys.readouterr().out.strip().startswith("$y$")
 
 
-def test_hash_password_feeds_via_stdin_not_argv():
-    captured = {}
+def test_hash_password_honors_the_sha512_method(capsys):
+    with patch("dasik.__main__.getpass.getpass", side_effect=["secret", "secret"]):
+        rc = _cmd_hash_password(method="sha512")
 
-    def fake_run(argv, **kwargs):
-        captured["argv"] = argv
-        captured["input"] = kwargs.get("input")
-        return MagicMock(returncode=0, stdout=b"$6$x$y\n", stderr=b"")
+    assert rc == 0
+    assert capsys.readouterr().out.strip().startswith("$6$")
 
-    with patch("dasik.__main__.getpass.getpass", side_effect=["pw", "pw"]), \
-         patch("dasik.__main__.subprocess.run", side_effect=fake_run):
+
+def test_the_printed_hash_verifies_the_password(capsys):
+    from dasik.lib.passwords import verify_password
+
+    with patch("dasik.__main__.getpass.getpass", side_effect=["secret", "secret"]):
         _cmd_hash_password()
-    assert captured["argv"] == ["openssl", "passwd", "-6", "-stdin"]
-    assert captured["input"] == b"pw"          # password via stdin, never in argv
+
+    assert verify_password("secret", capsys.readouterr().out.strip()) is True
 
 
 def test_hash_password_mismatch(capsys):
@@ -47,16 +50,23 @@ def test_hash_password_empty(capsys):
     assert rc == 1
 
 
-def test_hash_password_verb_routes_through_main():
-    with patch("dasik.__main__.getpass.getpass", side_effect=["pw", "pw"]), \
-         patch("dasik.__main__.subprocess.run",
-               return_value=MagicMock(returncode=0, stdout=b"$6$r$s\n", stderr=b"")):
+def test_hash_password_verb_routes_through_main(capsys):
+    with patch("dasik.__main__.getpass.getpass", side_effect=["pw", "pw"]):
         assert main(["hash-password"]) == 0
+    assert capsys.readouterr().out.strip().startswith("$y$")
 
 
-def test_hash_password_openssl_failure_returns_1(capsys):
+def test_hash_password_method_flag_routes_through_main(capsys):
+    with patch("dasik.__main__.getpass.getpass", side_effect=["pw", "pw"]):
+        assert main(["hash-password", "--method", "sha512"]) == 0
+    assert capsys.readouterr().out.strip().startswith("$6$")
+
+
+def test_hash_password_reports_a_hashing_failure(capsys):
     with patch("dasik.__main__.getpass.getpass", side_effect=["pw", "pw"]), \
-         patch("dasik.__main__.subprocess.run",
-               return_value=MagicMock(returncode=1, stdout=b"", stderr=b"boom")):
+         patch("dasik.__main__.hash_password",
+               side_effect=PasswordHashError("libcrypt.so.2 not found")):
         rc = _cmd_hash_password()
+
     assert rc == 1
+    assert "libcrypt.so.2 not found" in capsys.readouterr().err

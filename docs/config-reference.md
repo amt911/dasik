@@ -107,8 +107,11 @@ result back by hand.
 | `etc_environment` | list | `/etc/environment` lines |
 | `files` | list | Arbitrary `/etc/...` files (verbatim) |
 | `zram` | object | `/etc/systemd/zram-generator.conf` |
+| `sudo` | object | `/etc/sudoers.d/10-dasik` — wheel access + extra rules |
+| `cpu` | object | CPU scaling driver, power-profiles-daemon, cpupower governor |
+| `reflector` | object | `/etc/xdg/reflector/reflector.conf` + `reflector.timer` |
 | `bluetooth`, `hardware_acceleration`, `kvm`, `cups`, `microsoft_fonts`, `firewall`, `wireguard`, `snapper` | object | Feature toggles |
-| `enable_trim`, `enable_microcode`, `remove_home_on_delete` | bool | Simple toggles |
+| `enable_trim`, `enable_microcode`, `remove_home_on_delete`, `sysrq` | bool | Simple toggles |
 | `metadata`, `notes` | object / string | Free-form; not applied |
 
 ---
@@ -193,7 +196,7 @@ List of accounts:
 | Field | Type | Default | Notes |
 | --- | --- | --- | --- |
 | `username` | string | — | |
-| `hashed_password` | string | — | Crypt hash (`$6$…` / `$y$…`); use `dasik hash-password` or `openssl passwd -6`. |
+| `hashed_password` | string | — | Crypt hash; `dasik hash-password` prints yescrypt (`$y$…`), the format Arch's `passwd` writes and `sync` captures. `--method sha512` gives the older `$6$…`. |
 | `shell` | string | `/bin/bash` | |
 | `groups` | list[str] | `[]` | Supplementary groups. |
 
@@ -301,6 +304,13 @@ protects reproducibility, but a PKGBUILD is still third-party code you must trus
 
 `string` — `grub` (default) or `sd-boot` (a.k.a. `systemd-boot`).
 
+On `sd-boot` dasik writes **two** entries: `arch.conf` (the `default`) and
+`arch-fallback.conf`, a rescue entry loading `initramfs-linux-fallback.img` when
+mkinitcpio built one and the same image as the main entry otherwise (dracut
+builds no fallback). Every `kernel_cmdline` parameter is written to both. It also
+enables systemd's own `systemd-boot-update.service`, which keeps the loader on
+the ESP up to date.
+
 ### `initramfs`  *(sync ✓)*
 
 `string` — `mkinitcpio` (default) or `dracut`. Switching to dracut neutralizes
@@ -319,8 +329,10 @@ Two rules worth knowing:
   other parameter is single-valued, so yours replaces the derived one
   (`root=`, `resume=`).
 * `sync` captures the boot entry's own parameters minus everything dasik derives
-  from `disks` — so `resume=`, `amd_pstate=` and friends survive a capture, while
-  machine-specific UUIDs never enter the config.
+  from `disks` (machine-specific UUIDs never enter the config) and minus the
+  parameters a block owns — `amd_pstate=`, `intel_pstate=`, `sysrq_always_enabled=1`
+  come back as the `cpu` block and the `sysrq` flag, not as raw parameters. What
+  is left is what you really set by hand: `resume=`, `quiet`, `intel_iommu=on`.
 
 ---
 
@@ -382,6 +394,82 @@ Mirrors `/etc/systemd/zram-generator.conf` as `{device: {option: value}}`:
 ```
 
 Pulls in `zram-generator`.
+
+---
+
+## `sudo`  *(sync ✓)*
+
+Writes `/etc/sudoers.d/10-dasik` (mode `0440`), validated with `visudo -cf`
+through a temporary whose name sudo's `#includedir` skips — a fragment that
+fails validation never reaches the directory.
+
+| Field | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `wheel` | bool | `true` | Writes `%wheel ALL=(ALL:ALL) ALL`. |
+| `nopasswd` | bool | `false` | Makes the wheel rule `NOPASSWD: ALL`. |
+| `rules` | list | `[]` | Extra sudoers lines, verbatim and in order. Single-line only; `@include`/`#include` are rejected. |
+
+```json
+"sudo": { "wheel": true, "nopasswd": false, "rules": ["andres ALL=(ALL) NOPASSWD: /usr/bin/pacman"] }
+```
+
+**Implicit default:** with no `sudo` block at all, a user declared in `wheel`
+still gets the password-protected wheel rule — stock Arch ships `%wheel`
+commented out, so the group alone grants nothing. Opt out with
+`"sudo": { "wheel": false }`. Declare a package providing sudo (`sudo` or
+`base-devel`): preflight errors on an explicit block without one, and warns for
+the implicit default.
+
+---
+
+## `cpu`  *(sync ✓)*
+
+CPU frequency scaling — the old installer's `install_cpu_scaler`.
+
+| Field | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `scaling_driver` | string | `auto` | `auto` \| `amd_pstate` \| `intel_pstate` \| `acpi_cpufreq` \| `none`. `auto` reads the CPU vendor from `/proc/cpuinfo`. |
+| `mode` | string | `active` | `active` \| `guided` (AMD only) \| `passive` \| `disable`. |
+| `power_profiles_daemon` | bool | `true` | Installs and enables `power-profiles-daemon.service`. |
+| `governor` | string | `null` | Pins a cpupower governor (`performance`, …): pulls `cpupower`, writes `/etc/default/cpupower`, enables `cpupower.service`. |
+
+```json
+"cpu": { "scaling_driver": "auto", "mode": "active", "power_profiles_daemon": true }
+```
+
+The kernel parameter (`amd_pstate=active` / `intel_pstate=active`) is **derived**:
+it lands on every loader entry and an explicit `kernel_cmdline` entry for the same
+key still wins. `sync` subtracts it from `kernel_cmdline` and rebuilds this block
+instead — driver and mode from the live entry, `governor` from
+`/etc/default/cpupower`, `power_profiles_daemon` from the unit. A machine with no
+pstate parameter and no governor captures no `cpu` block at all (ppd on its own is
+already covered by `packages` + `systemd`), and `<driver>=disable` comes back as
+`scaling_driver: "acpi_cpufreq"` — the only reason dasik emits it. Preflight warns when `power_profiles_daemon`
+and `governor` are both set (ppd owns the energy-performance preference) and
+errors on ppd + `tlp`.
+
+---
+
+## `reflector`  *(sync ✓)*
+
+Periodic pacman mirrorlist refresh: installs `reflector`, enables
+`reflector.timer`, and writes `/etc/xdg/reflector/reflector.conf`.
+
+| Field | Type | Default |
+| --- | --- | --- |
+| `countries` | list | `[]` |
+| `protocols` | list | `["https"]` (`https` \| `http` \| `rsync` \| `ftp`) |
+| `latest` | int | `20` |
+| `sort` | string | `rate` (`rate` \| `age` \| `score` \| `delay` \| `country`) |
+| `save` | string | `/etc/pacman.d/mirrorlist` |
+
+```json
+"reflector": { "countries": ["ES"], "protocols": ["https"], "latest": 20, "sort": "rate" }
+```
+
+`sync` reads the conf back (repeated *and* comma-separated `--country` lines, both
+`--flag value` and `--flag=value`). A conf with no `--latest` captures
+`"latest": null` — defaulting it to 20 would add a filter the machine never had.
 
 ---
 
@@ -464,6 +552,7 @@ every config found under `/etc/snapper/configs`.
 | `enable_trim` | `false` | `fstrim.timer` for SSDs. |
 | `enable_microcode` | `false` | CPU microcode (`amd-ucode`/`intel-ucode`) in the boot entry. |
 | `remove_home_on_delete` | `false` | Remove a user's home when the account is removed. |
+| `sysrq` | `false` | REISUB: derives `sysrq_always_enabled=1` on the kernel cmdline. `sync` captures it back as this flag (never as a raw `kernel_cmdline` entry), and clears it when the live entry does not carry the parameter. |
 
 ---
 
@@ -495,6 +584,8 @@ One config exercising every section — validate a copy with `dasik check`
   ],
   "packages": [
     "base-devel",
+    "docker",
+    "openssh",
     "firefox",
     { "name": "linux-headers", "reason": "dep" },
     "yay",
@@ -514,7 +605,14 @@ One config exercising every section — validate a copy with `dasik check`
   "kernel_cmdline": ["intel_iommu=on", "quiet"],
   "enable_microcode": true,
   "enable_trim": true,
+  "sysrq": true,
   "remove_home_on_delete": false,
+  "sudo": { "wheel": true, "nopasswd": false,
+            "rules": ["andres ALL=(ALL) NOPASSWD: /usr/bin/pacman"] },
+  "cpu": { "scaling_driver": "auto", "mode": "active",
+           "power_profiles_daemon": true, "governor": null },
+  "reflector": { "countries": ["ES"], "protocols": ["https"],
+                 "latest": 20, "sort": "rate", "save": "/etc/pacman.d/mirrorlist" },
   "systemd": {
     "enable_units": ["sshd.service", "fstrim.timer"],
     "enable_sockets": ["cups.socket"],
@@ -529,7 +627,7 @@ One config exercising every section — validate a copy with `dasik check`
       "partitions": [
         { "label": "esp", "size": "1GiB", "filesystem": "fat32",
           "partition_type": "esp", "mountpoint": "/boot", "format": true },
-        { "label": "swap", "size": "4GiB", "filesystem": "swap",
+        { "label": "cryptswap", "size": "4GiB", "filesystem": "swap",
           "partition_type": "linux-swap", "format": true },
         { "label": "root", "size": "rest", "filesystem": "btrfs",
           "partition_type": "linux", "mountpoint": "/", "format": true,
@@ -595,6 +693,10 @@ destructive action unvalidated. Two layers:
 | `display_manager_config_mismatch` | warning | e.g. `sddm_conf_d` declared while Plasma Login Manager is the enabled DM (it reads `/etc/plasmalogin.conf.d`). |
 | `crypttab_bad_option` | error | Not `crypttab(5)` syntax (`size512` instead of `size=512`). |
 | `crypttab_undeclared_device` | error / warning | Entry names a device no declared partition provides. **Error** when the entry carries `swap`, which reformats that device on every boot. |
+| `sudo_without_provider` | error | A `sudo` block is declared but nothing provides sudo (`sudo` / `base-devel`). |
+| `wheel_without_sudo` | warning | A user is in `wheel` with no package providing sudo, so the group grants nothing. |
+| `ppd_and_governor` | warning | `cpu.power_profiles_daemon` and `cpu.governor` both set; ppd owns the energy-performance preference. |
+| `ppd_and_tlp` | error | power-profiles-daemon and `tlp` both manage power policy and conflict. |
 
 ## Generations and a failed apply
 

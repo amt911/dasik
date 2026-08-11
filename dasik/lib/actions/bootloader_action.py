@@ -16,6 +16,10 @@ from ..state.change import Change, Op
 _DOMAIN = "bootloader"
 _SDBOOT_MARKER = "/boot/EFI/systemd/systemd-bootx64.efi"
 _GRUB_MARKER = "/boot/grub/grub.cfg"
+_FALLBACK_ENTRY = "/boot/loader/entries/arch-fallback.conf"
+_FALLBACK_ITEM = "fallback-entry"
+_MAIN_INITRD = "/initramfs-linux.img"
+_FALLBACK_INITRD = "/initramfs-linux-fallback.img"
 
 
 class BootloaderAction(AbstractAction):
@@ -84,20 +88,39 @@ class BootloaderAction(AbstractAction):
 
     # --- v3 contract -------------------------------------------------- #
 
+    def _fallback_present(self) -> bool:
+        return os.path.exists(self._p(_FALLBACK_ENTRY))
+
     def actual(self) -> set:
-        return {self.bootloader} if self._installed() else set()
+        found = set()
+        if self._installed():
+            found.add(self.bootloader)
+        if self._is_sdboot() and self._fallback_present():
+            found.add(_FALLBACK_ITEM)
+        return found
 
     def managed_keys(self) -> dict:
         return {self._DOMAIN: sorted(self.actual())}
 
     def plan(self, managed) -> list:
-        if not self._installed():
-            return [Change(self._DOMAIN, Op.INSTALL, self.bootloader, reason="install bootloader")]
-        return []
+        have = self.actual()
+        changes = []
+        if self.bootloader not in have:
+            changes.append(Change(self._DOMAIN, Op.INSTALL, self.bootloader,
+                                  reason="install bootloader"))
+        # The rescue entry is a domain item of its own, so a machine whose
+        # bootloader is ALREADY installed still gets it on the next apply.
+        if self._is_sdboot() and _FALLBACK_ITEM not in have:
+            changes.append(Change(self._DOMAIN, Op.INSTALL, _FALLBACK_ITEM,
+                                  reason="rescue boot entry"))
+        return changes
 
     def apply(self, changes) -> None:
-        if changes:
-            self._install()
+        items = {c.item for c in changes}
+        if self.bootloader in items:
+            self._install()                 # writes both entries for sd-boot
+        if _FALLBACK_ITEM in items and not os.path.exists(self._p(_FALLBACK_ENTRY)):
+            self._write_fallback_entry()
 
     def import_state(self, managed=None) -> dict:
         """Capture which bootloader is actually installed, by its on-disk marker
@@ -113,10 +136,11 @@ class BootloaderAction(AbstractAction):
     # --- legacy executor bridge --------------------------------------- #
 
     def is_needed(self) -> bool:
-        return not self._installed()
+        # "Anything left to do" — the loader marker OR the rescue entry.
+        return bool(self.plan(managed=[]))
 
     def execute(self) -> None:
-        self._install()
+        self.apply(self.plan(managed=[]))
 
     def verify(self) -> bool:
         return self._installed()
@@ -135,6 +159,25 @@ class BootloaderAction(AbstractAction):
         return [img for img in ("/intel-ucode.img", "/amd-ucode.img")
                 if os.path.exists(self._p("/boot" + img))]
 
+    def _fallback_initrd(self) -> str:
+        """mkinitcpio's fallback image when the ESP has one, else the same image
+        the main entry loads. dracut builds no fallback image, so there the entry
+        is a duplicate — still worth having: it survives an edit that breaks
+        arch.conf."""
+        if os.path.exists(self._p("/boot" + _FALLBACK_INITRD)):
+            return _FALLBACK_INITRD
+        return _MAIN_INITRD
+
+    def _write_fallback_entry(self) -> None:
+        path = self._p(_FALLBACK_ENTRY)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        lines = ["title Arch Linux (fallback initramfs)", "linux /vmlinuz-linux"]
+        lines += [f"initrd {img}" for img in self._ucode_initrds()]
+        lines.append(f"initrd {self._fallback_initrd()}")
+        lines.append(f"options {self._root_param()} rw")
+        with open(path, "w") as f:
+            f.write("\n".join(lines) + "\n")
+
     def _install(self) -> None:
         # Every mutating boot command runs with check=True: a bootloader that
         # failed to install must abort the action, never be followed by
@@ -151,10 +194,11 @@ class BootloaderAction(AbstractAction):
             lines = ["title Arch Linux", "linux /vmlinuz-linux"]
             for img in self._ucode_initrds():
                 lines.append(f"initrd {img}")
-            lines.append("initrd /initramfs-linux.img")
+            lines.append(f"initrd {_MAIN_INITRD}")
             lines.append(f"options {self._root_param()} rw")
             with open(os.path.join(entries_dir, "arch.conf"), "w") as f:
                 f.write("\n".join(lines) + "\n")
+            self._write_fallback_entry()
         else:
             Command.execute("pacman", ["--noconfirm", "--needed", "-S", "grub", "efibootmgr"],
                             target=t, check=True)

@@ -16,6 +16,16 @@ from .abstract_action import AbstractAction
 from ..command_worker.command_worker import Command
 from ..state.change import Op
 
+_CPUINFO = "/proc/cpuinfo"
+# `guided` is an amd_pstate-only mode; intel_pstate takes these.
+_INTEL_MODES = ("active", "passive", "disable")
+
+_SYSRQ_PARAM = "sysrq_always_enabled=1"
+# Parameter NAMES a config block owns: on import they are never captured as
+# hand-set `kernel_cmdline` entries, because `sysrq` (here) and `cpu`
+# (CpuAction) declare them. See import_state.
+_BLOCK_OWNED_PARAMS = ("amd_pstate", "intel_pstate", "sysrq_always_enabled")
+
 
 class KernelCmdlineAction(AbstractAction):
     """Set kernel command line parameters declaratively."""
@@ -34,7 +44,7 @@ class KernelCmdlineAction(AbstractAction):
 
     @property
     def desired_params(self) -> List[str]:
-        return self._merge(self._derive_from_disks(), self.explicit_params)
+        return self._merge(self._derived(), self.explicit_params)
 
     # ------------------------------------------------------------------ #
     #  portable LUKS UUID resolution (via the open mapping; host-level)
@@ -138,6 +148,59 @@ class KernelCmdlineAction(AbstractAction):
                     params.append(f"rootflags={opts_str}")
         return params
 
+    # ------------------------------------------------------------------ #
+    #  auto-derivation from the cpu block / sysrq flag
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _cpu_vendor() -> Optional[str]:
+        """"amd" / "intel" / None, from /proc/cpuinfo.
+
+        The installer runs on the machine being installed, so the live CPU is the
+        target's CPU — the same assumption BaseInstallAction._detect_microcode
+        already makes when it picks amd-ucode vs intel-ucode.
+        """
+        try:
+            with open(_CPUINFO, "r") as f:
+                content = f.read()
+        except OSError:
+            return None
+        if "AuthenticAMD" in content:
+            return "amd"
+        if "GenuineIntel" in content:
+            return "intel"
+        return None
+
+    def _derive_from_cpu(self) -> List[str]:
+        """Kernel params for the `cpu` block and the `sysrq` flag."""
+        params: List[str] = []
+        cpu = self._cfg.get("cpu") or {}
+        if cpu:
+            driver = cpu.get("scaling_driver", "auto")
+            mode = cpu.get("mode", "active")
+            if driver == "auto":
+                driver = {"amd": "amd_pstate", "intel": "intel_pstate"}.get(
+                    self._cpu_vendor() or "", "none")
+            if driver == "amd_pstate":
+                params.append(f"amd_pstate={mode}")
+            elif driver == "intel_pstate":
+                # `guided` is amd_pstate-only; on Intel the kernel would ignore
+                # it, so emit the driver's default rather than a parameter that
+                # silently does nothing.
+                params.append(f"intel_pstate={mode if mode in _INTEL_MODES else 'active'}")
+            elif driver == "acpi_cpufreq":
+                # The built-in driver binds first; it has to stand down for
+                # acpi-cpufreq to take over.
+                params.append("amd_pstate=disable" if self._cpu_vendor() == "amd"
+                              else "intel_pstate=disable")
+        if self._cfg.get("sysrq"):
+            params.append("sysrq_always_enabled=1")
+        return params
+
+    def _derived(self) -> List[str]:
+        """Everything dasik derives itself — never captured back by `sync`."""
+        return self._derive_from_disks() + self._derive_from_cpu()
+
     # Kernel parameters that may appear MORE THAN ONCE, one per device. For
     # these the whole token identifies the entry — keying on the name alone made
     # a single explicit `rd.luks.name` drop every derived one, so a config that
@@ -175,6 +238,22 @@ class KernelCmdlineAction(AbstractAction):
         t = self._target()
         return t.path("/etc/default/grub") if t is not None else "/mnt/etc/default/grub"
 
+    def _default_entry(self) -> Optional[str]:
+        """The entry filename loader.conf selects (`default arch` → arch.conf)."""
+        t = self._target()
+        loader = (t.path("/boot/loader/loader.conf") if t is not None
+                  else "/mnt/boot/loader/loader.conf")
+        try:
+            with open(loader, "r") as f:
+                for line in f:
+                    parts = line.split()
+                    if len(parts) >= 2 and parts[0] == "default":
+                        name = parts[1]
+                        return name if name.endswith(".conf") else name + ".conf"
+        except OSError:
+            pass
+        return None
+
     def _sdboot_entries(self) -> List[str]:
         t = self._target()
         entries_dir = t.path("/boot/loader/entries") if t is not None else "/mnt/boot/loader/entries"
@@ -194,7 +273,7 @@ class KernelCmdlineAction(AbstractAction):
         return out
 
     def _desired_tokens(self) -> List[str]:
-        merged = self._merge(self._derive_from_disks(), self.explicit_params)
+        merged = self._merge(self._derived(), self.explicit_params)
         seen: set = set()
         deduped: List[str] = []
         for tok in self._tokens(merged):
@@ -206,8 +285,19 @@ class KernelCmdlineAction(AbstractAction):
     def _current_cmdline(self) -> str:
         if self.bootloader == "grub":
             return self._current_params_grub()
-        entries = self._sdboot_entries()
-        return self._current_params_sdboot(entries[0]) if entries else ""
+        # Read the entry the firmware actually boots. Reading `listdir[0]`
+        # stopped being deterministic once a second entry (arch-fallback.conf)
+        # existed — it sorts FIRST, so the plan compared against the rescue entry.
+        entries = sorted(self._sdboot_entries())
+        if not entries:
+            return ""
+        for wanted in (self._default_entry(), "arch.conf"):
+            if not wanted:
+                continue
+            for entry in entries:
+                if os.path.basename(entry) == wanted:
+                    return self._current_params_sdboot(entry)
+        return self._current_params_sdboot(entries[0])
 
     def actual(self) -> set:
         if self._target() is None:
@@ -227,26 +317,46 @@ class KernelCmdlineAction(AbstractAction):
     def managed_keys(self) -> dict:
         return {self._DOMAIN: self._desired_tokens()}
 
-    def import_state(self, managed=None) -> dict:
-        """Capture the boot entry's own parameters.
+    def live_params(self) -> List[str]:
+        """The parameters on the target's default boot entry (``[]`` if unread).
 
-        Everything dasik DERIVES from ``disks`` is subtracted: those tokens carry
-        resolved LUKS UUIDs and a machine-specific root device, and re-emitting
-        them would pin the config to one machine (they are re-derived on apply).
-        What is left is what somebody set by hand — ``resume=``, ``amd_pstate=``,
-        an unlock for a device this config does not describe — and dropping it,
-        as this used to, quietly removed hibernation from a captured config.
+        Public because the ``cpu`` block is reconstructed from the same entry
+        (``CpuAction.import_state``) and must not grow a second copy of the
+        bootloader-entry readers.
+        """
+        if self._target() is None:
+            return []
+        return self._current_cmdline().split()
+
+    def import_state(self, managed=None) -> dict:
+        """Capture the boot entry's own parameters, plus the ``sysrq`` flag.
+
+        Everything dasik DERIVES is subtracted. The disk tokens (resolved LUKS
+        UUIDs, a machine-specific root device) would pin the config to one
+        machine; the cpu/sysrq tokens belong to their own blocks, and keeping
+        them would declare the same policy twice. Those two are subtracted by
+        NAME, whether or not this config declares the block — otherwise a sync
+        from a bare seed captured ``amd_pstate=active`` as a hand-set parameter
+        and the ``cpu``/``sysrq`` declarations never appeared at all. Their
+        values are not lost: the flag is returned here and the block by
+        ``CpuAction``.
+
+        What is left is what somebody really set by hand — ``resume=``,
+        ``quiet``, an unlock for a device this config does not describe — and
+        dropping it, as this used to, quietly removed hibernation from a
+        captured config.
 
         Falls back to the declared params when the entry cannot be read (no
         target, no bootloader entry yet): sync must never blank a declaration
-        just because it could not look.
+        just because it could not look — which is also why ``sysrq`` is then
+        absent from the fragment rather than reported as off.
         """
-        live = self._current_cmdline().split() if self._target() is not None else []
+        live = self.live_params()
         if not live:
             return {self._DOMAIN: list(self.explicit_params)}
 
-        derived_keys = set()
-        for token in self._tokens(self._derive_from_disks()):
+        derived_keys = set(_BLOCK_OWNED_PARAMS)
+        for token in self._tokens(self._derived()):
             name = token.split("=")[0] if "=" in token else token
             derived_keys.add(token if name in self._REPEATABLE else name)
 
@@ -257,7 +367,7 @@ class KernelCmdlineAction(AbstractAction):
             if key in derived_keys or token in kept:
                 continue
             kept.append(token)
-        return {self._DOMAIN: kept}
+        return {self._DOMAIN: kept, "sysrq": _SYSRQ_PARAM in live}
 
     def _new_tokens(self, changes) -> List[str]:
         installs = [c.item for c in changes if c.op is Op.INSTALL]

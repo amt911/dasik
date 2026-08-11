@@ -197,9 +197,20 @@ class KernelCmdlineAction(AbstractAction):
             params.append("sysrq_always_enabled=1")
         return params
 
+    def _derive_from_plymouth(self) -> List[str]:
+        """`splash` for a declared `plymouth` block.
+
+        `quiet` is deliberately NOT derived: hiding the kernel's own messages is
+        the user's policy and `kernel_cmdline` already spells it. An EMPTY block
+        still derives the parameter — it declares the splash with plymouth's
+        default theme; only an absent block means no splash.
+        """
+        return ["splash"] if self._cfg.get("plymouth") is not None else []
+
     def _derived(self) -> List[str]:
         """Everything dasik derives itself — never captured back by `sync`."""
-        return self._derive_from_disks() + self._derive_from_cpu()
+        return (self._derive_from_disks() + self._derive_from_cpu()
+                + self._derive_from_plymouth())
 
     # Kernel parameters that may appear MORE THAN ONCE, one per device. For
     # these the whole token identifies the entry — keying on the name alone made

@@ -148,3 +148,40 @@ def test_dracut_without_a_keyfile_declares_neither():
     conf = DracutBackend({}).desired_value()
     assert "filesystems+=" not in conf
     assert "install_items+=" not in conf
+
+
+# --- /etc/crypttab: the key field decides, not the cmdline ----------------- #
+#
+# VM-proven (issue #173 block B): an initramfs whose /etc/crypttab lists the
+# volume with the key field `none` PROMPTS for the passphrase and never touches
+# the key device, even though rd.luks.key= is on the kernel cmdline —
+# systemd-cryptsetup-generator takes the crypttab entry as the description of
+# that volume, and `none` means "ask". Booting the very same image with
+# rd.luks.crypttab=no unlocked it from the pendrive unattended. So the keyfile
+# has to be in the crypttab line too; crypttab(5) takes the same
+# `<path>:<device spec>` syntax as rd.luks.key.
+
+def test_crypttab_carries_the_keyfile_and_its_key_device():
+    line = DracutBackend(_PEN).crypttab().splitlines()[1]
+    assert line.split()[2] == "/keyfile:UUID=1234-ABCD"
+
+
+def test_crypttab_carries_an_embedded_keyfile_as_a_plain_path():
+    line = DracutBackend(_EMBEDDED).crypttab().splitlines()[1]
+    assert line.split()[2] == "/etc/keyfile"
+
+
+def test_crypttab_falls_back_to_the_prompt_when_the_key_device_is_absent():
+    """Without keyfile-timeout the volume waits forever for a pendrive that is
+    not plugged in — the machine hangs instead of asking for the passphrase."""
+    line = DracutBackend(_PEN).crypttab().splitlines()[1]
+    assert "keyfile-timeout=10s" in line.split()[3]
+
+
+def test_crypttab_without_a_keyfile_still_says_none():
+    cfg = {"disks": {"disks": [{"device": "/dev/vda", "partitions": [
+        {"label": "root", "size": "rest", "filesystem": "ext4", "mountpoint": "/",
+         "encrypt": True, "luks_name": "cryptroot"}]}]}}
+    line = DracutBackend(cfg).crypttab().splitlines()[1]
+    assert line.split()[2] == "none"
+    assert "keyfile-timeout" not in line

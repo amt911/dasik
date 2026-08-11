@@ -6,11 +6,15 @@ from .base import InitramfsBackend
 from ...command_worker.command_worker import Command
 from ...exceptions.exceptions import CommandExecutionError
 from ..luks_uuid import luks_uuid
-from ..partition_utils import mounts_root
+from ..partition_utils import keydev_spec, mounts_root
 
 _CONF = "/etc/dracut.conf.d/dasik.conf"
 _CRYPTTAB = "/etc/crypttab"
 _FSTAB = "/etc/fstab"
+# Fallback to the passphrase prompt when the key device is absent (mirrors
+# KernelCmdlineAction._KEYFILE_TIMEOUT — same policy, two files that describe
+# the same unlock).
+_KEYFILE_TIMEOUT = "keyfile-timeout=10s"
 # Written by the `plymouth` expand toggle; an input to the image, not to this
 # file's own content (kept as a literal so the backend stays free of imports
 # from the expand layer).
@@ -146,6 +150,22 @@ class DracutBackend(InitramfsBackend):
                     name = part.get("luks_name", "cryptroot")
                     uuid = luks_uuid(name, part.get("luks_uuid"))
                     opts = ["luks"]
+                    # The key field, NOT `none`, whenever an unlock keyfile is
+                    # declared. VM-proven: with `none` here the initramfs asks
+                    # for the passphrase and never looks at the key device, even
+                    # though rd.luks.key= is on the cmdline — this line IS the
+                    # description of the volume for
+                    # systemd-cryptsetup-generator, and `none` means "ask". The
+                    # same image booted with rd.luks.crypttab=no (crypttab
+                    # ignored, cmdline alone) unlocked from the pendrive
+                    # unattended. crypttab(5) takes the same
+                    # `<path>:<device spec>` syntax as rd.luks.key.
+                    keyfile = part.get("unlock_keyfile")
+                    keydev = part.get("unlock_keydev")
+                    key_field = "none"
+                    if keyfile:
+                        key_field = (f"{keyfile}:{keydev_spec(keydev)}"
+                                     if keydev else keyfile)
                     # x-initrd.attach: the volume must be open before the real
                     # root is. True for / and for a swap holding the hibernation
                     # image — resume happens in the initramfs or not at all.
@@ -156,7 +176,16 @@ class DracutBackend(InitramfsBackend):
                     # schedules.
                     if self.config.get("enable_trim"):
                         opts.append("discard")
-                    derived[name] = f"{name} UUID={uuid} none {','.join(opts)}"
+                    # Same reason as the cmdline's keyfile-timeout: a key device
+                    # that is not plugged in must fall back to the prompt, not
+                    # wait forever. The user's own value wins.
+                    if keyfile and keydev and not any(
+                            str(o).startswith("keyfile-timeout=")
+                            for o in part.get("luks_options", []) or []):
+                        opts.append(_KEYFILE_TIMEOUT)
+                    opts.extend(o for o in part.get("luks_options", []) or []
+                                if str(o).startswith("keyfile-timeout="))
+                    derived[name] = f"{name} UUID={uuid} {key_field} {','.join(opts)}"
 
         # Non-root captured lines (swap etc.); skip any whose mapper is a derived
         # root name — the derived (correct) entry wins over a stale captured one.

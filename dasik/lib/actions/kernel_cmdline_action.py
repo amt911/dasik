@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 import re
 import subprocess
-from .partition_utils import mounts_root
+from .partition_utils import keydev_spec, mounts_root
 from typing import Any, Dict, List, Optional
 from .abstract_action import AbstractAction
 from ..command_worker.command_worker import Command
@@ -209,16 +209,10 @@ class KernelCmdlineAction(AbstractAction):
             params.append("sysrq_always_enabled=1")
         return params
 
-    @staticmethod
-    def _keydev_spec(value: str) -> str:
-        """Normalize ``unlock_keydev`` into a device spec the kernel resolves.
-
-        The field documents a filesystem UUID, and that bare value is what a
-        user writes — but ``rd.luks.key`` needs ``UUID=<uuid>`` (or an explicit
-        ``PARTUUID=``/``LABEL=``/``/dev/…``, which is passed through untouched).
-        """
-        value = str(value).strip()
-        return value if "=" in value or value.startswith("/dev/") else f"UUID={value}"
+    # Shared with the crypttab the dracut backend composes: the kernel parameter
+    # and the crypttab line must name the SAME device or one of them silently
+    # points nowhere.
+    _keydev_spec = staticmethod(keydev_spec)
 
     def _derive_from_plymouth(self) -> List[str]:
         """`splash` for a declared `plymouth` block.

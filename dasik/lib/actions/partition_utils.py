@@ -24,6 +24,21 @@ def keydev_path(spec: str) -> str:
     return f"/dev/disk/{by}/{value}" if by else value
 
 
+def keydev_spec(value: str) -> str:
+    """Normalize ``unlock_keydev`` into a device spec the kernel and crypttab(5)
+    both resolve.
+
+    The field documents a filesystem UUID, and that bare value is what a user
+    writes — but ``rd.luks.key`` (and the crypttab key field, which takes the
+    same ``<path>:<device spec>`` syntax) needs ``UUID=<uuid>``. An explicit
+    ``PARTUUID=``/``LABEL=``/``/dev/…`` is passed through untouched. Shared, so
+    the kernel parameter and the crypttab line can never disagree about which
+    device the key is on.
+    """
+    value = str(value).strip()
+    return value if "=" in value or value.startswith("/dev/") else f"UUID={value}"
+
+
 def mounts_root(part: Dict[str, Any]) -> bool:
     """True if this partition provides ``/``: either the partition itself mounts
     ``/``, or (btrfs) one of its subvolumes does. A synced btrfs root often has

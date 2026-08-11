@@ -263,3 +263,42 @@ def test_the_units_a_feature_brings_are_reproducible_from_the_capture(tmp_path):
 
     assert set(reapplied) >= {"power-profiles-daemon.service", "reflector.timer",
                               "systemd-boot-update.service"}
+
+
+# --- root password --------------------------------------------------------- #
+
+def _with_shadow(tmp_path, root_field):
+    """A machine whose /etc/shadow gives root *root_field*."""
+    machine = _machine(tmp_path)
+    etc = machine / "etc"
+    etc.mkdir(parents=True, exist_ok=True)
+    (etc / "passwd").write_text("root:x:0:0::/root:/bin/bash\n")
+    (etc / "group").write_text("wheel:x:998:\n")
+    (etc / "shadow").write_text(f"root:{root_field}:19000:0:99999:7:::\n")
+    return machine
+
+
+def test_sync_captures_the_root_password(tmp_path):
+    captured = _synced(_with_shadow(tmp_path, "$6$SET$h"))
+
+    assert captured["users"] == [{"username": "root", "hashed_password": "$6$SET$h"}]
+
+
+def test_sync_does_not_invent_a_root_password(tmp_path):
+    """A locked root is not a password: capturing `!` would both describe a
+    login the machine does not offer and fail the model's hash validator."""
+    captured = _synced(_with_shadow(tmp_path, "!"))
+
+    assert not captured.get("users")
+
+
+def test_sync_clears_a_declared_root_password_the_machine_lacks(tmp_path):
+    seed = {"bootloader": "sd-boot",
+            "users": [{"username": "root", "hashed_password": "$6$GONE$h"}]}
+    captured = _synced(_with_shadow(tmp_path, "!"), seed=seed)
+
+    assert captured["users"] == []
+
+
+def test_the_captured_root_password_config_validates(tmp_path):
+    JsonModel.model_validate(_synced(_with_shadow(tmp_path, "$6$SET$h")))

@@ -253,6 +253,26 @@ List of accounts:
 | `shell` | string | `/bin/bash` | |
 | `groups` | list[str] | `[]` | Supplementary groups. |
 
+**The root password is an entry in this list**, with `username: "root"`:
+
+```json
+"users": [
+  { "username": "root", "hashed_password": "$y$j9T$…" },
+  { "username": "andres", "hashed_password": "$y$j9T$…", "groups": ["wheel"] }
+]
+```
+
+Root is special-cased throughout: it is never created or deleted (the account
+always exists), only its password is reconciled — `plan` shows
+`~ [users] root (password)` and `apply` runs `usermod -p` and nothing else.
+Because of that, a root entry **may not declare `shell` or `groups`**; the model
+rejects them rather than accepting values that would be silently ignored.
+
+Omitting root entirely means *dasik does not manage the root password* — it is
+left exactly as it is, never locked. `sync` reads the real hash out of
+`/etc/shadow`, and captures nothing when root is locked (`!`, `*`, `!$6$…`),
+clearing a declaration the machine does not back.
+
 ---
 
 ## Packages, drivers, boot

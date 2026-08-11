@@ -189,20 +189,44 @@ class UsersAction(AbstractAction):
             "groups": sorted(self._groups(username)),
         }
 
+    _ROOT = "root"
+
+    def _capture_root(self):
+        """Root's password exactly as ``/etc/shadow`` has it, or ``None`` when
+        root has none.
+
+        A locked or absent field (``!``, ``*``, ``!*``, ``!$6$…``, ``""``) is not
+        a password: capturing it would make the synced config describe a root
+        login the machine does not offer, and it isn't a valid
+        ``hashed_password`` either. ``shell``/``groups`` are omitted
+        deliberately — ``apply()`` manages neither for root, so capturing them
+        would describe state dasik never reconciles.
+        """
+        h = self._hash(self._ROOT)
+        if not h.startswith("$"):
+            return None
+        return {"username": self._ROOT, "hashed_password": h}
+
     def import_state(self, managed=None) -> dict:
         # Capture reality: keep all declared users (intent; refresh attrs for
         # present ones) + every real user not declared. Independent of M.
         actual = self.actual()
+        root_captured = self._capture_root()
 
         result = []
         declared_names = set()
         for u in self.users:
             name = u["username"]
             declared_names.add(name)
-            if name in actual and name != "root":
+            if name == self._ROOT:
+                # Reality, not intent: refresh the hash, or drop the declaration
+                # outright when the machine's root has no password.
+                if root_captured is not None:
+                    result.append(root_captured)
+            elif name in actual:
                 result.append(self._capture(name))             # refresh from reality
             else:
-                result.append(u)                               # intent / root kept as-is
+                result.append(u)                               # intent
 
         drift = sorted(actual - declared_names)                # present, not declared (no M)
         for name in drift:
@@ -212,6 +236,12 @@ class UsersAction(AbstractAction):
             # entry with an empty hashed_password.
             if captured["hashed_password"]:
                 result.append(captured)
+
+        # Root is never in actual() (uid 0), so the drift loop above cannot see
+        # it: a root password nobody declared has to be captured explicitly, or
+        # re-applying the captured config would silently drop it.
+        if self._ROOT not in declared_names and root_captured is not None:
+            result.append(root_captured)
         return {self._USERS_DOMAIN: result}
 
     def apply(self, changes) -> None:

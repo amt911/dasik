@@ -18,6 +18,7 @@ from dasik.lib.actions.drop_files_action import DropFilesAction
 from dasik.lib.actions.kernel_cmdline_action import KernelCmdlineAction
 from dasik.lib.actions.sudo_action import SudoAction
 from dasik.lib.actions.systemd_action import SystemdAction
+from dasik.lib.actions.users_action import UsersAction
 from dasik.lib.expand import expand_config
 from dasik.lib.target.target import Target
 
@@ -293,3 +294,37 @@ def _units_planned(config):
                return_value=nothing_enabled):
         action = SystemdAction(config.get("systemd", {}), _ctx("/mnt"))
         return [c.item for c in action.plan(managed=[])]
+
+
+# --- root password --------------------------------------------------------- #
+
+def _users_plan(tmp_path, users, shadow, managed=()):
+    etc = tmp_path / "etc"
+    etc.mkdir(parents=True, exist_ok=True)
+    (etc / "passwd").write_text("root:x:0:0::/root:/bin/bash\n")
+    (etc / "group").write_text("wheel:x:998:\n")
+    (etc / "shadow").write_text(shadow)
+    action = UsersAction({"users": users}, _ctx(tmp_path))
+    return [(c.op.name, c.item) for c in action.plan(managed=list(managed))]
+
+
+def test_root_password_missing_from_shadow_is_planned(tmp_path):
+    assert _users_plan(
+        tmp_path,
+        [{"username": "root", "hashed_password": "$6$NEW$h"}],
+        "root:!:19000:0:99999:7:::\n",
+    ) == [("MODIFY", "root")]
+
+
+def test_root_password_already_set_plans_nothing(tmp_path):
+    assert _users_plan(
+        tmp_path,
+        [{"username": "root", "hashed_password": "$6$NEW$h"}],
+        "root:$6$NEW$h:19000:0:99999:7:::\n",
+    ) == []
+
+
+def test_an_undeclared_root_password_is_left_alone(tmp_path):
+    """Declaring no root password means "dasik does not manage it", not "lock
+    root" — the account is never created or deleted by the users domain."""
+    assert _users_plan(tmp_path, [], "root:$6$SET$h:19000:0:99999:7:::\n") == []

@@ -1,6 +1,6 @@
 {
   "metadata": {
-    "note": "AppArmor (mandatory access control) with the audit framework and the aa-notify desktop notifications, plus a hand-declared dotfile — the two consumers of the `home_files` domain. For the QEMU VM harness (scripts/vmtest/qemu.sh install-driven). Targets the guest's /dev/vda. NOT for real hardware."
+    "note": "AppArmor (mandatory access control) with the audit framework and the aa-notify desktop notifications, plus a hand-declared dotfile — the two consumers of the `home_files` domain. For the QEMU VM harness (scripts/vmtest/qemu.sh install-driven). Targets the guest's /dev/vda. NOT for real hardware. Autologins root on ttyS0 and ships python-pydantic/python-colorama via pacman, so the driver gets a shell and dasik runs from the 9p-mounted repo with no network."
   },
   "disks": {
     "disks": [
@@ -34,7 +34,10 @@
     "base",
     "linux",
     "linux-firmware",
-    "sudo"
+    "sudo",
+    "python",
+    "python-pydantic",
+    "python-colorama"
   ],
   "bootloader": "sd-boot",
   "hostname": "dasik-apparmor",
@@ -71,6 +74,12 @@
       "path": ".config/dasik/hello.conf",
       "content": "# Managed by dasik\ngreeting=hola\n",
       "mode": "0600"
+    }
+  ],
+  "files": [
+    {
+      "path": "/etc/systemd/system/serial-getty@ttyS0.service.d/autologin.conf",
+      "content": "[Service]\nExecStart=\nExecStart=-/sbin/agetty --autologin root --noclear --keep-baud 115200,38400,9600 %I $TERM\n"
     }
   ]
 }

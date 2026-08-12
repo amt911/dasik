@@ -300,6 +300,76 @@ class PamAction(AbstractAction):
     def managed_keys(self) -> dict:
         return {self._DOMAIN: self._declared()}
 
+    # --- capture ------------------------------------------------------------- #
+
+    @staticmethod
+    def _as_int(values: Dict[str, str], key: str) -> Optional[int]:
+        try:
+            return int(values[key])
+        except (KeyError, TypeError, ValueError):
+            return None
+
+    def _import_faillock(self) -> Optional[Dict[str, Any]]:
+        values = self._effective_faillock()
+        block: Dict[str, Any] = {}
+        for key in ("deny", "fail_interval", "unlock_time"):
+            number = self._as_int(values, key)
+            if number is not None:
+                block[key] = number
+        if not block:
+            return None
+        # Anything but the default /run location survives a reboot, which is the
+        # whole point of the flag — read the machine's answer, not ours.
+        block["persistent"] = values.get("dir", "").startswith("/var/")
+        return block
+
+    def _import_limits(self) -> Optional[Dict[str, Any]]:
+        block: Dict[str, Any] = {}
+        for raw in self._read(_LIMITS_DROPIN).splitlines():
+            fields = raw.split()
+            if len(fields) == 4 and fields[0] == "*" and fields[2] == "nproc":
+                try:
+                    block[f"nproc_{fields[1]}"] = int(fields[3])
+                except ValueError:
+                    continue
+        return block or None
+
+    def _import_pwquality(self) -> Optional[Dict[str, Any]]:
+        stack = self._read(_PASSWD_STACK)
+        if "pam_pwquality.so" not in stack:
+            # A drop-in nobody reads is not a policy: the module has to be in
+            # the stack for /etc/security/pwquality.conf* to mean anything.
+            return None
+        values = self._effective_pwquality()
+        block: Dict[str, Any] = {"enable": True}
+        for key in ("minlen", "difok", "retry", "dcredit", "ucredit", "lcredit",
+                    "ocredit"):
+            number = self._as_int(values, key)
+            if number is not None:
+                block[key] = number
+        block["enforce_for_root"] = any(
+            "pam_pwquality.so" in line and "enforce_for_root" in line
+            for line in stack.splitlines())
+        return block
+
+    def import_state(self, managed=None) -> dict:
+        """The `pam` policy this machine actually enforces, or ``{}``.
+
+        A declared item the machine does not have is CLEARED rather than echoed
+        back: ``ConfigWriter.merge`` can only overwrite a key, never delete one,
+        so staying silent would leave a stale declaration standing in a config
+        that claims to describe reality.
+        """
+        block: Dict[str, Any] = {}
+        for key, captured in ((_FAILLOCK, self._import_faillock()),
+                              (_LIMITS, self._import_limits()),
+                              (_PWQUALITY, self._import_pwquality())):
+            if captured is not None:
+                block[key] = captured
+        if block:
+            return {self._DOMAIN: block}
+        return {self._DOMAIN: {}} if self._declared() else {}
+
     # --- legacy executor bridge ---------------------------------------------- #
 
     def is_needed(self) -> bool:

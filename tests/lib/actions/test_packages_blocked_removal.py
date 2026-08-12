@@ -21,6 +21,17 @@ from dasik.lib.state.change import Op
 from dasik.lib.target.target import Target
 
 
+@pytest.fixture(autouse=True)
+def _quiet_run_logger():
+    """The warn path writes to the run log, and by this point in a full-suite
+    run another test has closed that file ("I/O operation on closed file").
+    Every test here stubs it; the one that asserts on the warning installs its
+    own recorder inside the test."""
+    from dasik.lib.logging import run_logger
+    with patch.object(run_logger, "get", return_value=MagicMock()):
+        yield
+
+
 def _qi(entries):
     """A `pacman -Qi` answer: [(name, required_by), …]."""
     blocks = []

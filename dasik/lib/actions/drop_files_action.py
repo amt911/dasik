@@ -121,6 +121,11 @@ class DropFilesAction(AbstractAction):
     def _exists(self, canonical: str) -> bool:
         return os.path.exists(self._abs(canonical))
 
+    def _is_symlink(self, canonical: str) -> bool:
+        """A managed path that is a link is not the managed file. Its own seam,
+        like _exists/_read, so a target-less double can stub it."""
+        return os.path.islink(self._abs(canonical))
+
     def actual(self) -> set:
         """Declared paths that exist on disk (no directory glob)."""
         if self._target() is None:
@@ -130,6 +135,8 @@ class DropFilesAction(AbstractAction):
     def _needs_write(self, canonical: str, desired: str) -> bool:
         if not self._exists(canonical):
             return True
+        if self._is_symlink(canonical):
+            return True          # a link is not the file, whatever it reads as
         return _sha256(self._read(canonical)) != _sha256(desired)
 
     # -- v3 contract --------------------------------------------------- #
@@ -147,7 +154,14 @@ class DropFilesAction(AbstractAction):
             op_remove=Op.DELETE,
         )
         for p in sorted(set(desired) & actual):
-            if self._read(p) != desired[p]:
+            if self._is_symlink(p):
+                # Not a content question: a link is not the file, whatever it
+                # reads as. Writing through it sent the content to the link's
+                # TARGET, so the file never converged and this plan repeated
+                # for ever (found by `ln -s /dev/null` over a managed file).
+                changes.append(Change(_FILES_DOMAIN, Op.MODIFY, p,
+                                      reason="replaced by a symlink"))
+            elif self._read(p) != desired[p]:
                 changes.append(Change(_FILES_DOMAIN, Op.MODIFY, p, reason="content drift"))
         self._warn_shadowed([c.item for c in changes if c.op is not Op.DELETE])
         return changes
@@ -377,17 +391,29 @@ class DropFilesAction(AbstractAction):
         deletes = [c.item for c in changes if c.op is Op.DELETE]
 
         for canonical in writes:                    # additive first
-            path = self._abs(canonical)
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            with open(path, "w") as f:
-                f.write(desired.get(canonical, ""))
-            if canonical in modes:                  # restrict secret files (0600)
-                os.chmod(path, modes[canonical])
+            self._write_file(canonical, desired.get(canonical, ""), modes)
 
         for canonical in deletes:
             path = self._abs(canonical)
             if os.path.exists(path):
                 os.remove(path)
+
+    def _write_file(self, canonical: str, content: str, modes: Dict[str, int]) -> None:
+        """Write a managed file, replacing whatever is in its place.
+
+        A symlink is REMOVED first rather than written through: following it
+        would send dasik's content to the link's target — a file it does not
+        manage — and leave the managed path still a link, so the next plan asks
+        for the same write again, for ever.
+        """
+        path = self._abs(canonical)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        if os.path.islink(path):
+            os.remove(path)
+        with open(path, "w") as f:
+            f.write(content)
+        if canonical in modes:                      # restrict secret files (0600)
+            os.chmod(path, modes[canonical])
 
     # -- legacy is_needed / execute / verify (old executor path) ------- #
 
@@ -398,13 +424,8 @@ class DropFilesAction(AbstractAction):
         modes = self._file_modes()
         for canonical, content in self._desired().items():
             if self._needs_write(canonical, content):
-                path = self._abs(canonical)
-                os.makedirs(os.path.dirname(path), exist_ok=True)
-                with open(path, "w") as f:
-                    f.write(content)
-                if canonical in modes:
-                    os.chmod(path, modes[canonical])
-                print(f"  Wrote {path}")
+                self._write_file(canonical, content, modes)
+                print(f"  Wrote {self._abs(canonical)}")
 
     def verify(self) -> bool:
         return not any(self._needs_write(p, c) for p, c in self._desired().items())

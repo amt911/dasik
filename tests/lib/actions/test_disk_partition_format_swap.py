@@ -86,3 +86,34 @@ def test_the_declared_label_alone_is_not_convergence():
 
 def test_a_missing_partition_is_still_not_converged():
     assert _converged({"esp", "cryptswap"}) is False
+
+
+# --- and it must not be swapon'd during the install ------------------------ #
+#
+# Also VM-proven: the mount pass ran `swapon /dev/vda2` on the random-key swap.
+# There is no swap signature there — the partition holds the 1 MiB ext2 label
+# filesystem, and the swap only exists behind /dev/mapper from the first boot,
+# once crypttab has created it. The command fails, and the install prints
+# "Enabling swap" for something it did not enable.
+
+def _mount_with(partition_specs):
+    from dasik.lib.models.disk_model import DiskLayout
+    action = DiskPartitionAction({}, None)
+    disk = DiskLayout(device="/dev/vda", partitions=partition_specs)
+    action.partition_map = {p["label"]: f"/dev/vda{i + 1}"
+                            for i, p in enumerate(partition_specs)}
+    with patch.object(DiskPartitionAction, "_mount_partition"), \
+         patch("dasik.lib.actions.disk_partition_action.Command.execute") as run:
+        action._mount_partitions(disk)
+    return [call[0] for call in run.call_args_list]
+
+
+def test_a_plain_swap_is_still_enabled_during_the_install():
+    calls = _mount_with([{"label": "swap", "size": "1GiB", "filesystem": "swap"}])
+    assert ("swapon", ["/dev/vda1"]) in [(c[0], c[1]) for c in calls]
+
+
+def test_a_random_key_swap_is_never_swapped_on():
+    calls = _mount_with([{"label": "swap", "size": "1GiB", "filesystem": "swap",
+                          "swap_encryption": "random"}])
+    assert "swapon" not in [c[0] for c in calls]

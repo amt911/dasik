@@ -1332,10 +1332,17 @@ class DiskPartitionAction(AbstractAction):
         
         # Enable swap if present
         for partition in disk.partitions:
-            if partition.filesystem == FileSystemType.SWAP:
-                device = self.partition_map[partition.label]
-                print(f"Enabling swap on {device}")
-                Command.execute("swapon", [device])
+            if partition.filesystem != FileSystemType.SWAP:
+                continue
+            if partition.swap_encryption is SwapEncryption.RANDOM:
+                # Nothing to enable: the partition holds the 1 MiB ext2 label
+                # filesystem, and the swap itself only exists behind
+                # /dev/mapper once crypttab creates it at the first boot.
+                # `swapon` on the raw device just fails.
+                continue
+            device = self.partition_map[partition.label]
+            print(f"Enabling swap on {device}")
+            Command.execute("swapon", [device])
 
     def _mount_partition(self, partition: Partition) -> None:
         """Mount a single partition.

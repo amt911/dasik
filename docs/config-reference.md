@@ -452,7 +452,7 @@ such packages; everything else resolves automatically.
 | Field | Type | Notes |
 | --- | --- | --- |
 | `type` | `"pkgbuild-git"` | Only value for now. |
-| `url` | string | HTTPS `github.com` URL ending in `.git` (first version limits host). |
+| `url` | string | Any HTTPS URL ending in `.git` (GitHub, GitLab, Codeberg, a self-hosted forge). Refused: plain HTTP, and credentials in the URL — `sync` would copy the secret into the captured config. |
 | `ref` | string | **Full 40-char commit SHA** — pins the build for reproducibility. Change it deliberately to update. |
 | `subdir` | string | Optional; PKGBUILD subdirectory (default `.`). Must stay inside the clone (no `..`). |
 

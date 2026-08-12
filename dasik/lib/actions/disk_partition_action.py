@@ -11,12 +11,14 @@ from dasik.lib.models.disk_model import (
     Partition,
     FileSystemType,
     BtrfsSubvolume,
+    SwapEncryption,
     _KEYDEV_FILESYSTEMS,
 )
 from dasik.lib.command_worker.command_worker import Command
 from dasik.lib.exceptions.exceptions import CommandExecutionError
 from dasik.lib.state.change import Change, Op
 from dasik.lib.actions.partition_utils import keydev_path
+from dasik.lib.actions.swap_encryption import LABEL_FS_SIZE, swap_names
 
 # lsblk FSTYPE -> dasik filesystem. Anything absent (ntfs, None, crypto_LUKS
 # handled separately, …) is UNREPRESENTABLE and its partition is skipped during
@@ -1093,7 +1095,18 @@ class DiskPartitionAction(AbstractAction):
             Command.execute("mkfs.fat", ["-F32", "-n", partition.label, part_device])
         
         elif partition.filesystem == FileSystemType.SWAP:
-            Command.execute("mkswap", ["-L", partition.label, part_device])
+            if partition.swap_encryption is SwapEncryption.RANDOM:
+                # No mkswap here: crypttab's `swap` option runs mkswap itself on
+                # every boot, on the mapper device. What this partition needs is
+                # the 1 MiB ext2 filesystem carrying the persistent LABEL the
+                # crypttab entry addresses — the encrypted area starts after it
+                # (offset=2048). Formatting it as swap instead would leave that
+                # entry pointing at a label nothing provides.
+                _mapper, fs_label = swap_names({"label": partition.label})
+                Command.execute("mkfs.ext2",
+                                ["-F", "-L", fs_label, part_device, LABEL_FS_SIZE])
+            else:
+                Command.execute("mkswap", ["-L", partition.label, part_device])
         
         elif partition.filesystem == FileSystemType.XFS:
             Command.execute("mkfs.xfs", ["-f", "-L", partition.label, part_device])

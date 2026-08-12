@@ -471,10 +471,71 @@ class PackagesAction(AbstractAction):
             if name in installed and applied_refs.get(name) != self.package_sources[name].get("ref"):
                 changes.append(Change(self._PACMAN_DOMAIN, Op.MODIFY, name,
                                       reason=self._REF_CHANGED))
-        for name in sorted(set(managed) - set(desired)):
+        removals = sorted(set(managed) - set(desired))
+        for name in self._removable(removals, installed):
             changes.append(Change(self._PACMAN_DOMAIN, Op.REMOVE, name,
                                   reason="no longer declared"))
         return changes
+
+    def _removable(self, names: "list[str]", installed: set) -> "list[str]":
+        """*names* minus the ones pacman would refuse to remove.
+
+        A package another INSTALLED package still requires cannot go, and
+        `pacman -Rns` fails the whole transaction when one name in it is like
+        that — so the apply aborts before any other domain runs and the same
+        plan comes back forever. `audit` is the real case: dasik declares it for
+        the `apparmor` block, and pam, systemd, shadow, dbus and NetworkManager
+        all require it, so it can never leave an Arch system.
+
+        A requirer that is itself being removed does not count — removing both
+        together is a transaction pacman accepts.
+
+        A probe that cannot answer changes nothing: the removal is planned and
+        pacman gets to refuse it, exactly as before.
+        """
+        present = [n for n in names if n in installed]
+        if not present:
+            return list(names)
+        required_by = self._required_by(present)
+        going = set(names)
+        keep: list = []
+        for name in names:
+            blockers = sorted(set(required_by.get(name, ())) - going)
+            if not blockers:
+                keep.append(name)
+                continue
+            run_logger.get().warning(
+                f"not removing {name}: still required by "
+                f"{', '.join(blockers)}",
+                detail="pacman refuses a transaction that would break a "
+                       "dependency, and one such name aborts the whole apply. "
+                       "It stays installed and out of the plan; remove whatever "
+                       "requires it first if you really want it gone.",
+            )
+        return keep
+
+    def _required_by(self, names: "list[str]") -> "dict[str, list[str]]":
+        """{package: [installed packages that require it]}, from one -Qi call."""
+        target = getattr(self.context, "target", None) if self.context else None
+        if target is None:
+            return {}
+        try:
+            res = Command.execute("pacman", ["-Qi", *names], target=target)
+        except Exception:      # nosec B110 - no pacman to ask: plan as before
+            return {}
+        out = getattr(res, "stdout", b"") or b""
+        if isinstance(out, bytes):
+            out = out.decode("utf-8", errors="replace")
+        result: dict[str, list[str]] = {}
+        current = None
+        for line in out.splitlines():
+            key, _, value = line.partition(":")
+            key, value = key.strip(), value.strip()
+            if key == "Name":
+                current = value
+            elif key == "Required By" and current:
+                result[current] = [] if value in ("None", "") else value.split()
+        return result
 
     _REF_CHANGED = "source ref changed"
 

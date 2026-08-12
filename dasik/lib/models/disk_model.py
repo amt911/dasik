@@ -33,6 +33,18 @@ class FileSystemType(str, Enum):
     XFS = "xfs"
 
 
+class SwapEncryption(str, Enum):
+    """How a swap partition is encrypted.
+
+    ``random`` is plain dm-crypt re-keyed on every boot (crypttab's ``swap``
+    option). It is NOT ``encrypt: true``, which is LUKS with a persistent key:
+    a random key is discarded at shutdown, so nothing written to that swap can
+    ever be read back — which is exactly why it forbids hibernation.
+    """
+    NONE = "none"
+    RANDOM = "random"
+
+
 class PartitionType(str, Enum):
     """Partition types for GPT."""
     EFI = "esp"  # EFI System Partition
@@ -130,6 +142,13 @@ class Partition(BaseModel):
         default=True,
         description="Whether to format this partition"
     )
+    swap_encryption: SwapEncryption = Field(
+        default=SwapEncryption.NONE,
+        description="Swap encryption mode. 'random' re-encrypts the swap with a "
+                    "fresh key on every boot (so it can never hold a hibernation "
+                    "image); 'none' leaves it plain. Orthogonal to `encrypt`, "
+                    "which is LUKS with one persistent key."
+    )
 
     @field_validator('label')
     @classmethod
@@ -200,6 +219,19 @@ class Partition(BaseModel):
                 f"(device-mapper name; no spaces, '=', '/', or shell/cmdline "
                 f"metacharacters — it is interpolated into the kernel cmdline)."
             )
+        if self.swap_encryption is SwapEncryption.RANDOM:
+            if self.filesystem != FileSystemType.SWAP:
+                raise ValueError(
+                    f"swap_encryption='random' only applies to a swap partition "
+                    f"(this one is {self.filesystem.value})."
+                )
+            if self.encrypt:
+                raise ValueError(
+                    "swap_encryption='random' and encrypt=True are different "
+                    "mechanisms and cannot both apply: random re-keys the swap on "
+                    "every boot (so it can never resume from hibernation), LUKS "
+                    "keeps one key (so it can). Pick one."
+                )
         return self
 
 

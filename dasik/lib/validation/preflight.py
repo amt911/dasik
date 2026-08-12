@@ -23,6 +23,12 @@ import os
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Set
 
+from ..actions.swap_encryption import (
+    crypttab_line,
+    random_swap_partitions,
+    swap_names,
+)
+
 # Groups that exist on every Arch system (filesystem/systemd/base), so no
 # package needs to be declared for them.
 _BASE_GROUPS: Set[str] = {
@@ -167,6 +173,11 @@ def _declared_block_ids(config: Dict[str, Any]) -> Set[str]:
         device = disk.get("device")
         if device:
             ids.add(str(device))
+    # The 1 MiB ext2 label filesystem a random-key swap is addressed by. Without
+    # it, dasik's own derived entry reads as pointing at an undeclared device —
+    # and as DESTRUCTIVE, since a `swap` entry reformats whatever it names.
+    for part in random_swap_partitions(config):
+        ids.add(swap_names(part)[1])
     return ids
 
 
@@ -330,6 +341,50 @@ def _check_crypttab(config: Dict[str, Any]) -> List[Issue]:
     return issues
 
 
+def _check_random_swap(config: Dict[str, Any]) -> List[Issue]:
+    """A random-key swap cannot coexist with hibernation, nor with a crypttab
+    the config writes itself.
+
+    The key is drawn from /dev/urandom at every boot and discarded at shutdown,
+    so a resume image written under the previous key can never be decrypted —
+    provable from the config alone, hence an error. It has to be an error
+    because the failure is silent: hibernating works, and the session is gone on
+    the way back.
+    """
+    parts = random_swap_partitions(config)
+    if not parts:
+        return []
+    issues: List[Issue] = []
+    resume = [word for token in config.get("kernel_cmdline") or []
+              for word in str(token).split() if word.startswith("resume=")]
+    if resume:
+        issues.append(Issue(
+            "error", "random_swap_hibernation",
+            f"a swap declares swap_encryption='random' while the kernel cmdline "
+            f"asks to resume from it ({resume[0]}): the random key is discarded at "
+            f"shutdown, so the hibernation image can never be decrypted. Declare "
+            f"the swap with `encrypt: true` (LUKS, one persistent key) to "
+            f"hibernate, or drop the resume parameter."))
+
+    verbatim = _crypttab_content(config)
+    if verbatim:
+        # dasik yields /etc/crypttab to a config that declares it, so a missing
+        # entry there means the swap is never opened — and nothing says so.
+        named = {line.strip().split()[0]
+                 for line in verbatim.splitlines() if line.strip()
+                 and not line.strip().startswith("#")}
+        for part in random_swap_partitions(config):
+            mapper, _ = swap_names(part)
+            if mapper not in named:
+                issues.append(Issue(
+                    "error", "random_swap_crypttab_conflict",
+                    f"the config declares its own /etc/crypttab in `files`, so dasik "
+                    f"will not merge the derived entry into it and the random-key "
+                    f"swap {mapper!r} would never be opened. Add this line to that "
+                    f"file: {crypttab_line(part)}"))
+    return issues
+
+
 def _check_unlock_keyfile(config: Dict[str, Any]) -> List[Issue]:
     """Coherence of the keyfile unlock (`rd.luks.key`).
 
@@ -422,6 +477,7 @@ def preflight(config: Dict[str, Any],
     issues += _check_sudo(config, packages)
     issues += _check_cpu(config, packages)
     issues += _check_crypttab(config)
+    issues += _check_random_swap(config)
     issues += _check_unlock_keyfile(config)
     issues += _check_efi(config, efi_boot)
     return issues

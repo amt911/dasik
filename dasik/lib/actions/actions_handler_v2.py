@@ -65,6 +65,7 @@ def setup_actions() -> None:
     from .luks_keyfile_action import LuksKeyfileAction
     from .encrypted_swap_action import EncryptedSwapAction
     from .apparmor_action import ApparmorAction
+    from .auditd_conf_action import AuditdConfAction
 
     # === Phase 1: disk & base install =====================================
     register_action(
@@ -237,6 +238,14 @@ def setup_actions() -> None:
     # unit, profile files) and the derived `lsm=` parameter, and nothing read it
     # back — a synced machine lost the block and kept the parameter as if it had
     # been hand-written.
+    # auditd sets the mode of /var/log/audit itself at start, so the tmpfiles
+    # override alone left the log root-only. Runs after Packages (the file comes
+    # from the `audit` package) and before the boot phase.
+    register_action(
+        action_class=AuditdConfAction,
+        config_key='__root__',   # reads root-level `apparmor`
+        is_optional=True,
+    )
     register_action(
         action_class=ApparmorAction,
         config_key='__root__',  # reads root-level `apparmor` + `bootloader`

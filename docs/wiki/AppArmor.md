@@ -58,11 +58,20 @@ the next reboot; with it they land in `/var/log/audit/audit.log`, which is what
 `aa-logprof` reads when you build a profile. `audit_backlog_limit=8192` keeps
 early-boot records from being dropped before `auditd` is up to collect them.
 
-The tmpfiles override is not decoration. Arch ships
-`z /var/log/audit 700 root root`, and `systemd-tmpfiles` re-applies it on every
-upgrade — so a non-root user can read the log until the next `pacman -Syu` and
-never again. dasik writes `z /var/log/audit 750 root adm` and adds every declared
-user to `adm`.
+Two things have to be true for a non-root user to read the log, and dasik does
+both — VM-proven, because doing only the first leaves the directory root-only:
+
+1. **`log_group = adm` in `/etc/audit/auditd.conf`.** auditd sets the mode of
+   `/var/log/audit` itself at start, and with no `log_group` it enforces
+   `0700 root:root` on every boot. dasik owns that single line and leaves the
+   rest of the file alone (it is a pacman backup file, so an upgrade leaves a
+   `.pacnew`). Dropping `audit` removes the line again.
+2. **The tmpfiles override.** Arch ships `z /var/log/audit 700 root root`, and
+   `systemd-tmpfiles` re-applies it on every upgrade — so without
+   `z /var/log/audit 750 root adm` the log would go back to root-only after the
+   next `pacman -Syu`.
+
+Every declared user is added to `adm`.
 
 **Why `adm` and not an `audit` group:** nothing on Arch creates an `audit`
 group. The wiki tells you to run `groupadd -r audit` by hand, and dasik never

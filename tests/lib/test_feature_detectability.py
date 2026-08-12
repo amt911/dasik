@@ -590,3 +590,29 @@ def test_the_firewalld_backend_still_installs_firewalld():
     expanded = expand_config({"firewall": {"enable": True}})
     assert "firewalld" in expanded["packages"]
     assert "ufw" not in expanded["packages"]
+
+
+# --- zram takes its file back (round E) ------------------------------------- #
+
+def test_dropping_the_zram_block_removes_its_file(tmp_path):
+    """The disable direction of a scalar domain: `ScalarV3Action.plan` only ever
+    proposes a MODIFY towards a value, so an undeclared block proposed nothing
+    and the file stayed."""
+    from dasik.lib.actions.zram_action import ZramAction
+
+    body = "[zram0]\nzram-size = ram / 2\n"
+    (tmp_path / "etc/systemd").mkdir(parents=True)
+    (tmp_path / "etc/systemd/zram-generator.conf").write_text(body)
+    action = ZramAction({}, _ctx(tmp_path))
+
+    assert [(c.op.name, c.item) for c in action.plan(managed=[body])] == [
+        ("REMOVE", "/etc/systemd/zram-generator.conf")]
+
+
+def test_a_zram_file_dasik_never_wrote_is_left_alone(tmp_path):
+    from dasik.lib.actions.zram_action import ZramAction
+
+    (tmp_path / "etc/systemd").mkdir(parents=True)
+    (tmp_path / "etc/systemd/zram-generator.conf").write_text("[zram0]\n")
+
+    assert ZramAction({}, _ctx(tmp_path)).plan(managed=[]) == []

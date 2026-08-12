@@ -22,6 +22,7 @@ import os
 from typing import Any, Dict, List
 
 from .abstract_action import AbstractAction
+from .initramfs.base import detect_encryption
 from .swap_encryption import (
     crypttab_line,
     fstab_line,
@@ -44,10 +45,16 @@ class EncryptedSwapAction(AbstractAction):
         cfg: Dict[str, Any] = config if isinstance(config, dict) else {}
         self._cfg = cfg
         self._parts = random_swap_partitions(cfg)
-        # dracut composes /etc/crypttab itself (DracutBackend.crypttab). Writing
-        # it here too would mean two owners rewriting the same file on
-        # alternating applies — a non-idempotent oscillation.
-        self._dracut_owns_crypttab = cfg.get("initramfs") == "dracut"
+        # dracut composes /etc/crypttab itself — but ONLY when there is
+        # encryption to compose: InitramfsAction runs its backend when the
+        # initramfs domain plans a change, and with no LUKS volume the dracut
+        # config is empty, the action no-ops, and the file is never written.
+        # Yielding on `initramfs: dracut` alone therefore left NOBODY writing
+        # it: VM-proven, /etc/crypttab had no swap line, /dev/mapper/swap never
+        # appeared and the swap was inert. This is the same condition
+        # DropFilesAction uses to decide the very same handover.
+        self._dracut_owns_crypttab = (
+            cfg.get("initramfs") == "dracut" and detect_encryption(cfg))
 
     @property
     def name(self) -> str:

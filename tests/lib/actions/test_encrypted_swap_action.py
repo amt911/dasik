@@ -77,8 +77,30 @@ def test_applying_twice_writes_the_line_once(target):
     assert _read(target, "/etc/fstab").count("/dev/mapper/swap") == 1
 
 
-def test_dracut_owns_the_crypttab_so_this_action_only_writes_fstab(target):
+_LUKS_ROOT = {"label": "root", "filesystem": "ext4", "mountpoint": "/",
+              "encrypt": True, "luks_name": "cryptroot"}
+
+
+def _cfg_dracut_luks():
+    """dracut AND a LUKS volume — the only case where dracut writes crypttab."""
+    cfg = _cfg(initramfs="dracut")
+    cfg["disks"]["disks"][0]["partitions"].append(_LUKS_ROOT)
+    return cfg
+
+
+def test_dracut_without_encryption_does_not_own_the_crypttab(target):
+    """VM-proven: InitramfsAction only runs its backend when the initramfs
+    domain plans a change. With no LUKS the dracut config is empty, the action
+    no-ops, and nothing writes /etc/crypttab — so yielding the file on
+    `initramfs: dracut` alone left the swap with no mapper at all."""
     action = _action(_cfg(initramfs="dracut"), target)
+    action.apply(action.plan(managed=[]))
+
+    assert "swap LABEL=cryptswap" in _read(target, "/etc/crypttab")
+
+
+def test_dracut_owns_the_crypttab_so_this_action_only_writes_fstab(target):
+    action = _action(_cfg_dracut_luks(), target)
     action.apply(action.plan(managed=[]))
     assert "/dev/mapper/swap" in _read(target, "/etc/fstab")
     assert not os.path.exists(target.path("/etc/crypttab"))
@@ -87,9 +109,9 @@ def test_dracut_owns_the_crypttab_so_this_action_only_writes_fstab(target):
 def test_under_dracut_convergence_does_not_wait_on_a_crypttab_it_does_not_own(target):
     """dracut writes /etc/crypttab later in the run. If this action judged
     itself unconverged by that file's absence it would re-plan forever."""
-    action = _action(_cfg(initramfs="dracut"), target)
+    action = _action(_cfg_dracut_luks(), target)
     action.apply(action.plan(managed=[]))
-    assert _action(_cfg(initramfs="dracut"), target).plan(managed=["swap"]) == []
+    assert _action(_cfg_dracut_luks(), target).plan(managed=["swap"]) == []
 
 
 def test_an_owned_swap_no_longer_declared_is_removed(target):

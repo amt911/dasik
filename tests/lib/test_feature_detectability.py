@@ -15,6 +15,7 @@ from unittest.mock import MagicMock, patch
 
 from dasik.lib.actions.action_context import ActionContext
 from dasik.lib.actions.drop_files_action import DropFilesAction
+from dasik.lib.actions.encrypted_swap_action import EncryptedSwapAction
 from dasik.lib.actions.kernel_cmdline_action import KernelCmdlineAction
 from dasik.lib.actions.sudo_action import SudoAction
 from dasik.lib.actions.systemd_action import SystemdAction
@@ -390,3 +391,58 @@ def test_an_unowned_oomd_drop_in_is_left_alone(tmp_path):
 def test_the_oomd_daemon_is_planned_as_a_unit():
     config = expand_config({"oomd": {"SwapUsedLimit": "80%"}})
     assert _units_planned(config) == ["systemd-oomd.service"]
+
+
+# --- encrypted swap (random key) ------------------------------------------- #
+#
+# The swap rides two files nobody else writes: the crypttab entry that creates
+# /dev/mapper/<name> at boot, and the fstab line that activates it. A machine
+# missing either is not converged, however complete the partition table looks.
+
+def _swap_cfg(**over):
+    cfg = {"disks": {"disks": [{"device": "/dev/vda", "partitions": [
+        {"label": "swap", "size": "2GiB", "filesystem": "swap",
+         "swap_encryption": "random"}]}]}}
+    cfg.update(over)
+    return cfg
+
+
+def _swap_plan(tmp_path, config, fstab="UUID=abc / ext4 defaults 0 0\n",
+               crypttab=None, managed=()):
+    (tmp_path / "etc").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "etc/fstab").write_text(fstab)
+    if crypttab is not None:
+        (tmp_path / "etc/crypttab").write_text(crypttab)
+    action = EncryptedSwapAction(config, _ctx(tmp_path))
+    return [(c.op.name, c.item) for c in action.plan(managed=list(managed))]
+
+
+_SWAP_CRYPTTAB = ("swap LABEL=cryptswap /dev/urandom "
+                  "swap,offset=2048,cipher=aes-xts-plain64,size=512,sector-size=4096\n")
+_SWAP_FSTAB = ("UUID=abc / ext4 defaults 0 0\n"
+               "/dev/mapper/swap none swap defaults 0 0\n")
+
+
+def test_a_random_swap_missing_from_the_target_is_planned(tmp_path):
+    assert _swap_plan(tmp_path, _swap_cfg()) == [("INSTALL", "swap")]
+
+
+def test_a_random_swap_already_on_the_target_plans_nothing(tmp_path):
+    assert _swap_plan(tmp_path, _swap_cfg(), fstab=_SWAP_FSTAB,
+                      crypttab=_SWAP_CRYPTTAB, managed=["swap"]) == []
+
+
+def test_a_crypttab_entry_without_the_fstab_line_is_not_converged(tmp_path):
+    """The swap exists as a mapping and is never activated — the half-applied
+    state a plan has to keep showing."""
+    assert _swap_plan(tmp_path, _swap_cfg(), crypttab=_SWAP_CRYPTTAB) == [
+        ("INSTALL", "swap")]
+
+
+def test_dropping_the_block_removes_a_swap_dasik_owns(tmp_path):
+    assert _swap_plan(tmp_path, {}, fstab=_SWAP_FSTAB, crypttab=_SWAP_CRYPTTAB,
+                      managed=["swap"]) == [("REMOVE", "swap")]
+
+
+def test_an_unowned_swap_is_left_alone(tmp_path):
+    assert _swap_plan(tmp_path, {}, fstab=_SWAP_FSTAB, crypttab=_SWAP_CRYPTTAB) == []

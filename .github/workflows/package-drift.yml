@@ -26,12 +26,18 @@ jobs:
     runs-on: ubuntu-latest
     container: archlinux:latest
     steps:
-      # The script imports dasik to ask the expand toggles what they derive, so
-      # it needs dasik's two runtime deps. They come from pacman, not pip: this
-      # container is the same Arch the tool targets, and its python is
-      # externally managed.
-      - name: Sync the package databases
-        run: pacman -Sy --noconfirm --needed python python-pydantic python-colorama git
+      # [multilib] is off in the stock container, and half of what the drivers
+      # toggle derives (every lib32-*, and steam) lives there — without it the
+      # job reports a dozen packages as "gone" that are simply in a repo it
+      # never synced. dasik enables multilib itself for exactly these packages.
+      - name: Enable multilib and sync the package databases
+        run: |
+          printf '\n[multilib]\nInclude = /etc/pacman.d/mirrorlist\n' >> /etc/pacman.conf
+          # The script imports dasik to ask the expand toggles what they derive,
+          # so it needs dasik's two runtime deps. From pacman, not pip: this
+          # container is the same Arch the tool targets, and its python is
+          # externally managed.
+          pacman -Sy --noconfirm --needed python python-pydantic python-colorama git
 
       - uses: actions/checkout@v4
 

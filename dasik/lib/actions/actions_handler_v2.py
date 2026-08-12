@@ -63,6 +63,7 @@ def setup_actions() -> None:
     from .reflector_action import ReflectorAction
     from .plymouth_action import PlymouthAction
     from .luks_keyfile_action import LuksKeyfileAction
+    from .encrypted_swap_action import EncryptedSwapAction
 
     # === Phase 1: disk & base install =====================================
     register_action(
@@ -179,6 +180,16 @@ def setup_actions() -> None:
     register_action(
         action_class=DropFilesAction,
         config_key='__root__',  # reads udev_rules, modprobe_conf, etc. from root
+        is_optional=True,
+    )
+    # The fstab (and, without dracut, crypttab) lines of a random-key swap.
+    # After DropFilesAction — which may write a verbatim /etc/crypttab — and
+    # long after BaseInstallAction ran genfstab, because both files must exist
+    # before a line is merged into them. Before phase 5, which builds the
+    # initramfs around that crypttab.
+    register_action(
+        action_class=EncryptedSwapAction,
+        config_key='__root__',   # reads `disks` — the mode lives per partition
         is_optional=True,
     )
     register_action(

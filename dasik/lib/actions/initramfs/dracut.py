@@ -7,6 +7,7 @@ from ...command_worker.command_worker import Command
 from ...exceptions.exceptions import CommandExecutionError
 from ..luks_uuid import luks_uuid
 from ..partition_utils import keydev_spec, mounts_root
+from ..swap_encryption import crypttab_line, random_swap_partitions, swap_names
 
 _CONF = "/etc/dracut.conf.d/dasik.conf"
 _CRYPTTAB = "/etc/crypttab"
@@ -186,6 +187,15 @@ class DracutBackend(InitramfsBackend):
                     opts.extend(o for o in part.get("luks_options", []) or []
                                 if str(o).startswith("keyfile-timeout="))
                     derived[name] = f"{name} UUID={uuid} {key_field} {','.join(opts)}"
+
+        # A random-key swap is plain dm-crypt, not LUKS, so it never appears in
+        # the loop above — but /etc/crypttab has exactly one owner and this is
+        # it. Derived (not captured) so the entry always names the label
+        # DiskPartitionAction actually wrote, and so a stale captured line for
+        # the same mapper is dropped by the dedup below.
+        for part in random_swap_partitions(self.config):
+            mapper, _ = swap_names(part)
+            derived[mapper] = crypttab_line(part)
 
         # Non-root captured lines (swap etc.); skip any whose mapper is a derived
         # root name — the derived (correct) entry wins over a stale captured one.

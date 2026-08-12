@@ -1,0 +1,36 @@
+{
+  "metadata": {
+    "note": "Swap re-encrypted with a random key on every boot (Arch wiki Dm-crypt/Swap_encryption). For the QEMU VM harness (scripts/vmtest/qemu.sh install), targets the guest's /dev/vda. NOT for real hardware.",
+    "warning": "This mode makes hibernation impossible: the key is discarded at shutdown, so a resume image can never be decrypted. Declare the swap with encrypt+luks_name instead if the machine must hibernate."
+  },
+  "disks": {
+    "disks": [
+      {
+        "device": "/dev/vda",
+        "partition_table": "gpt",
+        "wipe_disk": false,
+        "partitions": [
+          {"label": "esp",  "size": "512MiB", "filesystem": "fat32",
+           "partition_type": "esp",   "mountpoint": "/boot", "format": true},
+          {"label": "swap", "size": "2GiB",   "filesystem": "swap",
+           "partition_type": "linux-swap", "format": true,
+           "swap_encryption": "random"},
+          {"label": "root", "size": "rest",   "filesystem": "ext4",
+           "partition_type": "linux", "mountpoint": "/",     "format": true}
+        ]
+      }
+    ]
+  },
+  "initramfs": "dracut",
+  "enable_microcode": false,
+  "packages": ["base", "linux", "linux-firmware"],
+  "bootloader": "sd-boot",
+  "hostname": "dasik-swap-random",
+  "kernel_cmdline": ["console=ttyS0,115200"],
+  "timezone": {"region": "Etc", "city": "UTC"},
+  "locales": {
+    "selected_locales": ["en_US.UTF-8 UTF-8"],
+    "desired_locale": "en_US.UTF-8",
+    "desired_tty_layout": "us"
+  }
+}

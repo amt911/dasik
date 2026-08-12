@@ -410,3 +410,80 @@ def test_replanning_the_captured_oomd_config_is_a_no_op(tmp_path):
     action = OomdAction(captured, ActionContext(target=Target(root=str(machine))))
 
     assert action.plan(managed=[]) == []
+
+
+# --- encrypted swap (random key) ------------------------------------------- #
+#
+# To lsblk the partition is a 1 MiB ext2 filesystem — a type dasik cannot
+# represent, so discovery used to skip it and the captured layout came back with
+# no swap at all. /etc/crypttab is the only thing that says otherwise.
+
+_SWAP_CRYPTTAB = ("swap LABEL=cryptswap /dev/urandom "
+                  "swap,offset=2048,cipher=aes-xts-plain64,size=512,sector-size=4096\n")
+_SWAP_FSTAB = ("UUID=abc / ext4 defaults 0 0\n"
+               "/dev/mapper/swap none swap defaults 0 0\n")
+
+
+def _swap_tree():
+    return [{"name": "vda", "path": "/dev/vda", "type": "disk", "pttype": "gpt",
+             "children": [
+                 {"name": "vda1", "path": "/dev/vda1", "type": "part",
+                  "fstype": "vfat", "size": 512 * 1024**2,
+                  "parttypename": "EFI System", "mountpoint": "/boot"},
+                 {"name": "vda2", "path": "/dev/vda2", "type": "part",
+                  "fstype": "ext2", "label": "cryptswap", "size": 2 * 1024**3,
+                  "parttypename": "Linux swap"},
+                 {"name": "vda3", "path": "/dev/vda3", "type": "part",
+                  "fstype": "ext4", "size": 20 * 1024**3,
+                  "parttypename": "Linux filesystem", "mountpoint": "/"},
+             ]}]
+
+
+def _swap_machine(tmp_path, crypttab=_SWAP_CRYPTTAB):
+    machine = _machine(tmp_path)
+    (machine / "etc").mkdir(parents=True, exist_ok=True)
+    (machine / "etc/crypttab").write_text(crypttab)
+    (machine / "etc/fstab").write_text(_SWAP_FSTAB)
+    return machine
+
+
+def _synced_with_disks(tmp_path, crypttab=_SWAP_CRYPTTAB):
+    from dasik.lib.actions.disk_partition_action import DiskPartitionAction
+    with patch.object(DiskPartitionAction, "_lsblk_tree", return_value=_swap_tree()), \
+         patch.object(DiskPartitionAction, "_findmnt_btrfs_rows", return_value=[]):
+        return _synced(_swap_machine(tmp_path, crypttab))
+
+
+def _captured_swap(captured):
+    parts = captured["disks"]["disks"][0]["partitions"]
+    return next((p for p in parts if p.get("swap_encryption") == "random"), None)
+
+
+def test_sync_captures_the_random_swap_partition(tmp_path):
+    swap = _captured_swap(_synced_with_disks(tmp_path))
+
+    assert swap is not None
+    assert swap["filesystem"] == "swap"
+    assert swap["label"] == "swap"          # the mapper name, not "cryptswap"
+
+
+def test_sync_invents_no_swap_on_a_machine_without_one(tmp_path):
+    captured = _synced_with_disks(tmp_path, crypttab="")
+
+    assert _captured_swap(captured) is None
+
+
+def test_the_captured_swap_config_validates(tmp_path):
+    captured = _synced_with_disks(tmp_path)
+
+    JsonModel(**captured)          # what `dasik check` does
+
+
+def test_replanning_the_captured_swap_config_is_a_no_op(tmp_path):
+    from dasik.lib.actions.encrypted_swap_action import EncryptedSwapAction
+
+    captured = _synced_with_disks(tmp_path)
+    action = EncryptedSwapAction(expand_config(captured),
+                                 ActionContext(target=Target(root=str(tmp_path))))
+
+    assert action.plan(managed=["swap"]) == []

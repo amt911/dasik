@@ -11,6 +11,7 @@
 - [CLI](CLI)
 - [Configuration](Configuration)
 - [Disks and encryption](Disks)
+- [Swap](Swap)
 - [Boot chain](Boot)
 - [Packages](Packages)
 - [Feature blocks](Features)

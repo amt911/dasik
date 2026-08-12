@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, Dict, Optional
 
 from ..partition_utils import mounts_root
+from ..swap_encryption import is_random_swap
 
 
 def detect_encryption(cfg: Dict[str, Any]) -> bool:
@@ -63,6 +64,16 @@ def detect_hibernation(cfg: Dict[str, Any]) -> bool:
         for disk in disks.get("disks", []):
             for part in disk.get("partitions", []):
                 if part.get("filesystem") == "swap":
+                    # A random-key swap cannot hold a hibernation image: the key
+                    # is drawn fresh at every boot and discarded at shutdown, so
+                    # resume would have nothing to decrypt it with. Asking for
+                    # the resume module here only costs boot time hunting for an
+                    # image that cannot exist. (Declaring `resume=` alongside one
+                    # is refused by preflight — until then the cmdline below
+                    # still wins, because the module is what makes that
+                    # declaration mean anything.)
+                    if is_random_swap(part):
+                        continue
                     return True
     for token in cfg.get("kernel_cmdline", []) or []:
         for word in str(token).split():

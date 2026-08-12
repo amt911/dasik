@@ -11,12 +11,14 @@ from dasik.lib.models.disk_model import (
     Partition,
     FileSystemType,
     BtrfsSubvolume,
+    SwapEncryption,
     _KEYDEV_FILESYSTEMS,
 )
 from dasik.lib.command_worker.command_worker import Command
 from dasik.lib.exceptions.exceptions import CommandExecutionError
 from dasik.lib.state.change import Change, Op
 from dasik.lib.actions.partition_utils import keydev_path
+from dasik.lib.actions.swap_encryption import KEY_SOURCE, LABEL_FS_SIZE, swap_names
 
 # lsblk FSTYPE -> dasik filesystem. Anything absent (ntfs, None, crypto_LUKS
 # handled separately, …) is UNREPRESENTABLE and its partition is skipped during
@@ -123,8 +125,23 @@ class DiskPartitionAction(AbstractAction):
         except Exception:
             return set()
 
+    @staticmethod
+    def _expected_label(partition: Partition) -> str:
+        """The label lsblk will REPORT for this partition.
+
+        Usually the declared one, because that is what `mkfs -L` wrote. A
+        random-key swap is the exception: what sits on the partition is the
+        1 MiB ext2 filesystem carrying `crypt<label>`, and the swap itself only
+        exists behind /dev/mapper from the first boot. Comparing against the
+        declared label there means the disk NEVER converges — and with
+        `wipe_disk: true` that is a repartition on every single apply.
+        """
+        if partition.swap_encryption is SwapEncryption.RANDOM:
+            return swap_names({"label": partition.label})[1]
+        return partition.label
+
     def _disk_converged(self, disk: DiskLayout) -> bool:
-        want = {p.label for p in disk.partitions}
+        want = {self._expected_label(p) for p in disk.partitions}
         return bool(want) and want.issubset(self._device_labels(disk.device))
 
     def actual(self) -> set:
@@ -208,6 +225,41 @@ class DiskPartitionAction(AbstractAction):
                 return f.read()
         except Exception:
             return ""
+
+    def _random_swap_mappers(self) -> "Dict[str, str]":
+        """ext2 label -> mapper name, for every crypttab entry that re-encrypts
+        its device on each boot.
+
+        Reading the machine, not the config. A random-key swap partition looks
+        like a 1 MiB ext2 filesystem to lsblk — the swap only exists behind
+        /dev/mapper, and only from the first boot. Nothing but this crypttab
+        line says the ext2 is really the front of a swap, so without it
+        discovery skipped the partition as an unrepresentable filesystem and the
+        captured config lost the swap entirely.
+        """
+        target = self._target()
+        path = target.path("/etc/crypttab") if target is not None else "/mnt/etc/crypttab"
+        mappers: Dict[str, str] = {}
+        try:
+            with open(path, "r") as f:
+                content = f.read()
+        except OSError:
+            return mappers
+        for raw in content.splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            fields = line.split()
+            # <name> <device> <password> <options> — a random key means the
+            # password field IS the randomness source, and `swap` is what makes
+            # the entry reformat the device on every boot.
+            if len(fields) < 4 or fields[2] != KEY_SOURCE:
+                continue
+            if "swap" not in fields[3].split(","):
+                continue
+            if fields[1].startswith("LABEL="):
+                mappers[fields[1].split("=", 1)[1]] = fields[0]
+        return mappers
 
     def _read_luks_options(self, uuid: str) -> "List[str]":
         """Extra rd.luks.options tokens for <uuid> beyond what dasik derives
@@ -472,10 +524,32 @@ class DiskPartitionAction(AbstractAction):
                          "mount_options": mopts or ["compress-force=zstd"]})
         return subs
 
+    def _random_swap_partition(self, node: dict, mapper: str, used: set) -> dict:
+        """The partition stanza for a swap re-encrypted on every boot.
+
+        The label captured is the MAPPER name, not the ext2 one: names are
+        derived as ``label -> crypt<label>``, so capturing "cryptswap" would
+        derive "cryptcryptswap" on the next apply and the crypttab entry would
+        address a label nothing provides.
+        """
+        label = self._safe_label([mapper], "swap", used)
+        used.add(label)
+        return {
+            "label": label,
+            "size": self._bytes_to_size(int(node.get("size") or 0)),
+            "filesystem": "swap",
+            "partition_type": self._map_ptype(node.get("parttypename")),
+            "format": False,
+            "swap_encryption": "random",
+        }
+
     def _partition_from_node(self, node: dict, used: set) -> "Optional[dict]":
         """Build a partition dict from an lsblk `part` node, or None to skip it
         (unrepresentable filesystem / closed LUKS)."""
         fstype = node.get("fstype")
+        random_swap = self._random_swap_mappers().get(node.get("label") or "")
+        if random_swap:
+            return self._random_swap_partition(node, random_swap, used)
         encrypt, luks_name, luks_uuid = False, None, None
         inner = node
         if (fstype or "").lower() == "crypto_luks":
@@ -1093,7 +1167,18 @@ class DiskPartitionAction(AbstractAction):
             Command.execute("mkfs.fat", ["-F32", "-n", partition.label, part_device])
         
         elif partition.filesystem == FileSystemType.SWAP:
-            Command.execute("mkswap", ["-L", partition.label, part_device])
+            if partition.swap_encryption is SwapEncryption.RANDOM:
+                # No mkswap here: crypttab's `swap` option runs mkswap itself on
+                # every boot, on the mapper device. What this partition needs is
+                # the 1 MiB ext2 filesystem carrying the persistent LABEL the
+                # crypttab entry addresses — the encrypted area starts after it
+                # (offset=2048). Formatting it as swap instead would leave that
+                # entry pointing at a label nothing provides.
+                _mapper, fs_label = swap_names({"label": partition.label})
+                Command.execute("mkfs.ext2",
+                                ["-F", "-L", fs_label, part_device, LABEL_FS_SIZE])
+            else:
+                Command.execute("mkswap", ["-L", partition.label, part_device])
         
         elif partition.filesystem == FileSystemType.XFS:
             Command.execute("mkfs.xfs", ["-f", "-L", partition.label, part_device])
@@ -1247,10 +1332,17 @@ class DiskPartitionAction(AbstractAction):
         
         # Enable swap if present
         for partition in disk.partitions:
-            if partition.filesystem == FileSystemType.SWAP:
-                device = self.partition_map[partition.label]
-                print(f"Enabling swap on {device}")
-                Command.execute("swapon", [device])
+            if partition.filesystem != FileSystemType.SWAP:
+                continue
+            if partition.swap_encryption is SwapEncryption.RANDOM:
+                # Nothing to enable: the partition holds the 1 MiB ext2 label
+                # filesystem, and the swap itself only exists behind
+                # /dev/mapper once crypttab creates it at the first boot.
+                # `swapon` on the raw device just fails.
+                continue
+            device = self.partition_map[partition.label]
+            print(f"Enabling swap on {device}")
+            Command.execute("swapon", [device])
 
     def _mount_partition(self, partition: Partition) -> None:
         """Mount a single partition.

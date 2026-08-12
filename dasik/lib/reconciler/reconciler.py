@@ -258,7 +258,9 @@ class Reconciler:
 
         Walks the v3 actions and, for each, asks ``import_state(managed)`` for
         the reconciled config fragment (∪ drift, \\ vanished-owned) and records
-        ``managed ← actual()`` for the new manifest. Unlike ``build_plan``, an
+        ``managed ← actual ∩ (managed ∪ declared)`` for the new manifest — what
+        dasik owned or declares and reality confirms, never a bare observation
+        (see ``_owned_after_sync``). Unlike ``build_plan``, an
         absent config slice is NOT skipped — bootstrap captures undeclared
         reality. Merges fragments into a new config via ``ConfigWriter.merge``
         and persists the new manifest via the injected ``StateStore``.
@@ -312,10 +314,11 @@ class Reconciler:
                 domain = self._domain_for(action)
                 if domain is not None:
                     # import_state() also reads actual() internally; this second
-                    # call is intentional — managed tracks raw A (M <- A), not the
+                    # call is intentional — managed tracks raw A, not the
                     # fragment's derived/ordered list. It is asked of the OWNER
                     # action, which sees the derived items too.
-                    new_managed[domain] = sorted(owner.actual())
+                    new_managed[domain] = self._owned_after_sync(
+                        owner, domain, managed_all)
             except Exception as e:  # noqa: BLE001 - isolate per-action failures
                 print(
                     f"  Warning: skipping {type(action).__name__} during sync: {e}",
@@ -347,6 +350,33 @@ class Reconciler:
             self._state_store.save(new_manifest)
 
         return new_config, new_manifest
+
+    def _owned_after_sync(self, owner, domain: str, managed_all: dict) -> list:
+        """M after a sync: what dasik owned, plus what it declares — never a
+        pure observation.
+
+        `actual()` reads the whole machine for some domains (every explicit
+        package, every enabled unit), so recording it verbatim made dasik claim
+        `mkinitcpio`, `getty@.service`, `remote-fs.target` — things it never
+        installed and never enabled. That breaks the model's one safety
+        property: removal is scoped to what dasik itself APPLIED; anything else
+        is drift, and drift is captured, never deleted. The bill arrived at the
+        next rollback, which proposed removing them and died half-applied when
+        pacman refused.
+
+        So: intersect reality with (what was already owned ∪ what the expanded
+        config declares). Ownership still follows reality downwards — an owned
+        item that vanished stops being owned — and the observation still reaches
+        the CONFIG through import_state. Applying that captured config is what
+        makes it owned, by having applied it.
+        """
+        actual = set(owner.actual())
+        claimable = set(self._managed_for(owner, managed_all))
+        try:
+            declared = set(owner.managed_keys().get(domain, []))
+        except Exception:      # noqa: BLE001 - an action that cannot say owns nothing new
+            declared = set()
+        return sorted(actual & (claimable | declared))
 
     def _owner_action(self, cls, config_key: str, ctx):
         """The same action built from the EXPANDED config, or None.

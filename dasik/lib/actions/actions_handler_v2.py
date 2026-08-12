@@ -64,6 +64,7 @@ def setup_actions() -> None:
     from .plymouth_action import PlymouthAction
     from .luks_keyfile_action import LuksKeyfileAction
     from .encrypted_swap_action import EncryptedSwapAction
+    from .apparmor_action import ApparmorAction
 
     # === Phase 1: disk & base install =====================================
     register_action(
@@ -230,6 +231,15 @@ def setup_actions() -> None:
     register_action(
         action_class=PlymouthAction,
         config_key='__root__',  # reads root-level `plymouth`
+        is_optional=True,
+    )
+    # Capture-only as well: AppArmor converges through the toggle (package,
+    # unit, profile files) and the derived `lsm=` parameter, and nothing read it
+    # back — a synced machine lost the block and kept the parameter as if it had
+    # been hand-written.
+    register_action(
+        action_class=ApparmorAction,
+        config_key='__root__',  # reads root-level `apparmor` + `bootloader`
         is_optional=True,
     )
 

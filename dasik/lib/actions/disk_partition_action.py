@@ -18,7 +18,7 @@ from dasik.lib.command_worker.command_worker import Command
 from dasik.lib.exceptions.exceptions import CommandExecutionError
 from dasik.lib.state.change import Change, Op
 from dasik.lib.actions.partition_utils import keydev_path
-from dasik.lib.actions.swap_encryption import LABEL_FS_SIZE, swap_names
+from dasik.lib.actions.swap_encryption import KEY_SOURCE, LABEL_FS_SIZE, swap_names
 
 # lsblk FSTYPE -> dasik filesystem. Anything absent (ntfs, None, crypto_LUKS
 # handled separately, …) is UNREPRESENTABLE and its partition is skipped during
@@ -210,6 +210,41 @@ class DiskPartitionAction(AbstractAction):
                 return f.read()
         except Exception:
             return ""
+
+    def _random_swap_mappers(self) -> "Dict[str, str]":
+        """ext2 label -> mapper name, for every crypttab entry that re-encrypts
+        its device on each boot.
+
+        Reading the machine, not the config. A random-key swap partition looks
+        like a 1 MiB ext2 filesystem to lsblk — the swap only exists behind
+        /dev/mapper, and only from the first boot. Nothing but this crypttab
+        line says the ext2 is really the front of a swap, so without it
+        discovery skipped the partition as an unrepresentable filesystem and the
+        captured config lost the swap entirely.
+        """
+        target = self._target()
+        path = target.path("/etc/crypttab") if target is not None else "/mnt/etc/crypttab"
+        mappers: Dict[str, str] = {}
+        try:
+            with open(path, "r") as f:
+                content = f.read()
+        except OSError:
+            return mappers
+        for raw in content.splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            fields = line.split()
+            # <name> <device> <password> <options> — a random key means the
+            # password field IS the randomness source, and `swap` is what makes
+            # the entry reformat the device on every boot.
+            if len(fields) < 4 or fields[2] != KEY_SOURCE:
+                continue
+            if "swap" not in fields[3].split(","):
+                continue
+            if fields[1].startswith("LABEL="):
+                mappers[fields[1].split("=", 1)[1]] = fields[0]
+        return mappers
 
     def _read_luks_options(self, uuid: str) -> "List[str]":
         """Extra rd.luks.options tokens for <uuid> beyond what dasik derives
@@ -474,10 +509,32 @@ class DiskPartitionAction(AbstractAction):
                          "mount_options": mopts or ["compress-force=zstd"]})
         return subs
 
+    def _random_swap_partition(self, node: dict, mapper: str, used: set) -> dict:
+        """The partition stanza for a swap re-encrypted on every boot.
+
+        The label captured is the MAPPER name, not the ext2 one: names are
+        derived as ``label -> crypt<label>``, so capturing "cryptswap" would
+        derive "cryptcryptswap" on the next apply and the crypttab entry would
+        address a label nothing provides.
+        """
+        label = self._safe_label([mapper], "swap", used)
+        used.add(label)
+        return {
+            "label": label,
+            "size": self._bytes_to_size(int(node.get("size") or 0)),
+            "filesystem": "swap",
+            "partition_type": self._map_ptype(node.get("parttypename")),
+            "format": False,
+            "swap_encryption": "random",
+        }
+
     def _partition_from_node(self, node: dict, used: set) -> "Optional[dict]":
         """Build a partition dict from an lsblk `part` node, or None to skip it
         (unrepresentable filesystem / closed LUKS)."""
         fstype = node.get("fstype")
+        random_swap = self._random_swap_mappers().get(node.get("label") or "")
+        if random_swap:
+            return self._random_swap_partition(node, random_swap, used)
         encrypt, luks_name, luks_uuid = False, None, None
         inner = node
         if (fstype or "").lower() == "crypto_luks":

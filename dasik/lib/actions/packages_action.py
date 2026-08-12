@@ -706,15 +706,8 @@ class PackagesAction(AbstractAction):
                 with self._optional_guard(optional_aur):
                     self._apply_aur_install(optional_aur, helper=helper)
 
-        # Enforce install reason (repo packages only). -S marks explicit by
-        # default, so a fresh explicit install needs no -D; a dep install does.
-        to_dep = [p for p in repo_installs if self._reason.get(p, "explicit") == "dep"]
-        to_dep += [p for p in modifies if self._reason.get(p, "explicit") == "dep"]
-        to_explicit = [p for p in modifies if self._reason.get(p, "explicit") == "explicit"]
-        if to_dep:
-            Command.execute("pacman", ["-D", "--asdeps", *to_dep], target=target, check=True)
-        if to_explicit:
-            Command.execute("pacman", ["-D", "--asexplicit", *to_explicit], target=target, check=True)
+        self._enforce_reasons(target, planned_modifies=modifies,
+                              installed_now=repo_installs)
 
         if removes:
             Command.execute(
@@ -724,6 +717,44 @@ class PackagesAction(AbstractAction):
                 check=True,
                 stream=True,
             )
+
+    def _enforce_reasons(self, target, planned_modifies: "list[str]",
+                         installed_now: "list[str]") -> None:
+        """Make every declared package's install reason true, now.
+
+        Read from REALITY after the transaction, not from the plan. The plan is
+        computed before anything runs, so it cannot know that pacman will bring
+        a declared package in as a dependency of another one — `audit` arrives
+        with `apparmor`, and `pacman -S --needed` leaves an already-present
+        package's reason alone. Computing this from the plan left the correction
+        for the *next* apply: an apply that exits 0 and is not a no-op (#188).
+
+        Two things are known without probing and stay: the plan's own reason
+        MODIFY set, and what `pacman -S` just installed — it marks every one of
+        them explicit, so a dep-declared install needs the correction whatever
+        the probes report (and an explicit one needs nothing).
+        """
+        installed = self._installed_all()
+        explicit = self.actual()
+        planned = set(planned_modifies)
+        fresh = set(installed_now)
+        candidates = set(self._reason) | planned | fresh
+
+        to_dep = sorted(
+            p for p in candidates
+            if self._reason.get(p, "explicit") == "dep"
+            and (p in explicit or p in planned or p in fresh)
+        )
+        to_explicit = sorted(
+            p for p in candidates
+            if self._reason.get(p, "explicit") == "explicit"
+            and ((p in installed and p not in explicit) or p in planned)
+        )
+        if to_dep:
+            Command.execute("pacman", ["-D", "--asdeps", *to_dep], target=target, check=True)
+        if to_explicit:
+            Command.execute("pacman", ["-D", "--asexplicit", *to_explicit],
+                            target=target, check=True)
 
     def _split_optional(self, names: "list[str]") -> "tuple[list[str], list[str]]":
         """(required, optional) preserving order."""

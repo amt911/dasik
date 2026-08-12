@@ -82,6 +82,12 @@ _UNIT_PROVIDERS: Dict[str, Set[str]] = {
     "power-profiles-daemon.service": {"power-profiles-daemon"},
     "cpupower.service": {"cpupower"},
     "reflector.timer": {"reflector"},
+    # Enabled by hand in two of the repo's own sample configs while nothing
+    # declared the package. `systemctl enable` on a unit that does not exist
+    # fails, with the disk already partitioned.
+    "NetworkManager.service": {"networkmanager", "networkmanager-git"},
+    "NetworkManager-wait-online.service": {"networkmanager", "networkmanager-git"},
+    "NetworkManager-dispatcher.service": {"networkmanager", "networkmanager-git"},
 }
 
 # Packages that ship /usr/bin/sudo (and visudo). `base` does NOT.

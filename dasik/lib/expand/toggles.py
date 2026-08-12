@@ -6,6 +6,7 @@ modprobe_conf (list[{name, content}]), files (list[{path, content}]).
 Returns {} (no contribution) when the toggle is absent or disabled.
 """
 from __future__ import annotations
+import json
 from typing import Any, Dict
 
 
@@ -374,6 +375,54 @@ def expand_pam(config: Dict[str, Any]) -> Dict[str, Any]:
     return {"packages": ["libpwquality"]}
 
 
+_COMPOSE_PACKAGES = {"podman": "podman-compose", "docker": "docker-compose"}
+
+
+def expand_containers(config: Dict[str, Any]) -> Dict[str, Any]:
+    """The container runtime: packages, its unit, and docker's group.
+
+    podman gets no unit by default — rootless podman runs no daemon at all, and
+    `podman.socket` exists only for clients that speak the docker API. docker
+    does: either the always-on service or, with `api_socket`, the socket that
+    starts the engine on first use.
+
+    The `docker` group is handed to every declared user because there is no
+    other way to use docker without root — and it is worth saying plainly that
+    it is root-equivalent: a member can bind-mount / into a container.
+    """
+    cfg = config.get("containers") or {}
+    runtime = cfg.get("runtime")
+    if runtime not in ("podman", "docker"):
+        return {}
+
+    packages = [runtime]
+    units: list = []
+    out: Dict[str, Any] = {}
+
+    if cfg.get("compose"):
+        packages.append(_COMPOSE_PACKAGES[runtime])
+
+    if runtime == "podman":
+        if cfg.get("docker_compat"):
+            packages.append("podman-docker")
+        if cfg.get("api_socket"):
+            units.append("podman.socket")
+    else:
+        units.append("docker.socket" if cfg.get("api_socket") else "docker.service")
+        out["user_groups"] = ["docker"]
+        daemon = cfg.get("daemon_json")
+        if daemon:
+            out["files"] = [{
+                "path": "/etc/docker/daemon.json",
+                "content": json.dumps(daemon, indent=2, sort_keys=True) + "\n",
+            }]
+
+    out["packages"] = packages
+    if units:
+        out["units"] = units
+    return out
+
+
 def expand_sdboot_update(config: Dict[str, Any]) -> Dict[str, Any]:
     # systemd ships this unit itself: it runs `bootctl update` when the ESP's
     # loader is older than the installed systemd. The old imperative installer
@@ -390,5 +439,5 @@ TOGGLES = [
     expand_wireguard, expand_firewall, expand_hwaccel, expand_snapper,
     expand_drivers, expand_initramfs, expand_zram, expand_oomd, expand_cpu,
     expand_sdboot_update, expand_reflector, expand_plymouth,
-    expand_apparmor, expand_pam,
+    expand_apparmor, expand_pam, expand_containers,
 ]

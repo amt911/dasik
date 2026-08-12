@@ -59,6 +59,7 @@ class Reconciler:
         action_metas: Iterable[dict[str, Any]],
         state_store: Optional[Any] = None,
         generation_store: Optional[Any] = None,
+        owned_config: Optional[dict[str, Any]] = None,
     ):
         self._config = config
         self._target = target
@@ -66,6 +67,14 @@ class Reconciler:
         self._metas = list(action_metas)
         self._state_store = state_store
         self._generation_store = generation_store
+        # What dasik OWNS, which is not the same document it captures into.
+        # `sync` is handed the raw config — it rewrites that file and must not
+        # flatten the derived items into it — but ownership is defined by the
+        # EXPANDED config, the one `apply` used. Without this, every file a
+        # block derives stopped being owned the moment somebody ran a sync, and
+        # turning the block off no longer removed it (issue #197). None keeps
+        # the old behaviour for every other caller.
+        self._owned_config = owned_config
 
     def build_plan(self) -> tuple[Plan, list[ActionPlanResult]]:
         managed_all = (self._manifest or {}).get("managed", {})
@@ -289,6 +298,7 @@ class Reconciler:
                 action_config = self._empty_config_for(cls)
 
             action = cls(action_config, ctx)
+            owner = self._owner_action(cls, config_key, ctx) or action
             managed_for_action = self._managed_for(action, managed_all)
 
             # Per-action isolation: one domain failing to read reality (e.g. an
@@ -303,8 +313,9 @@ class Reconciler:
                 if domain is not None:
                     # import_state() also reads actual() internally; this second
                     # call is intentional — managed tracks raw A (M <- A), not the
-                    # fragment's derived/ordered list.
-                    new_managed[domain] = sorted(action.actual())
+                    # fragment's derived/ordered list. It is asked of the OWNER
+                    # action, which sees the derived items too.
+                    new_managed[domain] = sorted(owner.actual())
             except Exception as e:  # noqa: BLE001 - isolate per-action failures
                 print(
                     f"  Warning: skipping {type(action).__name__} during sync: {e}",
@@ -336,6 +347,25 @@ class Reconciler:
             self._state_store.save(new_manifest)
 
         return new_config, new_manifest
+
+    def _owner_action(self, cls, config_key: str, ctx):
+        """The same action built from the EXPANDED config, or None.
+
+        Only its ``actual()`` is used, to answer "what does dasik own here?".
+        The capture still comes from the action built on the raw config, so the
+        rewritten file keeps saying `reflector: {...}` rather than repeating the
+        file that block derives.
+        """
+        if self._owned_config is None:
+            return None
+        slice_ = (self._owned_config if config_key == "__root__"
+                  else self._owned_config.get(config_key))
+        if slice_ is None:
+            return None
+        try:
+            return cls(slice_, ctx)
+        except Exception:      # noqa: BLE001 - a config the action refuses owns nothing
+            return None
 
     def _build_new_manifest(
         self, results: list[ActionPlanResult], *, partial: bool = False

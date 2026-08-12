@@ -431,6 +431,10 @@ def _cmd_sync(config_path: Path, target_root: str) -> int:
         manifest=manifest_dict,
         action_metas=registry.get_all_actions(),
         state_store=state_store,
+        # Capture into the RAW config, but own the EXPANDED one — the set apply
+        # actually wrote. Otherwise a sync quietly disowns every file a block
+        # derives, and turning that block off stops removing them (issue #197).
+        owned_config=expand_config(config),
     )
     new_config, new_manifest = reconciler.sync()
     new_config = subtract_contributions(new_config, config)

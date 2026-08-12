@@ -151,7 +151,7 @@ Needs a btrfs root. Give `/.snapshots` its own subvolume
 | Contributes | |
 | --- | --- |
 | packages (always) | `libva-utils`, `vdpauinfo` |
-| + per declared driver | `nvidia`: `libva-nvidia-driver`, `nvtop` · `intel`: `intel-media-driver`, `intel-gpu-tools`, `libvdpau-va-gl` · `amd`: `libva-mesa-driver` |
+| + per declared driver | `nvidia`: `libva-nvidia-driver`, `nvtop` · `intel`: `intel-media-driver`, `intel-gpu-tools`, `libvdpau-va-gl` · `amd`: `mesa` (it provides the VA-API driver) |
 
 The extras come from your [`drivers`](#gpu-drivers) list.
 
@@ -165,11 +165,11 @@ Not a block — a root-level list. Recognised values and what they pull in:
 
 | Driver | Base | Added when `pacman.multilib` is on |
 | --- | --- | --- |
-| `nvidia` | `nvidia`, `nvidia-utils`, `nvidia-settings` | `lib32-nvidia-utils` |
+| `nvidia` | `nvidia-open`, `nvidia-utils`, `nvidia-settings` | `lib32-nvidia-utils` |
 | `nvidia-open` | `nvidia-open`, `nvidia-utils`, `nvidia-settings` | `lib32-nvidia-utils` |
 | `nouveau` | `mesa`, `vulkan-nouveau` | `lib32-mesa`, `lib32-vulkan-nouveau` |
 | `intel` | `mesa`, `vulkan-intel`, `intel-media-driver` | `lib32-mesa`, `lib32-vulkan-intel` |
-| `amd` | `mesa`, `vulkan-radeon`, `libva-mesa-driver` | `lib32-mesa`, `lib32-vulkan-radeon` |
+| `amd` | `mesa`, `vulkan-radeon` | `lib32-mesa`, `lib32-vulkan-radeon` |
 
 An unrecognised name (`nvidia_old`, a typo) contributes **nothing** and does not
 error — a wrong package is worse than a documented no-op. List the package by

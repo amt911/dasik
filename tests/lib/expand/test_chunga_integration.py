@@ -26,7 +26,7 @@ def test_chunga_parses_and_expands():
 
 def test_chunga_installs_nvidia_and_lib32():
     pkgs = _pkgs(_expanded())
-    assert "nvidia" in pkgs and "nvidia-utils" in pkgs
+    assert "nvidia-open" in pkgs and "nvidia-utils" in pkgs
     assert "lib32-nvidia-utils" in pkgs        # multilib is on
 
 

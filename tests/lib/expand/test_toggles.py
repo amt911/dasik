@@ -94,7 +94,7 @@ def test_hwaccel_enabled_uses_drivers():
         "drivers": ["intel", "amd"],
     })
     assert "intel-media-driver" in out["packages"]
-    assert "libva-mesa-driver" in out["packages"]
+    assert "mesa" in out["packages"]
     assert "libva-utils" in out["packages"]  # common
 
 
@@ -106,13 +106,14 @@ def test_hwaccel_enabled_no_drivers_only_common():
 def test_hwaccel_amd_does_not_pull_removed_mesa_vdpau():
     # mesa-vdpau was removed from the Arch repos (radeonsi VDPAU now ships in
     # `mesa`). Emitting it made `pacman -S` abort with "target not found",
-    # breaking an AMD hwaccel install. libva-mesa-driver (VA-API) stays.
+    # breaking an AMD hwaccel install. Nor libva-mesa-driver, which mesa
+    # now provides and replaces — naming either aborts the transaction.
     out = expand_hwaccel({
         "hardware_acceleration": {"enable": True},
         "drivers": ["amd"],
     })
     assert "mesa-vdpau" not in out["packages"]
-    assert "libva-mesa-driver" in out["packages"]
+    assert "mesa" in out["packages"]
 
 
 # --- initramfs generator: dracut installs dracut + neutralizes mkinitcpio --- #

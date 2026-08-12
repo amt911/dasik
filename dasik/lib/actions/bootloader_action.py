@@ -326,5 +326,15 @@ class BootloaderAction(AbstractAction):
             Command.execute("grub-install", [
                 "--target=x86_64-efi", "--efi-directory=/boot", "--bootloader-id=GRUB",
             ], target=t, check=True)
+            # …and again into the removable path, \EFI\BOOT\BOOTX64.EFI.
+            # The first call writes /EFI/GRUB and an NVRAM entry, and a machine
+            # that boots only from NVRAM stops booting the moment the firmware
+            # forgets it: a CMOS reset, a disk moved to another board, a VM
+            # handed a fresh OVMF_VARS (which is how this was found — the guest
+            # fell through to PXE). `bootctl install` writes both paths, so
+            # sd-boot machines already survive it; grub has to be asked.
+            Command.execute("grub-install", [
+                "--target=x86_64-efi", "--efi-directory=/boot", "--removable",
+            ], target=t, check=True)
             Command.execute("grub-mkconfig", ["-o", "/boot/grub/grub.cfg"],
                             target=t, check=True)

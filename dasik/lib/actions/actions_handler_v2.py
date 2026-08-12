@@ -44,6 +44,7 @@ def setup_actions() -> None:
     from .network_action import NetworkAction
     from .pacman_action import PacmanAction
     from .users_action import UsersAction
+    from .config_saver_action import ConfigSaverAction
     from .sudo_action import SudoAction
     from .packages_action import PackagesAction
     from .systemd_action import SystemdAction
@@ -207,6 +208,13 @@ def setup_actions() -> None:
     register_action(
         action_class=MicrosoftFontsAction,
         config_key='microsoft_fonts',
+        is_optional=True,
+    )
+    # config-saver restores an archive into a user's $HOME, so it runs after
+    # Users (the home must exist) and after Packages (the binary must too).
+    register_action(
+        action_class=ConfigSaverAction,
+        config_key='__root__',   # reads root-level `config_saver`
         is_optional=True,
     )
     register_action(

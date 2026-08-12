@@ -317,6 +317,33 @@ validated.
 
 ---
 
+## `config_saver` — backups of `$HOME`, and restoring them
+
+```json
+"config_saver": {
+  "source": { "url": "https://github.com/amt911/config-saver-aur.git", "ref": "<sha>" },
+  "configs": { "dotfiles": { "directories": [{ "source": "$HOME", "files": [".zshrc"] }] } },
+  "timer_users": ["andres"],
+  "restore": [{ "user": "andres", "archive": "/run/media/usb/dotfiles.tar.gz" }]
+}
+```
+
+[config-saver](https://github.com/amt911/config-saver) carries what a config
+file cannot: themes, browser profiles, keyboard layouts, whole directories. The
+block declares the policy — which backup documents exist, whose timer runs — and
+the restore unpacks, on a fresh machine, the archive the old one produced.
+
+The package is **not in the AUR**; `source` is the Git PKGBUILD that builds it,
+which becomes a [`package_sources`](Packages.md#packages-from-a-git-pkgbuild)
+entry. Without it the name resolves nowhere and `warn-and-skip` drops it.
+
+Restores are **once per archive content**: the marker under
+`~/.local/state/dasik/config-saver/<sha256>` says what was unpacked, so
+re-applying does nothing and a newer capture at the same path is restored again.
+Un-declaring one removes nothing — unpacking cannot be undone.
+
+---
+
 ## Seeing a feature in the plan
 
 A block never appears under its own name. `sysrq` shows up as

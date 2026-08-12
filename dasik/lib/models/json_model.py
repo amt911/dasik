@@ -25,6 +25,7 @@ from .reflector_model import ReflectorModel
 from .plymouth_model import PlymouthModel
 from .apparmor_model import ApparmorModel
 from .pam_model import PamModel
+from .config_saver_model import ConfigSaverModel
 from .systemd_conf_model import validate_ini_section
 
 
@@ -106,6 +107,7 @@ class JsonModel(BaseModel):
     plymouth: Optional[PlymouthModel] = None
     apparmor: Optional[ApparmorModel] = None
     pam: Optional[PamModel] = None
+    config_saver: Optional[ConfigSaverModel] = None
     # zram-generator: {device: {option: value}} mirroring zram-generator.conf ini.
     zram: Optional[Dict[str, Dict[str, Any]]] = None
     # The pacman-owned /etc/systemd/*.conf files, one block per file, each

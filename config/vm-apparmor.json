@@ -1,6 +1,6 @@
 {
   "metadata": {
-    "note": "AppArmor (mandatory access control) with the audit framework, for the QEMU VM harness (scripts/vmtest/qemu.sh install). Targets the guest's /dev/vda. NOT for real hardware."
+    "note": "AppArmor (mandatory access control) with the audit framework and the aa-notify desktop notifications, plus a hand-declared dotfile — the two consumers of the `home_files` domain. For the QEMU VM harness (scripts/vmtest/qemu.sh install-driven). Targets the guest's /dev/vda. NOT for real hardware."
   },
   "disks": {
     "disks": [
@@ -53,7 +53,8 @@
     "desired_tty_layout": "us"
   },
   "apparmor": {
-    "audit": true
+    "audit": true,
+    "desktop_notifications": true
   },
   "users": [
     {
@@ -62,6 +63,14 @@
       "groups": [
         "wheel"
       ]
+    }
+  ],
+  "home_files": [
+    {
+      "user": "test",
+      "path": ".config/dasik/hello.conf",
+      "content": "# Managed by dasik\ngreeting=hola\n",
+      "mode": "0600"
     }
   ]
 }

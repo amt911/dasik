@@ -187,3 +187,33 @@ def test_ppd_unit_without_its_package_warns():
     issues = preflight({"systemd": {"enable_units": ["power-profiles-daemon.service"]},
                         "packages": ["base"]}, efi_boot=True)
     assert any(i.code == "unit_without_provider" and i.level == "warning" for i in issues)
+
+
+# --- home_files ------------------------------------------------------------ #
+
+def _codes(config, **kw):
+    return {i.code for i in preflight(config, efi_boot=True, **kw)}
+
+
+_HOME_FILE = {"user": "andres", "path": ".gitconfig", "content": "[user]\n"}
+
+
+def test_a_home_file_for_a_user_nobody_declares_warns():
+    """`apply` would refuse it — after the disk was already partitioned. Say so
+    while nothing has been touched yet."""
+    codes = _codes({"home_files": [_HOME_FILE]})
+
+    assert "home_file_without_user" in codes
+
+
+def test_a_home_file_for_a_declared_user_is_fine():
+    config = {"users": [{"username": "andres", "hashed_password": "$6$a$b"}],
+              "home_files": [_HOME_FILE]}
+
+    assert "home_file_without_user" not in _codes(config)
+
+
+def test_a_home_file_for_root_is_fine():
+    """root exists on every machine without being declared."""
+    assert "home_file_without_user" not in _codes(
+        {"home_files": [dict(_HOME_FILE, user="root")]})

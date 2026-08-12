@@ -106,6 +106,7 @@ result back by hand.
 | `udev_rules`, `modprobe_conf`, `modules_load`, `sysctl_d`, `tmpfiles_d`, `sddm_conf_d`, `profile_d` | list | Local `/etc/*.d` snippet files |
 | `etc_environment` | list | `/etc/environment` lines |
 | `files` | list | Arbitrary `/etc/...` files (verbatim) |
+| `home_files` | list | Files inside a user's `$HOME` (dotfiles, autostart entries) |
 | `zram` | object | `/etc/systemd/zram-generator.conf` |
 | `sudo` | object | `/etc/sudoers.d/10-dasik` — wheel access + extra rules |
 | `cpu` | object | CPU scaling driver, power-profiles-daemon, cpupower governor |
@@ -129,6 +130,7 @@ defaults to `true`. See [the wiki page](wiki/AppArmor.md) for the full story.
 | --- | --- | --- | --- |
 | `enable` | bool | `true` | Installs `apparmor`, enables `apparmor.service`, and derives `lsm=landlock,lockdown,yama,integrity,apparmor,bpf`. **The parameter is what turns AppArmor on** — the package alone leaves every profile inert. |
 | `audit` | bool | `false` | Also installs `audit` + `auditd.service`, derives `audit=1 audit_backlog_limit=8192`, adds every declared user to `adm` and writes `/etc/tmpfiles.d/audit.conf` so `/var/log/audit` stays readable across upgrades. |
+| `desktop_notifications` | bool | `false` | Runs `aa-notify` on login: adds `python-notify2`, `python-psutil`, `tk` and an autostart entry in every declared (non-root) user's `$HOME`. Needs `audit: true` — the notifier reads `/var/log/audit/audit.log`, and the schema refuses the pair without it. |
 | `extra_profiles` | list | `[]` | `{name, content}` copied verbatim to `/etc/apparmor.d/<name>`. `name` is a file name, not a path. They load at the next boot — dasik does not run `apparmor_parser` in the chroot. |
 
 `sync` captures `enable: false` for a machine that has the package but no `lsm=`
@@ -571,6 +573,34 @@ Plus:
   `*.nmconnection`). Optional `mode` is an octal string applied via `chmod` after
   writing — needed for secret keyfiles (wireguard / NetworkManager refuse a
   world-readable one); sync sets `"0600"` on the files it discovers there.
+
+---
+
+## `home_files` — files inside a user's `$HOME`  *(sync ✓ — declared and owned only)*
+
+```json
+"home_files": [
+  {"user": "andres", "path": ".config/mangohud/MangoHud.conf",
+   "content": "fps_limit=144\n"},
+  {"user": "andres", "path": ".ssh/config", "content": "…", "mode": "0600"}
+]
+```
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `user` | string | Owner. **The machine decides where the home is** — dasik reads the target's `/etc/passwd`, so this stays right on a machine whose homes are not under `/home`. Before the user exists (a fresh install plans everything up front) the plan falls back to `/home/<user>`. |
+| `path` | string | Relative to that home. An absolute path or a `..` segment is refused. |
+| `content` | string | Verbatim. |
+| `mode` | string | Optional octal, e.g. `"0600"`. |
+
+Ownership is part of the desired state: a file whose content is right but which
+is still `root:root` is planned as a MODIFY, and every directory `apply` had to
+create is chowned to the user too — a `.config` owned by root is a directory the
+desktop cannot add to.
+
+`sync` **never scans a home directory** (it holds ssh keys, browser profiles and
+gigabytes of state). It reports back only what the config declares or the
+manifest owns, which is exactly what dasik can honestly claim to have put there.
 
 ---
 

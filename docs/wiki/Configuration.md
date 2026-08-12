@@ -196,6 +196,28 @@ A `files` entry:
 ]
 ```
 
+### `home_files` — inside a user's `$HOME`
+
+```json
+"home_files": [
+  { "user": "andres", "path": ".config/mangohud/MangoHud.conf",
+    "content": "fps_limit=144\n" }
+]
+```
+
+| Key | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `user` | string | — | owner; **the machine says where the home is** (dasik reads the target's `/etc/passwd`), falling back to `/home/<user>` for a user that does not exist yet |
+| `path` | string | — | relative to that home; absolute paths and `..` are refused |
+| `content` | string | — | verbatim |
+| `mode` | octal string | `null` | e.g. `"0600"` |
+
+Ownership is part of the desired state: right content but still `root:root` is
+a MODIFY, and the directories `apply` creates are chowned to the user too.
+
+`sync` never scans a home — it reports only what the config declares or the
+manifest owns.
+
 Long bodies belong in real files — see [Config splitting](Config-splitting.md):
 
 ```json

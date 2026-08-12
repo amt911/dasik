@@ -520,7 +520,8 @@ def _with_apparmor(tmp_path, params=f"{_ENTRY} {_LSM}", installed=True, auditd=F
 def test_sync_captures_the_apparmor_block(tmp_path):
     captured = _synced(_with_apparmor(tmp_path))
 
-    assert captured["apparmor"] == {"enable": True, "audit": False}
+    assert captured["apparmor"] == {"enable": True, "audit": False,
+                                    "desktop_notifications": False}
 
 
 def test_sync_invents_no_apparmor_on_a_machine_without_it(tmp_path):

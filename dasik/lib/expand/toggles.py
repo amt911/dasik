@@ -312,6 +312,21 @@ def expand_plymouth(config: Dict[str, Any]) -> Dict[str, Any]:
 
 _APPARMOR_PROFILE_DIR = "/etc/apparmor.d"
 _AUDIT_TMPFILES = "/etc/tmpfiles.d/audit.conf"
+# aa-notify ships with the `apparmor` package; these are its optdepends, and
+# without them it exits instead of notifying.
+_AA_NOTIFY_PACKAGES = ["python-notify2", "python-psutil", "tk"]
+_AA_NOTIFY_AUTOSTART = ".config/autostart/apparmor-notify.desktop"
+AA_NOTIFY_DESKTOP = (
+    "[Desktop Entry]\n"
+    "# Managed by dasik\n"
+    "Type=Application\n"
+    "Name=AppArmor Notify\n"
+    "Comment=Receive on-screen notifications of AppArmor denials\n"
+    "TryExec=aa-notify\n"
+    "Exec=aa-notify -p -s 1 -w 60 -f /var/log/audit/audit.log\n"
+    "StartupNotify=false\n"
+    "NoDisplay=true\n"
+)
 
 
 def expand_apparmor(config: Dict[str, Any]) -> Dict[str, Any]:
@@ -353,6 +368,17 @@ def expand_apparmor(config: Dict[str, Any]) -> Dict[str, Any]:
                         "# log group back out of the denial log.\n"
                         "z /var/log/audit 750 root adm - -\n"),
         })
+    if cfg.get("desktop_notifications"):
+        # The wiki's own recipe: aa-notify's optional dependencies, plus an
+        # autostart entry per desktop user. root is skipped — it has no session
+        # to notify, and the entry would sit in /root doing nothing.
+        packages += _AA_NOTIFY_PACKAGES
+        out["home_files"] = [
+            {"user": u["username"], "path": _AA_NOTIFY_AUTOSTART,
+             "content": AA_NOTIFY_DESKTOP}
+            for u in config.get("users") or []
+            if isinstance(u, dict) and u.get("username") and u["username"] != "root"
+        ]
     out["packages"] = packages
     out["units"] = units
     if files:

@@ -147,6 +147,15 @@ class KernelCmdlineAction(AbstractAction):
                     if opts:
                         params.append(f"rd.luks.options={uuid}={','.join(opts)}")
 
+                elif mounts_root(part):
+                    # The plain case, which nothing derived before: the entry
+                    # BootloaderAction writes carries `root=LABEL=… rw`, so
+                    # without deriving them here they were parameters nobody
+                    # declared — and a manifest that owned them (every manifest
+                    # a sync wrote) made the next plan propose deleting the root
+                    # of the filesystem (issue #189).
+                    params.append(f"root=LABEL={part.get('label', 'root')} rw")
+
                 # rootflags describe the mount of /, so only the partition that
                 # provides it contributes them — an encrypted btrfs /home must
                 # not overwrite the root's subvol= and compression options.
@@ -354,7 +363,20 @@ class KernelCmdlineAction(AbstractAction):
             return set()
         return set(self._current_cmdline().split())
 
+    # Tokens that say WHERE the root filesystem is and how it is mounted.
+    # dasik may add them and may change them, but must never plan their removal:
+    # a boot entry without `root=` does not boot, and "no longer declared" is
+    # not a good enough reason to make a machine unbootable. A config that
+    # cannot derive them (no `disks` block — the day-2 shape) simply leaves
+    # whatever the entry already has.
+    _ROOT_DEFINING = ("root", "rootflags", "rootfstype", "rw", "ro")
+
+    @classmethod
+    def _defines_root(cls, token: str) -> bool:
+        return (token.split("=")[0] if "=" in token else token) in cls._ROOT_DEFINING
+
     def plan(self, managed):
+        from ..state.change import Op
         from ..state.set_math import compute_changes
         changes, _drift = compute_changes(
             self._DOMAIN,
@@ -362,7 +384,8 @@ class KernelCmdlineAction(AbstractAction):
             managed=managed,
             actual=self.actual(),
         )
-        return changes
+        return [c for c in changes
+                if not (c.op is Op.REMOVE and self._defines_root(c.item))]
 
     def managed_keys(self) -> dict:
         return {self._DOMAIN: self._desired_tokens()}

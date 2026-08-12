@@ -590,3 +590,28 @@ def test_the_firewalld_backend_still_installs_firewalld():
     expanded = expand_config({"firewall": {"enable": True}})
     assert "firewalld" in expanded["packages"]
     assert "ufw" not in expanded["packages"]
+
+
+# --- root= and rw are derived, and never removable (issue #189) ------------- #
+
+_PLAIN_DISKS = {"bootloader": "sd-boot", "disks": {"disks": [{
+    "device": "/dev/vda", "partition_table": "gpt",
+    "partitions": [{"label": "ROOT", "size": "rest", "filesystem": "ext4",
+                    "partition_type": "linux", "mountpoint": "/"}]}]}}
+
+
+def test_the_root_parameter_of_a_plain_layout_is_planned(tmp_path):
+    assert ("INSTALL", "root=LABEL=ROOT") in _cmdline_plan(
+        tmp_path, _PLAIN_DISKS, "quiet")
+
+
+def test_a_boot_entry_that_already_names_its_root_plans_nothing(tmp_path):
+    assert _cmdline_plan(tmp_path, _PLAIN_DISKS, "root=LABEL=ROOT rw") == []
+
+
+def test_no_plan_ever_removes_the_root_parameter(tmp_path):
+    """The one case where "no longer declared" must NOT mean removal: dropping
+    it makes the machine unbootable, and the plan would call it routine."""
+    assert _cmdline_plan(tmp_path, {"bootloader": "sd-boot"},
+                         "root=LABEL=ROOT rw quiet",
+                         managed=["root=LABEL=ROOT", "rw"]) == []

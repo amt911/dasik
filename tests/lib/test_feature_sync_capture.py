@@ -617,3 +617,20 @@ def test_the_package_behind_the_policy_is_reproducible_from_the_capture(tmp_path
 
     assert captured["pam"]["pwquality"]["minlen"] == 12
     assert "libpwquality" in expand_config(captured)["packages"]
+
+
+# --- the network manager (issue #196) --------------------------------------- #
+
+def test_the_capture_of_a_hostname_only_machine_validates(tmp_path):
+    """A config with a `hostname` and no `network` block is valid, and so must
+    its capture be. It used to come back as `network: {"type": ""}` — which the
+    schema rejects, so `sync` produced a file dasik itself refused."""
+    machine = _machine(tmp_path)
+    (machine / "etc").mkdir(parents=True, exist_ok=True)
+    (machine / "etc/hostname").write_text("arch\n")
+
+    captured = _synced(machine, seed={"bootloader": "sd-boot", "hostname": "arch"})
+
+    assert captured["hostname"] == "arch"
+    assert "network" not in captured
+    JsonModel.model_validate(captured)

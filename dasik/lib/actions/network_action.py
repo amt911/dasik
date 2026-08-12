@@ -14,6 +14,7 @@ import os
 import re
 from typing import Any, Dict, Optional
 from .composite_action import CompositeV3Action
+from ..command_worker.command_worker import Command
 from ..exceptions.exceptions import ConfigValidationError, NetworkTypeNotFoundException
 
 _HOSTNAME = "/etc/hostname"
@@ -105,13 +106,50 @@ class NetworkAction(CompositeV3Action):
         return super().plan(managed)
 
     def import_state(self, managed=None) -> dict:
+        """Report the hostname, and the network manager the MACHINE runs.
+
+        The type is probed, not copied from the config: `sync` reports reality.
+        And when nothing answers — no manager enabled, no declaration to fall
+        back on — the `network` key is OMITTED rather than emitted empty. An
+        empty type is not one of the two values the schema accepts, so a capture
+        carrying it is a capture `dasik check` then rejects (issue #196): the
+        round trip breaks silently, and only when someone tries to use the file.
+        """
         if not self._declared():
             return {}
         st = self._actual_state() or self._desired_state()
-        return {
-            "hostname": st["hostname"],
-            "network": {"type": self.type, "add_default_hosts": st["default_hosts"]},
-        }
+        captured: Dict[str, Any] = {"hostname": st["hostname"]}
+        net_type = self._live_type() or self.type
+        if net_type:
+            captured["network"] = {"type": net_type,
+                                   "add_default_hosts": st["default_hosts"]}
+        return captured
+
+    # The unit each manager is enabled as. Order is the answer to "both
+    # installed": NetworkManager is the one that owns the interfaces when it
+    # runs, so it wins.
+    _MANAGER_UNITS = (("NetworkManager.service", "NetworkManager"),
+                      ("systemd-networkd.service", "systemd-networkd"))
+
+    def _live_type(self) -> str:
+        """Which network manager this machine actually starts, or ''."""
+        if self._target() is None:
+            return ""
+        for unit, name in self._MANAGER_UNITS:
+            if self._unit_enabled(unit):
+                return name
+        return ""
+
+    def _unit_enabled(self, unit: str) -> bool:
+        try:
+            res = Command.execute("systemctl", ["is-enabled", unit],
+                                  target=self._target())
+        except Exception:      # nosec B110 - no systemctl means "cannot tell"
+            return False
+        out = getattr(res, "stdout", b"") or b""
+        if isinstance(out, bytes):
+            out = out.decode("utf-8", errors="replace")
+        return out.strip() in ("enabled", "enabled-runtime")
 
     def _import_fragment(self, value) -> dict:  # pragma: no cover - import_state overridden
         return self.import_state()

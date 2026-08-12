@@ -16,6 +16,7 @@
 - [Packages](Packages)
 - [Feature blocks](Features)
 - [AppArmor](AppArmor)
+- [PAM hardening](PAM)
 - [Config splitting](Config-splitting)
 
 **How it works**

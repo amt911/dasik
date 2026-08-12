@@ -112,6 +112,7 @@ result back by hand.
 | `reflector` | object | `/etc/xdg/reflector/reflector.conf` + `reflector.timer` |
 | `plymouth` | object | Boot splash: package, theme, initramfs hook/module, `splash` |
 | `apparmor` | object | Mandatory access control: package, unit, the `lsm=` kernel parameter, optional audit framework, local profiles |
+| `pam` | object | PAM hardening: account lockout, nproc limits, password policy |
 | `bluetooth`, `hardware_acceleration`, `kvm`, `cups`, `microsoft_fonts`, `firewall`, `wireguard`, `snapper` | object | Feature toggles |
 | `enable_trim`, `enable_microcode`, `remove_home_on_delete`, `sysrq` | bool | Simple toggles |
 | `metadata`, `notes` | object / string | Free-form; not applied |
@@ -132,6 +133,44 @@ defaults to `true`. See [the wiki page](wiki/AppArmor.md) for the full story.
 `sync` captures `enable: false` for a machine that has the package but no `lsm=`
 naming it: that machine is not protected, and reporting otherwise would describe
 a system that does not exist. Profiles pacman owns are never captured.
+
+---
+
+## `pam`
+
+Three independent, optional sub-blocks. See [the wiki page](wiki/PAM.md).
+
+### `pam.faillock` → `/etc/security/faillock.conf`
+
+| Field | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `deny` | int | `5` | Failed attempts before lockout. `0` is rejected — pam_faillock reads it as "disable the lockout". |
+| `fail_interval` | int | `900` | Seconds within which the failures must fall. |
+| `unlock_time` | int | `600` | Seconds the account stays locked. |
+| `persistent` | bool | `true` | Writes `dir = /var/lib/faillock`, so a reboot does not clear the lockout. |
+
+`pam_faillock` is already in Arch's `system-auth`, so this touches nothing under `/etc/pam.d`.
+
+### `pam.limits` → `/etc/security/limits.d/10-dasik.conf`
+
+| Field | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `nproc_soft` | int | `100` | Soft per-user process limit (raisable with `prlimit`). |
+| `nproc_hard` | int | `200` | Hard limit — the ceiling a fork bomb hits. |
+
+### `pam.pwquality` → `/etc/security/pwquality.conf.d/10-dasik.conf` + `/etc/pam.d/passwd`
+
+| Field | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `enable` | bool | `true` | Adds `libpwquality` and puts `pam_pwquality.so` in the `passwd` stack. |
+| `minlen` | int | `10` | Minimum length; below 6 is rejected. |
+| `difok` | int | `6` | Characters that must differ from the old password. |
+| `retry` | int | `2` | Prompts before `passwd` gives up. |
+| `enforce_for_root` | bool | `false` | Apply to root too. |
+| `dcredit`, `ucredit`, `lcredit`, `ocredit` | int | `-1` | pwquality's convention: **negative = require** at least that many of the class. |
+
+The only PAM stack file dasik writes is `/etc/pam.d/passwd`, so a mistake breaks the `passwd`
+command, never login. `sync` captures pwquality only when the module is actually in that stack.
 
 ---
 

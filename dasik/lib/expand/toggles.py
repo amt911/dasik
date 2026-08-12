@@ -104,8 +104,11 @@ _HWACCEL_COMMON = ["libva-utils", "vdpauinfo"]
 _HWACCEL_DRIVER_PKGS = {
     "nvidia": ["libva-nvidia-driver", "nvtop"],
     "intel": ["intel-media-driver", "intel-gpu-tools", "libvdpau-va-gl"],
-    # mesa-vdpau was removed from the Arch repos (radeonsi VDPAU is in `mesa`).
-    "amd": ["libva-mesa-driver"],
+    # mesa-vdpau was removed from the Arch repos (radeonsi VDPAU is in `mesa`),
+    # and as of mesa 1:24.2.7 so was libva-mesa-driver — `mesa` now *provides*
+    # and *replaces* it, so naming it aborts the transaction with "target not
+    # found". The VA-API driver comes with mesa itself.
+    "amd": ["mesa"],
 }
 
 
@@ -128,7 +131,11 @@ def expand_hwaccel(config: Dict[str, Any]) -> Dict[str, Any]:
 # Unknown keys (e.g. a legacy "nvidia_old") are intentionally NOT mapped — a
 # wrong package is worse than a documented no-op; list it in `packages` instead.
 _DRIVER_PKGS = {
-    "nvidia": {"base": ["nvidia", "nvidia-utils", "nvidia-settings"],
+    # `nvidia` (the proprietary kernel module) is GONE from the repos: NVIDIA
+    # stopped shipping it and nvidia-open `Replaces: nvidia<=580.119.02-2`. The
+    # key stays so existing configs keep working, but it can only mean the open
+    # modules now — declaring the old name aborts the whole install.
+    "nvidia": {"base": ["nvidia-open", "nvidia-utils", "nvidia-settings"],
                "lib32": ["lib32-nvidia-utils"]},
     "nvidia-open": {"base": ["nvidia-open", "nvidia-utils", "nvidia-settings"],
                     "lib32": ["lib32-nvidia-utils"]},
@@ -136,7 +143,8 @@ _DRIVER_PKGS = {
                 "lib32": ["lib32-mesa", "lib32-vulkan-nouveau"]},
     "intel": {"base": ["mesa", "vulkan-intel", "intel-media-driver"],
               "lib32": ["lib32-mesa", "lib32-vulkan-intel"]},
-    "amd": {"base": ["mesa", "vulkan-radeon", "libva-mesa-driver"],
+    # No libva-mesa-driver: `mesa` provides and replaces it (see above).
+    "amd": {"base": ["mesa", "vulkan-radeon"],
             "lib32": ["lib32-mesa", "lib32-vulkan-radeon"]},
 }
 

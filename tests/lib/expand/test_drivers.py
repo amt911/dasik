@@ -17,7 +17,10 @@ def test_no_drivers_empty():
 
 def test_nvidia_installs_driver_and_utils():
     pkgs = expand_drivers({"drivers": ["nvidia"]})["packages"]
-    assert "nvidia" in pkgs
+    # `nvidia` (the proprietary module) no longer exists in the repos —
+    # nvidia-open Replaces it — so the declaration can only mean the open ones.
+    assert "nvidia-open" in pkgs
+    assert "nvidia" not in pkgs
     assert "nvidia-utils" in pkgs
     assert "nvidia-settings" in pkgs
 
@@ -53,3 +56,31 @@ def test_unknown_driver_key_contributes_nothing():
     # A non-standard key (e.g. "nvidia_old") is not auto-mapped — no crash,
     # no packages. The user can still list the exact package in `packages`.
     assert expand_drivers({"drivers": ["nvidia_old"]}) == {}
+
+
+# --- packages the repos no longer have ------------------------------------- #
+#
+# The failure mode is loud but late: `pacman -S nvidia` aborts the whole
+# transaction with "target not found", after the disk has been partitioned.
+# These pin the two names upstream retired, so a future edit cannot reintroduce
+# them without a test saying why.
+
+def test_the_retired_proprietary_nvidia_module_is_never_declared():
+    """NVIDIA stopped shipping it; nvidia-open `Replaces: nvidia<=580.119.02-2`."""
+    for driver in ("nvidia", "nvidia-open"):
+        pkgs = expand_drivers({"drivers": [driver]})["packages"]
+        assert "nvidia" not in pkgs
+        assert "nvidia-dkms" not in pkgs
+
+
+def test_libva_mesa_driver_is_never_declared():
+    """`mesa` provides AND replaces it as of 1:24.2.7 — naming it aborts."""
+    from dasik.lib.expand.toggles import expand_hwaccel
+
+    for cfg in ({"drivers": ["amd"]},
+                {"drivers": ["amd"], "hardware_acceleration": {"enable": True}}):
+        pkgs = set(expand_drivers(cfg).get("packages", []))
+        pkgs |= set(expand_hwaccel(cfg).get("packages", []))
+        assert "libva-mesa-driver" not in pkgs
+        # …and what actually ships the VA-API driver is still installed.
+        assert "mesa" in pkgs

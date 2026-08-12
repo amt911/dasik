@@ -734,8 +734,13 @@ class PackagesAction(AbstractAction):
         them explicit, so a dep-declared install needs the correction whatever
         the probes report (and an explicit one needs nothing).
         """
-        installed = self._installed_all()
-        explicit = self.actual()
+        try:
+            installed = self._installed_all()
+            explicit = self.actual()
+        except Exception:      # noqa: BLE001 - no pacman to ask (a half-built
+            # target, a unit test): fall back to what this apply already knows.
+            # A probe that cannot answer must not abort an otherwise good apply.
+            installed, explicit = set(), set()
         planned = set(planned_modifies)
         fresh = set(installed_now)
         candidates = set(self._reason) | planned | fresh

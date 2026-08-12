@@ -41,12 +41,16 @@ class SystemdAction(AbstractAction):
         if isinstance(stdout, bytes):
             stdout = stdout.decode("utf-8", errors="replace")
         enabled = {line.split()[0] for line in stdout.splitlines() if line.split()}
-        # `list-unit-files --state=enabled` OMITS enabled TEMPLATE INSTANCES
-        # (e.g. wg-quick@wg0.service — the enablement is a .wants symlink, not a
-        # listed unit file). `is-enabled` resolves them, so probe each declared
-        # instance; without this the reconciler re-enables it on every apply.
+        # `list-unit-files --state=enabled` MISSES enablements it cannot see as a
+        # unit-file state: template instances (wg-quick@wg0.service, whose
+        # enablement is a .wants symlink), and — VM-observed on 2026-08-12 —
+        # ufw.service inside an arch-chroot, which `is-enabled` reported as
+        # enabled while the listing did not. Either way the reconciler re-enabled
+        # the unit on every apply, so a fresh install never reached a silent
+        # plan. `is-enabled` resolves both; probe every declared unit the listing
+        # did not account for.
         for unit in self._d_on():
-            if "@" in unit and unit not in enabled and self._unit_enabled(unit, target):
+            if unit not in enabled and self._unit_enabled(unit, target):
                 enabled.add(unit)
         return enabled
 

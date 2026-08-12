@@ -239,19 +239,22 @@ def test_actual_includes_enabled_template_instance():
         assert a.actual() == {"sshd.service", "wg-quick@wg0.service"}
 
 
-def test_actual_does_not_probe_non_instance_units():
-    # Only '@' template instances need the is-enabled fallback; a plain unit that
-    # list-unit-files didn't report as enabled stays absent (no false positives).
+def test_actual_invents_nothing_for_a_unit_systemd_calls_disabled():
+    # The is-enabled fallback covers every declared unit now, not just '@'
+    # instances (VM-observed: inside an arch-chroot the listing omitted an
+    # ufw.service that is-enabled reported as enabled, and the reconciler
+    # re-enabled it on every apply). It still adds nothing systemd does not
+    # call exactly "enabled" — "static", "indirect" and "disabled" all stay out.
     def fake(cmd, args=None, *a, **k):
         if args and args[0] == "list-unit-files":
             return MagicMock(stdout=b"sshd.service enabled\n", returncode=0)
         if args and args[0] == "is-enabled":
-            return MagicMock(stdout=b"enabled\n", returncode=0)
+            return MagicMock(stdout=b"static\n", returncode=0)
         return MagicMock(stdout=b"", returncode=0)
 
     with patch("dasik.lib.actions.systemd_action.Command.execute", side_effect=fake):
         a = SystemdAction({"enable_units": ["sshd.service", "cups.service"]}, _ctx("/"))
-        assert a.actual() == {"sshd.service"}          # cups.service not probed (no '@')
+        assert a.actual() == {"sshd.service"}
 
 
 # --- mutating commands must fail loud (F-06) ------------------------------- #
@@ -276,3 +279,44 @@ def test_enable_failure_propagates():
                side_effect=CommandExecutionError("no such unit")):
         with pytest.raises(CommandExecutionError):
             a.apply([Change("systemd", Op.ENABLE, "sddm.service")])
+
+
+# --- enablements `list-unit-files` cannot see ------------------------------ #
+#
+# VM-observed: inside an arch-chroot, `systemctl list-unit-files --state=enabled`
+# did not list ufw.service while `systemctl is-enabled ufw.service` answered
+# "enabled". The reconciler therefore re-enabled it on every apply and a fresh
+# install never reached a silent plan. Same shape as the template-instance case.
+
+def test_a_unit_the_listing_misses_is_probed_with_is_enabled(monkeypatch):
+    from types import SimpleNamespace
+    from dasik.lib.actions.systemd_action import SystemdAction
+
+    def fake_execute(cmd, args=None, **kwargs):
+        if args and args[0] == "list-unit-files":
+            return SimpleNamespace(stdout="sshd.service enabled\n", returncode=0)
+        if args and args[0] == "is-enabled":
+            return SimpleNamespace(stdout="enabled\n", returncode=0)
+        return SimpleNamespace(stdout="", returncode=0)
+
+    monkeypatch.setattr("dasik.lib.actions.systemd_action.Command.execute", fake_execute)
+    action = SystemdAction({"enable_units": ["ufw.service"]},
+                           SimpleNamespace(target=SimpleNamespace(root="/mnt")))
+
+    assert "ufw.service" in action.actual()
+
+
+def test_a_unit_that_is_really_disabled_is_not_invented(monkeypatch):
+    from types import SimpleNamespace
+    from dasik.lib.actions.systemd_action import SystemdAction
+
+    def fake_execute(cmd, args=None, **kwargs):
+        if args and args[0] == "list-unit-files":
+            return SimpleNamespace(stdout="sshd.service enabled\n", returncode=0)
+        return SimpleNamespace(stdout="disabled\n", returncode=0)
+
+    monkeypatch.setattr("dasik.lib.actions.systemd_action.Command.execute", fake_execute)
+    action = SystemdAction({"enable_units": ["ufw.service"]},
+                           SimpleNamespace(target=SimpleNamespace(root="/mnt")))
+
+    assert "ufw.service" not in action.actual()

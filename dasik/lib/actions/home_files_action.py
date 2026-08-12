@@ -143,6 +143,11 @@ class HomeFilesAction(AbstractAction):
 
     def _drift_reason(self, canonical: str, spec: Dict[str, Any],
                       passwd: Dict[str, Tuple[str, int, int]]) -> Optional[str]:
+        if os.path.islink(self._abs(canonical)):
+            # $HOME is the user's; dasik writes there as root. Following a link
+            # planted at a managed path would put root's write wherever it
+            # points, and leave the path a link, so this never converges.
+            return "replaced by a symlink"
         if self._read(canonical) != spec["content"]:
             return "content drift"
         st = os.stat(self._abs(canonical))
@@ -193,15 +198,40 @@ class HomeFilesAction(AbstractAction):
         while probe and not os.path.exists(probe):
             created.append(probe)
             probe = os.path.dirname(probe)
+        self._check_parent(parent, canonical)
         os.makedirs(parent, exist_ok=True)
         for directory in reversed(created):
             os.chown(directory, uid, gid)
 
+        # Replace a symlink rather than write through it (see _drift_reason).
+        if os.path.islink(path):
+            os.remove(path)
         with open(path, "w") as f:
             f.write(spec["content"])
         if spec["mode"]:
             os.chmod(path, int(spec["mode"], 8))
         os.chown(path, uid, gid)
+
+    @staticmethod
+    def _check_parent(parent: str, canonical: str) -> None:
+        """Refuse a parent path that is not a directory dasik may write into.
+
+        A regular file in the way aborted the whole apply with a bare
+        `[Errno 17] File exists` naming nothing; a SYMLINKED directory
+        (`~/.config -> /etc`) would have sent every home file somewhere else
+        entirely, as root.
+        """
+        if os.path.islink(parent):
+            raise CommandExecutionError(
+                f"cannot write {canonical}: {parent} is a symlink, and dasik "
+                "will not write into a directory somebody redirected. Remove "
+                "it (or point the declaration elsewhere) and apply again."
+            )
+        if os.path.exists(parent) and not os.path.isdir(parent):
+            raise CommandExecutionError(
+                f"cannot write {canonical}: {parent} exists and is not a "
+                "directory. Remove it and apply again."
+            )
 
     # -- sync -------------------------------------------------------------- #
 

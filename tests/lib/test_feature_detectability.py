@@ -543,3 +543,50 @@ def test_hardening_dasik_never_wrote_is_left_alone(tmp_path):
 def test_the_password_library_reaches_the_expanded_config():
     expanded = expand_config({"pam": {"pwquality": {}}})
     assert "libpwquality" in expanded["packages"]
+
+
+# --- firewall backends ----------------------------------------------------- #
+#
+# The ufw backend reads the machine through `ufw status` and writes through the
+# CLI. Its plan must be honest in both directions, and the firewalld path must
+# behave exactly as it did before the backend field existed.
+
+def _ufw_plan(rules_live, cfg):
+    from unittest.mock import patch
+    from types import SimpleNamespace
+    from dasik.lib.actions.firewall_action import FirewallAction
+
+    status = ("Status: active\n\nTo Action From\n-- ------ ----\n"
+              + "".join(f"{t} ALLOW IN Anywhere\n" for t in rules_live))
+
+    class _R:
+        stdout, returncode = status, 0
+
+    action = FirewallAction(cfg, SimpleNamespace(target=None))
+    with patch("dasik.lib.actions.firewall_action.Command.execute",
+               return_value=_R()):
+        return [(c.op.name, c.item) for c in action.plan(managed=[])]
+
+
+_UFW_CFG = {"enable": True, "backend": "ufw", "rules": ["allow 22/tcp"]}
+
+
+def test_a_ufw_rule_missing_from_the_machine_is_planned():
+    assert _ufw_plan([], _UFW_CFG) == [("INSTALL", "allow 22/tcp")]
+
+
+def test_a_ufw_rule_already_live_plans_nothing():
+    assert _ufw_plan(["22/tcp"], _UFW_CFG) == []
+
+
+def test_the_ufw_backend_installs_ufw_and_not_firewalld():
+    expanded = expand_config(_UFW_CFG | {"firewall": _UFW_CFG})
+    packages = expanded["packages"]
+    assert "ufw" in packages
+    assert "firewalld" not in packages
+
+
+def test_the_firewalld_backend_still_installs_firewalld():
+    expanded = expand_config({"firewall": {"enable": True}})
+    assert "firewalld" in expanded["packages"]
+    assert "ufw" not in expanded["packages"]

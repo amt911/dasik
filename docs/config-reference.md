@@ -113,7 +113,8 @@ result back by hand.
 | `plymouth` | object | Boot splash: package, theme, initramfs hook/module, `splash` |
 | `apparmor` | object | Mandatory access control: package, unit, the `lsm=` kernel parameter, optional audit framework, local profiles |
 | `pam` | object | PAM hardening: account lockout, nproc limits, password policy |
-| `bluetooth`, `hardware_acceleration`, `kvm`, `cups`, `microsoft_fonts`, `firewall`, `wireguard`, `snapper` | object | Feature toggles |
+| `firewall` | object | firewalld **or** ufw — see below |
+| `bluetooth`, `hardware_acceleration`, `kvm`, `cups`, `microsoft_fonts`, `wireguard`, `snapper` | object | Feature toggles |
 | `enable_trim`, `enable_microcode`, `remove_home_on_delete`, `sysrq` | bool | Simple toggles |
 | `metadata`, `notes` | object / string | Free-form; not applied |
 
@@ -171,6 +172,25 @@ Three independent, optional sub-blocks. See [the wiki page](wiki/PAM.md).
 
 The only PAM stack file dasik writes is `/etc/pam.d/passwd`, so a mistake breaks the `passwd`
 command, never login. `sync` captures pwquality only when the module is actually in that stack.
+
+---
+
+## `firewall`
+
+One block, two backends — never both installed at once (preflight refuses it).
+See [the wiki page](wiki/Firewall.md).
+
+| Field | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `enable` | bool | `false` | Installs and enables the chosen backend. |
+| `backend` | `firewalld` \| `ufw` | `firewalld` | Which tool applies the rules. |
+| `allowed_services` | list | `[]` | firewalld: a service it knows (`samba`, `syncthing`). ufw: an application profile from `/etc/ufw/applications.d`. |
+| `remove_services` | list | `[]` | **firewalld only.** Services to strip from the `public` zone defaults (`ssh`, `dhcpv6-client`). ufw denies incoming by default, so it is a validation error there. |
+| `rich_rules` | list | `[]` | **firewalld only**, `firewall-cmd --add-rich-rule` syntax. A rule that cannot be represented losslessly is rejected, never approximated. |
+| `rules` | list | `[]` | **ufw only.** `<action> <target>` — `allow 22/tcp`, `limit 22/tcp`, `allow 6000:6007/udp`, `allow Syncthing`. `allow ssh` is rejected: ufw reports it as `22/tcp`, so dasik could never tell applied from missing. |
+
+firewalld converges as a file (`/etc/firewalld/zones/public.xml`, owned whole);
+ufw converges through its own CLI with `ufw status` as the read side.
 
 ---
 

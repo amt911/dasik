@@ -93,9 +93,16 @@ def expand_snapper(config: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def expand_firewall(config: Dict[str, Any]) -> Dict[str, Any]:
+    """The firewall the `backend` field asks for.
+
+    Only one of them: firewalld and ufw are both front-ends to netfilter, and
+    running the pair means each rewrites the other's rules on every restart.
+    """
     cfg = config.get("firewall") or {}
     if not cfg.get("enable"):
         return {}
+    if cfg.get("backend", "firewalld") == "ufw":
+        return {"packages": ["ufw"], "units": ["ufw.service"]}
     return {"packages": ["firewalld"], "units": ["firewalld.service"]}
 
 

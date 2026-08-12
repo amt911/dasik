@@ -305,6 +305,31 @@ def _check_cpu(config: Dict[str, Any], packages: Set[str]) -> List[Issue]:
     return issues
 
 
+_FIREWALL_PACKAGES = {"firewalld": "firewalld", "ufw": "ufw"}
+
+
+def _check_firewall_backend(config: Dict[str, Any], packages: Set[str]) -> List[Issue]:
+    """Two netfilter front-ends must not be installed together.
+
+    firewalld and ufw each own the whole rule set: whichever starts last wipes
+    the other's rules, so the machine's actual policy depends on unit ordering.
+    Provable from the config, hence an error.
+    """
+    cfg = config.get("firewall") or {}
+    if not cfg.get("enable"):
+        return []
+    backend = cfg.get("backend", "firewalld")
+    other = "ufw" if backend == "firewalld" else "firewalld"
+    if other in packages:
+        return [Issue(
+            "error", "firewall_backend_conflict",
+            f"the firewall backend is {backend!r} but {other!r} is also declared "
+            f"in packages. Both are front-ends to netfilter and each rewrites the "
+            f"other's rules on start, so the effective policy would depend on unit "
+            f"ordering. Keep one.")]
+    return []
+
+
 def _check_crypttab(config: Dict[str, Any]) -> List[Issue]:
     content = _crypttab_content(config)
     if not content:
@@ -476,6 +501,7 @@ def preflight(config: Dict[str, Any],
     issues += _check_units(config, packages)
     issues += _check_sudo(config, packages)
     issues += _check_cpu(config, packages)
+    issues += _check_firewall_backend(config, packages)
     issues += _check_crypttab(config)
     issues += _check_random_swap(config)
     issues += _check_unlock_keyfile(config)

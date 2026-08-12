@@ -1,0 +1,39 @@
+name: Package drift
+
+# The names dasik derives are data nobody resolves. That is exactly how `nvidia`
+# and `libva-mesa-driver` (PR #187) stayed broken with a green suite: both had
+# been dropped from the repos, and both abort a whole install with "target not
+# found" — after the disk has already been partitioned.
+#
+# Scheduled, not a merge gate: an upstream rename must not block an unrelated
+# PR, but it must not stay silent for months either. It also runs on demand, and
+# on any change to the package tables themselves.
+
+on:
+  schedule:
+    - cron: "17 5 * * 1"        # Mondays, 05:17 UTC
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "dasik/lib/expand/toggles.py"
+      - "config/*.json"
+      - "scripts/check-package-names.py"
+      - ".github/workflows/package-drift.yml"
+
+jobs:
+  resolve:
+    name: Every declarable package name still exists
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    steps:
+      - name: Sync the package databases
+        run: pacman -Sy --noconfirm --needed python git
+
+      - uses: actions/checkout@v4
+
+      - name: Resolve every name dasik can declare
+        run: python scripts/check-package-names.py
+
+      - name: Report (machine-readable)
+        if: always()
+        run: python scripts/check-package-names.py --json || true

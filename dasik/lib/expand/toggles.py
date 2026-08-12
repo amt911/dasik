@@ -345,6 +345,20 @@ def expand_apparmor(config: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
+def expand_pam(config: Dict[str, Any]) -> Dict[str, Any]:
+    """The password-quality library, when the policy is declared.
+
+    faillock and limits need no package at all: pam_faillock is already in
+    Arch's stack and pam_limits ships with pam itself. Only pwquality adds a
+    dependency, and without it `pam_pwquality.so` in /etc/pam.d/passwd would
+    break the `passwd` command outright.
+    """
+    pwquality = (config.get("pam") or {}).get("pwquality")
+    if pwquality is None or not pwquality.get("enable", True):
+        return {}
+    return {"packages": ["libpwquality"]}
+
+
 def expand_sdboot_update(config: Dict[str, Any]) -> Dict[str, Any]:
     # systemd ships this unit itself: it runs `bootctl update` when the ESP's
     # loader is older than the installed systemd. The old imperative installer
@@ -361,5 +375,5 @@ TOGGLES = [
     expand_wireguard, expand_firewall, expand_hwaccel, expand_snapper,
     expand_drivers, expand_initramfs, expand_zram, expand_oomd, expand_cpu,
     expand_sdboot_update, expand_reflector, expand_plymouth,
-    expand_apparmor,
+    expand_apparmor, expand_pam,
 ]

@@ -66,6 +66,7 @@ def setup_actions() -> None:
     from .encrypted_swap_action import EncryptedSwapAction
     from .apparmor_action import ApparmorAction
     from .auditd_conf_action import AuditdConfAction
+    from .pam_action import PamAction
 
     # === Phase 1: disk & base install =====================================
     register_action(
@@ -162,6 +163,15 @@ def setup_actions() -> None:
     register_action(
         action_class=SudoAction,
         config_key='__root__',   # reads `sudo` plus `users` for the implicit default
+        is_optional=True,
+    )
+
+    # PAM hardening comes right after Sudo, for the same reasons: the declared
+    # users exist, and PackagesAction has installed libpwquality (without it a
+    # pam_pwquality.so line in /etc/pam.d/passwd breaks the `passwd` command).
+    register_action(
+        action_class=PamAction,
+        config_key='__root__',   # reads root-level `pam`
         is_optional=True,
     )
 

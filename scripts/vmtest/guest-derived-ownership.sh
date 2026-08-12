@@ -38,5 +38,12 @@ echo "OWN-E: and the capture itself still converges"
 $D check /tmp/captured.json $L; echo "OWN-CAPCHECK-RC=$?"
 $D plan /tmp/captured.json --target / $L; echo "OWN-CAPPLAN-RC=$?"
 
+echo "OWN-F: rollback after the sync — it must NOT offer to dismantle the machine"
+$D generations --target / $L
+$D rollback 1 --target / --yes $L; echo "OWN-ROLLBACK-RC=$?"
+grep options /boot/loader/entries/arch.conf
+pacman -Q mkinitcpio && echo "OWN-MKINITCPIO: still here" || echo "OWN-MKINITCPIO: GONE"
+systemctl is-enabled getty@tty1.service; echo "OWN-GETTY-RC=$?"
+
 echo "OWN-DONE rc=0"
 [ -n "$DASIK_VM_NOPOWEROFF" ] || poweroff -f

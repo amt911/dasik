@@ -125,8 +125,23 @@ class DiskPartitionAction(AbstractAction):
         except Exception:
             return set()
 
+    @staticmethod
+    def _expected_label(partition: Partition) -> str:
+        """The label lsblk will REPORT for this partition.
+
+        Usually the declared one, because that is what `mkfs -L` wrote. A
+        random-key swap is the exception: what sits on the partition is the
+        1 MiB ext2 filesystem carrying `crypt<label>`, and the swap itself only
+        exists behind /dev/mapper from the first boot. Comparing against the
+        declared label there means the disk NEVER converges — and with
+        `wipe_disk: true` that is a repartition on every single apply.
+        """
+        if partition.swap_encryption is SwapEncryption.RANDOM:
+            return swap_names({"label": partition.label})[1]
+        return partition.label
+
     def _disk_converged(self, disk: DiskLayout) -> bool:
-        want = {p.label for p in disk.partitions}
+        want = {self._expected_label(p) for p in disk.partitions}
         return bool(want) and want.issubset(self._device_labels(disk.device))
 
     def actual(self) -> set:

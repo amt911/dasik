@@ -43,3 +43,46 @@ def test_the_label_filesystem_never_takes_the_whole_partition():
     with patch("dasik.lib.actions.disk_partition_action.Command.execute") as run:
         _action()._format_partition("/dev/vda", part)
     assert run.call_args[0][1][-1] == "1M"
+
+
+# --- convergence, which is what stops a re-apply from wiping the disk ------- #
+#
+# VM-proven on 2026-08-12: the second `dasik apply` of a config with a
+# random-key swap REPARTITIONED the disk. `_disk_converged` compares the
+# declared partition labels against the filesystem labels lsblk reports, and a
+# random-key swap carries the ext2 label (`cryptswap`) rather than its own —
+# so "swap" was never found, the disk never converged, and `wipe_disk: true`
+# fired again. Destructive, and silent right up until it happens.
+
+def _disk(**over):
+    from dasik.lib.models.disk_model import DiskLayout
+    spec = {"device": "/dev/vda", "wipe_disk": True, "partitions": [
+        {"label": "esp", "size": "512MiB", "filesystem": "fat32",
+         "partition_type": "esp", "mountpoint": "/boot"},
+        {"label": "swap", "size": "1GiB", "filesystem": "swap",
+         "partition_type": "linux-swap", "swap_encryption": "random"},
+        {"label": "root", "size": "rest", "filesystem": "ext4", "mountpoint": "/"},
+    ]}
+    spec.update(over)
+    return DiskLayout(**spec)
+
+
+def _converged(labels_on_disk):
+    action = DiskPartitionAction({}, None)
+    with patch.object(DiskPartitionAction, "_device_labels",
+                      return_value=set(labels_on_disk)):
+        return action._disk_converged(_disk())
+
+
+def test_a_random_key_swap_converges_on_its_derived_label():
+    assert _converged({"esp", "cryptswap", "root"}) is True
+
+
+def test_the_declared_label_alone_is_not_convergence():
+    """`swap` never appears on disk: the partition holds the 1 MiB ext2 whose
+    label is `cryptswap`, and the swap itself lives behind /dev/mapper."""
+    assert _converged({"esp", "swap", "root"}) is False
+
+
+def test_a_missing_partition_is_still_not_converged():
+    assert _converged({"esp", "cryptswap"}) is False

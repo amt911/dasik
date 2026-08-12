@@ -226,6 +226,15 @@ else inside LUKS: see the block above, plus `"initramfs": "dracut"` and
 Hibernation also needs `resume=` on the kernel cmdline and the resume hook in
 the initramfs — [Boot](Boot.md#hibernation).
 
+**Swap re-encrypted on every boot** (and therefore unable to hibernate)
+
+```json
+{"label":"swap","size":"8GiB","filesystem":"swap","partition_type":"linux-swap",
+ "swap_encryption":"random"}
+```
+
+Both swap modes, and why they exclude each other — [Swap](Swap.md).
+
 ## Related
 
 - [Boot chain](Boot.md) — how these choices become kernel parameters and an initramfs

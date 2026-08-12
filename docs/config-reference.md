@@ -142,6 +142,7 @@ for making a captured layout portable.
 | `partition_type` | `esp` \| `linux` \| `linux-swap` \| `lvm` | `linux` | GPT type. |
 | `mountpoint` | string | `null` | e.g. `/`, `/boot`. For a btrfs-with-subvolumes root, leave unset and put mounts on the subvolumes. |
 | `format` | bool | `true` | `sync` sets `false` (never reformat on re-apply). A freshly-created partition is formatted regardless. |
+| `swap_encryption` | `none` \| `random` | `none` | Swap only. `random` is plain dm-crypt re-keyed from `/dev/urandom` at every boot: dasik writes a 1 MiB ext2 label filesystem at the front of the partition, the crypttab entry and the fstab line. **Forbids hibernation** (preflight refuses it next to `resume=`) and cannot be combined with `encrypt`. Captured by `sync`. See [Swap](wiki/Swap.md). |
 | `encrypt` | bool | `false` | LUKS2. Requires `luks_name`. |
 | `luks_name` | string | `null` | dm-mapper name (`/dev/mapper/<name>`); `[A-Za-z0-9_-]+`. Use a generic name like `cryptroot`. |
 | `luks_password` | string | `null` | Passphrase, **plaintext** in config. Omit → cryptsetup prompts at install. |

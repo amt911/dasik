@@ -1,0 +1,69 @@
+{
+  "metadata": {
+    "note": "firewalld with the services the old imperative installer opened (samba + syncthing, ssh rate-limited). For the QEMU VM harness."
+  },
+  "disks": {
+    "disks": [
+      {
+        "device": "/dev/vda",
+        "partition_table": "gpt",
+        "wipe_disk": false,
+        "partitions": [
+          {
+            "label": "ESP",
+            "size": "512MiB",
+            "filesystem": "fat32",
+            "partition_type": "esp",
+            "mountpoint": "/boot",
+            "format": true
+          },
+          {
+            "label": "ROOT",
+            "size": "rest",
+            "filesystem": "ext4",
+            "partition_type": "linux",
+            "mountpoint": "/",
+            "format": true
+          }
+        ]
+      }
+    ]
+  },
+  "enable_microcode": false,
+  "packages": [
+    "base",
+    "linux",
+    "linux-firmware"
+  ],
+  "bootloader": "sd-boot",
+  "hostname": "dasik-firewalld",
+  "kernel_cmdline": [
+    "console=ttyS0,115200"
+  ],
+  "timezone": {
+    "region": "Etc",
+    "city": "UTC"
+  },
+  "locales": {
+    "selected_locales": [
+      "en_US.UTF-8 UTF-8"
+    ],
+    "desired_locale": "en_US.UTF-8",
+    "desired_tty_layout": "us"
+  },
+  "firewall": {
+    "enable": true,
+    "backend": "firewalld",
+    "allowed_services": [
+      "samba",
+      "samba-client",
+      "syncthing"
+    ],
+    "remove_services": [
+      "ssh"
+    ],
+    "rich_rules": [
+      "rule service name=\"ssh\" accept limit value=\"2/m\""
+    ]
+  }
+}

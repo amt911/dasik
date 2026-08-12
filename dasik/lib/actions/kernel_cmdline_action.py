@@ -21,6 +21,12 @@ _CPUINFO = "/proc/cpuinfo"
 _INTEL_MODES = ("active", "passive", "disable")
 
 _SYSRQ_PARAM = "sysrq_always_enabled=1"
+# AppArmor must be the FIRST major module in the list, and `capability` is never
+# listed — the kernel always includes it (arch-wiki AppArmor#Installation).
+_LSM_PARAM = "lsm=landlock,lockdown,yama,integrity,apparmor,bpf"
+# Denials travel through the audit subsystem; the backlog keeps early-boot
+# records from being dropped before auditd is up to read them.
+_AUDIT_PARAMS = ["audit=1", "audit_backlog_limit=8192"]
 _SPLASH_PARAM = "splash"
 # Fallback to the passphrase prompt when the key device is absent. Arch wiki:
 # rd.luks.key with a keyfile on another device does NOT fall back on its own.
@@ -28,7 +34,8 @@ _KEYFILE_TIMEOUT = "keyfile-timeout=10s"
 # Parameter NAMES a config block owns: on import they are never captured as
 # hand-set `kernel_cmdline` entries, because `sysrq` (here) and `cpu`
 # (CpuAction) declare them. See import_state.
-_BLOCK_OWNED_PARAMS = ("amd_pstate", "intel_pstate", "sysrq_always_enabled")
+_BLOCK_OWNED_PARAMS = ("amd_pstate", "intel_pstate", "sysrq_always_enabled",
+                       "lsm", "audit", "audit_backlog_limit")
 
 
 class KernelCmdlineAction(AbstractAction):
@@ -224,10 +231,25 @@ class KernelCmdlineAction(AbstractAction):
         """
         return ["splash"] if self._cfg.get("plymouth") is not None else []
 
+    def _derive_from_apparmor(self) -> List[str]:
+        """Kernel params for the `apparmor` block.
+
+        Installing the package is not what turns AppArmor on: without `lsm=`
+        naming it the module never initialises and every profile is inert —
+        indistinguishable from a working setup until someone runs `aa-enabled`.
+        """
+        cfg = self._cfg.get("apparmor")
+        if cfg is None or not cfg.get("enable", True):
+            return []
+        params = [_LSM_PARAM]
+        if cfg.get("audit"):
+            params += list(_AUDIT_PARAMS)
+        return params
+
     def _derived(self) -> List[str]:
         """Everything dasik derives itself — never captured back by `sync`."""
         return (self._derive_from_disks() + self._derive_from_cpu()
-                + self._derive_from_plymouth())
+                + self._derive_from_plymouth() + self._derive_from_apparmor())
 
     # Kernel parameters that may appear MORE THAN ONCE, one per device. For
     # these the whole token identifies the entry — keying on the name alone made

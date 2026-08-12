@@ -446,3 +446,46 @@ def test_dropping_the_block_removes_a_swap_dasik_owns(tmp_path):
 
 def test_an_unowned_swap_is_left_alone(tmp_path):
     assert _swap_plan(tmp_path, {}, fstab=_SWAP_FSTAB, crypttab=_SWAP_CRYPTTAB) == []
+
+
+# --- apparmor -------------------------------------------------------------- #
+#
+# The block rides the kernel cmdline: the package and the unit are visible as
+# their own domains, but what makes AppArmor actually enforce anything is the
+# `lsm=` parameter. A machine with apparmor installed and no such parameter is
+# NOT converged, however complete `pacman -Qq` looks.
+
+_LSM = "lsm=landlock,lockdown,yama,integrity,apparmor,bpf"
+
+
+def test_the_lsm_parameter_missing_from_the_entry_is_planned(tmp_path):
+    assert _cmdline_plan(tmp_path, {"apparmor": {}}, "root=LABEL=root rw") == [
+        ("INSTALL", _LSM)]
+
+
+def test_the_lsm_parameter_already_on_the_entry_plans_nothing(tmp_path):
+    assert _cmdline_plan(tmp_path, {"apparmor": {}},
+                         f"root=LABEL=root rw {_LSM}") == []
+
+
+def test_dropping_the_apparmor_block_removes_the_parameter_dasik_owns(tmp_path):
+    assert _cmdline_plan(tmp_path, {}, f"root=LABEL=root rw {_LSM}",
+                         managed=[_LSM]) == [("REMOVE", _LSM)]
+
+
+def test_an_unowned_lsm_parameter_is_left_alone(tmp_path):
+    """Somebody else's LSM order is not dasik's to delete."""
+    assert _cmdline_plan(tmp_path, {}, f"root=LABEL=root rw {_LSM}") == []
+
+
+def test_the_audit_parameters_are_planned_with_the_audit_flag(tmp_path):
+    planned = _cmdline_plan(tmp_path, {"apparmor": {"audit": True}},
+                            f"root=LABEL=root rw {_LSM}")
+    assert ("INSTALL", "audit=1") in planned
+    assert ("INSTALL", "audit_backlog_limit=8192") in planned
+
+
+def test_the_package_and_the_unit_reach_the_expanded_config():
+    expanded = expand_config({"apparmor": {}})
+    assert "apparmor" in expanded["packages"]
+    assert "apparmor.service" in expanded["systemd"]["enable_units"]

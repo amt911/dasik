@@ -487,3 +487,79 @@ def test_replanning_the_captured_swap_config_is_a_no_op(tmp_path):
                                  ActionContext(target=Target(root=str(tmp_path))))
 
     assert action.plan(managed=["swap"]) == []
+
+
+# --- apparmor -------------------------------------------------------------- #
+#
+# The mirror: a machine running AppArmor must capture the block, not the bare
+# `lsm=` parameter. Capturing the parameter alone would produce a config that
+# re-applies the same policy while never installing AppArmor — the parameter
+# names a module that is not there.
+
+_LSM = "lsm=landlock,lockdown,yama,integrity,apparmor,bpf"
+
+
+def _with_apparmor(tmp_path, params=f"{_ENTRY} {_LSM}", installed=True, auditd=False,
+                   profiles=()):
+    machine = _machine(tmp_path)
+    (machine / "boot/loader/entries/arch.conf").write_text(
+        f"title Arch\noptions {params}\n")
+    binaries = machine / "usr/bin"
+    binaries.mkdir(parents=True, exist_ok=True)
+    if installed:
+        (binaries / "apparmor_parser").write_text("")
+    if auditd:
+        (binaries / "auditd").write_text("")
+    profile_dir = machine / "etc/apparmor.d"
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    for name, content in profiles:
+        (profile_dir / name).write_text(content)
+    return machine
+
+
+def test_sync_captures_the_apparmor_block(tmp_path):
+    captured = _synced(_with_apparmor(tmp_path))
+
+    assert captured["apparmor"] == {"enable": True, "audit": False}
+
+
+def test_sync_invents_no_apparmor_on_a_machine_without_it(tmp_path):
+    captured = _synced(_with_apparmor(tmp_path, installed=False))
+
+    assert "apparmor" not in captured
+
+
+def test_sync_captures_the_audit_mode(tmp_path):
+    captured = _synced(_with_apparmor(tmp_path, params=f"{_ENTRY} {_LSM} audit=1",
+                                      auditd=True))
+
+    assert captured["apparmor"]["audit"] is True
+
+
+def test_sync_captures_a_local_profile(tmp_path):
+    captured = _synced(_with_apparmor(
+        tmp_path, profiles=[("usr.bin.foo", "profile foo {}\n")]))
+
+    assert captured["apparmor"]["extra_profiles"] == [
+        {"name": "usr.bin.foo", "content": "profile foo {}\n"}]
+
+
+def test_sync_leaves_the_lsm_parameter_out_of_kernel_cmdline(tmp_path):
+    """Captured as the block, not as a hand-set parameter — otherwise the same
+    policy is declared twice and `apparmor` never appears."""
+    captured = _synced(_with_apparmor(tmp_path))
+
+    assert not [p for p in captured["kernel_cmdline"] if p.startswith("lsm=")]
+
+
+def test_the_captured_apparmor_config_validates(tmp_path):
+    JsonModel(**_synced(_with_apparmor(tmp_path)))
+
+
+def test_replanning_the_captured_apparmor_config_is_a_no_op(tmp_path):
+    machine = _with_apparmor(tmp_path)
+    captured = _synced(machine)
+    action = KernelCmdlineAction(expand_config(captured),
+                                 ActionContext(target=Target(root=str(machine))))
+
+    assert [c for c in action.plan(managed=[]) if "lsm" in c.item] == []

@@ -15,6 +15,7 @@
 - [Boot chain](Boot)
 - [Packages](Packages)
 - [Feature blocks](Features)
+- [AppArmor](AppArmor)
 - [Config splitting](Config-splitting)
 
 **How it works**

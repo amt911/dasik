@@ -307,9 +307,16 @@ def expand_apparmor(config: Dict[str, Any]) -> Dict[str, Any]:
     unit starts, and every profile is inert — which looks exactly like a
     working setup until someone runs `aa-enabled`.
 
+    The log group is ``adm``, not a fresh ``audit`` one. NOTHING on Arch creates
+    an `audit` group — the wiki tells you to run ``groupadd -r audit`` by hand —
+    and dasik never creates groups, so declaring it would only make
+    ``useradd -G audit`` fail after the disk was already partitioned. The wiki's
+    own tip is to reuse an existing system group; ``adm`` is the traditional
+    log-reading one and exists on every Arch install.
+
     The tmpfiles override is not decoration: Arch ships
     ``z /var/log/audit 700 root root``, re-applied by systemd-tmpfiles on every
-    upgrade, so a user in the `audit` group can read the log until the next
+    upgrade, so a user in the log group can read the denials until the next
     ``pacman -Syu`` and never again.
     """
     cfg = config.get("apparmor")
@@ -323,13 +330,13 @@ def expand_apparmor(config: Dict[str, Any]) -> Dict[str, Any]:
     if cfg.get("audit"):
         packages.append("audit")
         units.append("auditd.service")
-        out["user_groups"] = ["audit"]
+        out["user_groups"] = ["adm"]
         files.append({
             "path": _AUDIT_TMPFILES,
             "content": ("# Managed by dasik: Arch's own tmpfiles entry resets\n"
                         "# /var/log/audit to 700 on every upgrade, which locks the\n"
-                        "# `audit` group back out of the denial log.\n"
-                        "z /var/log/audit 750 root audit - -\n"),
+                        "# log group back out of the denial log.\n"
+                        "z /var/log/audit 750 root adm - -\n"),
         })
     out["packages"] = packages
     out["units"] = units

@@ -111,9 +111,27 @@ result back by hand.
 | `cpu` | object | CPU scaling driver, power-profiles-daemon, cpupower governor |
 | `reflector` | object | `/etc/xdg/reflector/reflector.conf` + `reflector.timer` |
 | `plymouth` | object | Boot splash: package, theme, initramfs hook/module, `splash` |
+| `apparmor` | object | Mandatory access control: package, unit, the `lsm=` kernel parameter, optional audit framework, local profiles |
 | `bluetooth`, `hardware_acceleration`, `kvm`, `cups`, `microsoft_fonts`, `firewall`, `wireguard`, `snapper` | object | Feature toggles |
 | `enable_trim`, `enable_microcode`, `remove_home_on_delete`, `sysrq` | bool | Simple toggles |
 | `metadata`, `notes` | object / string | Free-form; not applied |
+
+---
+
+## `apparmor`
+
+Mandatory access control. Declaring the block is the declaration — `enable`
+defaults to `true`. See [the wiki page](wiki/AppArmor.md) for the full story.
+
+| Field | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `enable` | bool | `true` | Installs `apparmor`, enables `apparmor.service`, and derives `lsm=landlock,lockdown,yama,integrity,apparmor,bpf`. **The parameter is what turns AppArmor on** — the package alone leaves every profile inert. |
+| `audit` | bool | `false` | Also installs `audit` + `auditd.service`, derives `audit=1 audit_backlog_limit=8192`, adds every declared user to `adm` and writes `/etc/tmpfiles.d/audit.conf` so `/var/log/audit` stays readable across upgrades. |
+| `extra_profiles` | list | `[]` | `{name, content}` copied verbatim to `/etc/apparmor.d/<name>`. `name` is a file name, not a path. They load at the next boot — dasik does not run `apparmor_parser` in the chroot. |
+
+`sync` captures `enable: false` for a machine that has the package but no `lsm=`
+naming it: that machine is not protected, and reporting otherwise would describe
+a system that does not exist. Profiles pacman owns are never captured.
 
 ---
 

@@ -28,10 +28,17 @@ def test_audit_adds_the_daemon_the_group_and_the_tmpfiles_override():
     out = expand_apparmor({"apparmor": {"audit": True}})
     assert "audit" in out["packages"]
     assert "auditd.service" in out["units"]
-    assert out["user_groups"] == ["audit"]
     override = [f for f in out["files"] if f["path"] == "/etc/tmpfiles.d/audit.conf"]
     assert override, "the log directory override must be contributed"
-    assert "750 root audit" in override[0]["content"]
+    assert "750 root adm" in override[0]["content"]
+
+
+def test_the_log_group_is_one_that_actually_exists():
+    """No package on Arch creates an `audit` group — the wiki says to run
+    `groupadd -r audit` by hand — and dasik never creates groups, so declaring
+    it would make `useradd -G audit` fail after the disk was partitioned. The
+    wiki's own tip is to reuse a system group; `adm` reads logs by tradition."""
+    assert expand_apparmor({"apparmor": {"audit": True}})["user_groups"] == ["adm"]
 
 
 def test_profiles_become_files_under_the_profile_directory():
@@ -48,4 +55,4 @@ def test_the_expanded_config_carries_it_all_through():
     assert "apparmor.service" in expanded["systemd"]["enable_units"]
     assert "auditd.service" in expanded["systemd"]["enable_units"]
     # The group is what lets a desktop user read /var/log/audit at all.
-    assert "audit" in expanded["users"][0]["groups"]
+    assert "adm" in expanded["users"][0]["groups"]

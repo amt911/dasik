@@ -23,6 +23,7 @@ from .sudo_model import SudoModel
 from .cpu_model import CpuModel
 from .reflector_model import ReflectorModel
 from .plymouth_model import PlymouthModel
+from .apparmor_model import ApparmorModel
 from .systemd_conf_model import validate_ini_section
 
 
@@ -102,6 +103,7 @@ class JsonModel(BaseModel):
     cpu: Optional[CpuModel] = None
     reflector: Optional[ReflectorModel] = None
     plymouth: Optional[PlymouthModel] = None
+    apparmor: Optional[ApparmorModel] = None
     # zram-generator: {device: {option: value}} mirroring zram-generator.conf ini.
     zram: Optional[Dict[str, Dict[str, Any]]] = None
     # The pacman-owned /etc/systemd/*.conf files, one block per file, each

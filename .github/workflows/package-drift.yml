@@ -26,8 +26,12 @@ jobs:
     runs-on: ubuntu-latest
     container: archlinux:latest
     steps:
+      # The script imports dasik to ask the expand toggles what they derive, so
+      # it needs dasik's two runtime deps. They come from pacman, not pip: this
+      # container is the same Arch the tool targets, and its python is
+      # externally managed.
       - name: Sync the package databases
-        run: pacman -Sy --noconfirm --needed python git
+        run: pacman -Sy --noconfirm --needed python python-pydantic python-colorama git
 
       - uses: actions/checkout@v4
 

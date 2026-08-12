@@ -295,6 +295,49 @@ def expand_plymouth(config: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
+_APPARMOR_PROFILE_DIR = "/etc/apparmor.d"
+_AUDIT_TMPFILES = "/etc/tmpfiles.d/audit.conf"
+
+
+def expand_apparmor(config: Dict[str, Any]) -> Dict[str, Any]:
+    """AppArmor: the package, the unit, and optionally the audit framework.
+
+    The kernel parameter that actually turns AppArmor on is derived by
+    KernelCmdlineAction. Without `lsm=` naming it, the package installs, the
+    unit starts, and every profile is inert — which looks exactly like a
+    working setup until someone runs `aa-enabled`.
+
+    The tmpfiles override is not decoration: Arch ships
+    ``z /var/log/audit 700 root root``, re-applied by systemd-tmpfiles on every
+    upgrade, so a user in the `audit` group can read the log until the next
+    ``pacman -Syu`` and never again.
+    """
+    cfg = config.get("apparmor")
+    if cfg is None or not cfg.get("enable", True):
+        return {}
+    packages = ["apparmor"]
+    units = ["apparmor.service"]
+    files = [{"path": f"{_APPARMOR_PROFILE_DIR}/{p['name']}", "content": p["content"]}
+             for p in cfg.get("extra_profiles") or []]
+    out: Dict[str, Any] = {}
+    if cfg.get("audit"):
+        packages.append("audit")
+        units.append("auditd.service")
+        out["user_groups"] = ["audit"]
+        files.append({
+            "path": _AUDIT_TMPFILES,
+            "content": ("# Managed by dasik: Arch's own tmpfiles entry resets\n"
+                        "# /var/log/audit to 700 on every upgrade, which locks the\n"
+                        "# `audit` group back out of the denial log.\n"
+                        "z /var/log/audit 750 root audit - -\n"),
+        })
+    out["packages"] = packages
+    out["units"] = units
+    if files:
+        out["files"] = files
+    return out
+
+
 def expand_sdboot_update(config: Dict[str, Any]) -> Dict[str, Any]:
     # systemd ships this unit itself: it runs `bootctl update` when the ESP's
     # loader is older than the installed systemd. The old imperative installer
@@ -311,4 +354,5 @@ TOGGLES = [
     expand_wireguard, expand_firewall, expand_hwaccel, expand_snapper,
     expand_drivers, expand_initramfs, expand_zram, expand_oomd, expand_cpu,
     expand_sdboot_update, expand_reflector, expand_plymouth,
+    expand_apparmor,
 ]

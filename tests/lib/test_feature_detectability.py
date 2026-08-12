@@ -489,3 +489,57 @@ def test_the_package_and_the_unit_reach_the_expanded_config():
     expanded = expand_config({"apparmor": {}})
     assert "apparmor" in expanded["packages"]
     assert "apparmor.service" in expanded["systemd"]["enable_units"]
+
+
+# --- pam ------------------------------------------------------------------- #
+#
+# Three items in one domain, each with its own file. The disable direction is
+# the interesting one: dropping the block must UNDO what dasik wrote, and must
+# leave alone hardening somebody else did.
+
+def _pam_target(tmp_path):
+    (tmp_path / "etc/security").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "etc/pam.d").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "etc/security/faillock.conf").write_text("# deny = 3\n")
+    (tmp_path / "etc/pam.d/passwd").write_text(
+        "#%PAM-1.0\npassword\tinclude\t\tsystem-auth\n")
+    return tmp_path
+
+
+def _pam_plan(tmp_path, config, managed=()):
+    from dasik.lib.actions.pam_action import PamAction
+    return [(c.op.name, c.item)
+            for c in PamAction(config, _ctx(tmp_path)).plan(managed=list(managed))]
+
+
+def test_a_declared_pam_policy_missing_from_the_target_is_planned(tmp_path):
+    assert _pam_plan(_pam_target(tmp_path), {"pam": {"faillock": {}}}) == [
+        ("INSTALL", "faillock")]
+
+
+def test_a_pam_policy_already_applied_plans_nothing(tmp_path):
+    from dasik.lib.actions.pam_action import PamAction
+    target = _pam_target(tmp_path)
+    action = PamAction({"pam": {"faillock": {}}}, _ctx(target))
+    action.apply(action.plan(managed=[]))
+    assert _pam_plan(target, {"pam": {"faillock": {}}}, managed=["faillock"]) == []
+
+
+def test_dropping_the_pam_block_removes_what_dasik_owns(tmp_path):
+    from dasik.lib.actions.pam_action import PamAction
+    target = _pam_target(tmp_path)
+    action = PamAction({"pam": {"faillock": {}, "limits": {}}}, _ctx(target))
+    action.apply(action.plan(managed=[]))
+    assert sorted(_pam_plan(target, {}, managed=["faillock", "limits"])) == [
+        ("REMOVE", "faillock"), ("REMOVE", "limits")]
+
+
+def test_hardening_dasik_never_wrote_is_left_alone(tmp_path):
+    target = _pam_target(tmp_path)
+    (target / "etc/security/faillock.conf").write_text("deny = 3\n")
+    assert _pam_plan(target, {}, managed=["faillock"]) == []
+
+
+def test_the_password_library_reaches_the_expanded_config():
+    expanded = expand_config({"pam": {"pwquality": {}}})
+    assert "libpwquality" in expanded["packages"]

@@ -36,14 +36,17 @@ _FAILLOCK_CONF = "/etc/security/faillock.conf"
 _LIMITS_DROPIN = "/etc/security/limits.d/10-dasik.conf"
 _PWQUALITY_MAIN = "/etc/security/pwquality.conf"
 _PWQUALITY_DROPIN = "/etc/security/pwquality.conf.d/10-dasik.conf"
-_PASSWD_STACK = "/etc/pam.d/passwd"
+# Named without "passwd" on purpose: a constant called *_PASSWD holding a
+# string trips bandit's hardcoded-password check (B105), and a suppression
+# comment is worse than a clear name.
+_STACK_FILE = "/etc/pam.d/passwd"
 
 _HEADER = "# Managed by dasik\n"
 
 # What `shadow` ships as /etc/pam.d/passwd. Restored verbatim when the pwquality
 # item is dropped: dasik only ever replaces this file when the block asks for it,
 # so putting the original back is the honest undo.
-_STOCK_PASSWD = (
+_STOCK_STACK = (
     "#%PAM-1.0\n"
     "auth\t\tinclude\t\tsystem-auth\n"
     "account\t\tinclude\t\tsystem-auth\n"
@@ -169,7 +172,7 @@ class PamAction(AbstractAction):
         }
 
     @staticmethod
-    def _passwd_stack(cfg: Dict[str, Any]) -> str:
+    def _stack_content(cfg: Dict[str, Any]) -> str:
         """`/etc/pam.d/passwd` with pwquality in front of pam_unix.
 
         `use_authtok` is what makes pam_unix accept the password pwquality just
@@ -222,7 +225,7 @@ class PamAction(AbstractAction):
             return False
         # The drop-in alone changes nothing: without the module in the stack,
         # nobody ever reads it.
-        return self._read(_PASSWD_STACK) == self._passwd_stack(self._pwquality or {})
+        return self._read(_STACK_FILE) == self._stack_content(self._pwquality or {})
 
     def _declared(self) -> List[str]:
         return [item for item, cfg in ((_FAILLOCK, self._faillock),
@@ -237,7 +240,7 @@ class PamAction(AbstractAction):
         if item == _LIMITS:
             return os.path.exists(self._p(_LIMITS_DROPIN))
         return (os.path.exists(self._p(_PWQUALITY_DROPIN))
-                or "pam_pwquality.so" in self._read(_PASSWD_STACK))
+                or "pam_pwquality.so" in self._read(_STACK_FILE))
 
     # --- v3 contract --------------------------------------------------------- #
 
@@ -278,7 +281,7 @@ class PamAction(AbstractAction):
         else:
             cfg = self._pwquality or {}
             self._write(_PWQUALITY_DROPIN, _render_kv(self._pwquality_settings(cfg)))
-            self._write(_PASSWD_STACK, self._passwd_stack(cfg))
+            self._write(_STACK_FILE, self._stack_content(cfg))
 
     def _undo(self, item: str) -> None:
         if item == _FAILLOCK:
@@ -295,7 +298,7 @@ class PamAction(AbstractAction):
                 os.remove(self._p(_PWQUALITY_DROPIN))
             except FileNotFoundError:
                 pass
-            self._write(_PASSWD_STACK, _STOCK_PASSWD)
+            self._write(_STACK_FILE, _STOCK_STACK)
 
     def managed_keys(self) -> dict:
         return {self._DOMAIN: self._declared()}
@@ -335,7 +338,7 @@ class PamAction(AbstractAction):
         return block or None
 
     def _import_pwquality(self) -> Optional[Dict[str, Any]]:
-        stack = self._read(_PASSWD_STACK)
+        stack = self._read(_STACK_FILE)
         if "pam_pwquality.so" not in stack:
             # A drop-in nobody reads is not a policy: the module has to be in
             # the stack for /etc/security/pwquality.conf* to mean anything.

@@ -563,3 +563,57 @@ def test_replanning_the_captured_apparmor_config_is_a_no_op(tmp_path):
                                  ActionContext(target=Target(root=str(machine))))
 
     assert [c for c in action.plan(managed=[]) if "lsm" in c.item] == []
+
+
+# --- pam ------------------------------------------------------------------- #
+
+def _pam_machine(tmp_path, pam_config):
+    """A machine that has had `pam_config` applied to it."""
+    from dasik.lib.actions.pam_action import PamAction
+    machine = _machine(tmp_path)
+    (machine / "etc/security").mkdir(parents=True, exist_ok=True)
+    (machine / "etc/pam.d").mkdir(parents=True, exist_ok=True)
+    (machine / "etc/security/faillock.conf").write_text("# deny = 3\n")
+    (machine / "etc/pam.d/passwd").write_text(
+        "#%PAM-1.0\npassword\tinclude\t\tsystem-auth\n")
+    action = PamAction({"pam": pam_config},
+                       ActionContext(target=Target(root=str(machine))))
+    action.apply(action.plan(managed=[]))
+    return machine
+
+
+def test_sync_captures_the_pam_policy(tmp_path):
+    captured = _synced(_pam_machine(tmp_path, {"faillock": {"deny": 4}}))
+
+    assert captured["pam"]["faillock"]["deny"] == 4
+    assert captured["pam"]["faillock"]["persistent"] is True
+
+
+def test_sync_invents_no_pam_policy_on_a_stock_machine(tmp_path):
+    captured = _synced(_machine(tmp_path))
+
+    assert "pam" not in captured
+
+
+def test_the_captured_pam_config_validates(tmp_path):
+    JsonModel(**_synced(_pam_machine(tmp_path, {"faillock": {}, "limits": {}})))
+
+
+def test_replanning_the_captured_pam_config_is_a_no_op(tmp_path):
+    from dasik.lib.actions.pam_action import PamAction
+
+    machine = _pam_machine(tmp_path, {"faillock": {"deny": 4}, "limits": {}})
+    captured = _synced(machine)
+    action = PamAction(expand_config(captured),
+                       ActionContext(target=Target(root=str(machine))))
+
+    assert action.plan(managed=["faillock", "limits"]) == []
+
+
+def test_the_package_behind_the_policy_is_reproducible_from_the_capture(tmp_path):
+    """`subtract_contributions` strips libpwquality as a toggle contribution;
+    what must survive is the declaration that re-derives it."""
+    captured = _synced(_pam_machine(tmp_path, {"pwquality": {"minlen": 12}}))
+
+    assert captured["pam"]["pwquality"]["minlen"] == 12
+    assert "libpwquality" in expand_config(captured)["packages"]

@@ -548,11 +548,29 @@ class PackagesAction(AbstractAction):
                 result.append(bare)   # explicit / intent (not installed)
 
         for name in sorted(explicit - declared):   # new explicit packages
+            if self._is_debug_by_product(name, installed):
+                # `makepkg -si` builds and installs a split `-debug` package
+                # alongside the real one (Arch's default makepkg.conf asks for
+                # it). There is no `yay-debug` in any repo or in the AUR — it
+                # only exists as a by-product of building `yay` on THIS machine
+                # — so writing it into the config produces a capture that
+                # cannot be applied anywhere: the name resolves nowhere.
+                continue
             result.append(name)
         # …and whatever an enabled unit proves is there without being explicit.
         for name in sorted(self._unit_provider_packages() - declared - explicit):
             result.append({"name": name, "reason": "dep"})
         return {self._PACMAN_DOMAIN: result}
+
+    @staticmethod
+    def _is_debug_by_product(name: str, installed: set) -> bool:
+        """True for a `<pkg>-debug` whose `<pkg>` is installed beside it.
+
+        A package that merely ends in -debug with no base next to it is
+        somebody's real package and is captured like any other.
+        """
+        base = name[: -len("-debug")] if name.endswith("-debug") else ""
+        return bool(base) and base in installed
 
     # ------------------------------------------------------------------ #
     #  v3 apply() — destructive                                          #

@@ -629,6 +629,7 @@ class PackagesAction(AbstractAction):
         if target is None or not changes:
             return
 
+        self._refuse_a_locked_database(target)
         install_names = [c.item for c in changes if c.op is Op.INSTALL]
         # Two kinds of MODIFY: a Git source-ref change (rebuild) vs an install-
         # reason change (pacman -D). Keep them apart — a rebuild is not a -D.
@@ -724,6 +725,53 @@ class PackagesAction(AbstractAction):
                 check=True,
                 stream=True,
             )
+
+    _DB_LOCK = "/var/lib/pacman/db.lck"
+
+    def _refuse_a_locked_database(self, target) -> None:
+        """Say what the lock is before pacman says `File exists`.
+
+        A machine that lost power mid-apply comes back with db.lck still there —
+        pacman never got to remove it — and every apply after that dies with
+
+            error: could not lock database: File exists
+
+        which names no file, no cause and no fix, at exactly the moment somebody
+        is trying to recover a half-installed machine.
+
+        dasik does NOT delete it: a lock can also mean a pacman is genuinely
+        running, and guessing wrong there corrupts a package database.
+        """
+        try:
+            path = target.path(self._DB_LOCK)
+        except AttributeError:          # a target double without path()
+            return
+        if not os.path.exists(path):
+            return
+        if self._pacman_is_running():
+            raise CommandExecutionError(
+                f"another pacman is already running (lock: {self._DB_LOCK}). "
+                "Wait for it to finish and apply again."
+            )
+        raise CommandExecutionError(
+            f"pacman's database is locked by {self._DB_LOCK}, and no pacman is "
+            "running — the lock is left over from a run that was interrupted "
+            "(a crash, a power cut, a killed apply). Check that nothing is "
+            f"installing, remove the file (`rm {self._DB_LOCK}`) and apply "
+            "again. dasik will not remove it for you: if a pacman really is "
+            "running, deleting it corrupts the package database."
+        )
+
+    @staticmethod
+    def _pacman_is_running() -> bool:
+        """Best effort: any live pacman process, host-side (arch-chroot runs it
+        there too). Unknowable -> assume none, so the message is the stale one."""
+        try:
+            res = subprocess.run(["pgrep", "-x", "pacman"],  # nosec B603, B607
+                                 capture_output=True, check=False)
+            return res.returncode == 0
+        except Exception:      # noqa: BLE001 - no pgrep: cannot tell
+            return False
 
     def _split_optional(self, names: "list[str]") -> "tuple[list[str], list[str]]":
         """(required, optional) preserving order."""

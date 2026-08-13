@@ -174,6 +174,33 @@ restored".
 **Un-declaring a restore removes nothing.** Unpacking cannot be undone; the
 files belong to the user now. The domain plans no removal at all.
 
+**It is not limited to `$HOME`.** A document takes absolute paths, so system
+configuration works the same way:
+
+```json
+"configs": {
+  "etc-ssh": { "normalize_content": true,
+               "directories": [{ "source": "/etc/ssh",
+                                 "files": ["sshd_config", "ssh_config"] }] }
+},
+"timer_users": ["root"]
+```
+
+with three conditions that decide whether it works:
+
+- **`timer_users` needs `root`** for anything under `/etc` — a user timer cannot
+  read it, and the archive comes out short without saying so.
+- **Name the files, never the whole `/etc/ssh`**: that directory also holds
+  `ssh_host_*_key`, the host's private keys.
+- **`ref` is the full 40-character sha**; a short one is rejected by the model.
+
+And keep the two ideas apart: **`files` applies, `config_saver` saves.** A
+setting you want *identical on every machine* belongs in
+[`files`](#files) — dasik writes it, sees the drift and repairs it. A setting
+this machine *grew*, which you want back on the next one, belongs here. For
+`/etc/ssh` both usually apply: the hardening snippet declared, the rest backed
+up. The worked example is in the wiki's Recipes page.
+
 `sync` reads the documents and the enabled timers off the machine. `source` and
 `restore` come back from the config: a marker names a content hash and a built
 package names no repository, so neither can be reconstructed from the target —

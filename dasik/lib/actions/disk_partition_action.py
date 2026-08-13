@@ -172,6 +172,19 @@ class DiskPartitionAction(AbstractAction):
                 found[parts[0]] = parts[1]
         return found
 
+    def _unlabelled_fstypes(self, device: str) -> "set[str]":
+        """Filesystem types on this disk that carry no label — a LUKS container
+        is exactly that, so it never appears in the {label: fstype} map."""
+        try:
+            result = Command.execute("lsblk", ["-no", "LABEL,FSTYPE", device])
+        except Exception:      # nosec B110 - no lsblk: nothing to compare against
+            return set()
+        out = getattr(result, "stdout", b"") or b""
+        if isinstance(out, bytes):
+            out = out.decode("utf-8", "replace")
+        return {parts[0] for parts in (line.split() for line in out.splitlines())
+                if len(parts) == 1}
+
     def _content_mismatches(self, disk: DiskLayout) -> "list[str]":
         """Declared partitions whose label is there but whose CONTENT is not.
 
@@ -183,6 +196,7 @@ class DiskPartitionAction(AbstractAction):
         reported = self._reported_fstypes(disk.device)
         if not reported:
             return []
+        seen = set(reported.values()) | self._unlabelled_fstypes(disk.device)
         out: "list[str]" = []
         for part in disk.partitions:
             label = self._expected_label(part)
@@ -191,10 +205,21 @@ class DiskPartitionAction(AbstractAction):
                 continue
             # `filesystem` is an enum; lsblk speaks strings.
             declared = getattr(part.filesystem, "value", part.filesystem)
-            want = ("crypto_LUKS" if part.encrypt
-                    else self._FSTYPE_ALIASES.get(declared, declared))
-            if actual != want:
+            want = self._FSTYPE_ALIASES.get(declared, declared)
+            # On an encrypted partition the LABEL lsblk shows belongs to the
+            # filesystem INSIDE the mapping — the container itself carries none:
+            #
+            #     (no label)  crypto_LUKS
+            #     ROOT        btrfs
+            #
+            # so the labelled line is the inner filesystem and comparing it
+            # against "crypto_LUKS" warned on every plan of every encrypted
+            # machine. Whether the volume is encrypted at all is a separate
+            # question, answered by the container line below.
+            if actual not in (want, "crypto_LUKS"):
                 out.append(f"{label}: declared {want}, disk has {actual}")
+            if part.encrypt and "crypto_LUKS" not in seen:
+                out.append(f"{label}: declared encrypted, disk has no LUKS container")
         return out
 
     def plan(self, managed) -> list:

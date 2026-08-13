@@ -87,6 +87,25 @@ def test_an_encrypted_partition_reports_crypto_LUKS():
     assert (changes, warnings) == ([], [])
 
 
+def test_the_shape_a_real_encrypted_machine_actually_reports():
+    """What `lsblk -no LABEL,FSTYPE` prints on a machine dasik installed: the
+    container carries NO label (so it never reaches the {label: fstype} map) and
+    the labelled line is the filesystem inside the mapping. Comparing that line
+    against "crypto_LUKS" warned on every plan of every encrypted machine."""
+    changes, warnings = _run(_cfg(fs="btrfs", encrypt=True),
+                             [("ESP", "vfat"), ("", "crypto_LUKS"), ("ROOT", "btrfs")])
+
+    assert (changes, warnings) == ([], [])
+
+
+def test_the_filesystem_inside_the_mapping_is_still_compared():
+    changes, warnings = _run(_cfg(fs="btrfs", encrypt=True),
+                             [("ESP", "vfat"), ("", "crypto_LUKS"), ("ROOT", "ext4")])
+
+    assert changes == []
+    assert any("ROOT" in w and "ext4" in w and "btrfs" in w for w in warnings)
+
+
 def test_a_partition_declared_encrypted_that_is_not_is_reported():
     """The one that matters most: dasik would derive rd.luks.name for a volume
     that is plain, and the plan said nothing at all."""
@@ -94,7 +113,7 @@ def test_a_partition_declared_encrypted_that_is_not_is_reported():
                              [("ESP", "vfat"), ("ROOT", "ext4")])
 
     assert changes == []
-    assert any("ROOT" in w and "crypto_LUKS" in w for w in warnings)
+    assert any("ROOT" in w and "LUKS" in w for w in warnings), warnings
 
 
 def test_the_wipe_decision_is_untouched():

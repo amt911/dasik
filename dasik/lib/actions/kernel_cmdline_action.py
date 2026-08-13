@@ -304,6 +304,38 @@ class KernelCmdlineAction(AbstractAction):
             pass
         return None
 
+    def _our_sdboot_entries(self) -> List[str]:
+        """The entries dasik owns — never everything on the ESP.
+
+        An ESP can be shared. Writing this machine's `root=` into another
+        distribution's entry sends it to the wrong filesystem, and the plan
+        never mentions it because the domain is the command line, not the
+        entries. dasik's own are arch.conf, arch-fallback.conf and one pair per
+        DECLARED kernel; anything else there belongs to somebody else.
+        """
+        ours = {"arch.conf", "arch-fallback.conf"}
+        for name in self._declared_kernels():
+            ours |= {f"{name}.conf", f"{name}-fallback.conf"}
+        default = self._default_entry()
+        if default:
+            ours.add(default)
+        return [e for e in self._sdboot_entries() if os.path.basename(e) in ours]
+
+    def _declared_kernels(self) -> List[str]:
+        """Kernel packages the config asks for, other than the default `linux`
+        (whose entry is the historical arch.conf). Same rule the bootloader
+        domain uses to decide which entries to write."""
+        skip = ("-headers", "-docs", "-tools", "-api-headers", "-firmware")
+        out = []
+        for name in self.config.get("packages") or []:
+            if not isinstance(name, str):
+                continue
+            name = name.strip()
+            if name.startswith("linux") and name != "linux" \
+                    and not any(name.endswith(s) for s in skip):
+                out.append(name)
+        return sorted(set(out))
+
     def _sdboot_entries(self) -> List[str]:
         t = self._target()
         entries_dir = t.path("/boot/loader/entries") if t is not None else "/mnt/boot/loader/entries"
@@ -444,7 +476,7 @@ class KernelCmdlineAction(AbstractAction):
             self._write_grub(line)
             Command.execute("grub-mkconfig", ["-o", "/boot/grub/grub.cfg"], target=self._target())
         else:
-            for entry in self._sdboot_entries():
+            for entry in self._our_sdboot_entries():
                 self._write_sdboot(entry, line)
 
     def _write_grub(self, line: str) -> None:

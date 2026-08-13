@@ -1,5 +1,7 @@
 import json
+import contextlib
 import os
+import tempfile
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Any
@@ -59,12 +61,24 @@ def write_json_atomically(path: Path, payload: dict[str, Any]) -> None:
     which is atomic on POSIX.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    with open(tmp, "w", encoding="utf-8") as f:
-        f.write(json.dumps(payload, indent=2))
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp, path)
+    # A temporary of its own per write. Sharing one name means two writers race
+    # for it and the loser dies on the rename ("No such file or directory:
+    # state.json.tmp -> state.json") — a crash half way through an apply that
+    # has already changed the machine, which is worse than the interleaving it
+    # replaced. mkstemp also covers threads and pid reuse, which a pid suffix
+    # does not.
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".tmp.")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(json.dumps(payload, indent=2))
+            f.flush()
+            os.fsync(f.fileno())
+        os.chmod(tmp, 0o644)          # mkstemp creates 0600; this file is public
+        os.replace(tmp, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
 
 
 class StateStore:

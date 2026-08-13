@@ -120,3 +120,39 @@ def test_rollback_says_the_link_is_missing_rather_than_blaming_the_generations(t
     assert rc == 1
     assert "current" in err.getvalue()
     assert "dasik rollback <number>" in err.getvalue()
+
+
+def test_two_writers_do_not_fight_over_one_temporary(tmp_path):
+    """The temporary must be per-process.
+
+    Both writers used `<path>.tmp`, so one renamed it away while the other was
+    still about to — and the loser died on the rename:
+
+        FileNotFoundError: '…/state.json.tmp' -> '…/state.json'
+
+    Interleaved content was the old failure; a crash inside `_persist`, half way
+    through an apply that has already changed the machine, is a worse one.
+    """
+    import threading
+
+    from dasik.lib.state.state_store import StateStore
+
+    store = _store(tmp_path)
+    errors = []
+
+    def writer(generation):
+        try:
+            for _ in range(40):
+                store.save(Manifest(generation=generation))
+        except Exception as exc:               # noqa: BLE001 - the point of the test
+            errors.append(exc)
+
+    threads = [threading.Thread(target=writer, args=(n,)) for n in (1, 2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert errors == []
+    assert store.load().generation in (1, 2)   # one of them won, cleanly
+    assert [p.name for p in store.state_path.parent.iterdir()] == ["state.json"]

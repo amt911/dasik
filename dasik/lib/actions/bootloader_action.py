@@ -129,8 +129,13 @@ class BootloaderAction(AbstractAction):
 
     _ENTRY_PREFIX = "entry:"
     _DEFAULT_KERNEL = "linux"
-    # Packages whose name starts with "linux" and are NOT kernels.
-    _NOT_KERNELS = ("-headers", "-docs", "-tools", "-api-headers", "-firmware")
+    # Packages whose name starts with "linux" and are NOT kernels. The firmware
+    # family is a PREFIX because it splits: linux-firmware-marvell,
+    # linux-firmware-nvidia, … all start with linux- and end in none of the
+    # suffixes below, so a suffix list alone lets them through.
+    _NOT_KERNEL_SUFFIXES = ("-headers", "-docs", "-tools", "-api-headers", "-firmware")
+    _NOT_KERNEL_PREFIXES = ("linux-firmware", "linux-api-headers", "linux-tools",
+                            "linux-docs")
 
     def _declared_kernels(self) -> List[str]:
         """Extra kernels the CONFIG asks for, other than the default one.
@@ -148,10 +153,32 @@ class BootloaderAction(AbstractAction):
             name = name.strip()
             if not name.startswith("linux") or name == self._DEFAULT_KERNEL:
                 continue
-            if any(name.endswith(suffix) for suffix in self._NOT_KERNELS):
+            if any(name.endswith(s) for s in self._NOT_KERNEL_SUFFIXES):
+                continue
+            if any(name.startswith(p) for p in self._NOT_KERNEL_PREFIXES):
+                continue
+            if self._installed_without_a_kernel(name):
+                # The name is a guess; the machine is the fact. A package that
+                # is installed and brought no vmlinuz is not a kernel, whatever
+                # it is called — and asking for its entry would ask again on
+                # every plan, for ever. A package that is NOT installed yet is
+                # still planned: on an install it arrives in this same apply.
                 continue
             kernels.append(name)
         return sorted(set(kernels))
+
+    def _installed_without_a_kernel(self, name: str) -> bool:
+        """True when pacman's local db has the package and the ESP has no image
+        for it. Read straight off the target — no pacman call needed."""
+        if self._kernel_is_on_the_esp(name):
+            return False
+        try:
+            entries = os.listdir(self._p("/var/lib/pacman/local"))
+        except (OSError, AttributeError):
+            return False
+        prefix = name + "-"
+        return any(e.startswith(prefix) and e[len(prefix):len(prefix) + 1].isdigit()
+                   for e in entries)
 
     def _kernel_is_on_the_esp(self, kernel: str) -> bool:
         """Both halves or nothing: an entry whose initrd is missing makes

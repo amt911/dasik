@@ -177,3 +177,34 @@ def test_without_an_arch_conf_it_still_writes_a_bootable_options_line(tmp_path):
     options = [l for l in (root / "boot/loader/entries/linux-lts.conf").read_text().splitlines()
                if l.startswith("options ")][0]
     assert "root=" in options and options.endswith("rw")
+
+
+def test_the_firmware_split_packages_are_not_kernels(tmp_path):
+    """`linux-firmware-marvell` and its siblings start with `linux-` and end in
+    none of the excluded suffixes. Treating them as kernels asks for an entry
+    that can never be written — and asks again on every plan, for ever."""
+    root = _esp(tmp_path, kernels=("linux",), entries=("arch.conf", "arch-fallback.conf"))
+    action = _action(root, packages=("base", "linux", "linux-firmware",
+                                     "linux-firmware-marvell", "linux-firmware-nvidia"))
+
+    assert action.plan(managed=[]) == []
+
+
+def test_a_package_that_is_installed_without_a_kernel_image_is_not_a_kernel(tmp_path):
+    """The name is a guess; the machine is the fact. If the package is installed
+    and brought no vmlinuz, it is not a kernel whatever it is called."""
+    root = _esp(tmp_path, kernels=("linux",), entries=("arch.conf", "arch-fallback.conf"))
+    (root / "var/lib/pacman/local/linux-oddball-1.0-1").mkdir(parents=True)
+    action = _action(root, packages=("base", "linux", "linux-oddball"))
+
+    assert action.plan(managed=[]) == []
+
+
+def test_a_kernel_that_is_not_installed_yet_is_still_planned(tmp_path):
+    """The install case: the package arrives in the same apply, so the image is
+    not there at plan time and the entry must still be proposed."""
+    root = _esp(tmp_path, kernels=("linux",), entries=("arch.conf", "arch-fallback.conf"))
+    (root / "var/lib/pacman/local").mkdir(parents=True)
+    action = _action(root, packages=("base", "linux", "linux-lts"))
+
+    assert _items(action.plan(managed=[]), Op.INSTALL) == ["entry:linux-lts"]

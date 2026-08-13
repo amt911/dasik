@@ -130,3 +130,41 @@ def test_a_probe_that_cannot_answer_warns_about_nothing():
     with patch("dasik.lib.actions.disk_partition_action.Command.execute",
                side_effect=OSError("no lsblk")):
         assert action.plan(managed=["/dev/vda"]) == []
+
+
+def test_a_random_keyed_swap_is_not_compared_at_all():
+    """`swap_encryption: random` re-encrypts the partition with a fresh key on
+    every boot, so the raw bytes are last boot's ciphertext and blkid guesses
+    whatever they happen to look like:
+
+        warning: /dev/vda cryptswap: declared swap, disk has ext2
+
+    Seen on a healthy machine (the volume was open and active as [SWAP]). There
+    is nothing to compare: the content is meaningless by design."""
+    cfg = {"disks": [{"device": "/dev/vda", "partition_table": "gpt",
+                      "wipe_disk": False, "partitions": [
+        {"label": "esp", "size": "512MiB", "filesystem": "fat32",
+         "partition_type": "esp", "mountpoint": "/boot"},
+        # dasik labels the RAW partition "crypt<label>" and the mapping <label>
+        {"label": "swap", "size": "2GiB", "filesystem": "swap",
+         "partition_type": "linux", "swap_encryption": "random"},
+        {"label": "root", "size": "rest", "filesystem": "ext4",
+         "partition_type": "linux", "mountpoint": "/"}]}]}
+
+    changes, warnings = _run(cfg, [("esp", "vfat"), ("cryptswap", "ext2"),
+                                   ("root", "ext4")])
+
+    assert (changes, warnings) == ([], [])
+
+
+def test_a_plain_swap_partition_is_still_compared():
+    cfg = {"disks": [{"device": "/dev/vda", "partition_table": "gpt",
+                      "wipe_disk": False, "partitions": [
+        {"label": "swap", "size": "2GiB", "filesystem": "swap",
+         "partition_type": "linux"},
+        {"label": "root", "size": "rest", "filesystem": "ext4",
+         "partition_type": "linux", "mountpoint": "/"}]}]}
+
+    _changes, warnings = _run(cfg, [("swap", "ext4"), ("root", "ext4")])
+
+    assert any("swap" in w and "ext4" in w for w in warnings)

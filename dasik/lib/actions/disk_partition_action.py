@@ -203,6 +203,15 @@ class DiskPartitionAction(AbstractAction):
             actual = reported.get(label)
             if not actual:
                 continue
+            mode = getattr(part, "swap_encryption", None)
+            # NB: the default is the enum member NONE, not None — truthiness
+            # alone would skip every partition on the disk.
+            if str(getattr(mode, "value", mode) or "none").lower() != "none":
+                # Re-encrypted with a fresh key on every boot, so the raw bytes
+                # are last boot's ciphertext and blkid guesses whatever they
+                # resemble ("declared swap, disk has ext2" on a healthy machine
+                # whose swap was open and active). There is nothing to compare.
+                continue
             # `filesystem` is an enum; lsblk speaks strings.
             declared = getattr(part.filesystem, "value", part.filesystem)
             want = self._FSTYPE_ALIASES.get(declared, declared)

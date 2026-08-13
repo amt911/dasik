@@ -368,6 +368,30 @@ class DropFilesAction(AbstractAction):
         result["files"] = files_out
         return result
 
+    @staticmethod
+    def _write_content(path: str, content: str, mode: Optional[int]) -> None:
+        """Write a managed file, and never let a secret exist world-readable.
+
+        A declared mode is there because the content IS a secret — a WireGuard
+        or NetworkManager private key. Writing the content and chmod'ing after
+        put that key on disk readable by every user for the length of the write,
+        and left it that way for good if the process died in between.
+
+        So the mode is on the descriptor before any content reaches it:
+        O_CREAT's mode argument covers a new file, and fchmod covers one that
+        already existed — O_CREAT does not touch the mode of an existing file,
+        which is the case that matters (a key left at 0644 by an older dasik).
+        """
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        if mode is None:
+            with open(path, "w") as f:
+                f.write(content)
+            return
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
+        os.fchmod(fd, mode)
+        with os.fdopen(fd, "w") as f:
+            f.write(content)
+
     def apply(self, changes) -> None:
         if self._target() is None:
             return
@@ -377,12 +401,9 @@ class DropFilesAction(AbstractAction):
         deletes = [c.item for c in changes if c.op is Op.DELETE]
 
         for canonical in writes:                    # additive first
-            path = self._abs(canonical)
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            with open(path, "w") as f:
-                f.write(desired.get(canonical, ""))
-            if canonical in modes:                  # restrict secret files (0600)
-                os.chmod(path, modes[canonical])
+            self._write_content(self._abs(canonical),
+                                desired.get(canonical, ""),
+                                modes.get(canonical))
 
         for canonical in deletes:
             path = self._abs(canonical)

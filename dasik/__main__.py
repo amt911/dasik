@@ -35,6 +35,7 @@ from dasik.lib.logging import run_logger
 from dasik.lib.reconciler.reconciler import Reconciler
 from dasik.lib.state.config_writer import ConfigWriter
 from dasik.lib.state.generation_store import GenerationStore
+from dasik.lib.state.apply_lock import ApplyLock, ApplyLockBusy
 from dasik.lib.state.state_store import StateStore
 from dasik.lib.target.target import Target
 from dasik.lib.target.target_check import check_target
@@ -370,6 +371,15 @@ def _cmd_apply(config_path: Path, target_root: str, assume_yes: bool) -> int:
     if plan.is_empty():
         return 0
 
+    # One apply at a time, per target: two of them race for the manifest, and
+    # the loser's work ends up unowned. Taken AFTER the plan so a read-only
+    # plan never blocks, and released by the kernel even if this process dies.
+    try:
+        lock = ApplyLock(target).__enter__()
+    except ApplyLockBusy as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+
     try:
         new_manifest = reconciler.apply(plan, results, assume_yes=assume_yes)
     except Exception as e:
@@ -382,6 +392,8 @@ def _cmd_apply(config_path: Path, target_root: str, assume_yes: bool) -> int:
               "cause and run `dasik apply` again — completed work is not redone.",
               file=sys.stderr)
         return 1
+    finally:
+        lock.__exit__()
     if new_manifest is None:
         print("Aborted: no changes applied.", file=sys.stderr)
         return 1

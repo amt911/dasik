@@ -16,6 +16,7 @@ from dasik.lib.models.disk_model import (
 )
 from dasik.lib.command_worker.command_worker import Command
 from dasik.lib.exceptions.exceptions import CommandExecutionError
+from dasik.lib.logging import run_logger
 from dasik.lib.state.change import Change, Op
 from dasik.lib.actions.partition_utils import keydev_path
 from dasik.lib.actions.swap_encryption import KEY_SOURCE, LABEL_FS_SIZE, swap_names
@@ -150,10 +151,68 @@ class DiskPartitionAction(AbstractAction):
     def managed_keys(self) -> dict:
         return {self._DOMAIN: sorted(self.actual())}
 
+    # What lsblk REPORTS for a declared filesystem. dasik speaks mkfs's
+    # spelling; lsblk answers with the on-disk type.
+    _FSTYPE_ALIASES = {"fat32": "vfat", "fat16": "vfat", "fat": "vfat",
+                       "swap": "swap", "linux-swap": "swap"}
+
+    def _reported_fstypes(self, device: str) -> "dict[str, str]":
+        """{label: fstype} as lsblk sees this disk, or {} when it cannot say."""
+        try:
+            result = Command.execute("lsblk", ["-no", "LABEL,FSTYPE", device])
+        except Exception:      # nosec B110 - no lsblk: nothing to compare against
+            return {}
+        out = getattr(result, "stdout", b"") or b""
+        if isinstance(out, bytes):
+            out = out.decode("utf-8", "replace")
+        found: "dict[str, str]" = {}
+        for line in out.splitlines():
+            parts = line.split()
+            if len(parts) >= 2:
+                found[parts[0]] = parts[1]
+        return found
+
+    def _content_mismatches(self, disk: DiskLayout) -> "list[str]":
+        """Declared partitions whose label is there but whose CONTENT is not.
+
+        `_disk_converged` compares labels and nothing else, so a partition
+        declared btrfs on a disk carrying ext4 under the same label reads as
+        converged and the plan says "No changes" — about the one domain where
+        that sentence means "your filesystems are what you declared".
+        """
+        reported = self._reported_fstypes(disk.device)
+        if not reported:
+            return []
+        out: "list[str]" = []
+        for part in disk.partitions:
+            label = self._expected_label(part)
+            actual = reported.get(label)
+            if not actual:
+                continue
+            # `filesystem` is an enum; lsblk speaks strings.
+            declared = getattr(part.filesystem, "value", part.filesystem)
+            want = ("crypto_LUKS" if part.encrypt
+                    else self._FSTYPE_ALIASES.get(declared, declared))
+            if actual != want:
+                out.append(f"{label}: declared {want}, disk has {actual}")
+        return out
+
     def plan(self, managed) -> list:
         changes = []
         for disk in self.disks:
             if self._disk_converged(disk):
+                # Converged by LABEL. Anything else that differs cannot be
+                # fixed in place (no filesystem is converted under a running
+                # system) and must not be wiped without `wipe_disk: true`, so
+                # there is no honest change to plan — only something to say.
+                for mismatch in self._content_mismatches(disk):
+                    run_logger.get().warning(
+                        f"{disk.device} {mismatch}",
+                        detail="dasik will not reformat a populated disk. Set "
+                               "`wipe_disk: true` (ERASES the disk) if the "
+                               "declaration is what you want, or fix the "
+                               "declaration to match the machine.",
+                    )
                 continue
             if disk.wipe_disk or not self._has_partition_table(disk.device):
                 # destructive=True: the op is INSTALL, but applying this runs

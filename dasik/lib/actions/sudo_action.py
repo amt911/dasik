@@ -22,6 +22,8 @@ _CANON = "/etc/sudoers.d/10-dasik"
 _TMP = _CANON + ".tmp"
 _SUDOERS = "/etc/sudoers"
 _HEADER = "# Managed by dasik — `dasik apply` overwrites this file.\n"
+_WHEEL_RULE = "%wheel ALL=(ALL:ALL) ALL"
+_WHEEL_NOPASSWD_RULE = "%wheel ALL=(ALL) NOPASSWD: ALL"
 
 
 def _render(cfg: Dict[str, Any]) -> str:
@@ -33,8 +35,7 @@ def _render(cfg: Dict[str, Any]) -> str:
     """
     lines: List[str] = []
     if cfg.get("wheel", False):
-        lines.append("%wheel ALL=(ALL) NOPASSWD: ALL" if cfg.get("nopasswd")
-                     else "%wheel ALL=(ALL:ALL) ALL")
+        lines.append(_WHEEL_NOPASSWD_RULE if cfg.get("nopasswd") else _WHEEL_RULE)
     lines.extend(str(rule).strip() for rule in cfg.get("rules") or [])
     if not lines:
         return ""
@@ -115,13 +116,38 @@ class SudoAction(ScalarV3Action):
         mentions. Only ever removes a fragment the manifest owns; one someone
         else wrote is left alone.
         """
-        if self._desired_value() is None:
+        desired = self._desired_value()
+        if desired is None:
             actual = self._actual_value()
             if actual is not None and managed:
                 return [Change(self._DOMAIN, Op.REMOVE, actual,
                                reason="no longer declared: nothing in the config grants sudo")]
             return []
+        if self._already_granted_by_stock_sudoers(desired):
+            return []
         return super().plan(managed)
+
+    def _already_granted_by_stock_sudoers(self, desired: str) -> bool:
+        """True when /etc/sudoers itself already grants exactly what is asked.
+
+        import_state captures `wheel: true` from an uncommented `%wheel` in
+        /etc/sudoers — a machine that grants sudo the hand-rolled way still has
+        to reproduce as one. The plan side has to know about that same source,
+        or the capture of every such machine comes back with a `[sudo] set`
+        waiting on it and `sync` -> `plan` is never silent.
+
+        Only the plain wheel rule counts, and only when /etc/sudoers grants
+        exactly that. NOPASSWD is a different grant in both directions: asking
+        for it needs the fragment, and a stock line that hands it out unasked is
+        looser than the config — the fragment tightens it back, so it must still
+        be written. Drift inside a fragment that DOES exist is repaired too; the
+        caller has already ruled that case in.
+        """
+        if self._actual_value() is not None:
+            return False
+        if desired != _canonical(_WHEEL_RULE + "\n"):
+            return False
+        return _WHEEL_RULE in self._stock_wheel_rules()
 
     def apply(self, changes) -> None:
         if self._target() is None:
@@ -181,6 +207,15 @@ class SudoAction(ScalarV3Action):
             return {"sudo": {"wheel": True, "nopasswd": False, "rules": []}}
         desired = self._desired_value()
         return self._import_fragment(desired) if desired else {}
+
+    def _stock_wheel_rules(self) -> List[str]:
+        """The effective `%wheel` lines of /etc/sudoers, verbatim."""
+        try:
+            with open(self._path(_SUDOERS), "r", encoding="utf-8") as f:
+                lines = f.read().splitlines()
+        except OSError:
+            return []
+        return [line.strip() for line in lines if line.strip().startswith("%wheel")]
 
     def _stock_sudoers_grants_wheel(self) -> bool:
         try:

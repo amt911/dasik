@@ -47,7 +47,14 @@ class KernelCmdlineAction(AbstractAction):
         super().__init__(config, context)
         cfg: Dict[str, Any] = config if isinstance(config, dict) else {}
         self._cfg = cfg
-        self.bootloader: str = cfg.get("bootloader", "grub")
+        # A config that names its bootloader is asking about that one. A config
+        # that does not — the `{}` seed of a bootstrap `sync` — used to get grub
+        # by default, so on a systemd-boot machine every cmdline-derived fact
+        # read as absent: no `lsm=`, no `audit=1`, no `sysrq`, no cpu driver,
+        # and an `apparmor` capture so contradictory that `check` refused the
+        # file it had just written. Ask the machine instead.
+        self.bootloader: str = cfg.get("bootloader") or self._detect_bootloader(
+            getattr(context, "target", None) if context else None)
         self.explicit_params: List[str] = cfg.get("kernel_cmdline", [])
 
     def _target(self):
@@ -502,6 +509,27 @@ class KernelCmdlineAction(AbstractAction):
         return [p for p in self.desired_params if not self._param_present(current, p)]
 
     # ------------------------------------------------------------------ #
+
+    _SDBOOT_ENTRIES = "/boot/loader/entries"
+    _GRUB_CFG = "/boot/grub/grub.cfg"
+
+    @classmethod
+    def _detect_bootloader(cls, target) -> str:
+        """Which loader this machine boots, by its on-disk evidence.
+
+        Only reached when the config is silent (a bootstrap sync). grub stays
+        the answer when nothing can be read, which is what it always was.
+        """
+        if target is None:
+            return "grub"
+        try:
+            if os.path.isdir(target.path(cls._SDBOOT_ENTRIES)):
+                return "sd-boot"
+            if os.path.exists(target.path(cls._GRUB_CFG)):
+                return "grub"
+        except Exception:      # nosec B110 - a target double with no path()
+            return "grub"
+        return "grub"
 
     @property
     def name(self) -> str:

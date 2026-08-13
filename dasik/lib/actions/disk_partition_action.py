@@ -1273,7 +1273,11 @@ class DiskPartitionAction(AbstractAction):
             for subvol in subvolumes:
                 print(f"Creating btrfs subvolume: {subvol.name}")
                 subvol_path = f"{temp_mount}/{subvol.name}"
-                Command.execute("btrfs", ["subvolume", "create", subvol_path])
+                # check=True: a subvolume that was not created means a machine
+                # installed "successfully" with no /home, and the abort arrives
+                # much later, at genfstab, pointing somewhere else.
+                Command.execute("btrfs", ["subvolume", "create", subvol_path],
+                                check=True)
             
             Command.execute("umount", [temp_mount])
         finally:
@@ -1363,7 +1367,10 @@ class DiskPartitionAction(AbstractAction):
         mount_cmd.extend([device, mountpoint])
         
         print(f"Mounting {partition.label} at {mountpoint}")
-        Command.execute("mount", mount_cmd[1:])  # Skip 'mount' as Command adds it
+        # check=True: a mount that failed is how "genfstab produced an empty
+        # fstab" happens (#147) — the install carries on writing into the
+        # installer's own filesystem and only falls over later.
+        Command.execute("mount", mount_cmd[1:], check=True)  # Command adds 'mount' 
 
     def _mount_btrfs_subvolumes(self, partition: Partition) -> None:
         """Mount btrfs subvolumes.
@@ -1383,7 +1390,7 @@ class DiskPartitionAction(AbstractAction):
             mount_cmd = ["mount", "-o", ",".join(options), device, mountpoint]
             
             print(f"Mounting subvolume {subvol.name} at {mountpoint}")
-            Command.execute("mount", mount_cmd[1:])
+            Command.execute("mount", mount_cmd[1:], check=True)
 
     def get_partition_device(self, label: str) -> Optional[str]:
         """Get the device path for a partition by its label.

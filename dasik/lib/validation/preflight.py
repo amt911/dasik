@@ -333,8 +333,19 @@ def _check_nested_keys(block: str, value: Any, annotation: Any) -> List[Issue]:
 
 
 def _annotation_models(annotation: Any):
-    """The pydantic models hiding inside an annotation (Optional[X] -> X)."""
-    candidates = [annotation, *get_args(annotation)]
+    """The model an annotation IS, unwrapping Optional — never one it merely
+    CONTAINS.
+
+    `package_sources` is Dict[str, GitPackageSourceModel]: its keys are package
+    names the user chose, not model fields. Descending into it flagged every
+    real entry as a typo (`unknown key 'package_sources.config-saver'`), which
+    is exactly the noise this check exists to avoid. Same for `zram`, keyed by
+    device name. So: only a plain model, or Optional[model].
+    """
+    args = get_args(annotation)
+    candidates = [annotation]
+    if args and type(None) in args:            # Optional[X] / X | None
+        candidates += [a for a in args if a is not type(None)]
     for candidate in candidates:
         if isinstance(candidate, type) and issubclass(candidate, BaseModel):
             yield candidate

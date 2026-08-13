@@ -58,3 +58,25 @@ def test_the_warning_never_becomes_an_error():
     issues = preflight({"packages": ["base"], "firewal": {}}, efi_boot=True)
 
     assert not has_errors(issues)
+
+
+def test_a_map_shaped_block_is_not_treated_as_a_model():
+    """`package_sources` is keyed by PACKAGE NAME, not by model field. Descending
+    into it flagged every real entry as a typo — found by running the check over
+    the repo's own sample configs:
+
+        unknown key 'package_sources.config-saver'
+    """
+    messages = _messages({"package_sources": {
+        "config-saver": {"type": "git", "url": "https://github.com/x/y.git"}}})
+
+    assert messages == []
+
+
+def test_and_neither_is_zram():
+    """Same shape: the keys are device names (`zram0`), chosen by the user."""
+    assert _messages({"zram": {"zram0": {"zram-size": "ram/2"}}}) == []
+
+
+def test_a_real_typo_inside_a_model_block_is_still_caught():
+    assert "sudo.whel" in _messages({"sudo": {"whel": True}})[0]

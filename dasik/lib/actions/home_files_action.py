@@ -206,10 +206,21 @@ class HomeFilesAction(AbstractAction):
         # Replace a symlink rather than write through it (see _drift_reason).
         if os.path.islink(path):
             os.remove(path)
-        with open(path, "w") as f:
-            f.write(spec["content"])
-        if spec["mode"]:
-            os.chmod(path, int(spec["mode"], 8))
+        mode = int(spec["mode"], 8) if spec["mode"] else None
+        if mode is None:
+            with open(path, "w") as f:
+                f.write(spec["content"])
+        else:
+            # A declared mode means the content is a secret — an ssh config, a
+            # token, a .netrc. Writing it and chmod'ing after left it readable
+            # by every user for the length of the write, and for good if the
+            # apply died in between. The mode goes on the descriptor first:
+            # O_CREAT covers a new file, fchmod one that already existed (a
+            # dotfile left at 0644 by an older dasik is the case that matters).
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
+            os.fchmod(fd, mode)
+            with os.fdopen(fd, "w") as f:
+                f.write(spec["content"])
         os.chown(path, uid, gid)
 
     @staticmethod

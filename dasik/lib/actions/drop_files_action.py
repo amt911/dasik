@@ -189,6 +189,20 @@ class DropFilesAction(AbstractAction):
         marker = " is owned by "
         return out.split(marker)[1].split()[0] if marker in out else None
 
+    def _effective_env_lines(self) -> "Optional[List[str]]":
+        """The settings in /etc/environment, or None when it cannot be read.
+
+        Comments and blank lines are not settings: an untouched Arch install
+        ships a header of comments and nothing else, which must capture as
+        nothing rather than as five comment lines.
+        """
+        try:
+            text = self._read(_ENV_PATH)
+        except OSError:
+            return None
+        return [ln for ln in text.splitlines()
+                if ln.strip() and not ln.lstrip().startswith("#")]
+
     def _vendor_copy(self, path: str) -> Optional[str]:
         """The /usr/lib counterpart of an /etc file, when one exists.
 
@@ -339,9 +353,17 @@ class DropFilesAction(AbstractAction):
                         by_name[d["name"]] = d["content"]
             result[key] = [{"name": n, "content": by_name[n]} for n in order]
 
-        if _ENV_PATH in actual:
-            text = self._read(_ENV_PATH)
-            result["etc_environment"] = [ln for ln in text.split("\n") if ln != ""]
+        # Read the file whenever it is THERE, not only when the config already
+        # declared it. It belongs to the `pam` package, so file discovery skips
+        # it on purpose, and the old `if _ENV_PATH in actual` (declared paths
+        # that exist) meant a first capture of a machine with a customised
+        # /etc/environment silently dropped every line in it.
+        #
+        # The stock file is nothing but comments, so "has effective lines" is
+        # exactly the question "did somebody put something here".
+        env_lines = self._effective_env_lines()
+        if env_lines is not None:
+            result["etc_environment"] = env_lines
         else:
             result["etc_environment"] = list(self.etc_env_lines)
 

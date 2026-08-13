@@ -114,6 +114,13 @@ class DropFilesAction(AbstractAction):
                 modes[path] = int(mode, 8)
         return modes
 
+    def _mode_of(self, canonical: str) -> Optional[int]:
+        """The file's permission bits, or None when it cannot be stat'ed."""
+        try:
+            return os.stat(self._abs(canonical)).st_mode & 0o777
+        except OSError:
+            return None
+
     def _read(self, canonical: str) -> str:
         with open(self._abs(canonical), "r") as f:
             return f.read()
@@ -146,9 +153,24 @@ class DropFilesAction(AbstractAction):
             op_install=Op.CREATE,
             op_remove=Op.DELETE,
         )
+        modes = self._file_modes()
         for p in sorted(set(desired) & actual):
+            reasons = []
             if self._read(p) != desired[p]:
-                changes.append(Change(_FILES_DOMAIN, Op.MODIFY, p, reason="content drift"))
+                reasons.append("content drift")
+            # A declared mode is desired state, not decoration: NetworkManager
+            # and wg-quick refuse a keyfile anyone can read, so a file chmod'ed
+            # by hand (or restored from a backup) stops working while the plan
+            # stays silent. Only files that DECLARE a mode are checked — dasik
+            # does not own permissions it was never told about.
+            wanted = modes.get(p)
+            if wanted is not None:
+                current = self._mode_of(p)
+                if current is not None and current != wanted:
+                    reasons.append(f"mode drift ({current:04o} -> {wanted:04o})")
+            if reasons:
+                changes.append(Change(_FILES_DOMAIN, Op.MODIFY, p,
+                                      reason=", ".join(reasons)))
         self._warn_shadowed([c.item for c in changes if c.op is not Op.DELETE])
         return changes
 

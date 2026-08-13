@@ -496,6 +496,17 @@ def _cmd_rollback(target_root: str, number: Optional[int], assume_yes: bool) -> 
     gen_store = GenerationStore(target)
 
     if number is None:
+        gens = gen_store.list()
+        if gens and not any(g.is_current for g in gens):
+            # The `current` symlink is repointed by unlink-then-symlink, so a
+            # power cut can leave it absent. Saying "no earlier generation"
+            # there is false — there are plenty; dasik just does not know which
+            # one it is standing on, and only the user can say.
+            print(f"Error: no current generation recorded ({gen_store.current_link} is "
+                  f"missing), so there is no 'previous' to roll back to. Pick one "
+                  f"explicitly: dasik rollback <number> — `dasik generations` lists "
+                  f"{', '.join(str(g.number) for g in gens)}.", file=sys.stderr)
+            return 1
         number = _previous_generation(gen_store)
         if number is None:
             print("Error: no earlier generation to roll back to.", file=sys.stderr)

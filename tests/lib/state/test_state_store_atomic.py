@@ -97,3 +97,26 @@ def test_a_generation_is_written_atomically_too(tmp_path, monkeypatch):
     restored_config, restored_manifest = store.restore(number)
     assert restored_config == {"packages": ["git"]}
     assert restored_manifest["generation"] == 1
+
+
+def test_rollback_says_the_link_is_missing_rather_than_blaming_the_generations(tmp_path):
+    """The other half of a damaged state dir: `current` is a symlink, repointed
+    by unlink-then-symlink, so a cut can leave it absent. dasik then refused with
+    "no earlier generation to roll back to" — which is false; there are plenty,
+    it just does not know which one it is standing on."""
+    from dasik.__main__ import _cmd_rollback
+    from dasik.lib.state.generation_store import GenerationStore
+
+    store = GenerationStore(Target(root=str(tmp_path)))
+    store.new({"packages": ["git"]}, Manifest(generation=1).to_dict())
+    store.new({"packages": ["git", "htop"]}, Manifest(generation=2).to_dict())
+    store.current_link.unlink()
+
+    import io, contextlib
+    err = io.StringIO()
+    with contextlib.redirect_stderr(err):
+        rc = _cmd_rollback(str(tmp_path), None, assume_yes=True)
+
+    assert rc == 1
+    assert "current" in err.getvalue()
+    assert "dasik rollback <number>" in err.getvalue()

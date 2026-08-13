@@ -250,16 +250,25 @@ class LuksKeyfileAction(AbstractAction):
         if os.path.exists(local):
             return
         os.makedirs(os.path.dirname(local), exist_ok=True)
-        Command.execute("dd", [f"bs={_KEYFILE_BS}", f"count={_KEYFILE_COUNT}",
-                               "if=/dev/random", f"of={local}", "iflag=fullblock"],
-                        check=True)
+        # Born private. `dd` creates its output with the process umask (0644 for
+        # root) and the chmod used to come afterwards — so for the length of a
+        # 4 MiB read from /dev/random, which blocks, the key that unlocks the
+        # disk was readable by everyone, and stayed that way if the run died in
+        # between. Creating the file first costs nothing: `of=` truncates the
+        # contents, not the mode.
+        fd = os.open(local, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         try:
-            os.chmod(local, 0o600)
+            os.fchmod(fd, 0o600)
         except OSError:
             # FAT rejects a mode change outright (EPERM). The mount already
             # carries umask=0077 there, so the key is still root-only; aborting
             # here would leave a fresh keyfile that was never enrolled.
             pass
+        finally:
+            os.close(fd)
+        Command.execute("dd", [f"bs={_KEYFILE_BS}", f"count={_KEYFILE_COUNT}",
+                               "if=/dev/random", f"of={local}", "iflag=fullblock"],
+                        check=True)
 
     @staticmethod
     def _enroll(device: str, local: str, part: Dict[str, Any]) -> None:

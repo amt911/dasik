@@ -17,6 +17,7 @@ from dasik.lib.models.disk_model import (
 from dasik.lib.command_worker.command_worker import Command
 from dasik.lib.exceptions.exceptions import CommandExecutionError
 from dasik.lib.state.change import Change, Op
+from dasik.lib.logging import run_logger
 from dasik.lib.actions.partition_utils import keydev_path
 from dasik.lib.actions.swap_encryption import KEY_SOURCE, LABEL_FS_SIZE, swap_names
 
@@ -140,6 +141,45 @@ class DiskPartitionAction(AbstractAction):
             return swap_names({"label": partition.label})[1]
         return partition.label
 
+    def _warn_about_passphrases(self, disk) -> None:
+        """Say when a declared passphrase does not open the disk it describes.
+
+        `luks_password` is only ever used while FORMATTING, so changing it on an
+        installed machine does nothing at all — the volume keeps the old one and
+        the config claims the new one. You find out at the next reboot, which is
+        the worst possible moment.
+
+        dasik can just ask: `cryptsetup open --test-passphrase` creates no
+        mapping, so it is safe from plan() (the keyfile domain probes the same
+        way). A warning, never a change — rewriting a keyslot behind someone's
+        back is how a disk is lost, and the fix is a `cryptsetup luksChangeKey`
+        they run themselves.
+        """
+        for partition in disk.partitions:
+            if not getattr(partition, "encrypt", False):
+                continue
+            password = getattr(partition, "luks_password", None)
+            if not password:
+                continue
+            device = self._luks_backing_device(getattr(partition, "luks_name", "") or "")
+            if not device:
+                continue
+            try:
+                result = Command.execute(
+                    "cryptsetup", ["open", "--test-passphrase", device],
+                    input=(password + "\n").encode())
+            except Exception:      # nosec B112 - a probe that cannot run says nothing
+                continue
+            if getattr(result, "returncode", 0) == 0:
+                continue
+            run_logger.get().warning(
+                f"the declared passphrase does not open {partition.label} "
+                f"({device})",
+                detail="`luks_password` is only used while formatting, so this "
+                       "config describes a passphrase the volume does not have. "
+                       "dasik will not rewrite a keyslot for you: change it with "
+                       "`cryptsetup luksChangeKey` and the two will agree again.")
+
     def _disk_converged(self, disk: DiskLayout) -> bool:
         want = {self._expected_label(p) for p in disk.partitions}
         return bool(want) and want.issubset(self._device_labels(disk.device))
@@ -154,6 +194,7 @@ class DiskPartitionAction(AbstractAction):
         changes = []
         for disk in self.disks:
             if self._disk_converged(disk):
+                self._warn_about_passphrases(disk)
                 continue
             if disk.wipe_disk or not self._has_partition_table(disk.device):
                 # destructive=True: the op is INSTALL, but applying this runs

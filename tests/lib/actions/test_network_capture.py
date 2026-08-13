@@ -88,8 +88,10 @@ def test_the_machine_beats_the_declaration(tmp_path):
     assert captured["network"]["type"] == "systemd-networkd"
 
 
-def test_nothing_is_captured_without_a_hostname(tmp_path):
-    assert _captured(_machine(tmp_path), {}) == {}
+def test_an_undeclared_hostname_is_captured_from_the_machine(tmp_path):
+    """This used to assert the opposite. Gating the capture on the config was
+    the bug: a bootstrap sync starts from `{}` and must report what it finds."""
+    assert _captured(_machine(tmp_path), {})["hostname"] == "arch"
 
 
 @pytest.mark.parametrize("probe_raises", [OSError, RuntimeError])
@@ -99,3 +101,35 @@ def test_a_failing_probe_is_not_a_network_manager(tmp_path, probe_raises):
     with patch("dasik.lib.actions.network_action.Command.execute",
                side_effect=probe_raises("no systemctl")):
         assert "network" not in action.import_state([])
+
+
+# --- a bootstrap capture must not lose the hostname ------------------------- #
+
+def test_a_bare_seed_still_reports_the_machines_hostname(tmp_path):
+    """`sync` on a `{}` seed is how you adopt a machine you did not install.
+    The hostname is written on it in plain text, and the capture dropped it:
+    `_declared()` gated the CAPTURE on the seed already naming one."""
+    captured = _captured(_machine(tmp_path, hostname="adopted"), {})
+
+    assert captured["hostname"] == "adopted"
+
+
+def test_a_machine_with_no_hostname_reports_nothing(tmp_path):
+    (tmp_path / "etc").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "etc/hosts").write_text("127.0.0.1 localhost\n")
+
+    assert _captured(tmp_path, {}) == {}
+
+
+def test_the_bootstrap_capture_of_a_managed_machine_validates(tmp_path):
+    from dasik.lib.models.json_model import JsonModel
+
+    captured = _captured(_machine(tmp_path, hostname="adopted"), {},
+                         enabled=("NetworkManager.service",))
+    JsonModel(**{
+        "locales": {"selected_locales": [], "desired_locale": "en_US.UTF-8",
+                    "desired_tty_layout": "us"},
+        "timezone": {"region": "Europe", "city": "Madrid"},
+        **captured,
+    })
+    assert captured["network"]["type"] == "NetworkManager"

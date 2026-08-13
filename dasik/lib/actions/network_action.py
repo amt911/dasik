@@ -115,9 +115,18 @@ class NetworkAction(CompositeV3Action):
         carrying it is a capture `dasik check` then rejects (issue #196): the
         round trip breaks silently, and only when someone tries to use the file.
         """
-        if not self._declared():
+        # NOT gated on `_declared()`: that asks whether the CONFIG names a
+        # hostname, and a bootstrap `sync` starts from `{}` — the way you adopt
+        # a machine you did not install. The machine's own /etc/hostname is the
+        # answer, and gating on the config lost the name of every machine
+        # captured that way.
+        st = self._actual_state()
+        if st is None:
+            if not self._declared():
+                return {}
+            st = self._desired_state()
+        if not st["hostname"]:
             return {}
-        st = self._actual_state() or self._desired_state()
         captured: Dict[str, Any] = {"hostname": st["hostname"]}
         net_type = self._live_type() or self.type
         if net_type:

@@ -194,10 +194,23 @@ class Reconciler:
             # gave the user nothing to check against — least of all which disk is
             # about to be erased.
             listing = "\n".join(c.render() for c in destructive)
-            answer = input_fn(
-                f"These {len(destructive)} change(s) DESTROY data:\n{listing}\n"
-                f"Apply {len(destructive)} destructive change(s)? [y/N] "
-            ).strip().lower()
+            try:
+                answer = input_fn(
+                    f"These {len(destructive)} change(s) DESTROY data:\n{listing}\n"
+                    f"Apply {len(destructive)} destructive change(s)? [y/N] "
+                ).strip().lower()
+            except EOFError:
+                # No terminal to ask on — a pipe, a cron job, a headless run.
+                # A question nobody can answer is a "no", said out loud rather
+                # than raised as a traceback from inside the reconciler.
+                print("No terminal to confirm on, so nothing was applied. "
+                      "Re-run with --yes to accept the destructive changes above.",
+                      file=sys.stderr)
+                return None
+            except KeyboardInterrupt:
+                print("Aborted at the confirmation prompt; nothing was applied.",
+                      file=sys.stderr)
+                return None
             if answer not in ("y", "yes"):
                 return None
 

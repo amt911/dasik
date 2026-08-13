@@ -1253,8 +1253,13 @@ class DiskPartitionAction(AbstractAction):
         if partition.luks_password is None:
             print(f"NOTE: {kind} enroll skipped ({partition.label}): needs luks_password.")
             return
+        # check=True: every way this fails is a way the machine ends up with
+        # `fido2-device=auto` on its command line and no token in the header —
+        # the key not plugged in, never touched, needing a PIN, no TPM in the
+        # box. Silently, with the install reporting success. The passphrase
+        # still works, so the failure is recoverable; it just has to be said.
         Command.execute("systemd-cryptenroll", [kind, device],
-                        env={"PASSWORD": partition.luks_password})
+                        env={"PASSWORD": partition.luks_password}, check=True)
 
     def _create_btrfs_subvolumes(self, device: str, subvolumes: List[BtrfsSubvolume]) -> None:
         """Create btrfs subvolumes.

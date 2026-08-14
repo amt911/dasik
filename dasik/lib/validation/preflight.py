@@ -299,6 +299,46 @@ def _check_sudo(config: Dict[str, Any], packages: Set[str]) -> List[Issue]:
     return []
 
 
+# Paths dasik writes from a domain of their own. A `files` entry aimed at one of
+# them is a second writer with different content, so the two undo each other on
+# every apply. /etc/crypttab is deliberately absent: dasik's own capture puts it
+# in `files`, and that pairing is intended.
+_DOMAIN_OWNED_FILES = {
+    "/etc/sudoers.d/10-dasik": "sudo",
+    "/etc/systemd/zram-generator.conf": "zram",
+    "/etc/systemd/system.conf.d/10-dasik.conf": "systemd_system_conf",
+    "/etc/systemd/user.conf.d/10-dasik.conf": "systemd_user_conf",
+    "/etc/systemd/oomd.conf.d/10-dasik.conf": "oomd",
+    "/etc/security/limits.d/10-dasik.conf": "pam",
+    "/etc/security/pwquality.conf.d/10-dasik.conf": "pam",
+    "/etc/mkinitcpio.conf.d/dasik.conf": "initramfs",
+    "/etc/mkinitcpio.conf": "initramfs",
+}
+# /etc/fstab is deliberately absent too: genfstab writes it at install time and
+# nothing rewrites it afterwards, so a `files` entry there does not fight anyone.
+
+
+def _check_file_collisions(config: Dict[str, Any]) -> List[Issue]:
+    """A `files` entry over a path another domain owns never converges.
+
+    Both writers run on every apply, each undoing the other, and both report
+    success — the plan proposes the same change forever. A warning rather than
+    an error: the config is not wrong to parse, and the user may be mid-way
+    through moving a setting from one place to the other.
+    """
+    issues: List[Issue] = []
+    for entry in config.get("files") or []:
+        path = entry.get("path") if isinstance(entry, dict) else None
+        domain = _DOMAIN_OWNED_FILES.get(path or "")
+        if domain:
+            issues.append(Issue(
+                "warning", "file_owned_by_another_domain",
+                f"`files` declares {path}, which the `{domain}` domain also "
+                "writes; the two overwrite each other on every apply and the "
+                f"plan never goes quiet. Declare it through `{domain}` instead."))
+    return issues
+
+
 def _check_cpu(config: Dict[str, Any], packages: Set[str]) -> List[Issue]:
     """power-profiles-daemon owns the frequency policy it shares with nobody."""
     cpu = config.get("cpu") or {}
@@ -518,6 +558,7 @@ def preflight(config: Dict[str, Any],
     issues += _check_groups(config, packages)
     issues += _check_units(config, packages)
     issues += _check_sudo(config, packages)
+    issues += _check_file_collisions(config)
     issues += _check_cpu(config, packages)
     issues += _check_firewall_backend(config, packages)
     issues += _check_crypttab(config)

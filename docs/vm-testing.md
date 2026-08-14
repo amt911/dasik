@@ -382,3 +382,46 @@ attached, the machine boots with **no passphrase prompt** and reaches
 `Reached target Multi-User System` / `dasik-tpm2 login:`; detach the TPM and the
 same image stops at the prompt and now FAILS loudly.
 
+## FIDO2: what can and cannot be tested without a key
+
+`systemd-cryptenroll --fido2-device` needs **CTAP2 with the `hmac-secret` extension**.
+Nothing available emulates that:
+
+| candidate | verdict |
+| --- | --- |
+| QEMU `u2f-emulated` | U2F/CTAP1, no extensions — and not even built in Arch's qemu (needs libu2f-emu) |
+| QEMU `u2f-passthru` | passes through a REAL key plugged into the host |
+| `softfido` (Rust, USB/IP) | no mention of hmac anywhere in `src/` |
+| `virtual-fido` (Go, USB/IP) | its `hmac` uses are PIN auth, not the extension |
+
+Both USB/IP options also need `modprobe vhci-hcd`, i.e. root on the host.
+
+So the enrollment call cannot be exercised. Everything around it can:
+
+**The capture side, against a real LUKS2 header** — no VM and no root needed, because
+`luksDump` and `token import` only touch the header:
+
+```bash
+truncate -s 32M /tmp/luks-hdr.img
+cryptsetup luksFormat --type luks2 --batch-mode --pbkdf pbkdf2 \
+    --pbkdf-force-iterations 1000 /tmp/luks-hdr.img <<< "testpass"
+cryptsetup token import --token-id 1 /tmp/luks-hdr.img <<'JSON'
+{"type":"systemd-fido2","keyslots":["0"],
+ "fido2-credential":"3q2+7wAAAAA=","fido2-salt":"3q2+7wAAAAA=",
+ "fido2-rp":"io.systemd.cryptsetup","fido2-clientPin-required":false,
+ "fido2-up-required":true,"fido2-uv-required":false}
+JSON
+```
+
+Point `DiskPartitionAction._read_luks_tokens` at it (stub `_luks_backing_device` to return
+the file) and it answers `{'fido2'}` with the token there, `set()` once it is removed, and
+does not care about the token id.
+
+**The no-key install**, which is the failure users actually hit: `config/vm-fido2.json`
+declares `unlock_fido2: true`; installing it with no key attached completes rc=0 and the
+machine boots to a passphrase prompt. Before #241 the enrollment failure was silent.
+
+Note the harness consequence: a machine with `fido2-device=auto` and no token needs
+`qemu.sh boot-unlock` (which types the passphrase). `qemu.sh drive` will sit at the prompt
+until it drops to an emergency shell.
+

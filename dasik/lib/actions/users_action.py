@@ -244,6 +244,18 @@ class UsersAction(AbstractAction):
             result.append(root_captured)
         return {self._USERS_DOMAIN: result}
 
+    @staticmethod
+    def _set_password(name: str, hashed: str, target) -> None:
+        """Set a user's password without putting the hash in argv.
+
+        `usermod -p <hash>` is visible in `ps` to every local user for as long
+        as it runs — usermod's own man page says not to use it for that reason.
+        `chpasswd -e` takes `user:hash` on stdin instead, which never reaches
+        the process table.
+        """
+        Command.execute("chpasswd", ["-e"], target=target, check=True,
+                        input=f"{name}:{hashed}\n".encode())
+
     def apply(self, changes) -> None:
         target = self._target()
         if target is None:
@@ -279,8 +291,7 @@ class UsersAction(AbstractAction):
 
             def create(u=u, argv=argv, name=name):
                 Command.execute("useradd", argv, target=target, check=True)
-                Command.execute("usermod", ["-p", u["hashed_password"], name],
-                                target=target, check=True)
+                self._set_password(name, u["hashed_password"], target)
             attempt(name, create)
 
         for name in modifies:
@@ -290,7 +301,7 @@ class UsersAction(AbstractAction):
                 if name != "root":
                     Command.execute("usermod", ["-s", u.get("shell", "/bin/bash"), name], target=target, check=True)
                     Command.execute("usermod", ["-G", ",".join(u.get("groups", [])), name], target=target, check=True)
-                Command.execute("usermod", ["-p", u["hashed_password"], name], target=target, check=True)
+                self._set_password(name, u["hashed_password"], target)
             attempt(name, modify)
 
         for name in deletes:
@@ -332,7 +343,7 @@ class UsersAction(AbstractAction):
         for u in self.users:
             name = u["username"]
             if name == "root":
-                Command.execute("usermod", ["-p", u["hashed_password"], "root"], target=target)
+                self._set_password("root", u["hashed_password"], target)
                 continue
             shell = u.get("shell", "/bin/bash")
             groups = u.get("groups", [])
@@ -346,7 +357,7 @@ class UsersAction(AbstractAction):
                     argv += ["-G", ",".join(groups)]
                 argv.append(name)
                 Command.execute("useradd", argv, target=target)
-            Command.execute("usermod", ["-p", u["hashed_password"], name], target=target)
+            self._set_password(name, u["hashed_password"], target)
 
     def verify(self) -> bool:
         for u in self.users:

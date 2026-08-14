@@ -317,6 +317,111 @@ validated.
 
 ---
 
+## `containers` — the runtime, not the containers
+
+```json
+"containers": { "runtime": "podman", "rootless": true, "docker_compat": true }
+```
+
+One engine, installed and configured. dasik does not manage containers.
+
+| | podman | docker |
+| --- | --- | --- |
+| package | `podman` | `docker` |
+| unit | none (rootless podman runs no daemon); `podman.socket` with `api_socket` | `docker.service`, or `docker.socket` with `api_socket` |
+| group | none — that is the point | `docker`, for every declared user |
+| id maps | `subuid`/`subgid` per user | n/a |
+| daemon config | n/a | `daemon_json` → `/etc/docker/daemon.json` |
+| compose | `podman-compose` | `docker-compose` |
+
+A field belonging to the other engine is **refused, not ignored**: `daemon_json`
+under podman would describe a storage driver nobody applies, and every `plan`
+would still say "no changes".
+
+**The `docker` group is root-equivalent** — a member can bind-mount `/` into a
+container. That is not a reason to avoid it (there is no other way to use docker
+without root), it is a reason to know it.
+
+**subuid/subgid** is the one piece with no other owner. Rootless podman maps
+container uids into a range reserved for the user; `useradd` writes one for
+users it creates (shadow ≥ 4.11.1-3), so a fresh install converges to nothing,
+but an older account or one restored from a capture has none — and without it
+every rootless container fails to start. dasik allocates the next free range
+above whatever `/etc/subuid` already reserves.
+
+## `config_saver` — backups of `$HOME`, and restoring them
+
+```json
+"config_saver": {
+  "source": { "url": "https://github.com/amt911/config-saver-aur.git", "ref": "a520605367e13ec25db4c3c7e1c4bf46175ba8cd" },
+  "configs": { "dotfiles": { "directories": [{ "source": "$HOME", "files": [".zshrc"] }] } },
+  "timer_users": ["andres"],
+  "restore": [{ "user": "andres", "archive": "/run/media/usb/dotfiles.tar.gz" }]
+}
+```
+
+[config-saver](https://github.com/amt911/config-saver) carries what a config
+file cannot: themes, browser profiles, keyboard layouts, whole directories. The
+block declares the policy — which backup documents exist, whose timer runs — and
+the restore unpacks, on a fresh machine, the archive the old one produced.
+
+The package is **not in the AUR**; `source` is the Git PKGBUILD that builds it,
+which becomes a [`package_sources`](Packages.md#packages-from-a-git-pkgbuild)
+entry. Without it the name resolves nowhere and `warn-and-skip` drops it.
+
+Restores are **once per archive content**: the marker under
+`~/.local/state/dasik/config-saver/<sha256>` says what was unpacked, so
+re-applying does nothing and a newer capture at the same path is restored again.
+Un-declaring one removes nothing — unpacking cannot be undone.
+
+### It is not only `$HOME` — `/etc/ssh` and friends
+
+A backup document takes absolute paths, so system configuration goes in the same
+way:
+
+```json
+"config_saver": {
+  "source": { "url": "https://github.com/amt911/config-saver-aur.git", "ref": "a520605367e13ec25db4c3c7e1c4bf46175ba8cd" },
+  "configs": {
+    "etc-ssh": {
+      "normalize_content": true,
+      "directories": [
+        { "source": "/etc/ssh",               "files": ["sshd_config", "ssh_config"] },
+        { "source": "/etc/ssh/sshd_config.d", "files": ["10-hardening.conf"] }
+      ]
+    }
+  },
+  "timer_users": ["root"]
+}
+```
+
+Three things decide whether this works:
+
+- **The timer is per user.** A document that reads `/etc` needs `root` in
+  `timer_users`; a timer running as `andres` cannot read
+  `/etc/ssh/sshd_config.d`, and the backup silently comes out short.
+- **Name the files, not the directory.** `/etc/ssh` also holds the host's
+  private keys (`ssh_host_*_key`). Listing `files` explicitly is what keeps them
+  out of a configuration archive you might push somewhere.
+- **`ref` is the full 40-character sha.** A short one is rejected by the model
+  (`config_saver.source.ref`).
+
+### `config_saver` saves; `files` applies
+
+They are complementary, and mixing them up is the easy mistake:
+
+| you want | use |
+| --- | --- |
+| every machine to *have* this `sshd_config`, and drift repaired | [`files`](Configuration.md) — dasik writes it, plans the drift, fixes it |
+| to *keep* what this machine grew, and put it back on the next one | `config_saver` |
+
+`files` is desired state: declare it and every install gets it. `config_saver`
+is a backup policy: it captures what a config file cannot express and restores
+it on a fresh machine. For `/etc/ssh` most people want both — the hardening
+snippet declared in `files`, the accumulated local bits saved by config-saver.
+
+---
+
 ## Seeing a feature in the plan
 
 A block never appears under its own name. `sysrq` shows up as

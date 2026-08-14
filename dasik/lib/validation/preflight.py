@@ -326,6 +326,87 @@ def _check_home_files(config: Dict[str, Any]) -> List[Issue]:
         "already exists on the target.")]
 
 
+def _check_disk_coherence(config: Dict[str, Any]) -> List[Issue]:
+    """Disk declarations that cannot describe a working machine.
+
+    dasik keys its partition map by LABEL, derives `root=LABEL=…` from it, and
+    opens every LUKS volume at /dev/mapper/<luks_name>. None of that was
+    checked, so a config could ask for two disks with the same label, two
+    volumes with one mapper name, two filesystems at one path, no root at all,
+    or an encrypted volume with nothing to unlock it — and find out by
+    partitioning first.
+
+    Errors rather than warnings: preflight errors abort BEFORE the first
+    mutation, which in this domain is the difference between a message and a
+    wiped disk.
+    """
+    disks = (config.get("disks") or {}).get("disks")
+    if not disks:
+        return []
+    issues: List[Issue] = []
+    labels: Dict[str, int] = {}
+    luks_names: Dict[str, int] = {}
+    mountpoints: Dict[str, int] = {}
+    has_root = False
+    for disk in disks:
+        for part in disk.get("partitions") or []:
+            label = part.get("label")
+            if label:
+                labels[label] = labels.get(label, 0) + 1
+            name = part.get("luks_name")
+            if name:
+                luks_names[name] = luks_names.get(name, 0) + 1
+            # A btrfs partition and its own subvolumes are ONE filesystem: the
+            # partition's mountpoint is the one the `@` subvolume carries (see
+            # the mount ordering in DiskPartitionAction), so counting both would
+            # flag every btrfs layout dasik itself writes.
+            subs = [sub.get("mountpoint") for sub in part.get("btrfs_subvolumes") or []]
+            points = set(p for p in subs if p)
+            own = part.get("mountpoint")
+            if own and own not in points:
+                points.add(own)
+            for point in sorted(points):
+                mountpoints[point] = mountpoints.get(point, 0) + 1
+                if point == "/":
+                    has_root = True
+            if part.get("encrypt") and not part.get("luks_password") \
+                    and not part.get("unlock_keyfile") and not part.get("unlock_keydev"):
+                issues.append(Issue(
+                    "warning", "encryption_without_a_key",
+                    f"partition {label!r} declares `encrypt` but no `luks_password`, "
+                    "`unlock_keyfile` or `unlock_keydev`: cryptsetup would have "
+                    "nothing to enroll, and an unattended install has nobody to "
+                    "ask. (A warning, not an error, because a shipped example may "
+                    "leave the passphrase for you to fill in.)"))
+    for label, count in sorted(labels.items()):
+        if count > 1:
+            issues.append(Issue(
+                "error", "duplicate_partition_label",
+                f"the label {label!r} is declared {count} times. dasik keys its "
+                "partition map by label and derives `root=LABEL=…` from it, so "
+                "one declaration would silently stand in for the other — and the "
+                "kernel could not tell them apart either."))
+    for name, count in sorted(luks_names.items()):
+        if count > 1:
+            issues.append(Issue(
+                "error", "duplicate_luks_name",
+                f"`luks_name` {name!r} is declared {count} times: both volumes "
+                "would want /dev/mapper/" + name + "."))
+    for point, count in sorted(mountpoints.items()):
+        if count > 1:
+            issues.append(Issue(
+                "error", "duplicate_mountpoint",
+                f"{count} filesystems are declared at {point!r}; one would be "
+                "mounted over the other and its contents would be unreachable."))
+    if not has_root:
+        issues.append(Issue(
+            "warning", "no_root_partition",
+            "no declared partition or btrfs subvolume is mounted at `/`. That is "
+            "fine for a config that only describes extra disks on a machine that "
+            "already exists; it cannot install one."))
+    return issues
+
+
 _BUILTIN_LOCALES = {"C", "C.UTF-8", "POSIX"}
 
 
@@ -463,6 +544,45 @@ def _check_file_collisions(config: Dict[str, Any]) -> List[Issue]:
                 f"`files` declares {path}, which the `{domain}` domain also "
                 "writes; the two overwrite each other on every apply and the "
                 f"plan never goes quiet. Declare it through `{domain}` instead."))
+    return issues
+
+
+# Each /etc/*.d directory loads exactly one suffix; a file with any other name
+# sits there being ignored. (systemd-sysctl.service(8), udev(7), profile(5).)
+_SNIPPET_SUFFIXES = {
+    "udev_rules": ".rules",
+    "profile_d": ".sh",
+    "modprobe_conf": ".conf",
+    "modules_load": ".conf",
+    "sysctl_d": ".conf",
+    "tmpfiles_d": ".conf",
+    "sddm_conf_d": ".conf",
+}
+
+
+def _check_snippet_suffixes(config: Dict[str, Any]) -> List[Issue]:
+    """A snippet the system will never read is a snippet that does nothing.
+
+    dasik writes whatever `name` says, verbatim, so `{"name": "swappiness"}`
+    lands as /etc/sysctl.d/swappiness — which exists, converges, and is never
+    read. A warning rather than an error or a silent rename: the file IS what
+    the config asked for, and renaming it behind the user's back would leave the
+    old one behind on the next apply.
+
+    The free-form `files` section is not second-guessed: those are absolute
+    paths the user chose deliberately.
+    """
+    issues: List[Issue] = []
+    for section, suffix in _SNIPPET_SUFFIXES.items():
+        for entry in config.get(section) or []:
+            name = entry.get("name") if isinstance(entry, dict) else None
+            if not name or name.endswith(suffix):
+                continue
+            issues.append(Issue(
+                "warning", "snippet_never_read",
+                f"`{section}` entry {name!r} does not end in {suffix}: that "
+                f"directory only loads {suffix} files, so the snippet would be "
+                f"written and never read. Rename it to {name}{suffix}."))
     return issues
 
 
@@ -688,6 +808,8 @@ def preflight(config: Dict[str, Any],
     issues += _check_locales(config)
     issues += _check_unknown_keys(config)
     issues += _check_file_collisions(config)
+    issues += _check_snippet_suffixes(config)
+    issues += _check_disk_coherence(config)
     issues += _check_cpu(config, packages)
     issues += _check_home_files(config)
     issues += _check_firewall_backend(config, packages)

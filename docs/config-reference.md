@@ -180,7 +180,7 @@ archive the old one produced.
 ```json
 "config_saver": {
   "source": { "url": "https://github.com/amt911/config-saver-aur.git",
-              "ref": "a520605367e13ec25db4c3c7e1c4bf46175ba8cd" },
+              "ref": "e853c51f978b80fff9c993bcfdfe3a25c1efb201" },
   "configs": { "dotfiles": { "normalize_content": true,
                              "directories": [{ "source": "$HOME",
                                                "files": [".zshrc"] }] } },
@@ -195,6 +195,40 @@ archive the old one produced.
 | `configs` | object | `{}` | name → config-saver document, written to `/etc/config-saver/configs/<name>.json`. It reads JSON as well as YAML, and JSON needs no new dependency and round-trips exactly. |
 | `timer_users` | list | `[]` | Enables `config-saver@<user>.timer` for each. |
 | `restore` | list | `[]` | `{user, archive}` — an absolute path **on the target**. Unpacked into that user's `$HOME` with `config-saver --decompress`. |
+
+**Where a configuration can live (config-saver ≥ 3.3.0).** Three levels; the
+two active ones are merged by file name and the more specific wins:
+
+| Level | Owner | How it reaches a fresh machine |
+| --- | --- | --- |
+| `/usr/share/config-saver/configs` | the package | examples only — **never active**; use them with `--input <path>` |
+| `/etc/config-saver/configs` | **dasik**, from `configs` above | written by the first `apply` |
+| `~/.config/config-saver/configs.d` | the user | rides inside the `$HOME` archive itself, so a restore brings it back |
+
+With nothing in either active level config-saver **exits 6** ("No
+configurations found") rather than falling back to the examples — those reach
+`~/.ssh` and `~/.config/rclone`, and a package install should not start a daily
+timer that archives credentials nobody chose. `preflight` warns when
+`timer_users` is declared and `configs` is empty, because that is exactly the
+combination that produces a timer failing on every fire.
+
+**Making the archive self-sufficient.** A restore brings back the *data*; it
+brings back *what to back up* only if some configuration archived the directory
+the configurations live in. config-saver ships that one-liner as
+`own-configs.yaml`, but it is an example, so on a dasik machine you declare it:
+
+```json
+"configs": {
+  "own-configs": { "normalize_content": false,
+                   "directories": ["$CONFIG_DIR/config-saver/configs.d"] }
+}
+```
+
+That covers the *user's* level. `/etc/config-saver/configs` is deliberately not
+in it: dasik rebuilds that level from this config file, and an archive that
+restored it would leave the machine diverging from its own declaration.
+config-saver keeps it behind explicit `--include-system-configs` /
+`--restore-system-configs` for people not using a declarative installer.
 
 **Restore is once per archive content.** The marker under
 `~/.local/state/dasik/config-saver/<sha256>` names what was unpacked, so
@@ -547,7 +581,7 @@ such packages; everything else resolves automatically.
   "config-saver": {
     "type": "pkgbuild-git",
     "url": "https://github.com/amt911/config-saver-aur.git",
-    "ref": "a520605367e13ec25db4c3c7e1c4bf46175ba8cd"
+    "ref": "e853c51f978b80fff9c993bcfdfe3a25c1efb201"
   }
 }
 ```
@@ -1015,7 +1049,7 @@ One config exercising every section — validate a copy with `dasik check`
     "config-saver": {
       "type": "pkgbuild-git",
       "url": "https://github.com/amt911/config-saver-aur.git",
-      "ref": "a520605367e13ec25db4c3c7e1c4bf46175ba8cd"
+      "ref": "e853c51f978b80fff9c993bcfdfe3a25c1efb201"
     }
   },
   "drivers": ["nvidia"],

@@ -115,12 +115,24 @@ class DropFilesAction(AbstractAction):
                 modes[path] = int(mode, 8)
         return modes
 
+    def _mode_of(self, canonical: str) -> Optional[int]:
+        """The file's permission bits, or None when it cannot be stat'ed."""
+        try:
+            return os.stat(self._abs(canonical)).st_mode & 0o777
+        except OSError:
+            return None
+
     def _read(self, canonical: str) -> str:
         with open(self._abs(canonical), "r") as f:
             return f.read()
 
     def _exists(self, canonical: str) -> bool:
         return os.path.exists(self._abs(canonical))
+
+    def _is_symlink(self, canonical: str) -> bool:
+        """A managed path that is a link is not the managed file. Its own seam,
+        like _exists/_read, so a target-less double can stub it."""
+        return os.path.islink(self._abs(canonical))
 
     def actual(self) -> set:
         """Declared paths that exist on disk (no directory glob)."""
@@ -131,6 +143,8 @@ class DropFilesAction(AbstractAction):
     def _needs_write(self, canonical: str, desired: str) -> bool:
         if not self._exists(canonical):
             return True
+        if self._is_symlink(canonical):
+            return True          # a link is not the file, whatever it reads as
         return _sha256(self._read(canonical)) != _sha256(desired)
 
     # -- v3 contract --------------------------------------------------- #
@@ -147,11 +161,45 @@ class DropFilesAction(AbstractAction):
             op_install=Op.CREATE,
             op_remove=Op.DELETE,
         )
+        modes = self._file_modes()
         for p in sorted(set(desired) & actual):
-            if self._read(p) != desired[p]:
-                changes.append(Change(_FILES_DOMAIN, Op.MODIFY, p, reason="content drift"))
+            reasons = []
+            if self._is_symlink(p):
+                # Not a content question: a link is not the file, whatever it
+                # reads as. Writing through it sent the content to the link's
+                # TARGET, so the file never converged and this plan repeated
+                # for ever (found by `ln -s /dev/null` over a managed file).
+                # Its mode is the link's, not the file's — nothing to compare.
+                reasons.append("replaced by a symlink")
+            else:
+                if self._read(p) != desired[p]:
+                    reasons.append("content drift")
+                # A declared mode is desired state, not decoration: NetworkManager
+                # and wg-quick refuse a keyfile anyone can read, so a file chmod'ed
+                # by hand (or restored from a backup) stops working while the plan
+                # stays silent. Only files that DECLARE a mode are checked — dasik
+                # does not own permissions it was never told about.
+                wanted = modes.get(p)
+                if wanted is not None:
+                    current = self._mode_of(p)
+                    if current is not None and current != wanted:
+                        reasons.append(f"mode drift ({current:04o} -> {wanted:04o})")
+            if reasons:
+                changes.append(Change(_FILES_DOMAIN, Op.MODIFY, p,
+                                      reason=", ".join(reasons)))
         self._warn_shadowed([c.item for c in changes if c.op is not Op.DELETE])
-        return changes
+        return [self._explain_package_file(c) for c in changes]
+
+    def _explain_package_file(self, change: Change) -> Change:
+        """Say, in the plan itself, that a package file survives its removal."""
+        if change.op is not Op.DELETE:
+            return change
+        owner = self._pacman_owner(change.item)
+        if not owner:
+            return change
+        return Change(change.domain, change.op, change.item,
+                      reason=f"{change.reason}; owned by {owner} — a package file "
+                             "is left in place, not deleted")
 
     def _warn_shadowed(self, paths: List[str]) -> None:
         """Warn for each declared file that overrides one a package ships.
@@ -189,6 +237,20 @@ class DropFilesAction(AbstractAction):
         # "<path> is owned by <pkg> <version>"
         marker = " is owned by "
         return out.split(marker)[1].split()[0] if marker in out else None
+
+    def _effective_env_lines(self) -> "Optional[List[str]]":
+        """The settings in /etc/environment, or None when it cannot be read.
+
+        Comments and blank lines are not settings: an untouched Arch install
+        ships a header of comments and nothing else, which must capture as
+        nothing rather than as five comment lines.
+        """
+        try:
+            text = self._read(_ENV_PATH)
+        except OSError:
+            return None
+        return [ln for ln in text.splitlines()
+                if ln.strip() and not ln.lstrip().startswith("#")]
 
     def _vendor_copy(self, path: str) -> Optional[str]:
         """The /usr/lib counterpart of an /etc file, when one exists.
@@ -340,9 +402,17 @@ class DropFilesAction(AbstractAction):
                         by_name[d["name"]] = d["content"]
             result[key] = [{"name": n, "content": by_name[n]} for n in order]
 
-        if _ENV_PATH in actual:
-            text = self._read(_ENV_PATH)
-            result["etc_environment"] = [ln for ln in text.split("\n") if ln != ""]
+        # Read the file whenever it is THERE, not only when the config already
+        # declared it. It belongs to the `pam` package, so file discovery skips
+        # it on purpose, and the old `if _ENV_PATH in actual` (declared paths
+        # that exist) meant a first capture of a machine with a customised
+        # /etc/environment silently dropped every line in it.
+        #
+        # The stock file is nothing but comments, so "has effective lines" is
+        # exactly the question "did somebody put something here".
+        env_lines = self._effective_env_lines()
+        if env_lines is not None:
+            result["etc_environment"] = env_lines
         else:
             result["etc_environment"] = list(self.etc_env_lines)
 
@@ -399,6 +469,42 @@ class DropFilesAction(AbstractAction):
                     "of the way, or point the declaration elsewhere.") from e
             raise
 
+    @staticmethod
+    def _write_content(path: str, content: str, mode: Optional[int]) -> None:
+        """Write a managed file, and never let a secret exist world-readable.
+
+        A declared mode is there because the content IS a secret — a WireGuard
+        or NetworkManager private key. Writing the content and chmod'ing after
+        put that key on disk readable by every user for the length of the write,
+        and left it that way for good if the process died in between.
+
+        So the mode is on the descriptor before any content reaches it:
+        O_CREAT's mode argument covers a new file, and fchmod covers one that
+        already existed — O_CREAT does not touch the mode of an existing file,
+        which is the case that matters (a key left at 0644 by an older dasik).
+
+        A symlink in the managed path is REMOVED first rather than written
+        through: following it would send dasik's content to the link's target —
+        a file it does not manage, at the target's permissions, which for a
+        secret is the same leak by another route — and leave the managed path
+        still a link, so the next plan asks for the same write again, for ever.
+        The removal lives here, on the only code path that writes, so every
+        caller gets it — and so does :meth:`_ensure_parent`, which turns a
+        parent that cannot hold the file into a message that names it instead
+        of a bare `FileExistsError: [Errno 17]`.
+        """
+        DropFilesAction._ensure_parent(os.path.dirname(path), path)
+        if os.path.islink(path):
+            os.remove(path)
+        if mode is None:
+            with open(path, "w") as f:
+                f.write(content)
+            return
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
+        os.fchmod(fd, mode)
+        with os.fdopen(fd, "w") as f:
+            f.write(content)
+
     def apply(self, changes) -> None:
         if self._target() is None:
             return
@@ -408,17 +514,34 @@ class DropFilesAction(AbstractAction):
         deletes = [c.item for c in changes if c.op is Op.DELETE]
 
         for canonical in writes:                    # additive first
-            path = self._abs(canonical)
-            self._ensure_parent(os.path.dirname(path), canonical)
-            with open(path, "w") as f:
-                f.write(desired.get(canonical, ""))
-            if canonical in modes:                  # restrict secret files (0600)
-                os.chmod(path, modes[canonical])
+            self._write_file(canonical, desired.get(canonical, ""), modes)
 
         for canonical in deletes:
+            # The declaration OVERRODE whatever the package ships; dropping it
+            # undoes the override, and removing the path would go further than
+            # that — `pacman -Qkk` then reports the file missing and the next
+            # upgrade of that package silently puts it back. dasik refuses to
+            # capture a package file (see import_state); it must not delete one
+            # either. A probe that fails means "unknown", and unknown deletes.
+            owner = self._pacman_owner(canonical)
+            if owner:
+                run_logger.get().warning(
+                    f"{canonical} is owned by the {owner} package",
+                    detail="the declaration that overrode it is gone, so dasik "
+                           "stops managing the file — but it is left in place. "
+                           f"Reinstall {owner} to get the package's own version "
+                           "back.")
+                continue
             path = self._abs(canonical)
             if os.path.exists(path):
                 os.remove(path)
+
+    def _write_file(self, canonical: str, content: str, modes: Dict[str, int]) -> None:
+        """Write a managed file by its canonical path, replacing whatever is in
+        its place — a symlink included, and never through a world-readable
+        window. Both live in :meth:`_write_content`; this only resolves the path
+        and the file's declared mode."""
+        self._write_content(self._abs(canonical), content, modes.get(canonical))
 
     # -- legacy is_needed / execute / verify (old executor path) ------- #
 
@@ -429,13 +552,8 @@ class DropFilesAction(AbstractAction):
         modes = self._file_modes()
         for canonical, content in self._desired().items():
             if self._needs_write(canonical, content):
-                path = self._abs(canonical)
-                os.makedirs(os.path.dirname(path), exist_ok=True)
-                with open(path, "w") as f:
-                    f.write(content)
-                if canonical in modes:
-                    os.chmod(path, modes[canonical])
-                print(f"  Wrote {path}")
+                self._write_file(canonical, content, modes)
+                print(f"  Wrote {self._abs(canonical)}")
 
     def verify(self) -> bool:
         return not any(self._needs_write(p, c) for p, c in self._desired().items())

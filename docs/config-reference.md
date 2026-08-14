@@ -91,7 +91,7 @@ result back by hand.
 | `disks` | object | Partitioning, filesystems, LUKS, btrfs subvolumes |
 | `timezone` | object | `/etc/localtime` |
 | `locales` | object | `/etc/locale.gen`, `locale.conf`, `vconsole` keymap |
-| `network` | object | NetworkManager / systemd-networkd + `/etc/hosts` |
+| `network` | object | The network manager: package, unit, DHCP profile — plus `/etc/hosts` |
 | `hostname` | string | `/etc/hostname` |
 | `users` | list | User accounts + groups + shell |
 | `packages` | list | pacman + AUR + Git-source packages (real names) |
@@ -114,6 +114,7 @@ result back by hand.
 | `apparmor` | object | Mandatory access control: package, unit, the `lsm=` kernel parameter, optional audit framework, local profiles |
 | `pam` | object | PAM hardening: account lockout, nproc limits, password policy |
 | `firewall` | object | firewalld **or** ufw — see below |
+| `containers` | object | Container runtime: podman or docker (the engine, not the containers) |
 | `bluetooth`, `hardware_acceleration`, `kvm`, `cups`, `microsoft_fonts`, `wireguard`, `snapper` | object | Feature toggles |
 | `enable_trim`, `enable_microcode`, `remove_home_on_delete`, `sysrq` | bool | Simple toggles |
 | `metadata`, `notes` | object / string | Free-form; not applied |
@@ -134,6 +135,35 @@ defaults to `true`. See [the wiki page](wiki/AppArmor.md) for the full story.
 `sync` captures `enable: false` for a machine that has the package but no `lsm=`
 naming it: that machine is not protected, and reporting otherwise would describe
 a system that does not exist. Profiles pacman owns are never captured.
+
+---
+
+## `containers`  *(sync ✓)*
+
+The container **runtime**, installed and configured. dasik does not manage
+containers.
+
+```json
+"containers": { "runtime": "podman", "rootless": true, "docker_compat": true }
+```
+
+| Field | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `runtime` | `"podman"` \| `"docker"` | — | Exactly one: both own `/usr/bin/docker` and the same bridge networks. |
+| `rootless` | bool | `true` (podman) / `false` (docker) | podman: every declared non-root user gets a `subuid`/`subgid` range, which is what rootless containers map into. Refused for docker — rootless docker is a separate daemon setup, not a flag. |
+| `docker_compat` | bool | `false` | podman: installs `podman-docker`, so `docker` on the command line is podman. Refused for docker. |
+| `compose` | bool | `false` | `podman-compose` / `docker-compose`, following the runtime. |
+| `api_socket` | bool | `false` | Enables `podman.socket` / `docker.socket`. For docker this **replaces** `docker.service`: the engine starts on first use instead of at boot. |
+| `daemon_json` | object | `null` | docker only: `/etc/docker/daemon.json`, written as JSON. Refused for podman, which has no daemon. |
+
+docker also puts every declared user in the `docker` group — the only way to use
+docker without root, and worth knowing that it is **root-equivalent**: a member
+can bind-mount `/` into a container.
+
+`useradd` already writes a subuid range for users it creates (shadow ≥ 4.11.1-3),
+so on a fresh install this domain usually converges to nothing. It exists for the
+machines where it does not: an older account, a user restored from a capture, a
+machine that grew podman later.
 
 ---
 
@@ -321,7 +351,7 @@ block leaves the machine's `/etc/localtime` alone.
 
 | Field | Type | Default | Notes |
 | --- | --- | --- | --- |
-| `network.type` | `NetworkManager` \| `systemd-networkd` | — | |
+| `network.type` | `NetworkManager` \| `systemd-networkd` | — | **Installs and enables it.** `NetworkManager` adds the `networkmanager` package and `NetworkManager.service`; `systemd-networkd` needs no package (systemd ships it) and enables `systemd-networkd.service` + `systemd-resolved.service` plus a DHCP profile at `/etc/systemd/network/20-dasik-dhcp.network` — the unit alone matches no interface and configures nothing. Write any file under `/etc/systemd/network` yourself and yours is the only one. |
 | `network.add_default_hosts` | bool | `false` | Write the standard `/etc/hosts` entries. |
 | `hostname` | string | `""` | `/etc/hostname`. |
 
@@ -452,7 +482,7 @@ such packages; everything else resolves automatically.
 | Field | Type | Notes |
 | --- | --- | --- |
 | `type` | `"pkgbuild-git"` | Only value for now. |
-| `url` | string | HTTPS `github.com` URL ending in `.git` (first version limits host). |
+| `url` | string | Any HTTPS URL ending in `.git` (GitHub, GitLab, Codeberg, a self-hosted forge). Refused: plain HTTP, and credentials in the URL — `sync` would copy the secret into the captured config. |
 | `ref` | string | **Full 40-char commit SHA** — pins the build for reproducibility. Change it deliberately to update. |
 | `subdir` | string | Optional; PKGBUILD subdirectory (default `.`). Must stay inside the clone (no `..`). |
 

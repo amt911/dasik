@@ -16,6 +16,7 @@ from dasik.lib.models.disk_model import (
 )
 from dasik.lib.command_worker.command_worker import Command
 from dasik.lib.exceptions.exceptions import CommandExecutionError
+from dasik.lib.logging import run_logger
 from dasik.lib.state.change import Change, Op
 from dasik.lib.actions.partition_utils import keydev_path
 from dasik.lib.actions.swap_encryption import KEY_SOURCE, LABEL_FS_SIZE, swap_names
@@ -140,6 +141,45 @@ class DiskPartitionAction(AbstractAction):
             return swap_names({"label": partition.label})[1]
         return partition.label
 
+    def _warn_about_passphrases(self, disk) -> None:
+        """Say when a declared passphrase does not open the disk it describes.
+
+        `luks_password` is only ever used while FORMATTING, so changing it on an
+        installed machine does nothing at all — the volume keeps the old one and
+        the config claims the new one. You find out at the next reboot, which is
+        the worst possible moment.
+
+        dasik can just ask: `cryptsetup open --test-passphrase` creates no
+        mapping, so it is safe from plan() (the keyfile domain probes the same
+        way). A warning, never a change — rewriting a keyslot behind someone's
+        back is how a disk is lost, and the fix is a `cryptsetup luksChangeKey`
+        they run themselves.
+        """
+        for partition in disk.partitions:
+            if not getattr(partition, "encrypt", False):
+                continue
+            password = getattr(partition, "luks_password", None)
+            if not password:
+                continue
+            device = self._luks_backing_device(getattr(partition, "luks_name", "") or "")
+            if not device:
+                continue
+            try:
+                result = Command.execute(
+                    "cryptsetup", ["open", "--test-passphrase", device],
+                    input=(password + "\n").encode())
+            except Exception:      # nosec B112 - a probe that cannot run says nothing
+                continue
+            if getattr(result, "returncode", 0) == 0:
+                continue
+            run_logger.get().warning(
+                f"the declared passphrase does not open {partition.label} "
+                f"({device})",
+                detail="`luks_password` is only used while formatting, so this "
+                       "config describes a passphrase the volume does not have. "
+                       "dasik will not rewrite a keyslot for you: change it with "
+                       "`cryptsetup luksChangeKey` and the two will agree again.")
+
     def _disk_converged(self, disk: DiskLayout) -> bool:
         want = {self._expected_label(p) for p in disk.partitions}
         return bool(want) and want.issubset(self._device_labels(disk.device))
@@ -150,10 +190,103 @@ class DiskPartitionAction(AbstractAction):
     def managed_keys(self) -> dict:
         return {self._DOMAIN: sorted(self.actual())}
 
+    # What lsblk REPORTS for a declared filesystem. dasik speaks mkfs's
+    # spelling; lsblk answers with the on-disk type.
+    _FSTYPE_ALIASES = {"fat32": "vfat", "fat16": "vfat", "fat": "vfat",
+                       "swap": "swap", "linux-swap": "swap"}
+
+    def _reported_fstypes(self, device: str) -> "dict[str, str]":
+        """{label: fstype} as lsblk sees this disk, or {} when it cannot say."""
+        try:
+            result = Command.execute("lsblk", ["-no", "LABEL,FSTYPE", device])
+        except Exception:      # nosec B110 - no lsblk: nothing to compare against
+            return {}
+        out = getattr(result, "stdout", b"") or b""
+        if isinstance(out, bytes):
+            out = out.decode("utf-8", "replace")
+        found: "dict[str, str]" = {}
+        for line in out.splitlines():
+            parts = line.split()
+            if len(parts) >= 2:
+                found[parts[0]] = parts[1]
+        return found
+
+    def _unlabelled_fstypes(self, device: str) -> "set[str]":
+        """Filesystem types on this disk that carry no label — a LUKS container
+        is exactly that, so it never appears in the {label: fstype} map."""
+        try:
+            result = Command.execute("lsblk", ["-no", "LABEL,FSTYPE", device])
+        except Exception:      # nosec B110 - no lsblk: nothing to compare against
+            return set()
+        out = getattr(result, "stdout", b"") or b""
+        if isinstance(out, bytes):
+            out = out.decode("utf-8", "replace")
+        return {parts[0] for parts in (line.split() for line in out.splitlines())
+                if len(parts) == 1}
+
+    def _content_mismatches(self, disk: DiskLayout) -> "list[str]":
+        """Declared partitions whose label is there but whose CONTENT is not.
+
+        `_disk_converged` compares labels and nothing else, so a partition
+        declared btrfs on a disk carrying ext4 under the same label reads as
+        converged and the plan says "No changes" — about the one domain where
+        that sentence means "your filesystems are what you declared".
+        """
+        reported = self._reported_fstypes(disk.device)
+        if not reported:
+            return []
+        seen = set(reported.values()) | self._unlabelled_fstypes(disk.device)
+        out: "list[str]" = []
+        for part in disk.partitions:
+            label = self._expected_label(part)
+            actual = reported.get(label)
+            if not actual:
+                continue
+            mode = getattr(part, "swap_encryption", None)
+            # NB: the default is the enum member NONE, not None — truthiness
+            # alone would skip every partition on the disk.
+            if str(getattr(mode, "value", mode) or "none").lower() != "none":
+                # Re-encrypted with a fresh key on every boot, so the raw bytes
+                # are last boot's ciphertext and blkid guesses whatever they
+                # resemble ("declared swap, disk has ext2" on a healthy machine
+                # whose swap was open and active). There is nothing to compare.
+                continue
+            # `filesystem` is an enum; lsblk speaks strings.
+            declared = getattr(part.filesystem, "value", part.filesystem)
+            want = self._FSTYPE_ALIASES.get(declared, declared)
+            # On an encrypted partition the LABEL lsblk shows belongs to the
+            # filesystem INSIDE the mapping — the container itself carries none:
+            #
+            #     (no label)  crypto_LUKS
+            #     ROOT        btrfs
+            #
+            # so the labelled line is the inner filesystem and comparing it
+            # against "crypto_LUKS" warned on every plan of every encrypted
+            # machine. Whether the volume is encrypted at all is a separate
+            # question, answered by the container line below.
+            if actual not in (want, "crypto_LUKS"):
+                out.append(f"{label}: declared {want}, disk has {actual}")
+            if part.encrypt and "crypto_LUKS" not in seen:
+                out.append(f"{label}: declared encrypted, disk has no LUKS container")
+        return out
+
     def plan(self, managed) -> list:
         changes = []
         for disk in self.disks:
             if self._disk_converged(disk):
+                self._warn_about_passphrases(disk)
+                # Converged by LABEL. Anything else that differs cannot be
+                # fixed in place (no filesystem is converted under a running
+                # system) and must not be wiped without `wipe_disk: true`, so
+                # there is no honest change to plan — only something to say.
+                for mismatch in self._content_mismatches(disk):
+                    run_logger.get().warning(
+                        f"{disk.device} {mismatch}",
+                        detail="dasik will not reformat a populated disk. Set "
+                               "`wipe_disk: true` (ERASES the disk) if the "
+                               "declaration is what you want, or fix the "
+                               "declaration to match the machine.",
+                    )
                 continue
             if disk.wipe_disk or not self._has_partition_table(disk.device):
                 # destructive=True: the op is INSTALL, but applying this runs
@@ -1253,8 +1386,13 @@ class DiskPartitionAction(AbstractAction):
         if partition.luks_password is None:
             print(f"NOTE: {kind} enroll skipped ({partition.label}): needs luks_password.")
             return
+        # check=True: every way this fails is a way the machine ends up with
+        # `fido2-device=auto` on its command line and no token in the header —
+        # the key not plugged in, never touched, needing a PIN, no TPM in the
+        # box. Silently, with the install reporting success. The passphrase
+        # still works, so the failure is recoverable; it just has to be said.
         Command.execute("systemd-cryptenroll", [kind, device],
-                        env={"PASSWORD": partition.luks_password})
+                        env={"PASSWORD": partition.luks_password}, check=True)
 
     def _create_btrfs_subvolumes(self, device: str, subvolumes: List[BtrfsSubvolume]) -> None:
         """Create btrfs subvolumes.
@@ -1273,7 +1411,11 @@ class DiskPartitionAction(AbstractAction):
             for subvol in subvolumes:
                 print(f"Creating btrfs subvolume: {subvol.name}")
                 subvol_path = f"{temp_mount}/{subvol.name}"
-                Command.execute("btrfs", ["subvolume", "create", subvol_path])
+                # check=True: a subvolume that was not created means a machine
+                # installed "successfully" with no /home, and the abort arrives
+                # much later, at genfstab, pointing somewhere else.
+                Command.execute("btrfs", ["subvolume", "create", subvol_path],
+                                check=True)
             
             Command.execute("umount", [temp_mount])
         finally:
@@ -1363,7 +1505,10 @@ class DiskPartitionAction(AbstractAction):
         mount_cmd.extend([device, mountpoint])
         
         print(f"Mounting {partition.label} at {mountpoint}")
-        Command.execute("mount", mount_cmd[1:])  # Skip 'mount' as Command adds it
+        # check=True: a mount that failed is how "genfstab produced an empty
+        # fstab" happens (#147) — the install carries on writing into the
+        # installer's own filesystem and only falls over later.
+        Command.execute("mount", mount_cmd[1:], check=True)  # Command adds 'mount' 
 
     def _mount_btrfs_subvolumes(self, partition: Partition) -> None:
         """Mount btrfs subvolumes.
@@ -1383,7 +1528,7 @@ class DiskPartitionAction(AbstractAction):
             mount_cmd = ["mount", "-o", ",".join(options), device, mountpoint]
             
             print(f"Mounting subvolume {subvol.name} at {mountpoint}")
-            Command.execute("mount", mount_cmd[1:])
+            Command.execute("mount", mount_cmd[1:], check=True)
 
     def get_partition_device(self, label: str) -> Optional[str]:
         """Get the device path for a partition by its label.

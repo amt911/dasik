@@ -106,6 +106,8 @@ result back by hand.
 | `udev_rules`, `modprobe_conf`, `modules_load`, `sysctl_d`, `tmpfiles_d`, `sddm_conf_d`, `profile_d` | list | Local `/etc/*.d` snippet files |
 | `etc_environment` | list | `/etc/environment` lines |
 | `files` | list | Arbitrary `/etc/...` files (verbatim) |
+| `etc_tree` | string | Directory mirroring `/etc`; every file under it becomes a `files` entry ([Config splitting](wiki/Config-splitting.md)) |
+| `etc_tree_modes` | object | Tree-relative path → octal mode, for the modes Git cannot carry (`0600` on a keyfile) |
 | `home_files` | list | Files inside a user's `$HOME` (dotfiles, autostart entries) |
 | `zram` | object | `/etc/systemd/zram-generator.conf` |
 | `sudo` | object | `/etc/sudoers.d/10-dasik` — wheel access + extra rules |

@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from .includes import (
     CONCAT,
@@ -230,11 +230,18 @@ class _Planner:
                          for m, share in zip(members, shares)]}
 
 
-def write_back(root_path: "str | Path", new_config: Dict[str, Any]) -> List[Path]:
+def write_back(root_path: "str | Path", new_config: Dict[str, Any],
+               extra_writes: Optional[Dict[Path, str]] = None,
+               deletions: Optional[Set[Path]] = None) -> List[Path]:
     """Persist *new_config* through the directive tree rooted at *root_path*.
 
     Returns every file actually written, root first. A file whose content did
     not change is not in the list and was not opened.
+
+    *extra_writes* and *deletions* let a caller fold other file changes into the
+    same all-or-nothing step — `sync` uses them to extract captured `/etc`
+    bodies into the `etc_tree` while the JSON is being rewritten, so the two
+    never disagree.
     """
     root = Path(root_path)
     current = root.read_text(encoding="utf-8")
@@ -244,6 +251,14 @@ def write_back(root_path: "str | Path", new_config: Dict[str, Any]) -> List[Path
     value = planner.plan(raw, new_config, root.parent)
     root_text = _dumps(value)
 
+    for path, text in (extra_writes or {}).items():
+        try:
+            if path.read_text(encoding="utf-8") == text:
+                continue        # unchanged: do not touch it
+        except OSError:
+            pass                # absent or unreadable: write it
+        planner.writes[path] = text
+
     written: List[Path] = []
     if root_text != current:
         written.append(root)
@@ -251,5 +266,9 @@ def write_back(root_path: "str | Path", new_config: Dict[str, Any]) -> List[Path
 
     for path in written:
         text = root_text if path == root else planner.writes[path]
+        path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8")
+    for path in deletions or set():
+        path.unlink(missing_ok=True)
+        written.append(path)
     return written

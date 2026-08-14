@@ -78,6 +78,82 @@ base + desktop + dev, split by theme. Every member must resolve to a list.
 
 ---
 
+## `etc_tree` — a directory that mirrors `/etc`
+
+`$include_text` moves **one** body out of the JSON. A real machine's `/etc` is
+not one body, so there is a shorthand for all of them at once:
+
+```json
+"etc_tree": "etc"
+```
+
+```text
+config/
+├── main.json
+└── etc/
+    ├── pam.d/sudo                    → /etc/pam.d/sudo
+    ├── profile.d/dasik.sh            → /etc/profile.d/dasik.sh
+    └── udev/rules.d/99-qudelix.rules → /etc/udev/rules.d/99-qudelix.rules
+```
+
+Every file under the tree becomes a [`files`](Configuration.md) entry whose
+`path` is its position under `/etc`. Nothing else to declare, and the tree reads
+like the `/etc` it produces — a reviewer recognises it without learning a
+schema. It also covers what the snippet sections cannot: `/etc/pam.d` has no
+section of its own, so today it *must* be a `files` entry.
+
+The expansion happens in the loader, so `check`, `plan` and `apply` see ordinary
+entries. **Deleting a file from the tree removes it from the machine** on the
+next apply — the tree is a declaration, not a pile of leftovers.
+
+### Modes
+
+Git carries exactly one permission bit, so:
+
+| The file | Becomes |
+| --- | --- |
+| executable in your working tree | `mode: "0755"` |
+| anything else | no mode (the umask), as today |
+
+Everything else is declared, and one case makes that non-negotiable: a WireGuard
+or NetworkManager keyfile that is world-readable is **ignored in silence**.
+
+```json
+"etc_tree": "etc",
+"etc_tree_modes": { "wireguard/wg0.conf": "0600" }
+```
+
+A mode naming a file the tree does not hold is an error, not a no-op — a typo
+there is a secret left readable.
+
+### Precedence
+
+An explicit `files` entry **wins** over a tree file for the same path: the
+config says it in the file you are reading. `preflight` warns, because two
+declarations of one path is a smell even when the winner is well-defined.
+
+### `sync` extracts into it
+
+With a tree declared, a captured file under `/etc` is written **into the tree**
+and the JSON keeps no body at all:
+
+```text
+sync captures /etc/pam.d/sudo   →  writes etc/pam.d/sudo, the JSON does not grow
+```
+
+That is the other half of the writeback below. Without it, a capture would undo
+the split from the other direction — every PAM snippet back as an escaped
+one-line string. Paths outside `/etc` stay inline.
+
+### Refusals
+
+The tree is read at load time, so a bad one fails before anything runs: a
+**symlink** inside it (it would publish whatever it points at), a file that is
+**not UTF-8 text** (a body is a string; a binary belongs in a package), a tree
+outside the config's own directory, and a missing tree.
+
+---
+
 ## Rules
 
 | Rule | Why |

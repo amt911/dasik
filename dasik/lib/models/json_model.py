@@ -7,7 +7,7 @@ from .timezone_model import TimezoneModel
 from .network_model import NetworkModel
 from .disk_model import DisksConfiguration
 from .user_model import UserModel
-from .file_model import FileEntry, EtcFile, HomeFile
+from .file_model import FileEntry, EtcFile, HomeFile, _validate_mode
 from .package_model import PackageSpec, PackagePolicyModel, GitPackageSourceModel
 from .pacman_model import PacmanModel
 from .systemd_model import SystemdModel
@@ -80,6 +80,20 @@ class JsonModel(BaseModel):
     profile_d: List[FileEntry] = Field(default_factory=list)
     etc_environment: List[str] = Field(default_factory=list)
     files: List[EtcFile] = Field(default_factory=list)
+    etc_tree: Optional[str] = Field(
+        default=None,
+        description="Directory (relative to this config) mirroring /etc. Every "
+                    "file under it becomes a `files` entry at the matching path, "
+                    "so a PAM snippet or a udev rule lives in a real file instead "
+                    "of an escaped JSON string. The loader expands it; `sync` "
+                    "extracts captured /etc files back into it.")
+    etc_tree_modes: Dict[str, str] = Field(
+        default_factory=dict,
+        description="Tree-relative path -> octal mode, for files whose mode Git "
+                    "cannot carry. An executable file already becomes 0755; this "
+                    "is for the rest, e.g. '0600' on a WireGuard keyfile, which "
+                    "NetworkManager ignores in silence when world-readable.")
+
     home_files: List[HomeFile] = Field(
         default_factory=list,
         description="Files inside a user's $HOME (dotfiles, autostart entries). "
@@ -129,6 +143,19 @@ class JsonModel(BaseModel):
     _ini_sections = field_validator(
         "oomd", "systemd_system_conf", "systemd_user_conf", mode="after"
     )(staticmethod(validate_ini_section))
+
+    @field_validator("etc_tree_modes")
+    @classmethod
+    def _valid_tree_modes(cls, v: Dict[str, str]) -> Dict[str, str]:
+        """Keys address a file inside the tree, so they follow the same rule the
+        include directives do: relative, no escaping."""
+        for path, mode in v.items():
+            if path.startswith("/") or ".." in path.split("/"):
+                raise ValueError(
+                    f"etc_tree_modes key {path!r} must be relative to the tree "
+                    "and contain no '..' segment")
+            _validate_mode(mode)
+        return v
 
     @model_validator(mode="after")
     def _validate_package_sources(self) -> "JsonModel":

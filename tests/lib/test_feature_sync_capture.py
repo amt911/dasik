@@ -618,3 +618,180 @@ def test_the_package_behind_the_policy_is_reproducible_from_the_capture(tmp_path
 
     assert captured["pam"]["pwquality"]["minlen"] == 12
     assert "libpwquality" in expand_config(captured)["packages"]
+
+
+# --- the network manager (issue #196) --------------------------------------- #
+
+def test_the_capture_of_a_hostname_only_machine_validates(tmp_path):
+    """A config with a `hostname` and no `network` block is valid, and so must
+    its capture be. It used to come back as `network: {"type": ""}` — which the
+    schema rejects, so `sync` produced a file dasik itself refused."""
+    machine = _machine(tmp_path)
+    (machine / "etc").mkdir(parents=True, exist_ok=True)
+    (machine / "etc/hostname").write_text("arch\n")
+
+    captured = _synced(machine, seed={"bootloader": "sd-boot", "hostname": "arch"})
+
+    assert captured["hostname"] == "arch"
+    assert "network" not in captured
+    JsonModel.model_validate(captured)
+
+
+# --- a PKGBUILD that was never uploaded to the AUR ------------------------- #
+#
+# The end-to-end `_synced` harness cannot reach this one either: PackagesAction
+# reads reality with `pacman -Qq…`, which a fake root has no way to answer, so
+# the Reconciler isolates it and the fragment never appears. The pacman boundary
+# is faked here; the capture logic above it is the real code.
+
+_GIT_SRC = {"type": "pkgbuild-git",
+            "url": "https://git.example.org/pkgbuilds/config-saver.git",
+            "ref": "a520605367e13ec25db4c3c7e1c4bf46175ba8cd", "subdir": "."}
+
+
+def _packages_capture(seed, manifest, installed=("config-saver",)):
+    from dasik.lib.actions.packages_action import PackagesAction
+
+    action = PackagesAction(seed, ActionContext(target=Target(root="/"),
+                                                manifest=manifest))
+    action._installed_all = MagicMock(return_value=set(installed))
+    action.actual = MagicMock(return_value=set(installed))
+    action._unit_provider_packages = MagicMock(return_value=set())
+    return action.import_state(list(installed))
+
+
+_GIT_MANIFEST = {"managed": {"packages": ["config-saver"]},
+                 "action_state": {"packages": {"sources": {"config-saver": _GIT_SRC}}}}
+
+
+def test_sync_captures_the_git_source_of_a_package_no_repo_has():
+    captured = _packages_capture({}, _GIT_MANIFEST)
+
+    assert captured["package_sources"] == {"config-saver": _GIT_SRC}
+
+
+def test_sync_invents_no_source_on_a_machine_that_has_no_git_package():
+    assert "package_sources" not in _packages_capture(
+        {"packages": ["git"]}, None, installed=("git",))
+
+
+def test_the_captured_git_source_validates_and_re_plans_to_nothing():
+    captured = _packages_capture({}, _GIT_MANIFEST)
+    config = {
+        "locales": {"selected_locales": [], "desired_locale": "en_US.UTF-8",
+                    "desired_tty_layout": "us"},
+        "timezone": {"region": "Europe", "city": "Madrid"},
+        "network": {"type": "NetworkManager", "add_default_hosts": True},
+        "hostname": "arch", **captured,
+    }
+    JsonModel(**config)          # `dasik check` on the capture
+
+    from dasik.lib.actions.packages_action import PackagesAction
+    replan = PackagesAction(config, ActionContext(target=Target(root="/"),
+                                                  manifest=_GIT_MANIFEST))
+    replan._installed_all = MagicMock(return_value={"config-saver"})
+    replan.actual = MagicMock(return_value={"config-saver"})
+    assert replan.plan(managed=["config-saver"]) == []
+
+
+# --- containers (the runtime) ---------------------------------------------- #
+#
+# Reached through the real registry: the probes are files under the target root
+# and one `systemctl is-enabled`, so only that command needs faking.
+
+def _container_machine(tmp_path, runtime="podman", subuid="andres:100000:65536\n"):
+    machine = _machine(tmp_path)
+    (machine / "usr/bin").mkdir(parents=True, exist_ok=True)
+    (machine / "usr/bin" / ("podman" if runtime == "podman" else "dockerd")).write_text("")
+    (machine / "etc").mkdir(parents=True, exist_ok=True)
+    (machine / "etc/subuid").write_text(subuid)
+    (machine / "etc/subgid").write_text(subuid)
+    return machine
+
+
+def _synced_containers(tmp_path, **kw):
+    from dasik.lib.actions.containers_action import ContainersAction
+
+    machine = _container_machine(tmp_path, **kw)
+    with patch.object(ContainersAction, "_unit_enabled", return_value=False):
+        return _synced(machine)
+
+
+def test_sync_captures_the_container_runtime(tmp_path):
+    captured = _synced_containers(tmp_path)
+
+    assert captured["containers"]["runtime"] == "podman"
+    assert captured["containers"]["rootless"] is True
+
+
+def test_sync_invents_no_runtime_on_a_machine_without_one(tmp_path):
+    assert "containers" not in _synced(_machine(tmp_path))
+
+
+def test_the_captured_runtime_validates(tmp_path):
+    JsonModel.model_validate(_synced_containers(tmp_path))
+
+
+def test_replanning_the_captured_runtime_is_a_no_op(tmp_path):
+    from dasik.lib.actions.containers_action import ContainersAction
+
+    machine = _container_machine(tmp_path)
+    with patch.object(ContainersAction, "_unit_enabled", return_value=False):
+        captured = _synced(machine)
+    captured.setdefault("users", [{"username": "andres", "hashed_password": "$6$a$b"}])
+    action = ContainersAction(expand_config(captured),
+                              ActionContext(target=Target(root=str(machine))))
+
+    assert action.plan(managed=["andres"]) == []
+
+
+def test_the_package_behind_the_runtime_is_reproducible_from_the_capture(tmp_path):
+    captured = _synced_containers(tmp_path)
+
+    assert "podman" in expand_config(captured)["packages"]
+
+
+# --- config-saver ----------------------------------------------------------- #
+
+def _saver_machine(tmp_path):
+    machine = _machine(tmp_path)
+    (machine / "usr/bin").mkdir(parents=True, exist_ok=True)
+    (machine / "usr/bin/config-saver").write_text("")
+    (machine / "etc/config-saver/configs").mkdir(parents=True)
+    (machine / "etc/config-saver/configs/dotfiles.json").write_text(
+        '{"directories": ["$HOME/.config"]}')
+    return machine
+
+
+def _synced_saver(tmp_path, seed=None):
+    from dasik.lib.actions.config_saver_action import ConfigSaverAction
+
+    with patch.object(ConfigSaverAction, "_pkg_owned", return_value=False), \
+         patch.object(ConfigSaverAction, "_unit_enabled", return_value=False):
+        return _synced(_saver_machine(tmp_path), seed=seed)
+
+
+def test_sync_captures_the_config_saver_documents(tmp_path):
+    captured = _synced_saver(tmp_path)
+
+    assert captured["config_saver"]["configs"] == {
+        "dotfiles": {"directories": ["$HOME/.config"]}}
+
+
+def test_sync_invents_no_config_saver_block(tmp_path):
+    assert "config_saver" not in _synced(_machine(tmp_path))
+
+
+def test_the_captured_config_saver_block_validates(tmp_path):
+    JsonModel.model_validate(_synced_saver(tmp_path))
+
+
+def test_the_captured_document_is_not_also_a_hand_written_file(tmp_path):
+    """It rides `files`, so subtract_contributions must attribute it to the
+    block — or the capture carries the same JSON twice."""
+    captured = _synced_saver(tmp_path)
+    paths = [f["path"] for f in captured.get("files", [])]
+
+    assert "/etc/config-saver/configs/dotfiles.json" not in paths
+    assert "/etc/config-saver/configs/dotfiles.json" in \
+        [f["path"] for f in expand_config(captured)["files"]]

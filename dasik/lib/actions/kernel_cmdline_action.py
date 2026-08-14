@@ -47,7 +47,14 @@ class KernelCmdlineAction(AbstractAction):
         super().__init__(config, context)
         cfg: Dict[str, Any] = config if isinstance(config, dict) else {}
         self._cfg = cfg
-        self.bootloader: str = cfg.get("bootloader", "grub")
+        # A config that names its bootloader is asking about that one. A config
+        # that does not — the `{}` seed of a bootstrap `sync` — used to get grub
+        # by default, so on a systemd-boot machine every cmdline-derived fact
+        # read as absent: no `lsm=`, no `audit=1`, no `sysrq`, no cpu driver,
+        # and an `apparmor` capture so contradictory that `check` refused the
+        # file it had just written. Ask the machine instead.
+        self.bootloader: str = cfg.get("bootloader") or self._detect_bootloader(
+            getattr(context, "target", None) if context else None)
         self.explicit_params: List[str] = cfg.get("kernel_cmdline", [])
 
     def _target(self):
@@ -146,6 +153,15 @@ class KernelCmdlineAction(AbstractAction):
                         opts.append("discard")
                     if opts:
                         params.append(f"rd.luks.options={uuid}={','.join(opts)}")
+
+                elif mounts_root(part):
+                    # The plain case, which nothing derived before: the entry
+                    # BootloaderAction writes carries `root=LABEL=… rw`, so
+                    # without deriving them here they were parameters nobody
+                    # declared — and a manifest that owned them (every manifest
+                    # a sync wrote) made the next plan propose deleting the root
+                    # of the filesystem (issue #189).
+                    params.append(f"root=LABEL={part.get('label', 'root')} rw")
 
                 # rootflags describe the mount of /, so only the partition that
                 # provides it contributes them — an encrypted btrfs /home must
@@ -304,6 +320,38 @@ class KernelCmdlineAction(AbstractAction):
             pass
         return None
 
+    def _our_sdboot_entries(self) -> List[str]:
+        """The entries dasik owns — never everything on the ESP.
+
+        An ESP can be shared. Writing this machine's `root=` into another
+        distribution's entry sends it to the wrong filesystem, and the plan
+        never mentions it because the domain is the command line, not the
+        entries. dasik's own are arch.conf, arch-fallback.conf and one pair per
+        DECLARED kernel; anything else there belongs to somebody else.
+        """
+        ours = {"arch.conf", "arch-fallback.conf"}
+        for name in self._declared_kernels():
+            ours |= {f"{name}.conf", f"{name}-fallback.conf"}
+        default = self._default_entry()
+        if default:
+            ours.add(default)
+        return [e for e in self._sdboot_entries() if os.path.basename(e) in ours]
+
+    def _declared_kernels(self) -> List[str]:
+        """Kernel packages the config asks for, other than the default `linux`
+        (whose entry is the historical arch.conf). Same rule the bootloader
+        domain uses to decide which entries to write."""
+        skip = ("-headers", "-docs", "-tools", "-api-headers", "-firmware")
+        out = []
+        for name in self.config.get("packages") or []:
+            if not isinstance(name, str):
+                continue
+            name = name.strip()
+            if name.startswith("linux") and name != "linux" \
+                    and not any(name.endswith(s) for s in skip):
+                out.append(name)
+        return sorted(set(out))
+
     def _sdboot_entries(self) -> List[str]:
         t = self._target()
         entries_dir = t.path("/boot/loader/entries") if t is not None else "/mnt/boot/loader/entries"
@@ -354,7 +402,20 @@ class KernelCmdlineAction(AbstractAction):
             return set()
         return set(self._current_cmdline().split())
 
+    # Tokens that say WHERE the root filesystem is and how it is mounted.
+    # dasik may add them and may change them, but must never plan their removal:
+    # a boot entry without `root=` does not boot, and "no longer declared" is
+    # not a good enough reason to make a machine unbootable. A config that
+    # cannot derive them (no `disks` block — the day-2 shape) simply leaves
+    # whatever the entry already has.
+    _ROOT_DEFINING = ("root", "rootflags", "rootfstype", "rw", "ro")
+
+    @classmethod
+    def _defines_root(cls, token: str) -> bool:
+        return (token.split("=")[0] if "=" in token else token) in cls._ROOT_DEFINING
+
     def plan(self, managed):
+        from ..state.change import Op
         from ..state.set_math import compute_changes
         changes, _drift = compute_changes(
             self._DOMAIN,
@@ -362,7 +423,8 @@ class KernelCmdlineAction(AbstractAction):
             managed=managed,
             actual=self.actual(),
         )
-        return changes
+        return [c for c in changes
+                if not (c.op is Op.REMOVE and self._defines_root(c.item))]
 
     def managed_keys(self) -> dict:
         return {self._DOMAIN: self._desired_tokens()}
@@ -444,7 +506,7 @@ class KernelCmdlineAction(AbstractAction):
             self._write_grub(line)
             Command.execute("grub-mkconfig", ["-o", "/boot/grub/grub.cfg"], target=self._target())
         else:
-            for entry in self._sdboot_entries():
+            for entry in self._our_sdboot_entries():
                 self._write_sdboot(entry, line)
 
     def _write_grub(self, line: str) -> None:
@@ -502,6 +564,27 @@ class KernelCmdlineAction(AbstractAction):
         return [p for p in self.desired_params if not self._param_present(current, p)]
 
     # ------------------------------------------------------------------ #
+
+    _SDBOOT_ENTRIES = "/boot/loader/entries"
+    _GRUB_CFG = "/boot/grub/grub.cfg"
+
+    @classmethod
+    def _detect_bootloader(cls, target) -> str:
+        """Which loader this machine boots, by its on-disk evidence.
+
+        Only reached when the config is silent (a bootstrap sync). grub stays
+        the answer when nothing can be read, which is what it always was.
+        """
+        if target is None:
+            return "grub"
+        try:
+            if os.path.isdir(target.path(cls._SDBOOT_ENTRIES)):
+                return "sd-boot"
+            if os.path.exists(target.path(cls._GRUB_CFG)):
+                return "grub"
+        except Exception:      # nosec B110 - a target double with no path()
+            return "grub"
+        return "grub"
 
     @property
     def name(self) -> str:

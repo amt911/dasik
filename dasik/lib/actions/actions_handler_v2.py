@@ -45,6 +45,8 @@ def setup_actions() -> None:
     from .pacman_action import PacmanAction
     from .users_action import UsersAction
     from .home_files_action import HomeFilesAction
+    from .config_saver_action import ConfigSaverAction
+    from .containers_action import ContainersAction
     from .sudo_action import SudoAction
     from .packages_action import PackagesAction
     from .systemd_action import SystemdAction
@@ -218,6 +220,21 @@ def setup_actions() -> None:
     register_action(
         action_class=MicrosoftFontsAction,
         config_key='microsoft_fonts',
+        is_optional=True,
+    )
+    # config-saver restores an archive into a user's $HOME, so it runs after
+    # Users (the home must exist) and after Packages (the binary must too).
+    register_action(
+        action_class=ConfigSaverAction,
+        config_key='__root__',   # reads root-level `config_saver`
+        is_optional=True,
+    )
+    # The container runtime's id maps. After Users (useradd writes a range
+    # itself for a user it creates, so most of the time this converges to
+    # nothing) and after Packages (podman/docker are installed by then).
+    register_action(
+        action_class=ContainersAction,
+        config_key='__root__',   # reads root-level `containers` + `users`
         is_optional=True,
     )
     register_action(

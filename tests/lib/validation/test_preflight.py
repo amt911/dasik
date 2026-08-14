@@ -133,7 +133,9 @@ def test_coherent_config_has_no_issues():
         # `sudo` is declared on purpose: a user in `wheel` with no package
         # providing sudo is exactly the wheel_without_sudo warning below.
         "users": [{"username": "andres", "groups": ["wheel", "libvirt"]}],
-        "packages": ["libvirt", "plasma-meta", "sudo"],
+        # networkmanager is declared: enabling its unit without it is the
+        # unit_without_provider warning, not a coherent config.
+        "packages": ["libvirt", "plasma-meta", "sudo", "networkmanager"],
         "systemd": {"enable_units": ["plasmalogin.service", "NetworkManager.service"]},
     }
     assert preflight(cfg) == []

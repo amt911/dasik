@@ -16,17 +16,24 @@ from .toggles import TOGGLES
 
 _LIST_KEYS = ("packages", "units", "sockets", "modprobe_conf", "files",
               "home_files", "user_groups")
+_MAP_KEY = "package_sources"
 
 
 def contributions(config: Dict[str, Any]) -> Dict[str, Any]:
     """Aggregate every active toggle's contribution (order-preserving, de-duped)."""
-    out: Dict[str, list] = {k: [] for k in _LIST_KEYS}
+    out: Dict[str, Any] = {k: [] for k in _LIST_KEYS}
+    out[_MAP_KEY] = {}
     for fn in TOGGLES:
         frag = fn(config) or {}
         for key in _LIST_KEYS:
             for item in frag.get(key, []):
                 if item not in out[key]:
                     out[key].append(item)
+        # package_sources is a MAP, not a list: a toggle that knows where its
+        # package is built (config-saver is in no repo and no AUR) contributes
+        # the entry, and a hand-written one wins.
+        for name, source in (frag.get(_MAP_KEY) or {}).items():
+            out[_MAP_KEY].setdefault(name, source)
     return out
 
 
@@ -45,6 +52,10 @@ def expand_config(config: Dict[str, Any]) -> Dict[str, Any]:
 
     if c["packages"]:
         merged["packages"] = _merge_list(merged.get("packages", []), c["packages"])
+
+    if c[_MAP_KEY]:
+        declared = dict(merged.get(_MAP_KEY, {}) or {})
+        merged[_MAP_KEY] = {**c[_MAP_KEY], **declared}   # declared wins
 
     if c["units"] or c["sockets"]:
         sd = dict(merged.get("systemd", {}) or {})
@@ -98,6 +109,11 @@ def subtract_contributions(new_config: Dict[str, Any], original: Dict[str, Any])
         if key in result:
             orig_items = original.get(key, [])
             result[key] = [x for x in result[key] if x not in items or x in orig_items]
+
+    if _MAP_KEY in result:
+        orig_sources = original.get(_MAP_KEY, {}) or {}
+        result[_MAP_KEY] = {name: src for name, src in result[_MAP_KEY].items()
+                            if name not in c[_MAP_KEY] or name in orig_sources}
 
     if c["user_groups"] and "users" in result:
         orig_groups = {u.get("username"): set(u.get("groups", []))

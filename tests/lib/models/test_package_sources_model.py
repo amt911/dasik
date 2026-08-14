@@ -64,9 +64,36 @@ def test_git_source_rejects_http():
         _src(url="http://github.com/amt911/config-saver-aur.git")
 
 
-def test_git_source_rejects_non_github_host():
+@pytest.mark.parametrize("url", [
+    "https://gitlab.com/amt911/config-saver-aur.git",
+    "https://codeberg.org/amt911/config-saver-aur.git",
+    "https://git.example.org/pkgbuilds/config-saver.git",
+    "https://git.example.org:8443/pkgbuilds/config-saver.git",
+])
+def test_git_source_accepts_any_https_host(url):
+    # A PKGBUILD that was never uploaded to the AUR can live on any forge; the
+    # URL only ever reaches git as a positional argument, never a shell.
+    assert _src(url=url).url == url
+
+
+@pytest.mark.parametrize("url", [
+    "https://user:token@github.com/amt911/private.git",   # secret in the config
+    "https://token@github.com/amt911/private.git",
+])
+def test_git_source_rejects_credentials_in_url(url):
     with pytest.raises(ValidationError):
-        _src(url="https://gitlab.com/amt911/config-saver-aur.git")
+        _src(url=url)
+
+
+@pytest.mark.parametrize("url", [
+    "https:///amt911/config-saver-aur.git",     # no host at all
+    "https://-bad-.com/x.git",                  # not a DNS name
+    "https://exa mple.com/x.git",
+    "https://github.com/../../x.git",
+])
+def test_git_source_rejects_unusable_host_or_path(url):
+    with pytest.raises(ValidationError):
+        _src(url=url)
 
 
 def test_git_source_rejects_missing_git_suffix():

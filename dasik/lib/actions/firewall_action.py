@@ -202,19 +202,39 @@ class FirewallAction(AbstractAction):
         status = self._ufw_status()
         return self._parse_ufw_status(status) if status else []
 
-    def _plan_ufw(self) -> List[Change]:
+    def _plan_ufw(self, managed=()) -> List[Change]:
+        """Set-math over the rules, both directions.
+
+        The install half was here from the start; the removal half was not, so a
+        port you stopped declaring stayed open for ever — the plan never
+        mentioned it and `sync` captured it back into the config as if it had
+        been asked for. Removal is scoped to what dasik added (the manifest), so
+        somebody else's rule is drift and stays.
+        """
         live = set(self._live_ufw_rules())
-        return [Change(self._DOMAIN, Op.INSTALL, rule, reason="ufw rule")
-                for rule in self._desired_ufw_rules() if rule not in live]
+        desired = self._desired_ufw_rules()
+        changes = [Change(self._DOMAIN, Op.INSTALL, rule, reason="ufw rule")
+                   for rule in desired if rule not in live]
+        changes += [Change(self._DOMAIN, Op.REMOVE, rule, reason="no longer declared")
+                    for rule in sorted(set(managed) - set(desired))
+                    if rule in live]
+        return changes
 
     def _apply_ufw(self, changes) -> None:
         for change in changes:
             # Split here, never in the shell: `ufw allow 22/tcp` is two
             # arguments, and this string comes from the config.
-            Command.execute("ufw", change.item.split(), target=self._target())
+            argv = change.item.split()
+            if change.op is Op.REMOVE:
+                # --force so `ufw delete` does not stop to ask.
+                argv = ["--force", "delete", *argv]
+            # check=True: a rule ufw refused is a port left open (or shut) while
+            # the plan reports it applied — and a REMOVE that failed leaves the
+            # manifest claiming a rule the firewall still enforces.
+            Command.execute("ufw", argv, target=self._target(), check=True)
         # Non-interactive: plain `ufw enable` asks for confirmation and would
         # hang an unattended apply.
-        Command.execute("ufw", ["--force", "enable"], target=self._target())
+        Command.execute("ufw", ["--force", "enable"], target=self._target(), check=True)
 
     def _ufw_installed(self) -> bool:
         target = self._target()
@@ -255,7 +275,7 @@ class FirewallAction(AbstractAction):
         if not self.enable:
             return []
         if self._is_ufw():
-            return self._plan_ufw()
+            return self._plan_ufw(managed or ())
         if self._current_xml() == self._desired_xml():
             return []
         return [Change(self._DOMAIN, Op.MODIFY, "public", reason="zone rules")]

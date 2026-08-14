@@ -20,9 +20,14 @@ contributed by toggles count as declared.
 from __future__ import annotations
 
 import os
+from difflib import get_close_matches
+from typing import get_args
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Set
 
+from pydantic import BaseModel
+
+from ..models.json_model import JsonModel
 from ..actions.swap_encryption import (
     crypttab_line,
     random_swap_partitions,
@@ -82,6 +87,12 @@ _UNIT_PROVIDERS: Dict[str, Set[str]] = {
     "power-profiles-daemon.service": {"power-profiles-daemon"},
     "cpupower.service": {"cpupower"},
     "reflector.timer": {"reflector"},
+    # Enabled by hand in two of the repo's own sample configs while nothing
+    # declared the package. `systemctl enable` on a unit that does not exist
+    # fails, with the disk already partitioned.
+    "NetworkManager.service": {"networkmanager", "networkmanager-git"},
+    "NetworkManager-wait-online.service": {"networkmanager", "networkmanager-git"},
+    "NetworkManager-dispatcher.service": {"networkmanager", "networkmanager-git"},
 }
 
 # Packages that ship /usr/bin/sudo (and visudo). `base` does NOT.
@@ -99,14 +110,21 @@ _CRYPTTAB_FLAGS: Set[str] = {
     "readonly", "read-only", "verify", "bitlk", "fvault2", "tcrypt",
     "tcrypt-hidden", "tcrypt-system", "tcrypt-veracrypt", "same-cpu-crypt",
     "submit-from-crypt-cpus", "no-read-workqueue", "no-write-workqueue",
-    "_netdev", "netdev", "headless", "try-empty-password",
+    "_netdev", "netdev", "headless",
+    # Bare flags dasik itself writes or crypttab(5) documents without a value.
+    # `x-initrd.attach` lived in the key=value table below, so the line dasik's
+    # own dracut backend writes ("luks,x-initrd.attach") was rejected by `check`
+    # on every capture of an encrypted machine.
+    "x-initrd.attach", "keyfile-erase",
 }
+# crypttab(5) documents these as `name[=bool]`: both forms are valid.
+_CRYPTTAB_FLAG_OR_KEY: Set[str] = {"try-empty-password"}
 _CRYPTTAB_KEYS: Set[str] = {
     "cipher", "hash", "header", "key-slot", "keyfile-offset", "keyfile-size",
-    "keyfile-erase", "offset", "sector-size", "size", "skip", "timeout",
+    "offset", "sector-size", "size", "skip", "timeout",
     "tries", "token-timeout", "pkcs11-uri", "fido2-device", "fido2-cid",
     "fido2-rp", "tpm2-device", "tpm2-pcrs", "tpm2-signature", "tpm2-measure-pcr",
-    "x-systemd.device-timeout", "x-initrd.attach", "veracrypt-pim",
+    "x-systemd.device-timeout", "veracrypt-pim",
 }
 
 
@@ -308,6 +326,146 @@ def _check_home_files(config: Dict[str, Any]) -> List[Issue]:
         "already exists on the target.")]
 
 
+_BUILTIN_LOCALES = {"C", "C.UTF-8", "POSIX"}
+
+
+def _check_locales(config: Dict[str, Any]) -> List[Issue]:
+    """LANG must name a locale the config actually generates.
+
+    `selected_locales` is what gets uncommented in /etc/locale.gen and built;
+    `desired_locale` is what goes into LANG. Nothing tied them together, so a
+    config could install cleanly, converge, and leave the machine announcing a
+    locale nobody generated.
+
+    A warning, not an error: C/C.UTF-8/POSIX are built into glibc and need no
+    generation, and a target may already carry locales an earlier generation
+    built. The charset half of a locale.gen line is not part of the name —
+    `en_US.UTF-8 UTF-8` IS `en_US.UTF-8` as a LANG.
+    """
+    block = config.get("locales")
+    if not isinstance(block, dict):
+        return []
+    lang = (block.get("desired_locale") or "").strip()
+    if not lang or lang in _BUILTIN_LOCALES:
+        return []
+    generated = {entry.split()[0] for entry in block.get("selected_locales") or []
+                 if isinstance(entry, str) and entry.split()}
+    if lang in generated:
+        return []
+    listed = ", ".join(sorted(generated)) or "nothing"
+    return [Issue(
+        "warning", "lang_never_generated",
+        f"`desired_locale` is {lang!r} but `selected_locales` generates {listed}; "
+        "LANG would name a locale the machine never builds. Add it to "
+        "`selected_locales` (with its charset, e.g. "
+        f"'{lang} UTF-8') or point LANG at one that is there.")]
+
+
+def _check_unknown_keys(config: Dict[str, Any]) -> List[Issue]:
+    """Name every key dasik does not know, and guess what it meant.
+
+    The model deliberately IGNORES unknown keys so a config written for another
+    version stays loadable (tests/lib/json_parser: unknown top-level keys are
+    ignored). The cost is silence: a typo produces a machine quietly missing the
+    feature, with `check` and `plan` both saying nothing. So dasik says it here
+    — as a warning, which informs without aborting.
+
+    One level deep as well as at the root: `sudo.whel` is the same mistake.
+    `metadata` is free-form by design and never flagged.
+    """
+    known = set(JsonModel.model_fields)
+    issues: List[Issue] = []
+    for key, value in config.items():
+        if key in known:
+            nested = JsonModel.model_fields[key].annotation
+            issues += _check_nested_keys(key, value, nested)
+            continue
+        if key.startswith("$"):        # $include and friends: handled elsewhere
+            continue
+        issues.append(Issue("warning", "unknown_config_key",
+                            f"unknown key {key!r}: dasik ignores it, so whatever "
+                            f"it declares will not happen.{_did_you_mean(key, known)}"))
+    return issues
+
+
+def _check_nested_keys(block: str, value: Any, annotation: Any) -> List[Issue]:
+    """The same check inside one declared block, when its model is knowable."""
+    if block == "metadata" or not isinstance(value, dict):
+        return []
+    model = next((a for a in _annotation_models(annotation)), None)
+    if model is None:
+        return []
+    known = set(model.model_fields)
+    return [Issue("warning", "unknown_config_key",
+                  f"unknown key '{block}.{k}': dasik ignores it, so whatever it "
+                  f"declares will not happen.{_did_you_mean(k, known)}")
+            for k in value if k not in known]
+
+
+def _annotation_models(annotation: Any):
+    """The model an annotation IS, unwrapping Optional — never one it merely
+    CONTAINS.
+
+    `package_sources` is Dict[str, GitPackageSourceModel]: its keys are package
+    names the user chose, not model fields. Descending into it flagged every
+    real entry as a typo (`unknown key 'package_sources.config-saver'`), which
+    is exactly the noise this check exists to avoid. Same for `zram`, keyed by
+    device name. So: only a plain model, or Optional[model].
+    """
+    args = get_args(annotation)
+    candidates = [annotation]
+    if args and type(None) in args:            # Optional[X] / X | None
+        candidates += [a for a in args if a is not type(None)]
+    for candidate in candidates:
+        if isinstance(candidate, type) and issubclass(candidate, BaseModel):
+            yield candidate
+
+
+def _did_you_mean(key: str, known: Set[str]) -> str:
+    close = get_close_matches(key, sorted(known), n=1, cutoff=0.6)
+    return f" Did you mean {close[0]!r}?" if close else ""
+
+
+# Paths dasik writes from a domain of their own. A `files` entry aimed at one of
+# them is a second writer with different content, so the two undo each other on
+# every apply. /etc/crypttab is deliberately absent: dasik's own capture puts it
+# in `files`, and that pairing is intended.
+_DOMAIN_OWNED_FILES = {
+    "/etc/sudoers.d/10-dasik": "sudo",
+    "/etc/systemd/zram-generator.conf": "zram",
+    "/etc/systemd/system.conf.d/10-dasik.conf": "systemd_system_conf",
+    "/etc/systemd/user.conf.d/10-dasik.conf": "systemd_user_conf",
+    "/etc/systemd/oomd.conf.d/10-dasik.conf": "oomd",
+    "/etc/security/limits.d/10-dasik.conf": "pam",
+    "/etc/security/pwquality.conf.d/10-dasik.conf": "pam",
+    "/etc/mkinitcpio.conf.d/dasik.conf": "initramfs",
+    "/etc/mkinitcpio.conf": "initramfs",
+}
+# /etc/fstab is deliberately absent too: genfstab writes it at install time and
+# nothing rewrites it afterwards, so a `files` entry there does not fight anyone.
+
+
+def _check_file_collisions(config: Dict[str, Any]) -> List[Issue]:
+    """A `files` entry over a path another domain owns never converges.
+
+    Both writers run on every apply, each undoing the other, and both report
+    success — the plan proposes the same change forever. A warning rather than
+    an error: the config is not wrong to parse, and the user may be mid-way
+    through moving a setting from one place to the other.
+    """
+    issues: List[Issue] = []
+    for entry in config.get("files") or []:
+        path = entry.get("path") if isinstance(entry, dict) else None
+        domain = _DOMAIN_OWNED_FILES.get(path or "")
+        if domain:
+            issues.append(Issue(
+                "warning", "file_owned_by_another_domain",
+                f"`files` declares {path}, which the `{domain}` domain also "
+                "writes; the two overwrite each other on every apply and the "
+                f"plan never goes quiet. Declare it through `{domain}` instead."))
+    return issues
+
+
 def _check_cpu(config: Dict[str, Any], packages: Set[str]) -> List[Issue]:
     """power-profiles-daemon owns the frequency policy it shares with nobody."""
     cpu = config.get("cpu") or {}
@@ -370,7 +528,12 @@ def _check_crypttab(config: Dict[str, Any]) -> List[Issue]:
             if not opt:
                 continue
             key, sep, _value = opt.partition("=")
-            known = key in _CRYPTTAB_KEYS if sep else opt in _CRYPTTAB_FLAGS
+            if key in _CRYPTTAB_FLAG_OR_KEY:
+                known = True
+            elif sep:
+                known = key in _CRYPTTAB_KEYS
+            else:
+                known = opt in _CRYPTTAB_FLAGS
             if not known:
                 issues.append(Issue(
                     "error", "crypttab_bad_option",
@@ -522,6 +685,9 @@ def preflight(config: Dict[str, Any],
     issues += _check_groups(config, packages)
     issues += _check_units(config, packages)
     issues += _check_sudo(config, packages)
+    issues += _check_locales(config)
+    issues += _check_unknown_keys(config)
+    issues += _check_file_collisions(config)
     issues += _check_cpu(config, packages)
     issues += _check_home_files(config)
     issues += _check_firewall_backend(config, packages)

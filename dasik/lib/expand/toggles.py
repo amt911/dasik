@@ -6,6 +6,7 @@ modprobe_conf (list[{name, content}]), files (list[{path, content}]).
 Returns {} (no contribution) when the toggle is absent or disabled.
 """
 from __future__ import annotations
+import json
 from typing import Any, Dict
 
 
@@ -400,6 +401,137 @@ def expand_pam(config: Dict[str, Any]) -> Dict[str, Any]:
     return {"packages": ["libpwquality"]}
 
 
+_CONFIG_SAVER_DIR = "/etc/config-saver/configs"
+
+
+def expand_config_saver(config: Dict[str, Any]) -> Dict[str, Any]:
+    """config-saver: the package (and the Git PKGBUILD that builds it), one JSON
+    file per configuration, and the per-user timer.
+
+    The package is NOT in the AUR — its PKGBUILD lives in a plain Git
+    repository — so the block carries the source; without it the name resolves
+    nowhere and `warn-and-skip` would drop it silently.
+
+    Configurations are written as JSON rather than YAML: config-saver reads both
+    (`CONFIG_GLOBS = *.yaml, *.yml, *.json`), and JSON needs no new runtime
+    dependency and compares byte-for-byte after a round trip.
+    """
+    cfg = config.get("config_saver")
+    if cfg is None:
+        return {}
+    out: Dict[str, Any] = {"packages": ["config-saver"]}
+
+    source = cfg.get("source")
+    if source:
+        out["package_sources"] = {"config-saver": {"type": "pkgbuild-git",
+                                                   **dict(source)}}
+    files = [
+        {"path": f"{_CONFIG_SAVER_DIR}/{name}.json",
+         "content": json.dumps(doc, indent=2, sort_keys=True) + "\n"}
+        for name, doc in sorted((cfg.get("configs") or {}).items())
+    ]
+    if files:
+        out["files"] = files
+    units = [f"config-saver@{user}.timer" for user in cfg.get("timer_users") or []]
+    if units:
+        out["units"] = units
+    return out
+
+
+_COMPOSE_PACKAGES = {"podman": "podman-compose", "docker": "docker-compose"}
+
+
+def expand_containers(config: Dict[str, Any]) -> Dict[str, Any]:
+    """The container runtime: packages, its unit, and docker's group.
+
+    podman gets no unit by default — rootless podman runs no daemon at all, and
+    `podman.socket` exists only for clients that speak the docker API. docker
+    does: either the always-on service or, with `api_socket`, the socket that
+    starts the engine on first use.
+
+    The `docker` group is handed to every declared user because there is no
+    other way to use docker without root — and it is worth saying plainly that
+    it is root-equivalent: a member can bind-mount / into a container.
+    """
+    cfg = config.get("containers") or {}
+    runtime = cfg.get("runtime")
+    if runtime not in ("podman", "docker"):
+        return {}
+
+    packages = [runtime]
+    units: list = []
+    out: Dict[str, Any] = {}
+
+    if cfg.get("compose"):
+        packages.append(_COMPOSE_PACKAGES[runtime])
+
+    if runtime == "podman":
+        if cfg.get("docker_compat"):
+            packages.append("podman-docker")
+        if cfg.get("api_socket"):
+            units.append("podman.socket")
+    else:
+        units.append("docker.socket" if cfg.get("api_socket") else "docker.service")
+        out["user_groups"] = ["docker"]
+        daemon = cfg.get("daemon_json")
+        if daemon:
+            out["files"] = [{
+                "path": "/etc/docker/daemon.json",
+                "content": json.dumps(daemon, indent=2, sort_keys=True) + "\n",
+            }]
+
+    out["packages"] = packages
+    if units:
+        out["units"] = units
+    return out
+
+
+_NETWORKD_PROFILE = "/etc/systemd/network/20-dasik-dhcp.network"
+_NETWORKD_DIR = "/etc/systemd/network/"
+
+
+def expand_network(config: Dict[str, Any]) -> Dict[str, Any]:
+    """The declared network manager, actually installed and started.
+
+    The block used to write /etc/hostname and /etc/hosts and stop there: a
+    config whose only networking statement was `network: {"type":
+    "NetworkManager"}` produced a machine with no NetworkManager on it. Every
+    guest this repo installs has been network-less for months for that reason.
+
+    systemd-networkd needs no package (systemd ships it) but it DOES need a
+    .network file: the unit starts, matches nothing, and configures no
+    interface. A DHCP profile for wired interfaces is derived — unless the
+    config writes its own file under /etc/systemd/network, in which case
+    somebody has an opinion and it wins. `systemd-resolved` comes with it, and
+    the /etc/resolv.conf symlink is systemd's own tmpfiles job.
+    """
+    net = config.get("network") or {}
+    kind = net.get("type")
+    if kind == "NetworkManager":
+        return {"packages": ["networkmanager"], "units": ["NetworkManager.service"]}
+    if kind != "systemd-networkd":
+        return {}
+
+    out: Dict[str, Any] = {
+        "units": ["systemd-networkd.service", "systemd-resolved.service"],
+    }
+    declared = [f for f in config.get("files") or []
+                if isinstance(f, dict) and str(f.get("path", "")).startswith(_NETWORKD_DIR)]
+    if not declared:
+        out["files"] = [{
+            "path": _NETWORKD_PROFILE,
+            "content": ("# Managed by dasik: DHCP on every wired interface.\n"
+                        "# Declare your own file under /etc/systemd/network to\n"
+                        "# replace this one entirely.\n"
+                        "[Match]\n"
+                        "Name=en* eth*\n"
+                        "\n"
+                        "[Network]\n"
+                        "DHCP=yes\n"),
+        }]
+    return out
+
+
 def expand_sdboot_update(config: Dict[str, Any]) -> Dict[str, Any]:
     # systemd ships this unit itself: it runs `bootctl update` when the ESP's
     # loader is older than the installed systemd. The old imperative installer
@@ -416,5 +548,6 @@ TOGGLES = [
     expand_wireguard, expand_firewall, expand_hwaccel, expand_snapper,
     expand_drivers, expand_initramfs, expand_zram, expand_oomd, expand_cpu,
     expand_sdboot_update, expand_reflector, expand_plymouth,
-    expand_apparmor, expand_pam,
+    expand_apparmor, expand_pam, expand_config_saver, expand_containers,
+    expand_network,
 ]

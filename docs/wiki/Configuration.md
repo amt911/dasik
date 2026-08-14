@@ -131,7 +131,7 @@ The object form of a package entry:
 }
 ```
 
-`url` must be `https://github.com/….git`, `ref` a **full 40-char commit SHA**
+`url` must be `https://<host>/….git` (any forge, no credentials in it), `ref` a **full 40-char commit SHA**
 (reproducible builds), `subdir` relative and non-escaping. Every key must also
 appear in `packages` — a source nobody declares would never be built, so the
 schema rejects it.

@@ -228,10 +228,13 @@ class FirewallAction(AbstractAction):
             if change.op is Op.REMOVE:
                 # --force so `ufw delete` does not stop to ask.
                 argv = ["--force", "delete", *argv]
-            Command.execute("ufw", argv, target=self._target())
+            # check=True: a rule ufw refused is a port left open (or shut) while
+            # the plan reports it applied — and a REMOVE that failed leaves the
+            # manifest claiming a rule the firewall still enforces.
+            Command.execute("ufw", argv, target=self._target(), check=True)
         # Non-interactive: plain `ufw enable` asks for confirmation and would
         # hang an unattended apply.
-        Command.execute("ufw", ["--force", "enable"], target=self._target())
+        Command.execute("ufw", ["--force", "enable"], target=self._target(), check=True)
 
     def _ufw_installed(self) -> bool:
         target = self._target()

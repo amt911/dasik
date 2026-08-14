@@ -28,6 +28,7 @@ def _action(files, on_disk):
     a = DropFilesAction({"files": list(files)}, context=SimpleNamespace(target=object()))
     a._exists = lambda p: p in on_disk
     a._read = lambda p: on_disk[p]
+    a._is_symlink = lambda p: False       # plain files; the link case has its own suite
     return a
 
 

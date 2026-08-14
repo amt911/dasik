@@ -592,6 +592,192 @@ def test_the_firewalld_backend_still_installs_firewalld():
     assert "ufw" not in expanded["packages"]
 
 
+# --- zram takes its file back (round E) ------------------------------------- #
+
+def test_dropping_the_zram_block_removes_its_file(tmp_path):
+    """The disable direction of a scalar domain: `ScalarV3Action.plan` only ever
+    proposes a MODIFY towards a value, so an undeclared block proposed nothing
+    and the file stayed."""
+    from dasik.lib.actions.zram_action import ZramAction
+
+    body = "[zram0]\nzram-size = ram / 2\n"
+    (tmp_path / "etc/systemd").mkdir(parents=True)
+    (tmp_path / "etc/systemd/zram-generator.conf").write_text(body)
+    action = ZramAction({}, _ctx(tmp_path))
+
+    assert [(c.op.name, c.item) for c in action.plan(managed=[body])] == [
+        ("REMOVE", "/etc/systemd/zram-generator.conf")]
+
+
+def test_a_zram_file_dasik_never_wrote_is_left_alone(tmp_path):
+    from dasik.lib.actions.zram_action import ZramAction
+
+    (tmp_path / "etc/systemd").mkdir(parents=True)
+    (tmp_path / "etc/systemd/zram-generator.conf").write_text("[zram0]\n")
+
+    assert ZramAction({}, _ctx(tmp_path)).plan(managed=[]) == []
+
+
+# --- a PKGBUILD that was never uploaded to the AUR ------------------------- #
+#
+# `package_sources` rides the `packages` domain: there is no `[package_sources]`
+# line in a plan, the package appears as an install (or, when its pinned commit
+# moves, as a modify). Both directions must be visible.
+
+_SRC = {"type": "pkgbuild-git",
+        "url": "https://git.example.org/pkgbuilds/config-saver.git",
+        "ref": "a520605367e13ec25db4c3c7e1c4bf46175ba8cd", "subdir": "."}
+_OTHER_SHA = "b" * 40
+
+
+def _git_pkg_plan(installed, managed, source_ref=None, declared=True):
+    from unittest.mock import MagicMock
+    from dasik.lib.actions.action_context import ActionContext
+    from dasik.lib.actions.packages_action import PackagesAction
+    from dasik.lib.target.target import Target
+
+    config = ({"packages": ["config-saver"], "package_sources": {"config-saver": _SRC}}
+              if declared else {"packages": []})
+    manifest = {"managed": {"packages": list(managed)}, "action_state": {}}
+    if source_ref:
+        manifest["action_state"] = {
+            "packages": {"sources": {"config-saver": dict(_SRC, ref=source_ref)}}}
+    action = PackagesAction(config, ActionContext(target=Target(root="/"),
+                                                  manifest=manifest))
+    action._installed_all = MagicMock(return_value=set(installed))
+    action.actual = MagicMock(return_value=set(installed))
+    return [(c.op.name, c.item, c.reason) for c in action.plan(managed=list(managed))]
+
+
+def test_a_git_sourced_package_missing_from_the_machine_is_planned():
+    assert _git_pkg_plan(installed=(), managed=()) == [
+        ("INSTALL", "config-saver", "")]
+
+
+def test_a_git_sourced_package_built_at_the_pinned_commit_plans_nothing():
+    assert _git_pkg_plan(installed=("config-saver",), managed=("config-saver",),
+                         source_ref=_SRC["ref"]) == []
+
+
+def test_moving_the_pinned_commit_plans_a_rebuild():
+    assert _git_pkg_plan(installed=("config-saver",), managed=("config-saver",),
+                         source_ref=_OTHER_SHA) == [
+        ("MODIFY", "config-saver", "source ref changed")]
+
+
+def test_dropping_the_declaration_removes_the_package_the_manifest_owns():
+    assert _git_pkg_plan(installed=("config-saver",), managed=("config-saver",),
+                         declared=False) == [
+        ("REMOVE", "config-saver", "no longer declared")]
+
+
+# --- containers (the runtime) ---------------------------------------------- #
+#
+# The block rides three domains — packages, units, users' groups — plus one of
+# its own: the subuid/subgid map without which no rootless container starts.
+
+def _subid_plan(tmp_path, config, subuid="", managed=()):
+    from dasik.lib.actions.containers_action import ContainersAction
+
+    (tmp_path / "etc").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "etc/subuid").write_text(subuid)
+    (tmp_path / "etc/subgid").write_text(subuid)
+    action = ContainersAction(config, _ctx(tmp_path))
+    return [(c.op.name, c.item) for c in action.plan(managed=list(managed))]
+
+
+_ROOTLESS = {"containers": {"runtime": "podman"},
+             "users": [{"username": "andres", "hashed_password": "$6$a$b"}]}
+
+
+def test_a_missing_rootless_id_map_is_planned(tmp_path):
+    assert _subid_plan(tmp_path, _ROOTLESS) == [("CREATE", "andres")]
+
+
+def test_an_existing_id_map_plans_nothing(tmp_path):
+    assert _subid_plan(tmp_path, _ROOTLESS, subuid="andres:100000:65536\n") == []
+
+
+def test_dropping_the_containers_block_removes_the_map(tmp_path):
+    assert _subid_plan(tmp_path, {"users": _ROOTLESS["users"]},
+                       subuid="andres:100000:65536\n",
+                       managed=["andres"]) == [("REMOVE", "andres")]
+
+
+def test_an_id_map_dasik_never_wrote_is_left_alone(tmp_path):
+    assert _subid_plan(tmp_path, {}, subuid="otro:100000:65536\n") == []
+
+
+def test_the_docker_unit_is_planned_as_a_unit():
+    config = expand_config({"containers": {"runtime": "docker"}})
+    assert _units_planned(config) == ["docker.service"]
+
+
+def test_podman_plans_no_unit():
+    config = expand_config({"containers": {"runtime": "podman"}})
+    assert _units_planned(config) == []
+
+
+# --- config-saver ----------------------------------------------------------- #
+#
+# Rides `files` (one JSON per configuration) and `systemd` (the per-user timer);
+# the restore is its own domain because nothing else can see it.
+
+_SAVER = {"config_saver": {
+    "source": {"url": "https://github.com/amt911/config-saver-aur.git",
+               "ref": "a520605367e13ec25db4c3c7e1c4bf46175ba8cd"},
+    "configs": {"dotfiles": {"directories": ["$HOME/.config"]}},
+    "timer_users": ["andres"]}}
+
+
+def test_the_config_saver_document_is_planned(tmp_path):
+    action = DropFilesAction(expand_config(_SAVER), _ctx(tmp_path))
+
+    assert "/etc/config-saver/configs/dotfiles.json" in \
+        [c.item for c in action.plan(managed=[])]
+
+
+def test_the_config_saver_timer_is_planned_as_a_unit():
+    assert _units_planned(expand_config(_SAVER)) == ["config-saver@andres.timer"]
+
+
+def test_dropping_the_block_removes_the_document_and_the_timer(tmp_path):
+    """Both directions: without the block nothing derives them, so the file and
+    the unit come back as removals off their own set-math."""
+    (tmp_path / "etc/config-saver/configs").mkdir(parents=True)
+    (tmp_path / "etc/config-saver/configs/dotfiles.json").write_text("{}")
+    files = DropFilesAction(expand_config({}), _ctx(tmp_path))
+
+    assert [(c.op.name, c.item) for c in files.plan(
+        managed=["/etc/config-saver/configs/dotfiles.json"])] == [
+        ("DELETE", "/etc/config-saver/configs/dotfiles.json")]
+
+
+# --- root= and rw are derived, and never removable (issue #189) ------------- #
+
+_PLAIN_DISKS = {"bootloader": "sd-boot", "disks": {"disks": [{
+    "device": "/dev/vda", "partition_table": "gpt",
+    "partitions": [{"label": "ROOT", "size": "rest", "filesystem": "ext4",
+                    "partition_type": "linux", "mountpoint": "/"}]}]}}
+
+
+def test_the_root_parameter_of_a_plain_layout_is_planned(tmp_path):
+    assert ("INSTALL", "root=LABEL=ROOT") in _cmdline_plan(
+        tmp_path, _PLAIN_DISKS, "quiet")
+
+
+def test_a_boot_entry_that_already_names_its_root_plans_nothing(tmp_path):
+    assert _cmdline_plan(tmp_path, _PLAIN_DISKS, "root=LABEL=ROOT rw") == []
+
+
+def test_no_plan_ever_removes_the_root_parameter(tmp_path):
+    """The one case where "no longer declared" must NOT mean removal: dropping
+    it makes the machine unbootable, and the plan would call it routine."""
+    assert _cmdline_plan(tmp_path, {"bootloader": "sd-boot"},
+                         "root=LABEL=ROOT rw quiet",
+                         managed=["root=LABEL=ROOT", "rw"]) == []
+
+
 # --- ufw closes what it opened (round F) ------------------------------------ #
 
 def test_a_ufw_rule_no_longer_declared_is_removed():

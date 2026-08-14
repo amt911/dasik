@@ -1,0 +1,156 @@
+{
+  "metadata": {
+    "note": "EVERYTHING at once, encrypted: LUKS btrfs root with subvolumes + random-key swap + zram + snapper + apparmor(audit) + pam + firewalld + docker + NetworkManager. For scripts/vmtest/qemu.sh ONLY (guest /dev/vda)."
+  },
+  "disks": {
+    "disks": [
+      {
+        "device": "/dev/vda",
+        "partition_table": "gpt",
+        "wipe_disk": true,
+        "partitions": [
+          {
+            "label": "esp",
+            "size": "512MiB",
+            "filesystem": "fat32",
+            "partition_type": "esp",
+            "mountpoint": "/boot",
+            "format": true
+          },
+          {
+            "label": "swap",
+            "size": "1GiB",
+            "filesystem": "swap",
+            "partition_type": "linux-swap",
+            "format": true,
+            "swap_encryption": "random"
+          },
+          {
+            "label": "root",
+            "size": "rest",
+            "filesystem": "btrfs",
+            "partition_type": "linux",
+            "mountpoint": null,
+            "format": true,
+            "encrypt": true,
+            "luks_name": "cryptroot",
+            "luks_password": "megamixpass",
+            "mount_options": [
+              "compress-force=zstd:3"
+            ],
+            "btrfs_subvolumes": [
+              {
+                "name": "@",
+                "mountpoint": "/"
+              },
+              {
+                "name": "@home",
+                "mountpoint": "/home"
+              },
+              {
+                "name": "@snapshots",
+                "mountpoint": "/.snapshots"
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "initramfs": "dracut",
+  "bootloader": "sd-boot",
+  "enable_microcode": false,
+  "hostname": "dasik-megamix",
+  "kernel_cmdline": [
+    "console=ttyS0,115200"
+  ],
+  "timezone": {
+    "region": "Etc",
+    "city": "UTC"
+  },
+  "locales": {
+    "selected_locales": [
+      "en_US.UTF-8 UTF-8"
+    ],
+    "desired_locale": "en_US.UTF-8",
+    "desired_tty_layout": "us"
+  },
+  "network": {
+    "type": "NetworkManager"
+  },
+  "packages": [
+    "base",
+    "linux",
+    "linux-firmware",
+    "btrfs-progs",
+    "sudo",
+    "python",
+    "python-pydantic",
+    "python-colorama"
+  ],
+  "users": [
+    {
+      "username": "test",
+      "hashed_password": "$6$dasikvmtest$pfoSKkKQvVJXbEQ0eHtDdRlpUvhRAqhBl.tsklSPmb8Y2GfN5oQuJI1CDlYtNGTdNTuRfaVGqDbBaSPUvvxNS.",
+      "groups": [
+        "wheel"
+      ]
+    }
+  ],
+  "sudo": {
+    "wheel": true
+  },
+  "zram": {
+    "zram0": {
+      "zram-size": "min(ram / 2, 4096)",
+      "compression-algorithm": "zstd"
+    }
+  },
+  "snapper": {
+    "enable": true
+  },
+  "apparmor": {
+    "enable": true,
+    "audit": true
+  },
+  "pam": {
+    "faillock": {
+      "deny": 4,
+      "unlock_time": 300,
+      "persistent": true
+    },
+    "limits": {
+      "nproc_soft": 100,
+      "nproc_hard": 200
+    },
+    "pwquality": {
+      "enable": true,
+      "minlen": 12
+    }
+  },
+  "firewall": {
+    "enable": true,
+    "backend": "firewalld",
+    "allowed_services": [
+      "samba",
+      "syncthing"
+    ],
+    "remove_services": [
+      "ssh"
+    ],
+    "rich_rules": [
+      "rule service name=\"ssh\" accept limit value=\"2/m\""
+    ]
+  },
+  "containers": {
+    "runtime": "docker",
+    "api_socket": true,
+    "compose": true
+  },
+  "files": [
+    {
+      "path": "/etc/systemd/system/serial-getty@ttyS0.service.d/autologin.conf",
+      "content": "[Service]\nExecStart=\nExecStart=-/sbin/agetty --autologin root --noclear --keep-baud 115200,38400,9600 %I $TERM\n"
+    }
+  ]
+}

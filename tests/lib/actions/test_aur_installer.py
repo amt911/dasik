@@ -19,6 +19,15 @@ from dasik.lib.target.target import Target
 BUILD_ROOT = AurInstaller.BUILD_ROOT
 
 
+
+@pytest.fixture(autouse=True)
+def _quiet_run_logger(monkeypatch):
+    """The leftover-sudoers warning logs through the process-wide run_logger;
+    stub it so these tests never write to a capture stream another test already
+    closed (it only shows up under the mutation gate's ordering)."""
+    monkeypatch.setattr("dasik.lib.actions.aur_installer.run_logger.get",
+                        lambda: MagicMock())
+
 def _su_script_and_payload(args):
     """Return the fixed shell script and the values that become $1 onward.
 

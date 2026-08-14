@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional
 from .scalar_action import ScalarV3Action
 from ..command_worker.command_worker import Command
 from ..exceptions.exceptions import ConfigValidationError
+from ..state.change import Change, Op
 
 _CANON = "/etc/sudoers.d/10-dasik"
 # sudo's `#includedir` skips any filename containing a '.', so even a temporary
@@ -102,6 +103,36 @@ class SudoAction(ScalarV3Action):
                 return _canonical(f.read()) or None
         except OSError:
             return None
+
+    def plan(self, managed: Any):
+        """Also plan the removal the scalar base never plans.
+
+        ScalarV3Action is set-or-replace by design ("a scalar is set or
+        replaced, never removed"), which is right for a timezone — a machine
+        always has one. It is wrong here: this fragment is what makes `%wheel`
+        work at all, so leaving it behind after the last thing that declared
+        sudo is gone keeps granting root to a group the config no longer
+        mentions. Only ever removes a fragment the manifest owns; one someone
+        else wrote is left alone.
+        """
+        if self._desired_value() is None:
+            actual = self._actual_value()
+            if actual is not None and managed:
+                return [Change(self._DOMAIN, Op.REMOVE, actual,
+                               reason="no longer declared: nothing in the config grants sudo")]
+            return []
+        return super().plan(managed)
+
+    def apply(self, changes) -> None:
+        if self._target() is None:
+            return
+        if any(c.op is Op.REMOVE for c in changes):
+            try:
+                os.remove(self._path())
+            except FileNotFoundError:
+                pass
+            return
+        super().apply(changes)
 
     def _set_value(self) -> None:
         content = _render(self._effective())

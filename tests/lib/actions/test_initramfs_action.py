@@ -36,6 +36,10 @@ def test_delegates_hooks_to_backend():
 
 def test_plan_empty_when_converged():
     a = InitramfsAction({}, _ctx("/"))
+    # The generator probe reads the REAL host here (target "/"), and this box
+    # runs dracut, so pin it to what the config declares: this test is about
+    # the scalar comparison, not the switch (which has its own suite).
+    a._detect_generator = lambda: "mkinitcpio"
     with patch.object(a._backend, "desired_value", return_value="SAME"), \
          patch.object(a._backend, "actual_value", return_value="SAME"):
         assert a.plan(managed=[]) == []

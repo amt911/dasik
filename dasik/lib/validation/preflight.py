@@ -444,6 +444,45 @@ def _check_file_collisions(config: Dict[str, Any]) -> List[Issue]:
     return issues
 
 
+# Each /etc/*.d directory loads exactly one suffix; a file with any other name
+# sits there being ignored. (systemd-sysctl.service(8), udev(7), profile(5).)
+_SNIPPET_SUFFIXES = {
+    "udev_rules": ".rules",
+    "profile_d": ".sh",
+    "modprobe_conf": ".conf",
+    "modules_load": ".conf",
+    "sysctl_d": ".conf",
+    "tmpfiles_d": ".conf",
+    "sddm_conf_d": ".conf",
+}
+
+
+def _check_snippet_suffixes(config: Dict[str, Any]) -> List[Issue]:
+    """A snippet the system will never read is a snippet that does nothing.
+
+    dasik writes whatever `name` says, verbatim, so `{"name": "swappiness"}`
+    lands as /etc/sysctl.d/swappiness — which exists, converges, and is never
+    read. A warning rather than an error or a silent rename: the file IS what
+    the config asked for, and renaming it behind the user's back would leave the
+    old one behind on the next apply.
+
+    The free-form `files` section is not second-guessed: those are absolute
+    paths the user chose deliberately.
+    """
+    issues: List[Issue] = []
+    for section, suffix in _SNIPPET_SUFFIXES.items():
+        for entry in config.get(section) or []:
+            name = entry.get("name") if isinstance(entry, dict) else None
+            if not name or name.endswith(suffix):
+                continue
+            issues.append(Issue(
+                "warning", "snippet_never_read",
+                f"`{section}` entry {name!r} does not end in {suffix}: that "
+                f"directory only loads {suffix} files, so the snippet would be "
+                f"written and never read. Rename it to {name}{suffix}."))
+    return issues
+
+
 def _check_cpu(config: Dict[str, Any], packages: Set[str]) -> List[Issue]:
     """power-profiles-daemon owns the frequency policy it shares with nobody."""
     cpu = config.get("cpu") or {}
@@ -666,6 +705,7 @@ def preflight(config: Dict[str, Any],
     issues += _check_locales(config)
     issues += _check_unknown_keys(config)
     issues += _check_file_collisions(config)
+    issues += _check_snippet_suffixes(config)
     issues += _check_cpu(config, packages)
     issues += _check_firewall_backend(config, packages)
     issues += _check_crypttab(config)

@@ -765,6 +765,35 @@ def _check_unlock_keyfile(config: Dict[str, Any]) -> List[Issue]:
 _EFI_BOOTLOADERS = {"sd-boot", "systemd-boot", "grub"}
 
 
+def _check_config_saver(config: Dict[str, Any]) -> List[Issue]:
+    """A config-saver timer with no configuration to run.
+
+    config-saver 3.3.0 stopped falling back to the examples the package ships:
+    with nothing in either active level it exits 6 ("No configurations found"),
+    so a declared timer fails on every fire. Before 3.3.0 the same config
+    silently archived the package's examples — which reach ~/.ssh — so this is
+    a behaviour change worth naming rather than a new restriction.
+
+    A warning, not an error: the user level
+    (~/.config/config-saver/configs.d) is a real place to put a configuration
+    and dasik cannot see it.
+    """
+    block = config.get("config_saver")
+    if not isinstance(block, dict):
+        return []
+    users = block.get("timer_users") or []
+    if not users or block.get("configs"):
+        return []
+    return [Issue(
+        "warning", "config_saver_timer_without_configs",
+        f"config-saver@{{{','.join(users)}}}.timer is enabled but "
+        "`config_saver.configs` declares nothing, so /etc/config-saver/configs "
+        "stays empty. Since config-saver 3.3.0 that is not a fallback to the "
+        "shipped examples — it exits 6 ('No configurations found') on every "
+        "fire. Declare a configuration, or put one in the user's own "
+        "~/.config/config-saver/configs.d.")]
+
+
 def _check_efi(config: Dict[str, Any], efi_boot: Optional[bool]) -> List[Issue]:
     """Refuse an EFI bootloader when the installer is not booted in EFI mode.
 
@@ -816,5 +845,6 @@ def preflight(config: Dict[str, Any],
     issues += _check_crypttab(config)
     issues += _check_random_swap(config)
     issues += _check_unlock_keyfile(config)
+    issues += _check_config_saver(config)
     issues += _check_efi(config, efi_boot)
     return issues

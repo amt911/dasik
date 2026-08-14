@@ -209,55 +209,48 @@ your own tooling. The updated `ref` goes through the same writeback, so a
 - `--refs` with every remote unmoved: no file written, no commit;
 - both are inert without their flag.
 
-## D — config-saver stops shipping configs into `/etc`
+## D — config-saver's levels *(resolved upstream in 3.3.0/3.3.1)*
 
-Found while designing the above, and it breaks a fresh machine on its own.
+Found while designing the above: the package installed four example YAMLs into
+`/etc/config-saver/configs`, and `default_config_dir()` returned the **first
+candidate that exists**, so on a machine dasik had just installed the timer
+backed up `default-config`, `etc-files`, `wallpapers` and `zsh` — somebody
+else's examples — instead of what the user declared, while
+`~/.config/config-saver/configs.d` was unreachable by construction.
 
-`default_config_dir()` (config-saver `cli.py:121`) returns the **first
-candidate that exists**:
+Upstream went further than the one-line PKGBUILD change this spec first
+proposed, and the result is better:
 
-1. `/etc/config-saver/configs`
-2. `<sys.prefix>/share/config-saver/configs`
-3. `~/.config/config-saver/configs.d`
+| | Shipped in 3.3.0/3.3.1 |
+| --- | --- |
+| Examples | live in `/usr/share/config-saver/configs` and are **never active** — reachable only via `--input` |
+| Active levels | `/etc/config-saver/configs` **merged with** `~/.config/config-saver/configs.d`, by file name, user wins |
+| Nothing declared | **exit 6**, not a fallback: `default-config.yaml` reaches `~/.ssh` and `~/.config/rclone`, so installing a package must not start a daily timer archiving credentials nobody chose |
+| `/etc` in the archive | out by default in **both** directions; `--include-system-configs` / `--restore-system-configs` are explicit, because that level belongs to dasik and a restore that overwrote it would leave the machine diverging from its own declaration |
+| Self-sufficiency | `own-configs.yaml` archives `$CONFIG_DIR/config-saver/configs.d`, so the user's own level rides inside the `$HOME` archive |
 
-The AUR package installs four example YAMLs into candidate 1, so candidate 1
-always exists and always wins. `find_config_files` then globs
-`("*.yaml", "*.yml", "*.json")` over the whole directory. On a machine dasik
-just installed, the timer therefore backs up `default-config`, `etc-files`,
-`wallpapers` and `zsh` — the package's examples — rather than what the user
-declared. Candidate 3 is unreachable by construction.
+Verified before building on it: `e853c51f978b80fff9c993bcfdfe3a25c1efb201` is
+the 3.3.1 merge in `config-saver-aur`, `own-configs.yaml` is the one-line
+document above, and `config-saver@.service` carries `User=%i` (without that the
+user level would be unreachable and the whole scheme pointless).
 
-It also makes dasik's capture lossy on purpose: `_discover_configs` skips
-pacman-owned files (correctly — re-encoding the distro's defaults into the
-user's config would be wrong), so those four are invisible to `sync`.
+### What it changes on the dasik side
 
-**Fix, in `config-saver-aur`'s PKGBUILD:**
+1. **A new preflight warning** (`config_saver_timer_without_configs`):
+   `timer_users` declared with an empty `configs` used to "work" by archiving
+   the examples and now produces a timer that exits 6 on every fire. A warning,
+   not an error — the user level is real and dasik cannot see it.
+2. **`source.ref` bumped** to the 3.3.1 merge across `config/` and `docs/`.
+3. **The three levels are documented** in `config-reference.md`, along with the
+   JSON form of `own-configs` — on a dasik machine that example arrives from no
+   package, so making an archive self-sufficient means *declaring* it.
 
-```diff
--    install -d "$pkgdir/etc/config-saver/configs"
--    cp -r configs/* "$pkgdir/etc/config-saver/configs/"
-+    install -d "$pkgdir/usr/share/config-saver/configs"
-+    cp -r configs/* "$pkgdir/usr/share/config-saver/configs/"
-```
-
-`sys.prefix` is `/usr` for a system install, so candidate 2 is exactly that
-path: with no user configs the tool behaves as it does today, and the moment
-dasik writes `/etc/config-saver/configs/*.json` the user's `/etc` wins outright.
-Nothing in config-saver changes, `/etc` becomes the administrator's again, and
-`pacman -Syu` stops reintroducing examples into it.
-
-Verified on the author's machine: the four files are owned by `config-saver
-3.1.1-1` and `pacman -Qkk` reports them unmodified, so moving them loses no
-local edit.
-
-**Optional upstream follow-up** (config-saver, 2 lines): pick the first
-candidate that *contains* config files rather than the first that exists —
-otherwise an empty `/etc/config-saver/configs` (a plausible intermediate state)
-wins and compresses nothing instead of falling back.
+Nothing in the action changes: `_discover_configs` already skipped
+pacman-owned files, and after 3.3.0 there are none in `/etc` to skip.
 
 ## Order
 
-A → B → C, one PR each; D is independent and lands in `config-saver-aur`.
+A → B → C, one PR each. D is done (upstream + the three adaptations above).
 
 A is the prerequisite: without it `save` would refuse every config that keeps
 its secret in a file, which is the shape the documentation recommends.

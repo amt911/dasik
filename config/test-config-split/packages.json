@@ -83,7 +83,6 @@
   "podman-docker",
   "power-profiles-daemon",
   "pwgen",
-  "qemu-block-gluster",
   "qemu-block-iscsi",
   "qemu-full",
   "qemu-guest-agent",

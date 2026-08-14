@@ -121,7 +121,6 @@
     "podman-docker",
     "power-profiles-daemon",
     "pwgen",
-    "qemu-block-gluster",
     "qemu-block-iscsi",
     "qemu-full",
     "qemu-guest-agent",
@@ -383,7 +382,7 @@
     },
     {
       "path": "/etc/plasmalogin.conf.d/10-dasik.conf",
-      "content": "# Managed by dasik. Plasma Login Manager (plasmalogin.service) reads\n# /etc/plasmalogin.conf.d/*.conf — it is an SDDM fork, but it does NOT read\n# /etc/sddm.conf.d and it is fixed to the Breeze theme (no [Theme] key).\n# The previous sddm.conf.d \"DisplayServer=x11-user\" is intentionally NOT carried\n# over: plasmalogin defaults to Wayland. Re-add it only if you want X11 again.\n[Autologin]\nRelogin=false\nSession=plasma\nUser=andres\n\n[General]\nHaltCommand=/usr/bin/systemctl poweroff\nRebootCommand=/usr/bin/systemctl reboot\n\n[Users]\nMaximumUid=60513\nMinimumUid=1000\n"
+      "content": "# Managed by dasik. Plasma Login Manager (plasmalogin.service) reads\n# /etc/plasmalogin.conf.d/*.conf \u2014 it is an SDDM fork, but it does NOT read\n# /etc/sddm.conf.d and it is fixed to the Breeze theme (no [Theme] key).\n# The previous sddm.conf.d \"DisplayServer=x11-user\" is intentionally NOT carried\n# over: plasmalogin defaults to Wayland. Re-add it only if you want X11 again.\n[Autologin]\nRelogin=false\nSession=plasma\nUser=andres\n\n[General]\nHaltCommand=/usr/bin/systemctl poweroff\nRebootCommand=/usr/bin/systemctl reboot\n\n[Users]\nMaximumUid=60513\nMinimumUid=1000\n"
     }
   ],
   "zram": {

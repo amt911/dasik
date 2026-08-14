@@ -105,7 +105,7 @@ For something in neither the repos nor the AUR — your own repository, say:
 | Key | Rule |
 | --- | --- |
 | `type` | `pkgbuild-git` |
-| `url` | `https://github.com/….git` — https only, github.com only, in this first version |
+| `url` | `https://<host>/….git` — any forge, https only. Credentials in the URL are refused: a synced config would carry the secret |
 | `ref` | a **full 40-char commit SHA**. A branch name is not reproducible, so it is refused |
 | `subdir` | relative, may not escape the clone root |
 
@@ -114,6 +114,14 @@ unprivileged builder, and **verifies the built `pkgname` matches the declared
 package** before installing it. The applied SHA is recorded in the manifest and
 carried verbatim across a `sync` — dasik never fabricates a SHA it did not
 apply.
+
+`sync` captures the whole source, not just the name. It has to: a package built
+this way exists in no repo and in no AUR, so a capture that named only
+`config-saver` would re-plan into "unknown package", `warn-and-skip` would drop
+it, and the machine's own config would no longer describe the machine. What the
+capture reports is what the last `apply` actually built (the manifest), unless
+the config declares a source itself — intent wins, so a `ref` you just bumped
+survives the round trip.
 
 Every `package_sources` key must appear in `packages`; the schema rejects a
 source nobody declares.

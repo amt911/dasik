@@ -162,6 +162,17 @@ def test_apply_no_changes_is_noop():
     run.assert_not_called()
 
 
+def _mutating(run):
+    """The pacman calls that CHANGE something.
+
+    apply() also probes `pacman -Qq`/`-Qqe` at the end to make the install
+    reasons true against reality (issue #188), so counting every call would
+    count those read-only queries too.
+    """
+    return [c for c in run.call_args_list
+            if c.args[0] == "pacman" and c.args[1][0] not in ("-Qq", "-Qqe", "-D")]
+
+
 def test_apply_install_routes_pacman_pkgs_through_pacman_S():
     a = PackagesAction(config=["git", "htop"], context=_ctx("/"))
     changes = [
@@ -173,8 +184,8 @@ def test_apply_install_routes_pacman_pkgs_through_pacman_S():
         run.return_value = _ok()
         a.apply(changes)
     # One pacman -S call with both names + --noconfirm --needed
-    assert run.call_count == 1
-    args = run.call_args
+    assert len(_mutating(run)) == 1
+    args = _mutating(run)[0]
     assert args.args[0] == "pacman"
     pacman_args = args.args[1]
     assert "-S" in pacman_args
@@ -192,8 +203,8 @@ def test_apply_remove_routes_through_pacman_Rns():
     with patch("dasik.lib.actions.packages_action.Command.execute") as run:
         run.return_value = _ok()
         a.apply(changes)
-    assert run.call_count == 1
-    args = run.call_args
+    assert len(_mutating(run)) == 1
+    args = _mutating(run)[0]
     assert args.args[0] == "pacman"
     pacman_args = args.args[1]
     assert "-Rns" in pacman_args
@@ -213,10 +224,10 @@ def test_apply_mixes_install_and_remove_in_correct_order():
          patch.object(a, "_resolve_sources", return_value=_resolution(repo=["git"])):
         run.return_value = _ok()
         a.apply(changes)
-    # Two calls: pacman -S first, then pacman -Rns
-    assert run.call_count == 2
-    first_args = run.call_args_list[0].args
-    second_args = run.call_args_list[1].args
+    # Two mutating calls: pacman -S first, then pacman -Rns
+    assert len(_mutating(run)) == 2
+    first_args = _mutating(run)[0].args
+    second_args = _mutating(run)[1].args
     assert "-S" in first_args[1]
     assert "-Rns" in second_args[1]
 

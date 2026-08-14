@@ -11,6 +11,7 @@ class _SyncStub(AbstractAction):
     _actual: set = set()
     _fragment: dict = {}
     _domain: str = "packages"
+    _declared: list = []
 
     @property
     def name(self) -> str: return "sync-stub"
@@ -25,7 +26,7 @@ class _SyncStub(AbstractAction):
         return dict(type(self)._fragment)
 
     def managed_keys(self):
-        return {type(self)._domain: []}
+        return {type(self)._domain: list(type(self)._declared)}
 
 
 class _DictSyncStub(AbstractAction):
@@ -107,12 +108,30 @@ def test_sync_merges_fragment_into_config():
     assert new_config["packages"] == ["git", "htop"]
 
 
-def test_sync_records_managed_as_actual():
+def test_sync_records_only_what_it_owned_or_declares():
+    """M <- A ∩ (M ∪ D), not M <- A (issue #197).
+
+    Recording bare reality made dasik claim every explicit package and every
+    enabled unit on the machine — `mkinitcpio`, `getty@.service` — and then
+    offer to remove them at the next rollback. Ownership comes from having
+    APPLIED something; sync's job is the config.
+    """
     _SyncStub._actual = {"git", "htop", "vlc"}
     _SyncStub._fragment = {"packages": ["git", "htop", "vlc"]}
+    _SyncStub._declared = ["git"]
     r = _make(config={"packages": ["git"]}, metas=[_meta(_SyncStub)])
     _, manifest = r.sync()
-    assert manifest.managed == {"packages": ["git", "htop", "vlc"]}  # sorted A
+    assert manifest.managed == {"packages": ["git"]}
+    _SyncStub._declared = []
+
+
+def test_sync_keeps_what_was_already_owned():
+    _SyncStub._actual = {"git", "htop"}
+    _SyncStub._fragment = {"packages": ["git", "htop"]}
+    r = _make(config={"packages": ["git"]}, metas=[_meta(_SyncStub)],
+              manifest={"managed": {"packages": ["htop"]}})
+    _, manifest = r.sync()
+    assert manifest.managed == {"packages": ["htop"]}
 
 
 def test_sync_persists_manifest_via_state_store():
@@ -144,7 +163,9 @@ def test_sync_bootstrap_captures_actual_when_config_section_absent():
     new_config, manifest = r.sync()
     assert new_config["packages"] == ["git", "htop"]
     assert new_config["metadata"] == {"name": "fresh"}  # passthrough
-    assert manifest.managed == {"packages": ["git", "htop"]}
+    # Captured into the config, NOT adopted into ownership: applying the
+    # captured config is what makes dasik own it (issue #197).
+    assert manifest.managed == {"packages": []}
 
 
 def test_sync_bootstrap_dict_shaped_action_when_config_section_absent():
@@ -155,7 +176,8 @@ def test_sync_bootstrap_dict_shaped_action_when_config_section_absent():
     r = _make(config={}, metas=[_meta(_DictSyncStub, config_key="timezone")])
     new_config, manifest = r.sync()
     assert new_config["timezone"] == {"region": "Europe", "city": "Madrid"}
-    assert manifest.managed == {"timezone": ["Europe/Madrid"]}
+    # Same rule: the capture reaches the config, ownership waits for an apply.
+    assert manifest.managed == {"timezone": []}
 
 
 def test_sync_sets_config_hash_of_new_config():

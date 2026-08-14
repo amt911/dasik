@@ -50,6 +50,35 @@ class InitramfsAction(ScalarV3Action):
     def _set_value(self) -> None:
         self._backend.apply()
 
+    def plan(self, managed: Any):
+        """The scalar comparison, plus the one thing it cannot see.
+
+        The scalar value is the generator's own configuration (hooks, modules,
+        image freshness). It is computed by the DECLARED backend, so on a
+        machine still running the other generator it can compare "converged"
+        against a file that tool never wrote: switching `initramfs` from
+        mkinitcpio to dracut installed dracut, neutralised mkinitcpio's hooks,
+        left /boot/initramfs-linux.img untouched, and reported No changes.
+
+        So the generator itself is part of the desired state. When the machine
+        runs a different one, the image is rebuilt by the declared backend.
+        """
+        from ..state.change import Change, Op
+
+        changes = super().plan(managed)
+        if changes:
+            return changes
+        detected = self._detect_generator()
+        declared = self._declared_generator()
+        if detected and detected != declared:
+            return [Change(self._DOMAIN, Op.MODIFY, declared,
+                           reason=f"generator switch ({detected} -> {declared})")]
+        return []
+
+    def _declared_generator(self) -> str:
+        cfg = self.config if isinstance(self.config, dict) else {}
+        return cfg.get("initramfs", "mkinitcpio")
+
     def _detect_generator(self) -> Optional[str]:
         """Which initramfs generator the target actually uses.
 

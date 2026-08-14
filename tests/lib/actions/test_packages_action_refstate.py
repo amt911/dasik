@@ -37,12 +37,34 @@ def _ok():
 
 def test_state_metadata_records_installed_git_ref():
     a = _action(installed=("config-saver", "git"))
-    assert a.state_metadata() == {"packages": {"source_refs": {"config-saver": _SHA}}}
+    assert a.state_metadata()["packages"]["source_refs"] == {"config-saver": _SHA}
+
+
+def test_state_metadata_records_the_whole_source():
+    # The ref alone cannot rebuild anything: sync needs the URL back too, or a
+    # captured config drops a package that exists in no repo and no AUR.
+    a = _action(installed=("config-saver", "git"))
+    assert a.state_metadata()["packages"]["sources"] == {"config-saver": _SRC}
 
 
 def test_state_metadata_empty_when_git_pkg_not_installed():
     a = _action(installed=("git",))
     assert a.state_metadata() == {}
+
+
+def test_plan_modify_from_legacy_manifest_without_sources():
+    # A manifest written before `sources` existed still answers the ref question.
+    manifest = {"managed": {"packages": ["config-saver"]},
+                "action_state": {"packages": {"source_refs": {"config-saver": _SHA}}}}
+    a = _action(manifest=manifest, installed=("config-saver", "git"))
+    assert _ref_modifies(a.plan(managed=["config-saver", "git"])) == []
+
+
+def test_plan_modify_reads_ref_from_sources_when_refs_absent():
+    manifest = {"managed": {"packages": ["config-saver"]},
+                "action_state": {"packages": {"sources": {"config-saver": _SRC}}}}
+    a = _action(manifest=manifest, installed=("config-saver", "git"))
+    assert _ref_modifies(a.plan(managed=["config-saver", "git"])) == []
 
 
 # --- plan MODIFY on ref change --------------------------------------------

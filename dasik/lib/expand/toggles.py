@@ -423,6 +423,52 @@ def expand_containers(config: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
+_NETWORKD_PROFILE = "/etc/systemd/network/20-dasik-dhcp.network"
+_NETWORKD_DIR = "/etc/systemd/network/"
+
+
+def expand_network(config: Dict[str, Any]) -> Dict[str, Any]:
+    """The declared network manager, actually installed and started.
+
+    The block used to write /etc/hostname and /etc/hosts and stop there: a
+    config whose only networking statement was `network: {"type":
+    "NetworkManager"}` produced a machine with no NetworkManager on it. Every
+    guest this repo installs has been network-less for months for that reason.
+
+    systemd-networkd needs no package (systemd ships it) but it DOES need a
+    .network file: the unit starts, matches nothing, and configures no
+    interface. A DHCP profile for wired interfaces is derived — unless the
+    config writes its own file under /etc/systemd/network, in which case
+    somebody has an opinion and it wins. `systemd-resolved` comes with it, and
+    the /etc/resolv.conf symlink is systemd's own tmpfiles job.
+    """
+    net = config.get("network") or {}
+    kind = net.get("type")
+    if kind == "NetworkManager":
+        return {"packages": ["networkmanager"], "units": ["NetworkManager.service"]}
+    if kind != "systemd-networkd":
+        return {}
+
+    out: Dict[str, Any] = {
+        "units": ["systemd-networkd.service", "systemd-resolved.service"],
+    }
+    declared = [f for f in config.get("files") or []
+                if isinstance(f, dict) and str(f.get("path", "")).startswith(_NETWORKD_DIR)]
+    if not declared:
+        out["files"] = [{
+            "path": _NETWORKD_PROFILE,
+            "content": ("# Managed by dasik: DHCP on every wired interface.\n"
+                        "# Declare your own file under /etc/systemd/network to\n"
+                        "# replace this one entirely.\n"
+                        "[Match]\n"
+                        "Name=en* eth*\n"
+                        "\n"
+                        "[Network]\n"
+                        "DHCP=yes\n"),
+        }]
+    return out
+
+
 def expand_sdboot_update(config: Dict[str, Any]) -> Dict[str, Any]:
     # systemd ships this unit itself: it runs `bootctl update` when the ESP's
     # loader is older than the installed systemd. The old imperative installer
@@ -439,5 +485,5 @@ TOGGLES = [
     expand_wireguard, expand_firewall, expand_hwaccel, expand_snapper,
     expand_drivers, expand_initramfs, expand_zram, expand_oomd, expand_cpu,
     expand_sdboot_update, expand_reflector, expand_plymouth,
-    expand_apparmor, expand_pam, expand_containers,
+    expand_apparmor, expand_pam, expand_containers, expand_network,
 ]

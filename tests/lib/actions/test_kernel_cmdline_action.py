@@ -4,8 +4,13 @@ from dasik.lib.actions.kernel_cmdline_action import KernelCmdlineAction
 
 
 def _enc_cfg():
-    return {"disks": {"disks": [{"partitions": [
-        {"mountpoint": "/", "encrypt": True, "luks_name": "croot", "filesystem": "ext4"}]}]}}
+    # `bootloader` is pinned on purpose: without it the action now DETECTS the
+    # loader from the target, and these tests point at "/" — the real host,
+    # whose boot entry would then be read into the assertions.
+    return {"bootloader": "grub",
+            "disks": {"disks": [{"partitions": [
+                {"mountpoint": "/", "encrypt": True, "luks_name": "croot",
+                 "filesystem": "ext4"}]}]}}
 
 
 def _fake_exec(mapping):

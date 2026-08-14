@@ -91,7 +91,7 @@ result back by hand.
 | `disks` | object | Partitioning, filesystems, LUKS, btrfs subvolumes |
 | `timezone` | object | `/etc/localtime` |
 | `locales` | object | `/etc/locale.gen`, `locale.conf`, `vconsole` keymap |
-| `network` | object | NetworkManager / systemd-networkd + `/etc/hosts` |
+| `network` | object | The network manager: package, unit, DHCP profile — plus `/etc/hosts` |
 | `hostname` | string | `/etc/hostname` |
 | `users` | list | User accounts + groups + shell |
 | `packages` | list | pacman + AUR + Git-source packages (real names) |
@@ -351,7 +351,7 @@ block leaves the machine's `/etc/localtime` alone.
 
 | Field | Type | Default | Notes |
 | --- | --- | --- | --- |
-| `network.type` | `NetworkManager` \| `systemd-networkd` | — | |
+| `network.type` | `NetworkManager` \| `systemd-networkd` | — | **Installs and enables it.** `NetworkManager` adds the `networkmanager` package and `NetworkManager.service`; `systemd-networkd` needs no package (systemd ships it) and enables `systemd-networkd.service` + `systemd-resolved.service` plus a DHCP profile at `/etc/systemd/network/20-dasik-dhcp.network` — the unit alone matches no interface and configures nothing. Write any file under `/etc/systemd/network` yourself and yours is the only one. |
 | `network.add_default_hosts` | bool | `false` | Write the standard `/etc/hosts` entries. |
 | `hostname` | string | `""` | `/etc/hostname`. |
 
@@ -482,7 +482,7 @@ such packages; everything else resolves automatically.
 | Field | Type | Notes |
 | --- | --- | --- |
 | `type` | `"pkgbuild-git"` | Only value for now. |
-| `url` | string | HTTPS `github.com` URL ending in `.git` (first version limits host). |
+| `url` | string | Any HTTPS URL ending in `.git` (GitHub, GitLab, Codeberg, a self-hosted forge). Refused: plain HTTP, and credentials in the URL — `sync` would copy the secret into the captured config. |
 | `ref` | string | **Full 40-char commit SHA** — pins the build for reproducibility. Change it deliberately to update. |
 | `subdir` | string | Optional; PKGBUILD subdirectory (default `.`). Must stay inside the clone (no `..`). |
 

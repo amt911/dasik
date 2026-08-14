@@ -617,3 +617,77 @@ def test_the_package_behind_the_policy_is_reproducible_from_the_capture(tmp_path
 
     assert captured["pam"]["pwquality"]["minlen"] == 12
     assert "libpwquality" in expand_config(captured)["packages"]
+
+
+# --- the network manager (issue #196) --------------------------------------- #
+
+def test_the_capture_of_a_hostname_only_machine_validates(tmp_path):
+    """A config with a `hostname` and no `network` block is valid, and so must
+    its capture be. It used to come back as `network: {"type": ""}` — which the
+    schema rejects, so `sync` produced a file dasik itself refused."""
+    machine = _machine(tmp_path)
+    (machine / "etc").mkdir(parents=True, exist_ok=True)
+    (machine / "etc/hostname").write_text("arch\n")
+
+    captured = _synced(machine, seed={"bootloader": "sd-boot", "hostname": "arch"})
+
+    assert captured["hostname"] == "arch"
+    assert "network" not in captured
+    JsonModel.model_validate(captured)
+
+
+# --- a PKGBUILD that was never uploaded to the AUR ------------------------- #
+#
+# The end-to-end `_synced` harness cannot reach this one either: PackagesAction
+# reads reality with `pacman -Qq…`, which a fake root has no way to answer, so
+# the Reconciler isolates it and the fragment never appears. The pacman boundary
+# is faked here; the capture logic above it is the real code.
+
+_GIT_SRC = {"type": "pkgbuild-git",
+            "url": "https://git.example.org/pkgbuilds/config-saver.git",
+            "ref": "a520605367e13ec25db4c3c7e1c4bf46175ba8cd", "subdir": "."}
+
+
+def _packages_capture(seed, manifest, installed=("config-saver",)):
+    from dasik.lib.actions.packages_action import PackagesAction
+
+    action = PackagesAction(seed, ActionContext(target=Target(root="/"),
+                                                manifest=manifest))
+    action._installed_all = MagicMock(return_value=set(installed))
+    action.actual = MagicMock(return_value=set(installed))
+    action._unit_provider_packages = MagicMock(return_value=set())
+    return action.import_state(list(installed))
+
+
+_GIT_MANIFEST = {"managed": {"packages": ["config-saver"]},
+                 "action_state": {"packages": {"sources": {"config-saver": _GIT_SRC}}}}
+
+
+def test_sync_captures_the_git_source_of_a_package_no_repo_has():
+    captured = _packages_capture({}, _GIT_MANIFEST)
+
+    assert captured["package_sources"] == {"config-saver": _GIT_SRC}
+
+
+def test_sync_invents_no_source_on_a_machine_that_has_no_git_package():
+    assert "package_sources" not in _packages_capture(
+        {"packages": ["git"]}, None, installed=("git",))
+
+
+def test_the_captured_git_source_validates_and_re_plans_to_nothing():
+    captured = _packages_capture({}, _GIT_MANIFEST)
+    config = {
+        "locales": {"selected_locales": [], "desired_locale": "en_US.UTF-8",
+                    "desired_tty_layout": "us"},
+        "timezone": {"region": "Europe", "city": "Madrid"},
+        "network": {"type": "NetworkManager", "add_default_hosts": True},
+        "hostname": "arch", **captured,
+    }
+    JsonModel(**config)          # `dasik check` on the capture
+
+    from dasik.lib.actions.packages_action import PackagesAction
+    replan = PackagesAction(config, ActionContext(target=Target(root="/"),
+                                                  manifest=_GIT_MANIFEST))
+    replan._installed_all = MagicMock(return_value={"config-saver"})
+    replan.actual = MagicMock(return_value={"config-saver"})
+    assert replan.plan(managed=["config-saver"]) == []

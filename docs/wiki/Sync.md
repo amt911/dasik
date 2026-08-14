@@ -130,7 +130,8 @@ check it plans to nothing.
 
 | Situation | Behaviour |
 | --- | --- |
-| the config uses `$include`/`$include_text`/`$concat` | **refused** — syncing would flatten the split and inline every secret. Sync a scratch copy and fold changes back by hand ([Config splitting](Config-splitting.md#sync-refuses-a-split-config)) |
+| the config uses `$include`/`$include_text`/`$concat` | **written back through the split**: each value returns to the file it came from, a directive whose value did not change is left alone, and a new `$concat` entry goes to the last member ([Config splitting](Config-splitting.md#sync-writes-back-through-the-split)) |
+| a captured value a file cannot hold (a CR, or a padded/empty/multi-line `$include_line`) | written **inline** instead — the file would not read back as the same string, and an ugly value beats a wrong one |
 | a domain's probe fails (a binary missing, a locked volume) | that domain is skipped, the rest still captured — per-action isolation |
 | `/etc/libvirt/hooks` (GPU passthrough) | **not** captured: a nested tree of executable scripts the flat file model cannot round-trip |
 | secrets | captured verbatim when they live in a file dasik reads (WireGuard, NetworkManager). Treat both the config and the sync log as sensitive |

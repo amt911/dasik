@@ -43,11 +43,21 @@ sudo /home/you/repos/dasik/.venv/bin/dasik sync my-system.json --target /
 zone files. Without it, whole domains silently skip (per-action isolation is by
 design: one failing probe must not lose the whole capture).
 
-### `sync` refuses: "assembled from includes"
+### `sync` inlined a value instead of writing it to its file
 
-By design — it would flatten the split and inline your secrets. Sync a scratch
-copy and fold the changes back:
-[Config splitting](Config-splitting.md#sync-refuses-a-split-config).
+Two kinds of value cannot live in a file and be read back unchanged, so dasik
+writes them into the JSON rather than corrupt them: anything containing a
+carriage return (reading a file translates newlines), and an `$include_line`
+value that is empty, padded with whitespace, or spans more than one line. If
+you see a body inline that used to be an `$include_text`, its captured content
+grew a CR — convert the file to LF and re-run.
+
+### A new package landed in the wrong fragment
+
+`$concat` members are indistinguishable to a capture: dasik cannot know whether
+`htop` is "base" or "dev", so new entries go to the **last** member. Moving the
+line to another fragment is a normal edit and changes nothing else
+([Config splitting](Config-splitting.md#sync-writes-back-through-the-split)).
 
 ### The ISO runs out of space mid-install
 

@@ -1,6 +1,6 @@
 {
   "metadata": {
-    "note": "Minimal bootable config for the QEMU VM test harness (scripts/vmtest/qemu.sh install). Targets the guest's /dev/vda. NOT for real hardware."
+    "note": "Minimal bootable config for the QEMU VM test harness (scripts/vmtest/qemu.sh install). Targets the guest's /dev/vda. NOT for real hardware. Carries a `reflector` block so the VM can prove a derived file stays owned across a sync, and autologins root on ttyS0 with the python deps from pacman so the driver can run dasik from the 9p repo."
   },
   "disks": {
     "disks": [
@@ -36,7 +36,8 @@
     "linux-firmware",
     "python",
     "python-pydantic",
-    "python-colorama"
+    "python-colorama",
+    "reflector"
   ],
   "bootloader": "sd-boot",
   "hostname": "dasik-vm",
@@ -59,5 +60,14 @@
       "path": "/etc/systemd/system/serial-getty@ttyS0.service.d/autologin.conf",
       "content": "[Service]\nExecStart=\nExecStart=-/sbin/agetty --autologin root --noclear --keep-baud 115200,38400,9600 %I $TERM\n"
     }
-  ]
+  ],
+  "reflector": {
+    "countries": [
+      "ES"
+    ],
+    "protocols": [
+      "https"
+    ],
+    "latest": 20
+  }
 }

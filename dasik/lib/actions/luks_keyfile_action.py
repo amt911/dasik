@@ -149,12 +149,38 @@ class LuksKeyfileAction(AbstractAction):
             return None
         os.makedirs(_MOUNTPOINT, exist_ok=True)
         options = ["ro"] if read_only else []
-        if part.get("unlock_keydev_fs") in _MODELESS_FILESYSTEMS:
+        if self._keydev_fstype(part) in _MODELESS_FILESYSTEMS:
             options.append("umask=0077")
         args = ["-o", ",".join(options)] if options else []
         Command.execute("mount", [*args, self._keydev_path(keydev), _MOUNTPOINT],
                         check=True)
         return _MOUNTPOINT
+
+    def _keydev_fstype(self, part: Dict[str, Any]) -> Optional[str]:
+        """What the key device actually holds — asked, not assumed.
+
+        vfat has no permission bits, so the "only root may read this key" part
+        comes from `umask=0077` on the MOUNT. Keying that off the optional
+        `unlock_keydev_fs` field meant a user who did not declare it got a
+        pendrive mounted wide open, with the chmod that would have fixed it
+        returning EPERM on that very filesystem.
+
+        The declaration still wins when the probe cannot answer (no lsblk, a
+        device that is not there yet), so nothing gets worse when the answer is
+        unknown.
+        """
+        try:
+            result = Command.execute(
+                "lsblk", ["-no", "FSTYPE", self._keydev_path(part["unlock_keydev"])])
+        except Exception:            # noqa: BLE001 - no lsblk, or no such device
+            return part.get("unlock_keydev_fs")
+        if getattr(result, "returncode", 1) != 0:
+            return part.get("unlock_keydev_fs")
+        out = getattr(result, "stdout", b"") or b""
+        if isinstance(out, bytes):
+            out = out.decode("utf-8", errors="replace")
+        detected = out.strip().splitlines()
+        return detected[0].strip() if detected else part.get("unlock_keydev_fs")
 
     @staticmethod
     def _umount_keydev(mountpoint: Optional[str]) -> None:
@@ -250,16 +276,25 @@ class LuksKeyfileAction(AbstractAction):
         if os.path.exists(local):
             return
         os.makedirs(os.path.dirname(local), exist_ok=True)
-        Command.execute("dd", [f"bs={_KEYFILE_BS}", f"count={_KEYFILE_COUNT}",
-                               "if=/dev/random", f"of={local}", "iflag=fullblock"],
-                        check=True)
+        # Born private. `dd` creates its output with the process umask (0644 for
+        # root) and the chmod used to come afterwards — so for the length of a
+        # 4 MiB read from /dev/random, which blocks, the key that unlocks the
+        # disk was readable by everyone, and stayed that way if the run died in
+        # between. Creating the file first costs nothing: `of=` truncates the
+        # contents, not the mode.
+        fd = os.open(local, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         try:
-            os.chmod(local, 0o600)
+            os.fchmod(fd, 0o600)
         except OSError:
             # FAT rejects a mode change outright (EPERM). The mount already
             # carries umask=0077 there, so the key is still root-only; aborting
             # here would leave a fresh keyfile that was never enrolled.
             pass
+        finally:
+            os.close(fd)
+        Command.execute("dd", [f"bs={_KEYFILE_BS}", f"count={_KEYFILE_COUNT}",
+                               "if=/dev/random", f"of={local}", "iflag=fullblock"],
+                        check=True)
 
     @staticmethod
     def _enroll(device: str, local: str, part: Dict[str, Any]) -> None:

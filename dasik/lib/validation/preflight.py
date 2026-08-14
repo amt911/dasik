@@ -82,6 +82,12 @@ _UNIT_PROVIDERS: Dict[str, Set[str]] = {
     "power-profiles-daemon.service": {"power-profiles-daemon"},
     "cpupower.service": {"cpupower"},
     "reflector.timer": {"reflector"},
+    # Enabled by hand in two of the repo's own sample configs while nothing
+    # declared the package. `systemctl enable` on a unit that does not exist
+    # fails, with the disk already partitioned.
+    "NetworkManager.service": {"networkmanager", "networkmanager-git"},
+    "NetworkManager-wait-online.service": {"networkmanager", "networkmanager-git"},
+    "NetworkManager-dispatcher.service": {"networkmanager", "networkmanager-git"},
 }
 
 # Packages that ship /usr/bin/sudo (and visudo). `base` does NOT.
@@ -99,14 +105,21 @@ _CRYPTTAB_FLAGS: Set[str] = {
     "readonly", "read-only", "verify", "bitlk", "fvault2", "tcrypt",
     "tcrypt-hidden", "tcrypt-system", "tcrypt-veracrypt", "same-cpu-crypt",
     "submit-from-crypt-cpus", "no-read-workqueue", "no-write-workqueue",
-    "_netdev", "netdev", "headless", "try-empty-password",
+    "_netdev", "netdev", "headless",
+    # Bare flags dasik itself writes or crypttab(5) documents without a value.
+    # `x-initrd.attach` lived in the key=value table below, so the line dasik's
+    # own dracut backend writes ("luks,x-initrd.attach") was rejected by `check`
+    # on every capture of an encrypted machine.
+    "x-initrd.attach", "keyfile-erase",
 }
+# crypttab(5) documents these as `name[=bool]`: both forms are valid.
+_CRYPTTAB_FLAG_OR_KEY: Set[str] = {"try-empty-password"}
 _CRYPTTAB_KEYS: Set[str] = {
     "cipher", "hash", "header", "key-slot", "keyfile-offset", "keyfile-size",
-    "keyfile-erase", "offset", "sector-size", "size", "skip", "timeout",
+    "offset", "sector-size", "size", "skip", "timeout",
     "tries", "token-timeout", "pkcs11-uri", "fido2-device", "fido2-cid",
     "fido2-rp", "tpm2-device", "tpm2-pcrs", "tpm2-signature", "tpm2-measure-pcr",
-    "x-systemd.device-timeout", "x-initrd.attach", "veracrypt-pim",
+    "x-systemd.device-timeout", "veracrypt-pim",
 }
 
 
@@ -286,6 +299,46 @@ def _check_sudo(config: Dict[str, Any], packages: Set[str]) -> List[Issue]:
     return []
 
 
+# Paths dasik writes from a domain of their own. A `files` entry aimed at one of
+# them is a second writer with different content, so the two undo each other on
+# every apply. /etc/crypttab is deliberately absent: dasik's own capture puts it
+# in `files`, and that pairing is intended.
+_DOMAIN_OWNED_FILES = {
+    "/etc/sudoers.d/10-dasik": "sudo",
+    "/etc/systemd/zram-generator.conf": "zram",
+    "/etc/systemd/system.conf.d/10-dasik.conf": "systemd_system_conf",
+    "/etc/systemd/user.conf.d/10-dasik.conf": "systemd_user_conf",
+    "/etc/systemd/oomd.conf.d/10-dasik.conf": "oomd",
+    "/etc/security/limits.d/10-dasik.conf": "pam",
+    "/etc/security/pwquality.conf.d/10-dasik.conf": "pam",
+    "/etc/mkinitcpio.conf.d/dasik.conf": "initramfs",
+    "/etc/mkinitcpio.conf": "initramfs",
+}
+# /etc/fstab is deliberately absent too: genfstab writes it at install time and
+# nothing rewrites it afterwards, so a `files` entry there does not fight anyone.
+
+
+def _check_file_collisions(config: Dict[str, Any]) -> List[Issue]:
+    """A `files` entry over a path another domain owns never converges.
+
+    Both writers run on every apply, each undoing the other, and both report
+    success — the plan proposes the same change forever. A warning rather than
+    an error: the config is not wrong to parse, and the user may be mid-way
+    through moving a setting from one place to the other.
+    """
+    issues: List[Issue] = []
+    for entry in config.get("files") or []:
+        path = entry.get("path") if isinstance(entry, dict) else None
+        domain = _DOMAIN_OWNED_FILES.get(path or "")
+        if domain:
+            issues.append(Issue(
+                "warning", "file_owned_by_another_domain",
+                f"`files` declares {path}, which the `{domain}` domain also "
+                "writes; the two overwrite each other on every apply and the "
+                f"plan never goes quiet. Declare it through `{domain}` instead."))
+    return issues
+
+
 def _check_cpu(config: Dict[str, Any], packages: Set[str]) -> List[Issue]:
     """power-profiles-daemon owns the frequency policy it shares with nobody."""
     cpu = config.get("cpu") or {}
@@ -348,7 +401,12 @@ def _check_crypttab(config: Dict[str, Any]) -> List[Issue]:
             if not opt:
                 continue
             key, sep, _value = opt.partition("=")
-            known = key in _CRYPTTAB_KEYS if sep else opt in _CRYPTTAB_FLAGS
+            if key in _CRYPTTAB_FLAG_OR_KEY:
+                known = True
+            elif sep:
+                known = key in _CRYPTTAB_KEYS
+            else:
+                known = opt in _CRYPTTAB_FLAGS
             if not known:
                 issues.append(Issue(
                     "error", "crypttab_bad_option",
@@ -500,6 +558,7 @@ def preflight(config: Dict[str, Any],
     issues += _check_groups(config, packages)
     issues += _check_units(config, packages)
     issues += _check_sudo(config, packages)
+    issues += _check_file_collisions(config)
     issues += _check_cpu(config, packages)
     issues += _check_firewall_backend(config, packages)
     issues += _check_crypttab(config)

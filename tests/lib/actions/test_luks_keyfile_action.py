@@ -123,7 +123,9 @@ def _apply(action, exists, changes=None):
          patch.object(LuksKeyfileAction, "_luks_device", return_value="/dev/vda2"), \
          patch("os.path.exists", return_value=exists), \
          patch("os.makedirs"), \
-         patch("os.chmod"):
+         patch("os.open", return_value=99), patch("os.fchmod"), patch("os.close"):
+        # The keyfile is CREATED private (os.open with 0600) and dd only fills
+        # it in, so those three are what stands in for touching a real path.
         action.apply(changes)
     return run.call_args_list
 
@@ -265,11 +267,13 @@ def test_a_read_only_probe_mount_says_so():
 
 
 def test_chmod_failing_on_a_filesystem_without_modes_is_not_fatal():
-    """The kernel returns EPERM for chmod on vfat. Aborting there would leave a
-    freshly created keyfile that was never enrolled."""
+    """The kernel returns EPERM for a mode change on vfat. Aborting there would
+    leave a freshly created keyfile that was never enrolled. (The mode is now set
+    on the descriptor, so the call that fails is fchmod rather than chmod.)"""
     action = _action()
     with patch("dasik.lib.actions.luks_keyfile_action.Command.execute"), \
          patch("os.path.exists", return_value=False), \
          patch("os.makedirs"), \
-         patch("os.chmod", side_effect=PermissionError("fat")):
+         patch("os.open", return_value=99), patch("os.close"), \
+         patch("os.fchmod", side_effect=PermissionError("fat")):
         action._create_keyfile("/run/dasik-key/keyfile")     # must not raise

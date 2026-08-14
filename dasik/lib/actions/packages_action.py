@@ -24,7 +24,7 @@ and forced to the AUR path for that read. ``sync`` re-emits it as the plain name
 Idempotent: a package already installed is not reinstalled.
 """
 from __future__ import annotations
-from typing import Any, List
+from typing import Any, Dict, List
 from .abstract_action import AbstractAction
 from .package_resolver import (
     PackageResolution,
@@ -479,30 +479,53 @@ class PackagesAction(AbstractAction):
     _REF_CHANGED = "source ref changed"
 
     def state_metadata(self) -> dict:
-        """Per-action state for the manifest: the applied Git SHA of every
-        declared ``package_sources`` package that is installed (PLAN v3 §10).
+        """Per-action state for the manifest: what was built, and from where.
 
-        Iterating only the current sources drops refs for packages no longer
+        ``source_refs`` (name -> applied SHA) answers "must this be rebuilt?".
+        ``sources`` records the **whole** declaration (url/ref/subdir) because
+        the SHA alone cannot rebuild anything: a package built from a Git
+        PKGBUILD exists in no repo and no AUR, so a ``sync`` that cannot name
+        its URL produces a config that silently drops it (PLAN v3 §10).
+
+        Iterating only the current sources drops entries for packages no longer
         declared or no longer Git-sourced. Returns ``{}`` when there is nothing
         to record so the reconciler merge stays clean."""
         installed = self._installed_all()
-        refs = {
-            name: src["ref"]
+        sources = {
+            name: dict(src)
             for name, src in self.package_sources.items()
             if name in installed and isinstance(src, dict) and src.get("ref")
         }
-        if not refs:
+        if not sources:
             return {}
-        return {self._PACMAN_DOMAIN: {"source_refs": refs}}
+        return {self._PACMAN_DOMAIN: {
+            "source_refs": {name: src["ref"] for name, src in sources.items()},
+            "sources": sources,
+        }}
 
-    def _applied_refs(self) -> dict:
-        """{name: applied_sha} recorded by the last apply, from the manifest."""
+    def _action_state(self) -> dict:
         manifest = getattr(self.context, "manifest", None) if self.context else None
         if not isinstance(manifest, dict):
             return {}
-        return (manifest.get("action_state", {})
-                        .get(self._PACMAN_DOMAIN, {})
-                        .get("source_refs", {}))
+        state = manifest.get("action_state", {}).get(self._PACMAN_DOMAIN, {})
+        return state if isinstance(state, dict) else {}
+
+    def _recorded_sources(self) -> dict:
+        """{name: source} recorded by the last apply. Empty for a manifest
+        written before ``sources`` existed — those hold a SHA and no URL, and a
+        source cannot be invented from a SHA."""
+        sources = self._action_state().get("sources", {})
+        return sources if isinstance(sources, dict) else {}
+
+    def _applied_refs(self) -> dict:
+        """{name: applied_sha} recorded by the last apply, from the manifest.
+        Reads the legacy ``source_refs`` map first so a manifest written by an
+        older dasik still answers the ref-drift question."""
+        refs = self._action_state().get("source_refs", {})
+        if isinstance(refs, dict) and refs:
+            return refs
+        return {name: src["ref"] for name, src in self._recorded_sources().items()
+                if isinstance(src, dict) and src.get("ref")}
 
     def managed_keys(self) -> dict:
         """Packages this action owns after apply (bare names).
@@ -552,7 +575,31 @@ class PackagesAction(AbstractAction):
         # …and whatever an enabled unit proves is there without being explicit.
         for name in sorted(self._unit_provider_packages() - declared - explicit):
             result.append({"name": name, "reason": "dep"})
-        return {self._PACMAN_DOMAIN: result}
+
+        captured: Dict[str, Any] = {self._PACMAN_DOMAIN: result}
+        sources = self._captured_sources(installed)
+        if sources:
+            captured["package_sources"] = sources
+        return captured
+
+    def _captured_sources(self, installed: set) -> dict:
+        """The ``package_sources`` a sync must carry back.
+
+        Declared beats recorded: the config is intent, so a ref the admin just
+        bumped survives the capture instead of being overwritten by whatever the
+        last apply happened to build. Only installed packages are reported —
+        a source for something absent would describe a machine that does not
+        exist.
+        """
+        out: Dict[str, Any] = {}
+        recorded = self._recorded_sources()
+        for name in sorted(set(recorded) | set(self.package_sources)):
+            if name not in installed:
+                continue
+            src = self.package_sources.get(name) or recorded.get(name)
+            if isinstance(src, dict) and src.get("url") and src.get("ref"):
+                out[name] = dict(src)
+        return out
 
     # ------------------------------------------------------------------ #
     #  v3 apply() — destructive                                          #

@@ -11,6 +11,7 @@ no ``aur-`` prefix. Two extra top-level maps tune that resolution:
 import re
 from posixpath import normpath
 from typing import Literal
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel, field_validator
 
@@ -19,6 +20,12 @@ from pydantic import BaseModel, field_validator
 # shell unsafely. Same grammar PackageResolver/PackagesAction enforce.
 _VALID_PKG_NAME = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9@._+-]*")
 _SHA1_HEX = re.compile(r"[0-9a-fA-F]{40}")
+# A DNS name: labels of alphanumerics and inner hyphens. urlsplit already
+# stripped any port, so this never has to think about ':'.
+_VALID_HOSTNAME = re.compile(
+    r"[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?"
+    r"(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*"
+)
 
 
 class PackageSpec(BaseModel):
@@ -59,7 +66,15 @@ class GitPackageSourceModel(BaseModel):
     dasik clones ``url`` at the exact ``ref`` (a full 40-char commit SHA, so the
     build is reproducible), builds the PKGBUILD under ``subdir`` as an
     unprivileged user, and verifies its ``pkgname`` matches the declared package
-    before installing. First version limits ``url`` to ``https://github.com/….git``.
+    before installing.
+
+    ``url`` is any ``https://<host>/…​.git``: a PKGBUILD that was never uploaded
+    to the AUR lives wherever its author put it (GitHub, GitLab, Codeberg, a
+    self-hosted forge). The value only ever reaches ``git`` as a positional
+    argument — never a shell — so the host allowlist was never what made this
+    safe. Still refused: plain HTTP (no integrity), a URL that is not a Git
+    repository, and **credentials in the URL**, which would put a secret in a
+    config file that ``sync`` copies verbatim.
     """
     type: Literal["pkgbuild-git"]
     url: str
@@ -71,12 +86,24 @@ class GitPackageSourceModel(BaseModel):
     def _validate_url(cls, v: str) -> str:
         if not v.startswith("https://"):
             raise ValueError(f"package source url must be https://, got {v!r}")
-        if not v.startswith("https://github.com/"):
-            raise ValueError(
-                f"package source url host must be github.com (first version), got {v!r}"
-            )
         if not v.endswith(".git"):
             raise ValueError(f"package source url must end with .git, got {v!r}")
+        parts = urlsplit(v)
+        if "@" in parts.netloc:
+            raise ValueError(
+                f"package source url must not carry credentials, got {v!r}; "
+                "a synced config would copy the secret verbatim"
+            )
+        try:
+            host = parts.hostname
+            parts.port          # raises on a non-numeric / out-of-range port
+        except ValueError as exc:
+            raise ValueError(f"package source url has an unusable port: {v!r}") from exc
+        if not host or not _VALID_HOSTNAME.fullmatch(host):
+            raise ValueError(f"package source url host is not a hostname: {v!r}")
+        path = parts.path
+        if not path.strip("/") or ".." in path.split("/"):
+            raise ValueError(f"package source url path is unusable: {v!r}")
         return v
 
     @field_validator("ref")

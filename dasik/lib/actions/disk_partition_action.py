@@ -495,6 +495,7 @@ class DiskPartitionAction(AbstractAction):
         if not self.disks:
             discovered = self._discover_disks()
             return {"disks": {"disks": discovered}} if discovered else {}
+        live_subvol_options = self._live_subvol_options()
         disks_out = []
         for disk in self.disks:
             d = disk.model_dump(mode="json")
@@ -502,6 +503,7 @@ class DiskPartitionAction(AbstractAction):
             for p in d.get("partitions", []):
                 p["format"] = False
                 p.pop("luks_password", None)
+                self._correct_subvol_options(p, live_subvol_options)
                 if p.get("encrypt") and p.get("luks_name"):
                     uuid = self._read_luks_uuid(p["luks_name"])
                     if uuid:
@@ -551,15 +553,72 @@ class DiskPartitionAction(AbstractAction):
             s["mount_options"] = [o for o in s.get("mount_options", []) if o not in common]
         return sorted(common)
 
+    def _live_subvol_options(self) -> "Dict[str, List[str]]":
+        """subvolume name -> the mount options it is REALLY mounted with.
+
+        Only the ones dasik can express (compress*): the rest of what findmnt
+        prints is kernel bookkeeping (relatime, space_cache, subvolid) that no
+        config declares.
+        """
+        live: Dict[str, List[str]] = {}
+        for _target, _src, opts in self._findmnt_btrfs_rows():
+            subvol = next((o.split("=", 1)[1] for o in opts.split(",")
+                           if o.startswith("subvol=")), None)
+            if not subvol:
+                continue
+            name = subvol.rstrip("/").split("/")[-1]
+            if name:
+                live[name] = [o for o in opts.split(",") if o.startswith("compress")]
+        return live
+
+    @staticmethod
+    def _correct_subvol_options(partition: dict, live: "Dict[str, List[str]]") -> None:
+        """Replace declared subvolume options with the mounted truth (in place).
+
+        `model_dump()` materializes defaults, so a config that declares a
+        subvolume without `mount_options` captured the model's own
+        `compress-force=zstd` as if the machine had reported it — and the
+        derived rootflags then carried that value NEXT TO the partition's real
+        one. Reporting the machine is the whole contract of `sync`.
+
+        What the partition already carries is subtracted, so a shared option is
+        stated once (the same shape `_hoist_common_mount_options` produces on
+        the discovery path). A subvolume findmnt does not mention is not
+        mounted: there is nothing to read, so the declaration stands.
+        """
+        if not live:
+            return
+        base = set(partition.get("mount_options") or [])
+        for subvol in partition.get("btrfs_subvolumes") or []:
+            mounted = live.get(subvol.get("name"))
+            if mounted is None:
+                continue
+            subvol["mount_options"] = [o for o in mounted if o not in base]
+
     @staticmethod
     def _subvol_mount_options(partition, subvol) -> "List[str]":
         """Effective mount options for a subvolume: the partition's mount_options
         as a base (so a hoisted `compress-force=…` applies), plus the subvolume's
-        own (de-duplicated), plus `subvol=<name>`."""
+        own, plus `subvol=<name>`.
+
+        De-duplicated by option NAME, not by whole token: the subvolume is the
+        more specific statement, so its value replaces the partition's in place
+        rather than being appended next to it. Appending produced
+        `compress-force=zstd:3,compress-force=zstd` — not a merge but a
+        contradiction, which the kernel resolves by taking the last one, i.e.
+        silently neither what the partition nor the subvolume asked for.
+        """
+        def name_of(option: str) -> str:
+            return option.split("=", 1)[0]
+
         merged = list(partition.mount_options)
-        for o in subvol.mount_options:
-            if o not in merged:
-                merged.append(o)
+        for own in subvol.mount_options:
+            for i, existing in enumerate(merged):
+                if name_of(existing) == name_of(own):
+                    merged[i] = own          # the subvolume wins, in place
+                    break
+            else:
+                merged.append(own)
         merged.append(f"subvol={subvol.name}")
         return merged
 

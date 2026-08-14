@@ -1,6 +1,6 @@
 {
   "metadata": {
-    "note": "Split form of the ThinkPad P14s Gen 2 (AMD) config. Secrets live in secrets/ (gitignored): copy the .example files and fill them in — the LUKS passphrase is referenced by BOTH partitions from one file, so they cannot drift apart. Everything else is the same config as the single-file form."
+    "note": "Split form of the ThinkPad P14s Gen 2 (AMD) config. Every /etc file lives in etc/ as a real file (etc_tree), not as an escaped JSON string; the rest of the config is assembled with $include. Secrets live in secrets/ (gitignored): copy the .example files and fill them in \u2014 the LUKS passphrase is referenced by BOTH partitions from one file, so they cannot drift apart. Equivalent to laptop-p14s.json, plus config-saver."
   },
   "timezone": {
     "region": "Europe",
@@ -31,60 +31,15 @@
     "enable": true,
     "in_initramfs": false
   },
+  "etc_tree": "etc",
   "disks": {
     "$include": "disks.json"
   },
-  "udev_rules": [
-    {
-      "name": "1-qudelix.rules",
-      "content": {
-        "$include_text": "udev_rules/1-qudelix.rules"
-      }
-    },
-    {
-      "name": "50-dolphin-UB400.rules",
-      "content": {
-        "$include_text": "udev_rules/50-dolphin-UB400.rules"
-      }
-    }
-  ],
-  "modprobe_conf": [
-    {
-      "name": "nested_virt.conf",
-      "content": {
-        "$include_text": "modprobe.d/nested_virt.conf"
-      }
-    }
-  ],
-  "modules_load": [],
-  "files": [
-    {
-      "path": "/etc/plasmalogin.conf.d/10-dasik.conf",
-      "content": {
-        "$include_text": "files/etc-plasmalogin.conf.d-10-dasik.conf"
-      }
-    },
-    {
-      "path": "/etc/pam.d/sudo",
-      "content": {
-        "$include_text": "files/etc-pam.d-sudo"
-      }
-    },
-    {
-      "path": "/etc/pam.d/polkit-1",
-      "content": {
-        "$include_text": "files/etc-pam.d-polkit-1"
-      }
-    },
-    {
-      "path": "/etc/pam.d/plasmalogin",
-      "content": {
-        "$include_text": "files/etc-pam.d-plasmalogin"
-      }
-    }
-  ],
   "zram": {
     "$include": "zram.json"
+  },
+  "oomd": {
+    "DefaultMemoryPressureDurationSec": "20s"
   },
   "firewall": {
     "$include": "firewall.json"
@@ -119,8 +74,12 @@
     "power_profiles_daemon": true
   },
   "reflector": {
-    "countries": ["ES"],
-    "protocols": ["https"],
+    "countries": [
+      "ES"
+    ],
+    "protocols": [
+      "https"
+    ],
     "latest": 20,
     "sort": "rate"
   },
@@ -129,5 +88,18 @@
     "rd.luks.name=7c678858-646c-5261-9727-4779b680f718=cryptswap",
     "resume=/dev/mapper/cryptswap"
   ],
-  "notes": "Lenovo ThinkPad P14s Gen 2 (AMD Ryzen 7 PRO 5850U, Cezanne iGPU, no discrete GPU). BEFORE APPLYING: (1) set both luks_password fields (they are placeholders — use the SAME passphrase on cryptroot and cryptswap so systemd's initrd password cache asks only once); (2) confirm the disk is /dev/nvme0n1 with lsblk — wipe_disk is true; (3) size the swap partition to your RAM (32GiB assumed) or hibernation cannot fit; (4) regenerate hashed_password with `dasik hash-password`. In the UEFI set Sleep to 'Linux' (s2idle) — with 'Windows 10' the lid switch is flaky. Fingerprint: Synaptics 06cb:00bd, supported in-tree; enrol with `fprintd-enroll` and keep the reader firmware current via fwupd."
+  "notes": "Lenovo ThinkPad P14s Gen 2 (AMD Ryzen 7 PRO 5850U, Cezanne iGPU, no discrete GPU). BEFORE APPLYING: (1) set both luks_password fields (they are placeholders \u2014 use the SAME passphrase on cryptroot and cryptswap so systemd's initrd password cache asks only once); (2) confirm the disk is /dev/nvme0n1 with lsblk \u2014 wipe_disk is true; (3) size the swap partition to your RAM (32GiB assumed) or hibernation cannot fit; (4) regenerate hashed_password with `dasik hash-password`. In the UEFI set Sleep to 'Linux' (s2idle) \u2014 with 'Windows 10' the lid switch is flaky. Fingerprint: Synaptics 06cb:00bd, supported in-tree; enrol with `fprintd-enroll` and keep the reader firmware current via fwupd.",
+  "config_saver": {
+    "source": {
+      "url": "https://github.com/amt911/config-saver-aur.git",
+      "ref": "7bca56d2e5a016d8e07541b6b5f7708190339d26",
+      "subdir": "."
+    },
+    "configs": {
+      "$include": "config-saver-configs.json"
+    },
+    "timer_users": [
+      "andres"
+    ]
+  }
 }

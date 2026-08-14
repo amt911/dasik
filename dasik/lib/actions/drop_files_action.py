@@ -121,6 +121,11 @@ class DropFilesAction(AbstractAction):
     def _exists(self, canonical: str) -> bool:
         return os.path.exists(self._abs(canonical))
 
+    def _is_symlink(self, canonical: str) -> bool:
+        """A managed path that is a link is not the managed file. Its own seam,
+        like _exists/_read, so a target-less double can stub it."""
+        return os.path.islink(self._abs(canonical))
+
     def actual(self) -> set:
         """Declared paths that exist on disk (no directory glob)."""
         if self._target() is None:
@@ -130,6 +135,8 @@ class DropFilesAction(AbstractAction):
     def _needs_write(self, canonical: str, desired: str) -> bool:
         if not self._exists(canonical):
             return True
+        if self._is_symlink(canonical):
+            return True          # a link is not the file, whatever it reads as
         return _sha256(self._read(canonical)) != _sha256(desired)
 
     # -- v3 contract --------------------------------------------------- #
@@ -147,10 +154,28 @@ class DropFilesAction(AbstractAction):
             op_remove=Op.DELETE,
         )
         for p in sorted(set(desired) & actual):
-            if self._read(p) != desired[p]:
+            if self._is_symlink(p):
+                # Not a content question: a link is not the file, whatever it
+                # reads as. Writing through it sent the content to the link's
+                # TARGET, so the file never converged and this plan repeated
+                # for ever (found by `ln -s /dev/null` over a managed file).
+                changes.append(Change(_FILES_DOMAIN, Op.MODIFY, p,
+                                      reason="replaced by a symlink"))
+            elif self._read(p) != desired[p]:
                 changes.append(Change(_FILES_DOMAIN, Op.MODIFY, p, reason="content drift"))
         self._warn_shadowed([c.item for c in changes if c.op is not Op.DELETE])
-        return changes
+        return [self._explain_package_file(c) for c in changes]
+
+    def _explain_package_file(self, change: Change) -> Change:
+        """Say, in the plan itself, that a package file survives its removal."""
+        if change.op is not Op.DELETE:
+            return change
+        owner = self._pacman_owner(change.item)
+        if not owner:
+            return change
+        return Change(change.domain, change.op, change.item,
+                      reason=f"{change.reason}; owned by {owner} — a package file "
+                             "is left in place, not deleted")
 
     def _warn_shadowed(self, paths: List[str]) -> None:
         """Warn for each declared file that overrides one a package ships.
@@ -188,6 +213,20 @@ class DropFilesAction(AbstractAction):
         # "<path> is owned by <pkg> <version>"
         marker = " is owned by "
         return out.split(marker)[1].split()[0] if marker in out else None
+
+    def _effective_env_lines(self) -> "Optional[List[str]]":
+        """The settings in /etc/environment, or None when it cannot be read.
+
+        Comments and blank lines are not settings: an untouched Arch install
+        ships a header of comments and nothing else, which must capture as
+        nothing rather than as five comment lines.
+        """
+        try:
+            text = self._read(_ENV_PATH)
+        except OSError:
+            return None
+        return [ln for ln in text.splitlines()
+                if ln.strip() and not ln.lstrip().startswith("#")]
 
     def _vendor_copy(self, path: str) -> Optional[str]:
         """The /usr/lib counterpart of an /etc file, when one exists.
@@ -339,9 +378,17 @@ class DropFilesAction(AbstractAction):
                         by_name[d["name"]] = d["content"]
             result[key] = [{"name": n, "content": by_name[n]} for n in order]
 
-        if _ENV_PATH in actual:
-            text = self._read(_ENV_PATH)
-            result["etc_environment"] = [ln for ln in text.split("\n") if ln != ""]
+        # Read the file whenever it is THERE, not only when the config already
+        # declared it. It belongs to the `pam` package, so file discovery skips
+        # it on purpose, and the old `if _ENV_PATH in actual` (declared paths
+        # that exist) meant a first capture of a machine with a customised
+        # /etc/environment silently dropped every line in it.
+        #
+        # The stock file is nothing but comments, so "has effective lines" is
+        # exactly the question "did somebody put something here".
+        env_lines = self._effective_env_lines()
+        if env_lines is not None:
+            result["etc_environment"] = env_lines
         else:
             result["etc_environment"] = list(self.etc_env_lines)
 
@@ -377,17 +424,44 @@ class DropFilesAction(AbstractAction):
         deletes = [c.item for c in changes if c.op is Op.DELETE]
 
         for canonical in writes:                    # additive first
-            path = self._abs(canonical)
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            with open(path, "w") as f:
-                f.write(desired.get(canonical, ""))
-            if canonical in modes:                  # restrict secret files (0600)
-                os.chmod(path, modes[canonical])
+            self._write_file(canonical, desired.get(canonical, ""), modes)
 
         for canonical in deletes:
+            # The declaration OVERRODE whatever the package ships; dropping it
+            # undoes the override, and removing the path would go further than
+            # that — `pacman -Qkk` then reports the file missing and the next
+            # upgrade of that package silently puts it back. dasik refuses to
+            # capture a package file (see import_state); it must not delete one
+            # either. A probe that fails means "unknown", and unknown deletes.
+            owner = self._pacman_owner(canonical)
+            if owner:
+                run_logger.get().warning(
+                    f"{canonical} is owned by the {owner} package",
+                    detail="the declaration that overrode it is gone, so dasik "
+                           "stops managing the file — but it is left in place. "
+                           f"Reinstall {owner} to get the package's own version "
+                           "back.")
+                continue
             path = self._abs(canonical)
             if os.path.exists(path):
                 os.remove(path)
+
+    def _write_file(self, canonical: str, content: str, modes: Dict[str, int]) -> None:
+        """Write a managed file, replacing whatever is in its place.
+
+        A symlink is REMOVED first rather than written through: following it
+        would send dasik's content to the link's target — a file it does not
+        manage — and leave the managed path still a link, so the next plan asks
+        for the same write again, for ever.
+        """
+        path = self._abs(canonical)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        if os.path.islink(path):
+            os.remove(path)
+        with open(path, "w") as f:
+            f.write(content)
+        if canonical in modes:                      # restrict secret files (0600)
+            os.chmod(path, modes[canonical])
 
     # -- legacy is_needed / execute / verify (old executor path) ------- #
 
@@ -398,13 +472,8 @@ class DropFilesAction(AbstractAction):
         modes = self._file_modes()
         for canonical, content in self._desired().items():
             if self._needs_write(canonical, content):
-                path = self._abs(canonical)
-                os.makedirs(os.path.dirname(path), exist_ok=True)
-                with open(path, "w") as f:
-                    f.write(content)
-                if canonical in modes:
-                    os.chmod(path, modes[canonical])
-                print(f"  Wrote {path}")
+                self._write_file(canonical, content, modes)
+                print(f"  Wrote {self._abs(canonical)}")
 
     def verify(self) -> bool:
         return not any(self._needs_write(p, c) for p, c in self._desired().items())

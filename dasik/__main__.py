@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import getpass
 import json
+import os
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -35,6 +36,7 @@ from dasik.lib.logging import run_logger
 from dasik.lib.reconciler.reconciler import Reconciler
 from dasik.lib.state.config_writer import ConfigWriter
 from dasik.lib.state.generation_store import GenerationStore
+from dasik.lib.state.apply_lock import ApplyLock, ApplyLockBusy
 from dasik.lib.state.state_store import StateStore
 from dasik.lib.target.target import Target
 from dasik.lib.target.target_check import check_target
@@ -207,6 +209,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     hash_p = sub.add_parser(
         "hash-password",
+        parents=[common],   # -v/--log/--no-log, like every other verb
         help="Prompt for a password (twice) and print its crypt hash for use "
              "as a user's hashed_password.",
     )
@@ -229,11 +232,19 @@ _KNOWN_VERBS = {"plan", "apply", "sync", "generations", "rollback", "check",
 def _is_legacy_invocation(raw: list[str]) -> Optional[str]:
     """If argv matches the deprecated ``dasik <config>`` form, return the
     config path. Otherwise return None and let argparse handle it.
+
+    A first argument that is not a verb but does not look like a config file
+    either — `dasik aply cfg.json` — is a typo, not the legacy form. Answering
+    it with "use `dasik plan aply`" is advice about a file that does not exist,
+    so those go to argparse, which says `invalid choice` and lists the verbs.
     """
     non_flags = [a for a in raw if not a.startswith("-")]
-    if non_flags and non_flags[0] not in _KNOWN_VERBS:
-        return non_flags[0]
-    return None
+    if not non_flags or non_flags[0] in _KNOWN_VERBS:
+        return None
+    first = non_flags[0]
+    looks_like_a_config = first.endswith(".json") or os.path.sep in first \
+        or os.path.exists(first)
+    return first if looks_like_a_config else None
 
 
 def _load_validated_config(config_path: Path) -> Optional[dict]:
@@ -370,6 +381,15 @@ def _cmd_apply(config_path: Path, target_root: str, assume_yes: bool) -> int:
     if plan.is_empty():
         return 0
 
+    # One apply at a time, per target: two of them race for the manifest, and
+    # the loser's work ends up unowned. Taken AFTER the plan so a read-only
+    # plan never blocks, and released by the kernel even if this process dies.
+    try:
+        lock = ApplyLock(target).__enter__()
+    except ApplyLockBusy as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+
     try:
         new_manifest = reconciler.apply(plan, results, assume_yes=assume_yes)
     except Exception as e:
@@ -382,6 +402,8 @@ def _cmd_apply(config_path: Path, target_root: str, assume_yes: bool) -> int:
               "cause and run `dasik apply` again — completed work is not redone.",
               file=sys.stderr)
         return 1
+    finally:
+        lock.__exit__()
     if new_manifest is None:
         print("Aborted: no changes applied.", file=sys.stderr)
         return 1
@@ -431,6 +453,10 @@ def _cmd_sync(config_path: Path, target_root: str) -> int:
         manifest=manifest_dict,
         action_metas=registry.get_all_actions(),
         state_store=state_store,
+        # Capture into the RAW config, but own the EXPANDED one — the set apply
+        # actually wrote. Otherwise a sync quietly disowns every file a block
+        # derives, and turning that block off stops removing them (issue #197).
+        owned_config=expand_config(config),
     )
     new_config, new_manifest = reconciler.sync()
     new_config = subtract_contributions(new_config, config)
@@ -496,6 +522,17 @@ def _cmd_rollback(target_root: str, number: Optional[int], assume_yes: bool) -> 
     gen_store = GenerationStore(target)
 
     if number is None:
+        gens = gen_store.list()
+        if gens and not any(g.is_current for g in gens):
+            # The `current` symlink is repointed by unlink-then-symlink, so a
+            # power cut can leave it absent. Saying "no earlier generation"
+            # there is false — there are plenty; dasik just does not know which
+            # one it is standing on, and only the user can say.
+            print(f"Error: no current generation recorded ({gen_store.current_link} is "
+                  f"missing), so there is no 'previous' to roll back to. Pick one "
+                  f"explicitly: dasik rollback <number> — `dasik generations` lists "
+                  f"{', '.join(str(g.number) for g in gens)}.", file=sys.stderr)
+            return 1
         number = _previous_generation(gen_store)
         if number is None:
             print("Error: no earlier generation to roll back to.", file=sys.stderr)

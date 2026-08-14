@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import getpass
 import json
+import os
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -207,6 +208,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     hash_p = sub.add_parser(
         "hash-password",
+        parents=[common],   # -v/--log/--no-log, like every other verb
         help="Prompt for a password (twice) and print its crypt hash for use "
              "as a user's hashed_password.",
     )
@@ -229,11 +231,19 @@ _KNOWN_VERBS = {"plan", "apply", "sync", "generations", "rollback", "check",
 def _is_legacy_invocation(raw: list[str]) -> Optional[str]:
     """If argv matches the deprecated ``dasik <config>`` form, return the
     config path. Otherwise return None and let argparse handle it.
+
+    A first argument that is not a verb but does not look like a config file
+    either — `dasik aply cfg.json` — is a typo, not the legacy form. Answering
+    it with "use `dasik plan aply`" is advice about a file that does not exist,
+    so those go to argparse, which says `invalid choice` and lists the verbs.
     """
     non_flags = [a for a in raw if not a.startswith("-")]
-    if non_flags and non_flags[0] not in _KNOWN_VERBS:
-        return non_flags[0]
-    return None
+    if not non_flags or non_flags[0] in _KNOWN_VERBS:
+        return None
+    first = non_flags[0]
+    looks_like_a_config = first.endswith(".json") or os.path.sep in first \
+        or os.path.exists(first)
+    return first if looks_like_a_config else None
 
 
 def _load_validated_config(config_path: Path) -> Optional[dict]:

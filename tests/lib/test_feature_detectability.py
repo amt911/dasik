@@ -669,3 +669,50 @@ def test_dropping_the_declaration_removes_the_package_the_manifest_owns():
     assert _git_pkg_plan(installed=("config-saver",), managed=("config-saver",),
                          declared=False) == [
         ("REMOVE", "config-saver", "no longer declared")]
+
+
+# --- containers (the runtime) ---------------------------------------------- #
+#
+# The block rides three domains — packages, units, users' groups — plus one of
+# its own: the subuid/subgid map without which no rootless container starts.
+
+def _subid_plan(tmp_path, config, subuid="", managed=()):
+    from dasik.lib.actions.containers_action import ContainersAction
+
+    (tmp_path / "etc").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "etc/subuid").write_text(subuid)
+    (tmp_path / "etc/subgid").write_text(subuid)
+    action = ContainersAction(config, _ctx(tmp_path))
+    return [(c.op.name, c.item) for c in action.plan(managed=list(managed))]
+
+
+_ROOTLESS = {"containers": {"runtime": "podman"},
+             "users": [{"username": "andres", "hashed_password": "$6$a$b"}]}
+
+
+def test_a_missing_rootless_id_map_is_planned(tmp_path):
+    assert _subid_plan(tmp_path, _ROOTLESS) == [("CREATE", "andres")]
+
+
+def test_an_existing_id_map_plans_nothing(tmp_path):
+    assert _subid_plan(tmp_path, _ROOTLESS, subuid="andres:100000:65536\n") == []
+
+
+def test_dropping_the_containers_block_removes_the_map(tmp_path):
+    assert _subid_plan(tmp_path, {"users": _ROOTLESS["users"]},
+                       subuid="andres:100000:65536\n",
+                       managed=["andres"]) == [("REMOVE", "andres")]
+
+
+def test_an_id_map_dasik_never_wrote_is_left_alone(tmp_path):
+    assert _subid_plan(tmp_path, {}, subuid="otro:100000:65536\n") == []
+
+
+def test_the_docker_unit_is_planned_as_a_unit():
+    config = expand_config({"containers": {"runtime": "docker"}})
+    assert _units_planned(config) == ["docker.service"]
+
+
+def test_podman_plans_no_unit():
+    config = expand_config({"containers": {"runtime": "podman"}})
+    assert _units_planned(config) == []

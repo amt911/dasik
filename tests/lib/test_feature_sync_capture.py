@@ -691,3 +691,60 @@ def test_the_captured_git_source_validates_and_re_plans_to_nothing():
     replan._installed_all = MagicMock(return_value={"config-saver"})
     replan.actual = MagicMock(return_value={"config-saver"})
     assert replan.plan(managed=["config-saver"]) == []
+
+
+# --- containers (the runtime) ---------------------------------------------- #
+#
+# Reached through the real registry: the probes are files under the target root
+# and one `systemctl is-enabled`, so only that command needs faking.
+
+def _container_machine(tmp_path, runtime="podman", subuid="andres:100000:65536\n"):
+    machine = _machine(tmp_path)
+    (machine / "usr/bin").mkdir(parents=True, exist_ok=True)
+    (machine / "usr/bin" / ("podman" if runtime == "podman" else "dockerd")).write_text("")
+    (machine / "etc").mkdir(parents=True, exist_ok=True)
+    (machine / "etc/subuid").write_text(subuid)
+    (machine / "etc/subgid").write_text(subuid)
+    return machine
+
+
+def _synced_containers(tmp_path, **kw):
+    from dasik.lib.actions.containers_action import ContainersAction
+
+    machine = _container_machine(tmp_path, **kw)
+    with patch.object(ContainersAction, "_unit_enabled", return_value=False):
+        return _synced(machine)
+
+
+def test_sync_captures_the_container_runtime(tmp_path):
+    captured = _synced_containers(tmp_path)
+
+    assert captured["containers"]["runtime"] == "podman"
+    assert captured["containers"]["rootless"] is True
+
+
+def test_sync_invents_no_runtime_on_a_machine_without_one(tmp_path):
+    assert "containers" not in _synced(_machine(tmp_path))
+
+
+def test_the_captured_runtime_validates(tmp_path):
+    JsonModel.model_validate(_synced_containers(tmp_path))
+
+
+def test_replanning_the_captured_runtime_is_a_no_op(tmp_path):
+    from dasik.lib.actions.containers_action import ContainersAction
+
+    machine = _container_machine(tmp_path)
+    with patch.object(ContainersAction, "_unit_enabled", return_value=False):
+        captured = _synced(machine)
+    captured.setdefault("users", [{"username": "andres", "hashed_password": "$6$a$b"}])
+    action = ContainersAction(expand_config(captured),
+                              ActionContext(target=Target(root=str(machine))))
+
+    assert action.plan(managed=["andres"]) == []
+
+
+def test_the_package_behind_the_runtime_is_reproducible_from_the_capture(tmp_path):
+    captured = _synced_containers(tmp_path)
+
+    assert "podman" in expand_config(captured)["packages"]

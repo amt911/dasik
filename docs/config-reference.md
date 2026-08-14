@@ -114,6 +114,7 @@ result back by hand.
 | `apparmor` | object | Mandatory access control: package, unit, the `lsm=` kernel parameter, optional audit framework, local profiles |
 | `pam` | object | PAM hardening: account lockout, nproc limits, password policy |
 | `firewall` | object | firewalld **or** ufw — see below |
+| `containers` | object | Container runtime: podman or docker (the engine, not the containers) |
 | `bluetooth`, `hardware_acceleration`, `kvm`, `cups`, `microsoft_fonts`, `wireguard`, `snapper` | object | Feature toggles |
 | `enable_trim`, `enable_microcode`, `remove_home_on_delete`, `sysrq` | bool | Simple toggles |
 | `metadata`, `notes` | object / string | Free-form; not applied |
@@ -134,6 +135,35 @@ defaults to `true`. See [the wiki page](wiki/AppArmor.md) for the full story.
 `sync` captures `enable: false` for a machine that has the package but no `lsm=`
 naming it: that machine is not protected, and reporting otherwise would describe
 a system that does not exist. Profiles pacman owns are never captured.
+
+---
+
+## `containers`  *(sync ✓)*
+
+The container **runtime**, installed and configured. dasik does not manage
+containers.
+
+```json
+"containers": { "runtime": "podman", "rootless": true, "docker_compat": true }
+```
+
+| Field | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `runtime` | `"podman"` \| `"docker"` | — | Exactly one: both own `/usr/bin/docker` and the same bridge networks. |
+| `rootless` | bool | `true` (podman) / `false` (docker) | podman: every declared non-root user gets a `subuid`/`subgid` range, which is what rootless containers map into. Refused for docker — rootless docker is a separate daemon setup, not a flag. |
+| `docker_compat` | bool | `false` | podman: installs `podman-docker`, so `docker` on the command line is podman. Refused for docker. |
+| `compose` | bool | `false` | `podman-compose` / `docker-compose`, following the runtime. |
+| `api_socket` | bool | `false` | Enables `podman.socket` / `docker.socket`. For docker this **replaces** `docker.service`: the engine starts on first use instead of at boot. |
+| `daemon_json` | object | `null` | docker only: `/etc/docker/daemon.json`, written as JSON. Refused for podman, which has no daemon. |
+
+docker also puts every declared user in the `docker` group — the only way to use
+docker without root, and worth knowing that it is **root-equivalent**: a member
+can bind-mount `/` into a container.
+
+`useradd` already writes a subuid range for users it creates (shadow ≥ 4.11.1-3),
+so on a fresh install this domain usually converges to nothing. It exists for the
+machines where it does not: an older account, a user restored from a capture, a
+machine that grew podman later.
 
 ---
 

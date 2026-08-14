@@ -551,7 +551,7 @@ def test_the_password_library_reaches_the_expanded_config():
 # CLI. Its plan must be honest in both directions, and the firewalld path must
 # behave exactly as it did before the backend field existed.
 
-def _ufw_plan(rules_live, cfg):
+def _ufw_plan(rules_live, cfg, managed=()):
     from unittest.mock import patch
     from types import SimpleNamespace
     from dasik.lib.actions.firewall_action import FirewallAction
@@ -565,7 +565,7 @@ def _ufw_plan(rules_live, cfg):
     action = FirewallAction(cfg, SimpleNamespace(target=None))
     with patch("dasik.lib.actions.firewall_action.Command.execute",
                return_value=_R()):
-        return [(c.op.name, c.item) for c in action.plan(managed=[])]
+        return [(c.op.name, c.item) for c in action.plan(managed=list(managed))]
 
 
 _UFW_CFG = {"enable": True, "backend": "ufw", "rules": ["allow 22/tcp"]}
@@ -776,3 +776,17 @@ def test_no_plan_ever_removes_the_root_parameter(tmp_path):
     assert _cmdline_plan(tmp_path, {"bootloader": "sd-boot"},
                          "root=LABEL=ROOT rw quiet",
                          managed=["root=LABEL=ROOT", "rw"]) == []
+
+
+# --- ufw closes what it opened (round F) ------------------------------------ #
+
+def test_a_ufw_rule_no_longer_declared_is_removed():
+    """The half that was missing: the backend only ever opened ports."""
+    assert _ufw_plan(["22/tcp", "22000/tcp"], _UFW_CFG,
+                     managed=["allow 22/tcp", "allow 22000/tcp"]) == [
+        ("REMOVE", "allow 22000/tcp")]
+
+
+def test_a_ufw_rule_dasik_never_added_is_left_alone():
+    assert _ufw_plan(["22/tcp", "9999/tcp"], _UFW_CFG,
+                     managed=["allow 22/tcp"]) == []

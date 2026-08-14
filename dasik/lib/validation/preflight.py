@@ -304,6 +304,41 @@ def _check_sudo(config: Dict[str, Any], packages: Set[str]) -> List[Issue]:
     return []
 
 
+_BUILTIN_LOCALES = {"C", "C.UTF-8", "POSIX"}
+
+
+def _check_locales(config: Dict[str, Any]) -> List[Issue]:
+    """LANG must name a locale the config actually generates.
+
+    `selected_locales` is what gets uncommented in /etc/locale.gen and built;
+    `desired_locale` is what goes into LANG. Nothing tied them together, so a
+    config could install cleanly, converge, and leave the machine announcing a
+    locale nobody generated.
+
+    A warning, not an error: C/C.UTF-8/POSIX are built into glibc and need no
+    generation, and a target may already carry locales an earlier generation
+    built. The charset half of a locale.gen line is not part of the name —
+    `en_US.UTF-8 UTF-8` IS `en_US.UTF-8` as a LANG.
+    """
+    block = config.get("locales")
+    if not isinstance(block, dict):
+        return []
+    lang = (block.get("desired_locale") or "").strip()
+    if not lang or lang in _BUILTIN_LOCALES:
+        return []
+    generated = {entry.split()[0] for entry in block.get("selected_locales") or []
+                 if isinstance(entry, str) and entry.split()}
+    if lang in generated:
+        return []
+    listed = ", ".join(sorted(generated)) or "nothing"
+    return [Issue(
+        "warning", "lang_never_generated",
+        f"`desired_locale` is {lang!r} but `selected_locales` generates {listed}; "
+        "LANG would name a locale the machine never builds. Add it to "
+        "`selected_locales` (with its charset, e.g. "
+        f"'{lang} UTF-8') or point LANG at one that is there.")]
+
+
 def _check_unknown_keys(config: Dict[str, Any]) -> List[Issue]:
     """Name every key dasik does not know, and guess what it meant.
 
@@ -628,6 +663,7 @@ def preflight(config: Dict[str, Any],
     issues += _check_groups(config, packages)
     issues += _check_units(config, packages)
     issues += _check_sudo(config, packages)
+    issues += _check_locales(config)
     issues += _check_unknown_keys(config)
     issues += _check_file_collisions(config)
     issues += _check_cpu(config, packages)

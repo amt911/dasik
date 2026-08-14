@@ -14,6 +14,7 @@ Source of truth: `dasik/__main__.py` (`_build_parser`, `_KNOWN_VERBS`).
 | [`plan`](#plan) | no | no | `/mnt` | to read some state |
 | [`apply`](#apply) | **YES — destructive** | no | `/mnt` | yes |
 | [`sync`](#sync) | no | **yes** (writes `.bak`) | `/` | yes |
+| [`save`](#save) | no | **yes** — and commits it | `/` | yes |
 | [`generations`](#generations) | no | no | `/` | yes |
 | [`rollback`](#rollback) | **YES — destructive** | no | `/` | yes |
 | [`hash-password`](#hash-password) | no | no | *(no target)* | no |
@@ -162,6 +163,49 @@ to the system; it **rewrites the config file** and leaves `<config>.bak`.
 
 Prints `Config already matches system reality - nothing to sync.` when nothing
 changed. What each domain can capture: [Sync](Sync.md).
+
+## `save`
+
+```bash
+sudo dasik save <config> [-m MSG] [--no-push]
+```
+
+`sync`, then commit what it wrote to the Git repository the config lives in —
+the five-step cycle as one command. The order matters: **`check` runs on the
+capture before the commit**, because a config the tool would refuse is a broken
+capture and committing it spreads it to every machine that clones the repo.
+
+| Thing | Where it comes from |
+| --- | --- |
+| repository | the Git work tree containing the config |
+| remote | its `origin` (no origin ⇒ commits, says it did not push) |
+| author | `$SUDO_USER`'s own Git identity |
+| message | `-m`, else `<hostname>: sync <date>` — the hostname the **config** declares |
+
+Nothing is added to the schema: a config describes the *system*, and which
+remote it is pushed to is not part of that.
+
+**It runs Git as you, not as root.** `sync` needs root; the commit does not, and
+a commit authored by root in your repository with root's (absent) credentials is
+not what anybody wants. `save` also hands back ownership of every file the
+capture wrote — `sudo dasik sync` leaves them `root:root` in your repo.
+
+**A gitignored file is never staged.** The writeback legitimately rewrites
+`secrets/hashed-password`; staging it would commit a password hash on the
+strength of a convenience flag. Such files are reported instead:
+
+```text
+  wrote /home/andres/config/secrets/hashed-password  (gitignored, not staged)
+Committed: torre: sync 2026-08-15
+Pushed to origin.
+```
+
+The `<config>.bak` that `sync` leaves is **removed once the commit holds the
+capture** (the previous commit is a better backup), and kept when nothing was
+committed.
+
+Refusals: not a Git repository, running as plain root with no `SUDO_USER`, a
+written file outside the work tree, and a capture `check` rejects.
 
 ## `generations`
 

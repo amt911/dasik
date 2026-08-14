@@ -8,6 +8,8 @@ Verbs (slice 1 of declarative-convergence):
     ``--yes`` is passed.
   * ``sync <config> [--target /]`` — capture system reality back into the
     config file (non-destructive to the system; rewrites the config).
+  * ``save <config> [-m MSG] [--no-push]`` — sync, then commit (and push) the
+    capture to the Git repository the config lives in, as the invoking user.
   * ``generations [--target /]`` — list recorded generations, marking the
     current one. **Read-only.**
   * ``rollback [N] [--target /] [--yes]`` — restore generation N's config and
@@ -44,12 +46,14 @@ from dasik.lib.target.target import Target
 from dasik.lib.target.target_check import check_target
 from dasik.lib.expand import expand_config, subtract_contributions
 from dasik.lib.exceptions.exceptions import PasswordHashError
+from dasik.lib.git_save import (GitSaveError, chown_to, commit_paths,
+                                invoking_user, repo_root)
 from dasik.lib.passwords import SHA512, YESCRYPT, hash_password
 
 
 # Verbs that shell out to real commands and therefore benefit from an install
 # log. Read-only/trivial verbs (check, hash-password) write no log by default.
-_LOGGED_VERBS = {"plan", "apply", "sync", "rollback", "generations"}
+_LOGGED_VERBS = {"plan", "apply", "sync", "save", "rollback", "generations"}
 
 
 def _default_log_path(verb: str) -> Path:
@@ -165,6 +169,26 @@ def _build_parser() -> argparse.ArgumentParser:
              "install target). Default: /.",
     )
 
+    save_p = sub.add_parser(
+        "save",
+        parents=[common],
+        help="sync, then commit the capture to the config's Git repository",
+    )
+    save_p.add_argument("config", help="Path to the JSON configuration file")
+    save_p.add_argument(
+        "--target",
+        default="/",
+        help="Root to read reality from. Default: /.",
+    )
+    save_p.add_argument(
+        "-m", "--message", default=None,
+        help="Commit message. Default: '<hostname>: sync <date>'.",
+    )
+    save_p.add_argument(
+        "--no-push", action="store_true",
+        help="Commit but do not push.",
+    )
+
     gens_p = sub.add_parser(
         "generations",
         parents=[common],
@@ -227,8 +251,8 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-_KNOWN_VERBS = {"plan", "apply", "sync", "generations", "rollback", "check",
-                "hash-password"}
+_KNOWN_VERBS = {"plan", "apply", "sync", "save", "generations", "rollback",
+                "check", "hash-password"}
 
 
 def _is_legacy_invocation(raw: list[str]) -> Optional[str]:
@@ -426,20 +450,25 @@ def _cmd_apply(config_path: Path, target_root: str, assume_yes: bool) -> int:
 
 def _cmd_sync(config_path: Path, target_root: str) -> int:
     """Capture system reality back into the config file (spec §4 sync flow)."""
+    return _sync_capture(config_path, target_root)[0]
+
+
+def _sync_capture(config_path: Path, target_root: str) -> "tuple[int, list[Path]]":
+    """`sync`, plus the list of files it wrote — what `save` has to commit."""
     target = _target_or_none(target_root)
     if target is None:
-        return 1
+        return 1, []
     try:
         raw_text = config_path.read_text()
     except Exception as e:
         print(f"Error loading config: {e}", file=sys.stderr)
-        return 1
+        return 1, []
     # Schema-validate the seed too: sync REWRITES this file, so starting from a
     # config pydantic would reject would silently launder it into a new one.
     # No preflight here — sync's job is to repair a config from reality.
     config = _load_validated_config(config_path)
     if config is None:
-        return 1
+        return 1, []
 
     setup_actions()
     registry = get_default_registry()
@@ -462,7 +491,7 @@ def _cmd_sync(config_path: Path, target_root: str) -> int:
 
     if new_manifest is None:
         print("Nothing to sync (no convergence-aware actions registered).")
-        return 0
+        return 0, []
 
     # A freshly-bootstrapped domain that captured nothing (empty) is not a
     # meaningful change: drop newly-added empty keys so sync doesn't rewrite
@@ -470,7 +499,7 @@ def _cmd_sync(config_path: Path, target_root: str) -> int:
     new_config = {k: v for k, v in new_config.items() if k in config or v}
     if new_config == config:
         print("Config already matches system reality - nothing to sync.")
-        return 0
+        return 0, []
 
     backup = config_path.with_suffix(config_path.suffix + ".bak")
     backup.write_text(raw_text)
@@ -497,6 +526,79 @@ def _cmd_sync(config_path: Path, target_root: str) -> int:
     if len(written) > 1 or (written and written[0] != config_path):
         for path in written:
             print(f"  wrote {path}")
+    return 0, written
+
+
+def _cmd_save(config_path: Path, target_root: str, message: Optional[str],
+              push: bool) -> int:
+    """`sync`, then commit what it wrote — the whole cycle as one command.
+
+    The order is the point. `check` runs on the capture BEFORE the commit,
+    because a config the tool would refuse is a broken capture and committing it
+    spreads it to every machine that clones the repository.
+    """
+    try:
+        user = invoking_user()
+    except GitSaveError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+    # Refuse before capturing, not after: a `save` that cannot commit should
+    # leave the config exactly as it found it.
+    repo = repo_root(config_path)
+    if repo is None:
+        print(f"Error: {config_path.parent} is not a Git repository. `save` "
+              "commits the capture, so the config has to live in one — use "
+              "`dasik sync` for a config that does not.", file=sys.stderr)
+        return 1
+
+    rc, written = _sync_capture(config_path, target_root)
+    if rc != 0:
+        return rc
+    if not written:
+        return 0            # _sync_capture already said nothing changed
+
+    if user:
+        # The capture ran as root; the repository is the user's.
+        chown_to(user, written)
+
+    if _cmd_check(config_path) != 0:
+        print("Error: the capture does not validate — refusing to commit it. "
+              "The config on disk is the capture; `git checkout` it or fix it.",
+              file=sys.stderr)
+        return 1
+
+    if message is None:
+        # The hostname the CONFIG declares, not this machine's: the commit
+        # documents the machine the config describes, which is what you want
+        # when one repository holds several of them.
+        captured = _load_validated_config(config_path) or {}
+        host = captured.get("hostname") or os.uname().nodename
+        message = f"{host}: sync {datetime.now().strftime('%Y-%m-%d')}"
+
+    try:
+        result = commit_paths(repo, written, message, push=push, user=user)
+    except GitSaveError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+    for path in result.skipped:
+        print(f"  wrote {path}  (gitignored, not staged)")
+    if not result.committed:
+        print("Nothing to commit — the files the capture wrote are unchanged.")
+        return 0
+    # `sync` leaves <config>.bak. Once the capture is committed the previous
+    # commit is a better backup, and an untracked .bak after every save leaves
+    # `git status` permanently dirty. It stays when nothing was committed —
+    # which is exactly when it is worth having.
+    backup = config_path.with_suffix(config_path.suffix + ".bak")
+    backup.unlink(missing_ok=True)
+
+    print(f"Committed: {message}")
+    if result.push_error:
+        print(f"Not pushed: {result.push_error}", file=sys.stderr)
+    elif result.pushed:
+        print("Pushed to origin.")
     return 0
 
 
@@ -708,6 +810,12 @@ def main(argv: Optional[list[str]] = None) -> int:
             if path is None:
                 return 1
             return _cmd_sync(path, args.target)
+
+        if args.verb == "save":
+            path = _validate_config_file(args.config)
+            if path is None:
+                return 1
+            return _cmd_save(path, args.target, args.message, not args.no_push)
 
         if args.verb == "generations":
             return _cmd_generations(args.target)

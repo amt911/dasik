@@ -375,6 +375,43 @@ def expand_pam(config: Dict[str, Any]) -> Dict[str, Any]:
     return {"packages": ["libpwquality"]}
 
 
+_CONFIG_SAVER_DIR = "/etc/config-saver/configs"
+
+
+def expand_config_saver(config: Dict[str, Any]) -> Dict[str, Any]:
+    """config-saver: the package (and the Git PKGBUILD that builds it), one JSON
+    file per configuration, and the per-user timer.
+
+    The package is NOT in the AUR — its PKGBUILD lives in a plain Git
+    repository — so the block carries the source; without it the name resolves
+    nowhere and `warn-and-skip` would drop it silently.
+
+    Configurations are written as JSON rather than YAML: config-saver reads both
+    (`CONFIG_GLOBS = *.yaml, *.yml, *.json`), and JSON needs no new runtime
+    dependency and compares byte-for-byte after a round trip.
+    """
+    cfg = config.get("config_saver")
+    if cfg is None:
+        return {}
+    out: Dict[str, Any] = {"packages": ["config-saver"]}
+
+    source = cfg.get("source")
+    if source:
+        out["package_sources"] = {"config-saver": {"type": "pkgbuild-git",
+                                                   **dict(source)}}
+    files = [
+        {"path": f"{_CONFIG_SAVER_DIR}/{name}.json",
+         "content": json.dumps(doc, indent=2, sort_keys=True) + "\n"}
+        for name, doc in sorted((cfg.get("configs") or {}).items())
+    ]
+    if files:
+        out["files"] = files
+    units = [f"config-saver@{user}.timer" for user in cfg.get("timer_users") or []]
+    if units:
+        out["units"] = units
+    return out
+
+
 _COMPOSE_PACKAGES = {"podman": "podman-compose", "docker": "docker-compose"}
 
 
@@ -485,5 +522,6 @@ TOGGLES = [
     expand_wireguard, expand_firewall, expand_hwaccel, expand_snapper,
     expand_drivers, expand_initramfs, expand_zram, expand_oomd, expand_cpu,
     expand_sdboot_update, expand_reflector, expand_plymouth,
-    expand_apparmor, expand_pam, expand_containers, expand_network,
+    expand_apparmor, expand_pam, expand_config_saver, expand_containers,
+    expand_network,
 ]

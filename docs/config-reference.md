@@ -115,6 +115,7 @@ result back by hand.
 | `pam` | object | PAM hardening: account lockout, nproc limits, password policy |
 | `firewall` | object | firewalld **or** ufw — see below |
 | `containers` | object | Container runtime: podman or docker (the engine, not the containers) |
+| `config_saver` | object | config-saver: the package, its backup documents, its timers, and restoring an archive into `$HOME` |
 | `bluetooth`, `hardware_acceleration`, `kvm`, `cups`, `microsoft_fonts`, `wireguard`, `snapper` | object | Feature toggles |
 | `enable_trim`, `enable_microcode`, `remove_home_on_delete`, `sysrq` | bool | Simple toggles |
 | `metadata`, `notes` | object / string | Free-form; not applied |
@@ -164,6 +165,76 @@ can bind-mount `/` into a container.
 so on a fresh install this domain usually converges to nothing. It exists for the
 machines where it does not: an older account, a user restored from a capture, a
 machine that grew podman later.
+
+---
+
+## `config_saver`  *(sync ✓ — configs and timers from the machine, the rest as intent)*
+
+[config-saver](https://github.com/amt911/config-saver) backs up the parts of
+`$HOME` a config file cannot carry (themes, browser profiles, whole
+directories). dasik declares the policy — and, on a fresh machine, unpacks the
+archive the old one produced.
+
+```json
+"config_saver": {
+  "source": { "url": "https://github.com/amt911/config-saver-aur.git",
+              "ref": "a520605367e13ec25db4c3c7e1c4bf46175ba8cd" },
+  "configs": { "dotfiles": { "normalize_content": true,
+                             "directories": [{ "source": "$HOME",
+                                               "files": [".zshrc"] }] } },
+  "timer_users": ["andres"],
+  "restore": [{ "user": "andres", "archive": "/run/media/usb/dotfiles.tar.gz" }]
+}
+```
+
+| Field | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `source` | object | `null` | `{url, ref, subdir}` of the **Git PKGBUILD** that builds it. config-saver is not in the AUR, so without this (or a `package_sources` entry of your own) the name resolves nowhere and `warn-and-skip` drops it silently. |
+| `configs` | object | `{}` | name → config-saver document, written to `/etc/config-saver/configs/<name>.json`. It reads JSON as well as YAML, and JSON needs no new dependency and round-trips exactly. |
+| `timer_users` | list | `[]` | Enables `config-saver@<user>.timer` for each. |
+| `restore` | list | `[]` | `{user, archive}` — an absolute path **on the target**. Unpacked into that user's `$HOME` with `config-saver --decompress`. |
+
+**Restore is once per archive content.** The marker under
+`~/.local/state/dasik/config-saver/<sha256>` names what was unpacked, so
+re-applying restores nothing and replacing the file with a newer capture
+restores again. An archive that is not there is planned anyway and `apply` says
+which path it could not find — silence would be indistinguishable from "already
+restored".
+
+**Un-declaring a restore removes nothing.** Unpacking cannot be undone; the
+files belong to the user now. The domain plans no removal at all.
+
+**It is not limited to `$HOME`.** A document takes absolute paths, so system
+configuration works the same way:
+
+```json
+"configs": {
+  "etc-ssh": { "normalize_content": true,
+               "directories": [{ "source": "/etc/ssh",
+                                 "files": ["sshd_config", "ssh_config"] }] }
+},
+"timer_users": ["root"]
+```
+
+with three conditions that decide whether it works:
+
+- **`timer_users` needs `root`** for anything under `/etc` — a user timer cannot
+  read it, and the archive comes out short without saying so.
+- **Name the files, never the whole `/etc/ssh`**: that directory also holds
+  `ssh_host_*_key`, the host's private keys.
+- **`ref` is the full 40-character sha**; a short one is rejected by the model.
+
+And keep the two ideas apart: **`files` applies, `config_saver` saves.** A
+setting you want *identical on every machine* belongs in
+[`files`](#files) — dasik writes it, sees the drift and repairs it. A setting
+this machine *grew*, which you want back on the next one, belongs here. For
+`/etc/ssh` both usually apply: the hardening snippet declared, the rest backed
+up. The worked example is in the wiki's Recipes page.
+
+`sync` reads the documents and the enabled timers off the machine. `source` and
+`restore` come back from the config: a marker names a content hash and a built
+package names no repository, so neither can be reconstructed from the target —
+they are intent, like a package's `optional` flag.
 
 ---
 

@@ -716,3 +716,38 @@ def test_the_docker_unit_is_planned_as_a_unit():
 def test_podman_plans_no_unit():
     config = expand_config({"containers": {"runtime": "podman"}})
     assert _units_planned(config) == []
+
+
+# --- config-saver ----------------------------------------------------------- #
+#
+# Rides `files` (one JSON per configuration) and `systemd` (the per-user timer);
+# the restore is its own domain because nothing else can see it.
+
+_SAVER = {"config_saver": {
+    "source": {"url": "https://github.com/amt911/config-saver-aur.git",
+               "ref": "a520605367e13ec25db4c3c7e1c4bf46175ba8cd"},
+    "configs": {"dotfiles": {"directories": ["$HOME/.config"]}},
+    "timer_users": ["andres"]}}
+
+
+def test_the_config_saver_document_is_planned(tmp_path):
+    action = DropFilesAction(expand_config(_SAVER), _ctx(tmp_path))
+
+    assert "/etc/config-saver/configs/dotfiles.json" in \
+        [c.item for c in action.plan(managed=[])]
+
+
+def test_the_config_saver_timer_is_planned_as_a_unit():
+    assert _units_planned(expand_config(_SAVER)) == ["config-saver@andres.timer"]
+
+
+def test_dropping_the_block_removes_the_document_and_the_timer(tmp_path):
+    """Both directions: without the block nothing derives them, so the file and
+    the unit come back as removals off their own set-math."""
+    (tmp_path / "etc/config-saver/configs").mkdir(parents=True)
+    (tmp_path / "etc/config-saver/configs/dotfiles.json").write_text("{}")
+    files = DropFilesAction(expand_config({}), _ctx(tmp_path))
+
+    assert [(c.op.name, c.item) for c in files.plan(
+        managed=["/etc/config-saver/configs/dotfiles.json"])] == [
+        ("DELETE", "/etc/config-saver/configs/dotfiles.json")]

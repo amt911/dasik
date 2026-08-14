@@ -258,6 +258,71 @@ Details and rules: [Config splitting](Config-splitting.md).
 
 ---
 
+## Keeping `/etc/ssh` (and friends) with config-saver
+
+The question this answers: *my machine has accumulated an ssh setup — how do I
+carry it to the next one?*
+
+```json
+{
+  "packages": ["base", "linux", "linux-firmware", "openssh", "config-saver"],
+  "package_sources": {
+    "config-saver": {
+      "type": "pkgbuild-git",
+      "url": "https://github.com/amt911/config-saver-aur.git",
+      "ref": "a520605367e13ec25db4c3c7e1c4bf46175ba8cd"
+    }
+  },
+  "files": [
+    { "path": "/etc/ssh/sshd_config.d/10-hardening.conf",
+      "content": "PermitRootLogin no\nPasswordAuthentication no\n" }
+  ],
+  "config_saver": {
+    "source": { "url": "https://github.com/amt911/config-saver-aur.git",
+                "ref": "a520605367e13ec25db4c3c7e1c4bf46175ba8cd" },
+    "configs": {
+      "etc-ssh": {
+        "normalize_content": true,
+        "directories": [
+          { "source": "/etc/ssh",               "files": ["sshd_config", "ssh_config"] },
+          { "source": "/etc/ssh/sshd_config.d", "files": ["10-hardening.conf"] }
+        ]
+      },
+      "etc-net": {
+        "directories": [
+          { "source": "/etc/NetworkManager/conf.d", "files": ["wifi-powersave.conf"] }
+        ]
+      }
+    },
+    "timer_users": ["root"],
+    "restore": [
+      { "user": "root", "archive": "/run/media/usb/etc-ssh.tar.gz" }
+    ]
+  }
+}
+```
+
+What each half does:
+
+- **`files`** puts `10-hardening.conf` on every machine this config installs, and
+  repairs it if somebody edits it. That is the part you want *identical*
+  everywhere.
+- **`config_saver`** backs up what the machine grew on its own — the rest of
+  `sshd_config`, the NetworkManager tweak — on a `root` timer, and `restore`
+  unpacks last machine's archive onto the new one, once per archive content.
+
+Three traps, in the order people hit them:
+
+1. `timer_users` must include **`root`** for anything under `/etc`; a user timer
+   cannot read it and the archive quietly comes out short.
+2. **Never list the `/etc/ssh` directory wholesale** — it holds
+   `ssh_host_*_key`, the host's private keys. Name the files.
+3. `ref` is the **full 40-character sha**; a short one is rejected.
+
+And the boundary worth remembering: dasik's own `files` section is *desired
+state* (declared, applied, repaired), while config-saver is a *backup policy*
+(captured, restored). Neither replaces the other.
+
 ## Making a captured `disks` block generic
 
 `sync` captures *this* machine: real device paths, real UUIDs, `wipe_disk:

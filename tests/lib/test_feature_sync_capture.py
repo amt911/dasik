@@ -748,3 +748,49 @@ def test_the_package_behind_the_runtime_is_reproducible_from_the_capture(tmp_pat
     captured = _synced_containers(tmp_path)
 
     assert "podman" in expand_config(captured)["packages"]
+
+
+# --- config-saver ----------------------------------------------------------- #
+
+def _saver_machine(tmp_path):
+    machine = _machine(tmp_path)
+    (machine / "usr/bin").mkdir(parents=True, exist_ok=True)
+    (machine / "usr/bin/config-saver").write_text("")
+    (machine / "etc/config-saver/configs").mkdir(parents=True)
+    (machine / "etc/config-saver/configs/dotfiles.json").write_text(
+        '{"directories": ["$HOME/.config"]}')
+    return machine
+
+
+def _synced_saver(tmp_path, seed=None):
+    from dasik.lib.actions.config_saver_action import ConfigSaverAction
+
+    with patch.object(ConfigSaverAction, "_pkg_owned", return_value=False), \
+         patch.object(ConfigSaverAction, "_unit_enabled", return_value=False):
+        return _synced(_saver_machine(tmp_path), seed=seed)
+
+
+def test_sync_captures_the_config_saver_documents(tmp_path):
+    captured = _synced_saver(tmp_path)
+
+    assert captured["config_saver"]["configs"] == {
+        "dotfiles": {"directories": ["$HOME/.config"]}}
+
+
+def test_sync_invents_no_config_saver_block(tmp_path):
+    assert "config_saver" not in _synced(_machine(tmp_path))
+
+
+def test_the_captured_config_saver_block_validates(tmp_path):
+    JsonModel.model_validate(_synced_saver(tmp_path))
+
+
+def test_the_captured_document_is_not_also_a_hand_written_file(tmp_path):
+    """It rides `files`, so subtract_contributions must attribute it to the
+    block — or the capture carries the same JSON twice."""
+    captured = _synced_saver(tmp_path)
+    paths = [f["path"] for f in captured.get("files", [])]
+
+    assert "/etc/config-saver/configs/dotfiles.json" not in paths
+    assert "/etc/config-saver/configs/dotfiles.json" in \
+        [f["path"] for f in expand_config(captured)["files"]]

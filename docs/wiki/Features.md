@@ -353,7 +353,7 @@ above whatever `/etc/subuid` already reserves.
 
 ```json
 "config_saver": {
-  "source": { "url": "https://github.com/amt911/config-saver-aur.git", "ref": "e853c51f978b80fff9c993bcfdfe3a25c1efb201" },
+  "source": { "url": "https://github.com/amt911/config-saver-aur.git", "ref": "7bca56d2e5a016d8e07541b6b5f7708190339d26" },
   "configs": { "dotfiles": { "directories": [{ "source": "$HOME", "files": [".zshrc"] }] } },
   "timer_users": ["andres"],
   "restore": [{ "user": "andres", "archive": "/run/media/usb/dotfiles.tar.gz" }]
@@ -381,7 +381,7 @@ way:
 
 ```json
 "config_saver": {
-  "source": { "url": "https://github.com/amt911/config-saver-aur.git", "ref": "e853c51f978b80fff9c993bcfdfe3a25c1efb201" },
+  "source": { "url": "https://github.com/amt911/config-saver-aur.git", "ref": "7bca56d2e5a016d8e07541b6b5f7708190339d26" },
   "configs": {
     "etc-ssh": {
       "normalize_content": true,

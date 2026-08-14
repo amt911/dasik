@@ -92,6 +92,30 @@ def test_the_backup_survives_when_nothing_was_committed(repo, monkeypatch):
     assert (repo / "main.json.bak").exists()
 
 
+def test_the_repository_is_located_as_the_invoking_user(repo, monkeypatch):
+    """Git refuses a repository owned by somebody else, and `save` is root
+    looking at a user's repository by definition — so the probe that finds it
+    has to drop privileges too, or `save` reports "not a Git repository" on the
+    machine it was written for. The unit tests run unprivileged, where the two
+    are indistinguishable; this asserts the wiring itself.
+    """
+    seen = {}
+    real = m.repo_root
+    monkeypatch.setattr(m, "invoking_user", lambda: "andres")
+    monkeypatch.setattr(m, "chown_to", lambda user, paths: None)
+    monkeypatch.setattr(m, "repo_root",
+                        lambda path, user=None: seen.setdefault("user", user)
+                        or real(path))
+    monkeypatch.setattr(m, "commit_paths",
+                        lambda *a, **k: __import__("dasik.lib.git_save",
+                                                   fromlist=["SaveResult"]).SaveResult())
+    _stub_capture(monkeypatch, {"hostname": "torre"})
+
+    m._cmd_save(repo / "main.json", "/", message=None, push=False)
+
+    assert seen.get("user") == "andres"
+
+
 def test_a_config_outside_a_repository_is_refused(tmp_path, monkeypatch, capsys):
     loose = tmp_path / "main.json"
     loose.write_text(json.dumps({"hostname": "old"}) + "\n")

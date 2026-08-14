@@ -545,7 +545,7 @@ def _cmd_save(config_path: Path, target_root: str, message: Optional[str],
 
     # Refuse before capturing, not after: a `save` that cannot commit should
     # leave the config exactly as it found it.
-    repo = repo_root(config_path)
+    repo = repo_root(config_path, user)
     if repo is None:
         print(f"Error: {config_path.parent} is not a Git repository. `save` "
               "commits the capture, so the config has to live in one — use "

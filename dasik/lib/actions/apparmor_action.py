@@ -24,6 +24,7 @@ _AUDITD_BIN = "/usr/bin/auditd"
 _PROFILE_DIR = "/etc/apparmor.d"
 _LSM_MODULE = "apparmor"
 _AUDIT_PARAM = "audit=1"
+_NOTIFY_AUTOSTART = ".config/autostart/apparmor-notify.desktop"
 
 
 class ApparmorAction(AbstractAction):
@@ -149,10 +150,44 @@ class ApparmorAction(AbstractAction):
             # sake, and the parameter without the daemon logs into the void.
             "audit": self._auditd_installed() and _AUDIT_PARAM in params,
         }
+        block["desktop_notifications"] = self._notifier_autostarts()
         profiles = self._local_profiles()
         if profiles:
             block["extra_profiles"] = profiles
         return {self._DOMAIN: block}
+
+    def _notifier_autostarts(self) -> bool:
+        """True when some user's home carries the aa-notify autostart entry.
+
+        The `home_files` domain cannot answer this on its own: the entry is
+        DERIVED by this block, so `subtract_contributions` strips it from the
+        captured `home_files` — if nothing here re-derived it, the capture would
+        lose the notifier entirely. Same shape as `sysrq` on the kernel cmdline.
+        """
+        for home in self._homes():
+            if os.path.exists(os.path.join(self._p(home), _NOTIFY_AUTOSTART)):
+                return True
+        return False
+
+    def _homes(self) -> List[str]:
+        """Home directories of the machine's regular users, from /etc/passwd."""
+        homes: List[str] = []
+        try:
+            with open(self._p("/etc/passwd"), "r", encoding="utf-8") as f:
+                lines = f.readlines()
+        except OSError:
+            return homes
+        for line in lines:
+            parts = line.rstrip("\n").split(":")
+            if len(parts) < 6 or parts[0] == "root":
+                continue
+            try:
+                uid = int(parts[2])
+            except ValueError:
+                continue
+            if 1000 <= uid < 65534:        # a login account, not a service user
+                homes.append(parts[5])
+        return homes
 
     # --- legacy executor path ---------------------------------------------- #
 

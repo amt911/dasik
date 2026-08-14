@@ -790,3 +790,65 @@ def test_a_ufw_rule_no_longer_declared_is_removed():
 def test_a_ufw_rule_dasik_never_added_is_left_alone():
     assert _ufw_plan(["22/tcp", "9999/tcp"], _UFW_CFG,
                      managed=["allow 22/tcp"]) == []
+
+
+# --- home files / aa-notify ------------------------------------------------ #
+#
+# The AppArmor notifier rides the `home_files` domain: there is no
+# `[desktop_notifications]` line in a plan, the autostart entry is what shows up.
+
+def _home_plan(tmp_path, config, managed=()):
+    from dasik.lib.actions.home_files_action import HomeFilesAction
+
+    (tmp_path / "etc").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "etc/passwd").write_text(
+        "root:x:0:0::/root:/bin/bash\nandres:x:1000:1000::/home/andres:/bin/bash\n")
+    action = HomeFilesAction(expand_config(config), _ctx(tmp_path))
+    return [(c.op.name, c.item) for c in action.plan(managed=list(managed))]
+
+
+_NOTIFY = {"apparmor": {"enable": True, "audit": True,
+                        "desktop_notifications": True},
+           "users": [{"username": "andres", "hashed_password": "$6$a$b"}]}
+_AUTOSTART = "/home/andres/.config/autostart/apparmor-notify.desktop"
+
+
+def test_the_notifier_autostart_entry_is_planned(tmp_path):
+    assert _home_plan(tmp_path, _NOTIFY) == [("CREATE", _AUTOSTART)]
+
+
+def test_the_notifier_already_in_place_plans_nothing(tmp_path):
+    import os
+    from dasik.lib.expand.toggles import AA_NOTIFY_DESKTOP
+
+    d = tmp_path / "home/andres/.config/autostart"
+    d.mkdir(parents=True)
+    entry = d / "apparmor-notify.desktop"
+    entry.write_text(AA_NOTIFY_DESKTOP)
+    os.chown(entry, os.getuid(), os.getgid())
+    (tmp_path / "etc").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "etc/passwd").write_text(
+        f"andres:x:{os.getuid()}:{os.getgid()}::/home/andres:/bin/bash\n")
+    from dasik.lib.actions.home_files_action import HomeFilesAction
+    action = HomeFilesAction(expand_config(_NOTIFY), _ctx(tmp_path))
+
+    assert action.plan(managed=[_AUTOSTART]) == []
+
+
+def test_turning_the_notifier_off_deletes_the_entry_dasik_owns(tmp_path):
+    """The disable direction: the entry lives in $HOME, where nothing else would
+    ever clean it up."""
+    d = tmp_path / "home/andres/.config/autostart"
+    d.mkdir(parents=True)
+    (d / "apparmor-notify.desktop").write_text("[Desktop Entry]\n")
+
+    assert _home_plan(tmp_path, {"users": _NOTIFY["users"]},
+                      managed=[_AUTOSTART]) == [("DELETE", _AUTOSTART)]
+
+
+def test_an_unowned_home_file_is_never_deleted(tmp_path):
+    d = tmp_path / "home/andres/.config/autostart"
+    d.mkdir(parents=True)
+    (d / "apparmor-notify.desktop").write_text("[Desktop Entry]\n")
+
+    assert _home_plan(tmp_path, {"users": _NOTIFY["users"]}) == []

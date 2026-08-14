@@ -7,7 +7,7 @@ from .timezone_model import TimezoneModel
 from .network_model import NetworkModel
 from .disk_model import DisksConfiguration
 from .user_model import UserModel
-from .file_model import FileEntry, EtcFile
+from .file_model import FileEntry, EtcFile, HomeFile
 from .package_model import PackageSpec, PackagePolicyModel, GitPackageSourceModel
 from .pacman_model import PacmanModel
 from .systemd_model import SystemdModel
@@ -80,6 +80,10 @@ class JsonModel(BaseModel):
     profile_d: List[FileEntry] = Field(default_factory=list)
     etc_environment: List[str] = Field(default_factory=list)
     files: List[EtcFile] = Field(default_factory=list)
+    home_files: List[HomeFile] = Field(
+        default_factory=list,
+        description="Files inside a user's $HOME (dotfiles, autostart entries). "
+                    "Path is relative to the home the machine declares.")
     kernel_cmdline: List[str] = Field(default_factory=list)
 
     # Toggles

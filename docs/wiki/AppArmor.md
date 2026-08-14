@@ -108,11 +108,37 @@ The profiles the package ships are skipped (they are implied by the package),
 as are the `abstractions/`, `tunables/` and `local/` subdirectories — that is
 AppArmor's own machinery, not something anybody wrote for this machine.
 
-## Not here yet
+## Desktop notifications
 
-Desktop notifications on denial (`aa-notify` + `python-notify2` + an autostart
-`.desktop` file) need to write into a user's `$HOME`, which is config-saver's
-territory. Tracked on [#173](https://github.com/amt911/dasik/issues/173).
+```json
+"apparmor": { "enable": true, "audit": true, "desktop_notifications": true }
+```
+
+A denial that only reaches `/var/log/audit/audit.log` is a denial nobody sees.
+`desktop_notifications` runs the notifier on login: it adds `python-notify2`,
+`python-psutil` and `tk` (aa-notify's optional dependencies — without them it
+exits instead of notifying) and writes, for every declared non-root user,
+
+```ini
+# ~/.config/autostart/apparmor-notify.desktop
+[Desktop Entry]
+Type=Application
+Name=AppArmor Notify
+TryExec=aa-notify
+Exec=aa-notify -p -s 1 -w 60 -f /var/log/audit/audit.log
+```
+
+The file lands through the [`home_files`](Configuration.md#home_files--inside-a-users-home)
+domain, so it is planned, owned and removed like any other managed file — turning
+the flag off deletes it, which matters for a file in `$HOME` that nothing else
+would ever clean up.
+
+**It needs `audit: true`** and the schema enforces that: aa-notify reads the
+audit log and nothing else, so without the framework it would start on every
+login and show nothing forever.
+
+`sync` reports it from the machine — the block is asked whether any user's home
+carries the entry — rather than letting it come back as an anonymous home file.
 
 ## Related
 

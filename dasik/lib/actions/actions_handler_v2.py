@@ -44,6 +44,7 @@ def setup_actions() -> None:
     from .network_action import NetworkAction
     from .pacman_action import PacmanAction
     from .users_action import UsersAction
+    from .home_files_action import HomeFilesAction
     from .config_saver_action import ConfigSaverAction
     from .containers_action import ContainersAction
     from .sudo_action import SudoAction
@@ -174,6 +175,16 @@ def setup_actions() -> None:
     register_action(
         action_class=PamAction,
         config_key='__root__',   # reads root-level `pam`
+        is_optional=True,
+    )
+
+    # Home files come after Users for the obvious reason — the home has to
+    # exist, and the file is chowned to a uid that only exists once useradd has
+    # run. Everything under $HOME lands here: dotfiles, and the aa-notify
+    # autostart entry the AppArmor block derives.
+    register_action(
+        action_class=HomeFilesAction,
+        config_key='__root__',   # reads root-level `home_files`
         is_optional=True,
     )
 

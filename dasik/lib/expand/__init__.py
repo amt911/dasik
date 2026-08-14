@@ -14,7 +14,8 @@ from typing import Any, Dict
 
 from .toggles import TOGGLES
 
-_LIST_KEYS = ("packages", "units", "sockets", "modprobe_conf", "files", "user_groups")
+_LIST_KEYS = ("packages", "units", "sockets", "modprobe_conf", "files",
+              "home_files", "user_groups")
 _MAP_KEY = "package_sources"
 
 
@@ -68,6 +69,10 @@ def expand_config(config: Dict[str, Any]) -> Dict[str, Any]:
     if c["files"]:
         merged["files"] = _merge_list(merged.get("files", []), c["files"])
 
+    if c["home_files"]:
+        merged["home_files"] = _merge_list(merged.get("home_files", []),
+                                           c["home_files"])
+
     if c["user_groups"]:
         # A toggle (e.g. kvm → libvirt) can grant a group to every declared
         # user; UsersAction then reconciles the membership idempotently.
@@ -99,7 +104,8 @@ def subtract_contributions(new_config: Dict[str, Any], original: Dict[str, Any])
                 keep = set(orig_sd.get(key, []))
                 sd[key] = [x for x in sd[key] if x not in items or x in keep]
 
-    for key, items in (("modprobe_conf", c["modprobe_conf"]), ("files", c["files"])):
+    for key, items in (("modprobe_conf", c["modprobe_conf"]), ("files", c["files"]),
+                       ("home_files", c["home_files"])):
         if key in result:
             orig_items = original.get(key, [])
             result[key] = [x for x in result[key] if x not in items or x in orig_items]

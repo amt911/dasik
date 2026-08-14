@@ -304,6 +304,28 @@ def _check_sudo(config: Dict[str, Any], packages: Set[str]) -> List[Issue]:
     return []
 
 
+def _check_home_files(config: Dict[str, Any]) -> List[Issue]:
+    """A file under $HOME needs a user whose home dasik can find.
+
+    A warning, not an error: the account may already exist on a machine whose
+    config does not declare it (day 2, or a capture of a hand-made user). What
+    it buys is the timing — `apply` refuses the write, and it would refuse it
+    with the disk already partitioned.
+    """
+    declared = {u.get("username") for u in config.get("users") or []
+                if isinstance(u, dict)}
+    declared.add("root")            # exists on every machine, never declared
+    missing = sorted({str(f.get("user")) for f in config.get("home_files") or []
+                      if isinstance(f, dict) and f.get("user") not in declared})
+    if not missing:
+        return []
+    return [Issue(
+        "warning", "home_file_without_user",
+        f"home_files target {', '.join(repr(u) for u in missing)}, which no "
+        "`users` entry declares; apply can only write the file if the account "
+        "already exists on the target.")]
+
+
 def _check_disk_coherence(config: Dict[str, Any]) -> List[Issue]:
     """Disk declarations that cannot describe a working machine.
 
@@ -789,6 +811,7 @@ def preflight(config: Dict[str, Any],
     issues += _check_snippet_suffixes(config)
     issues += _check_disk_coherence(config)
     issues += _check_cpu(config, packages)
+    issues += _check_home_files(config)
     issues += _check_firewall_backend(config, packages)
     issues += _check_crypttab(config)
     issues += _check_random_swap(config)

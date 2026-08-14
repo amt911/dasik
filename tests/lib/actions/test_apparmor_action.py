@@ -60,7 +60,8 @@ def test_an_installed_and_active_apparmor_captures_the_block(tmp_path, monkeypat
     machine = _machine(tmp_path, params=f"root=LABEL=root rw {_LSM}")
 
     assert _action(machine).import_state() == {
-        "apparmor": {"enable": True, "audit": False}}
+        "apparmor": {"enable": True, "audit": False,
+                     "desktop_notifications": False}}
 
 
 def test_apparmor_installed_but_not_the_active_lsm_captures_it_disabled(tmp_path, monkeypatch):

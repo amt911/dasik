@@ -1,7 +1,7 @@
 """Models for the `apparmor` block (Mandatory Access Control)."""
 import re
 from typing import List
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 # The name becomes a file under /etc/apparmor.d/, so it must stay a plain
 # filename — a path separator there would let a config write anywhere on the
@@ -42,8 +42,31 @@ class ApparmorModel(BaseModel):
                     "readable: auditd, the audit kernel parameters, and the "
                     "`audit` group for the declared users.",
     )
+    desktop_notifications: bool = Field(
+        default=False,
+        description="Run `aa-notify` on login, so a denial shows up as a desktop "
+                    "notification instead of only in the log. Adds its "
+                    "python/tk dependencies and an autostart entry in every "
+                    "declared user's $HOME.",
+    )
     extra_profiles: List[ApparmorProfile] = Field(
         default_factory=list,
         description="Profiles copied verbatim into /etc/apparmor.d/. They load "
                     "at the next boot (AppArmor does not run in the chroot).",
     )
+
+    @model_validator(mode="after")
+    def _notifications_need_the_audit_log(self) -> "ApparmorModel":
+        """aa-notify reads /var/log/audit/audit.log and nothing else.
+
+        Without the audit framework that file never exists, so the notifier
+        starts on every login and shows nothing, forever — a feature that looks
+        enabled and does nothing. Fail closed instead.
+        """
+        if self.desktop_notifications and not self.audit:
+            raise ValueError(
+                "apparmor.desktop_notifications needs audit: true — aa-notify "
+                "reads /var/log/audit/audit.log, which only the audit framework "
+                "creates."
+            )
+        return self

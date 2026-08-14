@@ -149,12 +149,38 @@ class LuksKeyfileAction(AbstractAction):
             return None
         os.makedirs(_MOUNTPOINT, exist_ok=True)
         options = ["ro"] if read_only else []
-        if part.get("unlock_keydev_fs") in _MODELESS_FILESYSTEMS:
+        if self._keydev_fstype(part) in _MODELESS_FILESYSTEMS:
             options.append("umask=0077")
         args = ["-o", ",".join(options)] if options else []
         Command.execute("mount", [*args, self._keydev_path(keydev), _MOUNTPOINT],
                         check=True)
         return _MOUNTPOINT
+
+    def _keydev_fstype(self, part: Dict[str, Any]) -> Optional[str]:
+        """What the key device actually holds — asked, not assumed.
+
+        vfat has no permission bits, so the "only root may read this key" part
+        comes from `umask=0077` on the MOUNT. Keying that off the optional
+        `unlock_keydev_fs` field meant a user who did not declare it got a
+        pendrive mounted wide open, with the chmod that would have fixed it
+        returning EPERM on that very filesystem.
+
+        The declaration still wins when the probe cannot answer (no lsblk, a
+        device that is not there yet), so nothing gets worse when the answer is
+        unknown.
+        """
+        try:
+            result = Command.execute(
+                "lsblk", ["-no", "FSTYPE", self._keydev_path(part["unlock_keydev"])])
+        except Exception:            # noqa: BLE001 - no lsblk, or no such device
+            return part.get("unlock_keydev_fs")
+        if getattr(result, "returncode", 1) != 0:
+            return part.get("unlock_keydev_fs")
+        out = getattr(result, "stdout", b"") or b""
+        if isinstance(out, bytes):
+            out = out.decode("utf-8", errors="replace")
+        detected = out.strip().splitlines()
+        return detected[0].strip() if detected else part.get("unlock_keydev_fs")
 
     @staticmethod
     def _umount_keydev(mountpoint: Optional[str]) -> None:

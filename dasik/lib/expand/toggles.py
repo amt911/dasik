@@ -35,7 +35,11 @@ def expand_trim(config: Dict[str, Any]) -> Dict[str, Any]:
 
 
 _KVM_PKGS = [
-    "qemu-full", "qemu-block-gluster", "qemu-block-iscsi", "samba",
+    # No "qemu-block-gluster": RETIRED from the Arch repos (the glusterfs block
+    # driver went with it), so naming it aborts the transaction with "target not
+    # found" — in phase 3, disk already partitioned. `qemu-full` pulls whatever
+    # block drivers still exist, so nothing is lost by not naming this one.
+    "qemu-full", "qemu-block-iscsi", "samba",
     "qemu-guest-agent", "qemu-user-static",
     "edk2-ovmf", "swtpm", "virt-firmware",
     "libvirt", "virt-manager",

@@ -119,7 +119,6 @@
     "power-profiles-daemon",
     "powertop",
     "pwgen",
-    "qemu-block-gluster",
     "qemu-block-iscsi",
     "qemu-full",
     "qemu-guest-agent",
@@ -394,11 +393,11 @@
   "files": [
     {
       "path": "/etc/plasmalogin.conf.d/10-dasik.conf",
-      "content": "# Managed by dasik. Plasma Login Manager (plasmalogin.service) reads\n# /etc/plasmalogin.conf.d/*.conf — it is an SDDM fork, but it does NOT read\n# /etc/sddm.conf.d and it is fixed to the Breeze theme (no [Theme] key).\n# No [Autologin] here, unlike the desktop: on a laptop the login prompt is the\n# second factor after the LUKS passphrase.\n[General]\nHaltCommand=/usr/bin/systemctl poweroff\nRebootCommand=/usr/bin/systemctl reboot\n\n[Users]\nMaximumUid=60513\nMinimumUid=1000\n"
+      "content": "# Managed by dasik. Plasma Login Manager (plasmalogin.service) reads\n# /etc/plasmalogin.conf.d/*.conf \u2014 it is an SDDM fork, but it does NOT read\n# /etc/sddm.conf.d and it is fixed to the Breeze theme (no [Theme] key).\n# No [Autologin] here, unlike the desktop: on a laptop the login prompt is the\n# second factor after the LUKS passphrase.\n[General]\nHaltCommand=/usr/bin/systemctl poweroff\nRebootCommand=/usr/bin/systemctl reboot\n\n[Users]\nMaximumUid=60513\nMinimumUid=1000\n"
     },
     {
       "path": "/etc/pam.d/sudo",
-      "content": "#%PAM-1.0\n# Managed by dasik. Vendor file (sudo package) + fingerprint on top.\n# WARNING: fingerprint auth for sudo is the CVE-2024-37408 vector — a background\n# process can consume the prompt and obtain permissions without you touching the\n# reader. Delete the pam_fprintd line to go back to password-only sudo.\nauth       sufficient  pam_fprintd.so\nauth       include     system-auth\naccount    include     system-auth\nsession    include     system-auth\nsession    optional    pam_systemd.so class=none\n"
+      "content": "#%PAM-1.0\n# Managed by dasik. Vendor file (sudo package) + fingerprint on top.\n# WARNING: fingerprint auth for sudo is the CVE-2024-37408 vector \u2014 a background\n# process can consume the prompt and obtain permissions without you touching the\n# reader. Delete the pam_fprintd line to go back to password-only sudo.\nauth       sufficient  pam_fprintd.so\nauth       include     system-auth\naccount    include     system-auth\nsession    include     system-auth\nsession    optional    pam_systemd.so class=none\n"
     },
     {
       "path": "/etc/pam.d/polkit-1",
@@ -464,8 +463,12 @@
     "power_profiles_daemon": true
   },
   "reflector": {
-    "countries": ["ES"],
-    "protocols": ["https"],
+    "countries": [
+      "ES"
+    ],
+    "protocols": [
+      "https"
+    ],
     "latest": 20,
     "sort": "rate"
   },
@@ -474,5 +477,5 @@
     "rd.luks.name=7c678858-646c-5261-9727-4779b680f718=cryptswap",
     "resume=/dev/mapper/cryptswap"
   ],
-  "notes": "Lenovo ThinkPad P14s Gen 2 (AMD Ryzen 7 PRO 5850U, Cezanne iGPU, no discrete GPU). BEFORE APPLYING: (1) set both luks_password fields (they are placeholders — use the SAME passphrase on cryptroot and cryptswap so systemd's initrd password cache asks only once); (2) confirm the disk is /dev/nvme0n1 with lsblk — wipe_disk is true; (3) size the swap partition to your RAM (32GiB assumed) or hibernation cannot fit; (4) regenerate hashed_password with `dasik hash-password`. In the UEFI set Sleep to 'Linux' (s2idle) — with 'Windows 10' the lid switch is flaky. Fingerprint: Synaptics 06cb:00bd, supported in-tree; enrol with `fprintd-enroll` and keep the reader firmware current via fwupd."
+  "notes": "Lenovo ThinkPad P14s Gen 2 (AMD Ryzen 7 PRO 5850U, Cezanne iGPU, no discrete GPU). BEFORE APPLYING: (1) set both luks_password fields (they are placeholders \u2014 use the SAME passphrase on cryptroot and cryptswap so systemd's initrd password cache asks only once); (2) confirm the disk is /dev/nvme0n1 with lsblk \u2014 wipe_disk is true; (3) size the swap partition to your RAM (32GiB assumed) or hibernation cannot fit; (4) regenerate hashed_password with `dasik hash-password`. In the UEFI set Sleep to 'Linux' (s2idle) \u2014 with 'Windows 10' the lid switch is flaky. Fingerprint: Synaptics 06cb:00bd, supported in-tree; enrol with `fprintd-enroll` and keep the reader firmware current via fwupd."
 }

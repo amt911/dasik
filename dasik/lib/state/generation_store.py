@@ -1,9 +1,11 @@
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from ..target.target import Target
+from .state_store import write_json_atomically
 
 
 @dataclass
@@ -51,8 +53,10 @@ class GenerationStore:
         n = self._next_number()
         gen_dir = self.base_dir / str(n)
         gen_dir.mkdir(parents=True, exist_ok=True)
-        (gen_dir / "config.json").write_text(json.dumps(config, indent=2))
-        (gen_dir / "state.json").write_text(json.dumps(manifest_dict, indent=2))
+        # Both land atomically: a generation half-written by a power cut is a
+        # config `rollback` would happily restore.
+        write_json_atomically(gen_dir / "config.json", config)
+        write_json_atomically(gen_dir / "state.json", manifest_dict)
         self._point_current_at(n)
         return n
 

@@ -207,3 +207,46 @@ def test_apply_without_stores_runs_actions_but_skips_persistence():
     # what was built. Persistence is what's skipped, not the return value.
     assert new_manifest is not None
     assert new_manifest.generation == 1
+
+
+def test_a_prompt_nobody_can_answer_aborts_instead_of_crashing():
+    """No terminal (a pipe, a cron job, a headless verification run) means the
+    confirmation cannot be answered — `input()` raises EOFError. Nothing was
+    applied either way, but the user got a traceback where the tool should have
+    said what it decided and why."""
+    store = MagicMock()
+    gen = MagicMock()
+    r = _make_reconciler(store=store, gen_store=gen)
+    a = _RecordingV3(config=[], context=None)
+    plan = Plan()
+    plan.add(Change("packages", Op.REMOVE, "vim"))
+    results = [ActionPlanResult(action=a, changes=list(plan.changes))]
+
+    _RecordingV3.last_applied = []      # class-level record, shared per module
+
+    def no_terminal(_prompt):
+        raise EOFError
+
+    assert r.apply(plan, results, assume_yes=False, input_fn=no_terminal) is None
+    store.save.assert_not_called()
+    gen.new.assert_not_called()
+    assert a.last_applied == []
+
+
+def test_ctrl_c_at_the_prompt_aborts_the_same_way():
+    store = MagicMock()
+    gen = MagicMock()
+    r = _make_reconciler(store=store, gen_store=gen)
+    a = _RecordingV3(config=[], context=None)
+    plan = Plan()
+    plan.add(Change("packages", Op.REMOVE, "vim"))
+    results = [ActionPlanResult(action=a, changes=list(plan.changes))]
+
+    _RecordingV3.last_applied = []
+
+    def interrupted(_prompt):
+        raise KeyboardInterrupt
+
+    assert r.apply(plan, results, assume_yes=False, input_fn=interrupted) is None
+    store.save.assert_not_called()
+    assert a.last_applied == []

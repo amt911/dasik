@@ -78,6 +78,25 @@ registered v3 actions — reaches them.
 The general lesson: **a feature delivered purely by an expand toggle has no
 owner on the way back until you give it one.**
 
+## What a sync does NOT do: take ownership
+
+A capture changes the **config**. It does not make dasik the owner of what it
+saw.
+
+The rule the whole model rests on is that removal is scoped to what dasik
+itself **applied** — anything else is drift, reported and left alone. `sync`
+used to break it: it recorded ownership of everything present, so on any
+machine it would suddenly own `mkinitcpio`, `getty@.service`, `remote-fs.target`
+— packages it never installed and units it never enabled. The bill arrived at
+the next `rollback`, which offered to remove them, and died half-applied when
+pacman refused to drop `mkinitcpio`.
+
+So a sync keeps owning what it already owned, plus what the (expanded) config
+declares and the machine confirms. Ownership still follows reality downwards —
+an owned item that vanished stops being owned. And the observation is not lost:
+it lands in the captured config, and **applying that config is what makes it
+owned**, by having applied it.
+
 ## Block-owned parameters
 
 `amd_pstate=`, `intel_pstate=`, `sysrq_always_enabled=` and (when plymouth is

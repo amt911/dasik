@@ -348,6 +348,40 @@ cat /sys/power/resume -> 253:0
 BOOT1-BOOTID == BOOT2-BOOTID -> RESUMED FROM HIBERNATION: True
 ```
 
+### `boot` used to pass on a guest that never booted
+
+The success marker was `login:|reached target|Welcome to|systemd[1]`, and an
+initramfs sitting at a LUKS passphrase prompt prints **seven** "Reached target"
+lines of its own:
+
+```
+Reached target Local File Systems      Reached target Path Units
+Reached target Slice Units             Reached target Socket Units …
+```
+
+So `qemu.sh boot` reported *boot layer PASSED* for an encrypted image that never
+reached userspace — measured by detaching the TPM from a machine that unlocks
+with TPM2. The marker is now one only the booted system prints (`Reached target
+Multi-User`/`Graphical`, or a login prompt), and a guest waiting for a passphrase
+is named as such and pointed at `qemu.sh boot-unlock`.
+
+### …and with `DASIK_VM_TPM=1` it printed no verdict at all
+
+```bash
+_stop_tpm() { [ -n "$SWTPM_PID" ] && kill "$SWTPM_PID" 2>/dev/null; SWTPM_PID=""; }
+```
+
+`kill` is the last command of that AND-list, so under `set -euo pipefail` its
+failure aborts the script — and swtpm is usually already gone, because qemu
+tearing down the chardev takes it with it. Every TPM run died right after qemu
+exited, before the verdict, which is why the TPM2 flow had never reported PASS or
+FAIL. Fixed with `|| true`.
+
+With both fixed, `config/vm-tpm2.json` verifies end to end: installed with swtpm
+attached, the machine boots with **no passphrase prompt** and reaches
+`Reached target Multi-User System` / `dasik-tpm2 login:`; detach the TPM and the
+same image stops at the prompt and now FAILS loudly.
+
 ## FIDO2: what can and cannot be tested without a key
 
 `systemd-cryptenroll --fido2-device` needs **CTAP2 with the `hmac-secret` extension**.

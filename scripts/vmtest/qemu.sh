@@ -111,7 +111,13 @@ _start_tpm() {
     TPM_QARGS="-chardev socket,id=chrtpm,path=$dir/sock -tpmdev emulator,id=tpm0,chardev=chrtpm -device tpm-tis,tpmdev=tpm0"
     log "TPM2 (swtpm) enabled: state $dir"
 }
-_stop_tpm() { [ -n "$SWTPM_PID" ] && kill "$SWTPM_PID" 2>/dev/null; SWTPM_PID=""; }
+# `kill` is the LAST command of that AND-list, so under `set -e` its failure
+# aborts the whole script — and swtpm is usually already gone by the time we get
+# here, because qemu tearing down the chardev takes it with it. Every
+# TPM-enabled run therefore died right after qemu exited, BEFORE printing its
+# verdict: that is why the TPM2 flow has never reported PASS or FAIL. `|| true`
+# is the whole fix.
+_stop_tpm() { [ -n "$SWTPM_PID" ] && kill "$SWTPM_PID" 2>/dev/null || true; SWTPM_PID=""; }
 
 # NOTE: validate_ram must be called by each command DIRECTLY, never inside a
 # $(...) — a `die` inside command-substitution only exits the subshell and the
@@ -179,9 +185,19 @@ cmd_boot() {
     # shellcheck disable=SC2086
     timeout "$BOOT_TIMEOUT" qemu-system-x86_64 $args -no-reboot > "$out" 2>&1 || true
     _stop_tpm
-    if grep -qiE "login:|reached target|Welcome to|systemd\[1\]" "$out"; then
+    # The marker has to be one the guest can only print AFTER the real root is
+    # up. "reached target" alone is printed SEVEN times by the initramfs of a
+    # machine sitting at a LUKS passphrase prompt, so it reported PASSED for a
+    # guest that never booted — measured on an encrypted image with its TPM
+    # detached. Multi-User/Graphical and a login prompt come from the booted
+    # system; nothing in an initramfs prints them.
+    if grep -qiE "reached target (multi-user|graphical)|login:" "$out"; then
         log "boot layer PASSED — guest reached a boot/login marker."
         rm -f "$out"; return 0
+    fi
+    if grep -qi "please enter passphrase" "$out"; then
+        warn "the guest is waiting for a LUKS passphrase — it never reached userspace."
+        warn "for an encrypted image use: qemu.sh boot-unlock <image> [passphrase]"
     fi
     warn "no boot marker seen in ${BOOT_TIMEOUT}s. Last lines:"; tail -n 20 "$out" >&2
     rm -f "$out"

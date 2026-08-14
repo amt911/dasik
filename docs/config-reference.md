@@ -182,7 +182,7 @@ archive the old one produced.
 ```json
 "config_saver": {
   "source": { "url": "https://github.com/amt911/config-saver-aur.git",
-              "ref": "e853c51f978b80fff9c993bcfdfe3a25c1efb201" },
+              "ref": "7bca56d2e5a016d8e07541b6b5f7708190339d26" },
   "configs": { "dotfiles": { "normalize_content": true,
                              "directories": [{ "source": "$HOME",
                                                "files": [".zshrc"] }] } },
@@ -583,7 +583,7 @@ such packages; everything else resolves automatically.
   "config-saver": {
     "type": "pkgbuild-git",
     "url": "https://github.com/amt911/config-saver-aur.git",
-    "ref": "e853c51f978b80fff9c993bcfdfe3a25c1efb201"
+    "ref": "7bca56d2e5a016d8e07541b6b5f7708190339d26"
   }
 }
 ```
@@ -1051,7 +1051,7 @@ One config exercising every section — validate a copy with `dasik check`
     "config-saver": {
       "type": "pkgbuild-git",
       "url": "https://github.com/amt911/config-saver-aur.git",
-      "ref": "e853c51f978b80fff9c993bcfdfe3a25c1efb201"
+      "ref": "7bca56d2e5a016d8e07541b6b5f7708190339d26"
     }
   },
   "drivers": ["nvidia"],

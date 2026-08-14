@@ -1,6 +1,6 @@
 {
   "metadata": {
-    "note": "config-saver built from its Git PKGBUILD (it is not in the AUR), one backup document, the per-user timer, and a dotfile restore from a tarball staged on the target. For the QEMU VM harness (scripts/vmtest/qemu.sh install-driven). NOT for real hardware. Autologins root on ttyS0 and ships python-pydantic/python-colorama via pacman, so the driver gets a shell and dasik runs from the 9p-mounted repo with no network."
+    "note": "etc_tree + a split config + config-saver, for the QEMU harness (scripts/vmtest/qemu.sh install-driven config/vm-etc-tree/main.json). Every /etc file this installs comes from etc/ as a real file, and the packages/users blocks come from their own JSON fragments \u2014 so one install exercises the directory tree, the include directives and config-saver at once. NOT for real hardware."
   },
   "disks": {
     "disks": [
@@ -29,17 +29,11 @@
       }
     ]
   },
+  "etc_tree": "etc",
+  "etc_tree_modes": {
+    "pam.d/dasik-vm": "0640"
+  },
   "enable_microcode": false,
-  "packages": [
-    "base",
-    "linux",
-    "linux-firmware",
-    "sudo",
-    "git",
-    "python",
-    "python-pydantic",
-    "python-colorama"
-  ],
   "bootloader": "sd-boot",
   "hostname": "dasik-config-saver",
   "kernel_cmdline": [
@@ -81,19 +75,16 @@
       "test"
     ]
   },
-  "users": [
-    {
-      "username": "test",
-      "hashed_password": "$6$dasikvmtest$pfoSKqgh8yWKbmkwBpNuvQuJ4/kLeJmwCPCezBolW4pKbtJbtvMGQCM5f7W/hkbF/FmtCMZMYr/NLwDO4OJm7.",
-      "groups": [
-        "wheel"
-      ]
-    }
-  ],
   "files": [
     {
       "path": "/etc/systemd/system/serial-getty@ttyS0.service.d/autologin.conf",
       "content": "[Service]\nExecStart=\nExecStart=-/sbin/agetty --autologin root --noclear --keep-baud 115200,38400,9600 %I $TERM\n"
     }
-  ]
+  ],
+  "packages": {
+    "$include": "packages.json"
+  },
+  "users": {
+    "$include": "users.json"
+  }
 }

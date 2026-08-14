@@ -1,0 +1,25 @@
+{
+  "own-configs": {
+    "normalize_content": false,
+    "directories": [
+      "$CONFIG_DIR/config-saver/configs.d"
+    ]
+  },
+  "dotfiles": {
+    "normalize_content": true,
+    "directories": [
+      {
+        "source": "$HOME",
+        "files": [
+          ".zshrc",
+          ".gitconfig",
+          ".face"
+        ]
+      },
+      "$CONFIG_DIR/kdeglobals",
+      "$CONFIG_DIR/plasma-org.kde.plasma.desktop-appletsrc",
+      "$CONFIG_DIR/dolphinrc",
+      "$CONFIG_DIR/konsolerc"
+    ]
+  }
+}

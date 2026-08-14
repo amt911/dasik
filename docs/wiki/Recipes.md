@@ -270,7 +270,7 @@ carry it to the next one?*
     "config-saver": {
       "type": "pkgbuild-git",
       "url": "https://github.com/amt911/config-saver-aur.git",
-      "ref": "e853c51f978b80fff9c993bcfdfe3a25c1efb201"
+      "ref": "7bca56d2e5a016d8e07541b6b5f7708190339d26"
     }
   },
   "files": [
@@ -279,7 +279,7 @@ carry it to the next one?*
   ],
   "config_saver": {
     "source": { "url": "https://github.com/amt911/config-saver-aur.git",
-                "ref": "e853c51f978b80fff9c993bcfdfe3a25c1efb201" },
+                "ref": "7bca56d2e5a016d8e07541b6b5f7708190339d26" },
     "configs": {
       "etc-ssh": {
         "normalize_content": true,

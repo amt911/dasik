@@ -17,6 +17,7 @@ from pathlib import Path
 
 import pytest
 
+from dasik.lib.json_parser.etc_tree import expand_etc_tree
 from dasik.lib.json_parser.includes import resolve_includes
 from dasik.lib.models.json_model import JsonModel
 
@@ -28,7 +29,49 @@ PAIRS = [
 
 
 def _assembled(split_main: Path):
-    return resolve_includes(json.loads(split_main.read_text()), split_main.parent)
+    """The split as the loader sees it: directives resolved, `etc_tree`
+    expanded. Both steps happen before anything else looks at a config."""
+    data = resolve_includes(json.loads(split_main.read_text()), split_main.parent)
+    return expand_etc_tree(data, split_main.parent)
+
+
+# Keys where the two forms are allowed to differ, each for a stated reason.
+# Everything else is compared strictly.
+_FILE_KEYS = ("files", "udev_rules", "modprobe_conf", "modules_load")
+_ALLOWED_EXTRA = {
+    # The laptop split is also the worked example of managing /etc as a
+    # directory and of driving config-saver, so it declares both. The files
+    # themselves are still compared — see _etc_files.
+    "config/laptop-p14s-split/main.json": {"etc_tree", "etc_tree_modes",
+                                           "config_saver"},
+}
+_ALLOWED_EXTRA_PACKAGES = {
+    "config/laptop-p14s-split/main.json": {"config-saver"},
+}
+
+
+def _etc_files(config) -> dict:
+    """Every /etc file a config declares, however it declares it.
+
+    A file may arrive as a `files` entry, as a snippet section, or from an
+    `etc_tree` directory. Which of the three is a matter of style; *which files
+    end up on the machine* is not, so that is what gets compared.
+    """
+    out = {e["path"]: e["content"] for e in config.get("files", [])}
+    for key, directory in (("udev_rules", "/etc/udev/rules.d"),
+                           ("modprobe_conf", "/etc/modprobe.d"),
+                           ("modules_load", "/etc/modules-load.d"),
+                           ("sysctl_d", "/etc/sysctl.d"),
+                           ("tmpfiles_d", "/etc/tmpfiles.d"),
+                           ("sddm_conf_d", "/etc/sddm.conf.d"),
+                           ("profile_d", "/etc/profile.d")):
+        for entry in config.get(key, []):
+            out[f"{directory}/{entry['name']}"] = entry["content"]
+    return out
+
+
+def _package_names(config) -> set:
+    return {p if isinstance(p, str) else p["name"] for p in config.get("packages", [])}
 
 
 def _secret_values(split_main: Path) -> set:
@@ -80,10 +123,52 @@ def test_split_assembles_to_the_single_file_config(mono_rel, split_rel):
     assembled.pop("metadata", None)
     expected.pop("metadata", None)
 
+    # The same /etc files, no matter which of the three ways declares them.
+    assert _etc_files(assembled) == _etc_files(expected), (
+        f"{split_rel} and {mono_rel} do not declare the same /etc files")
+    # …and the same packages, but for the ones the split's extra blocks need.
+    assert _package_names(assembled) - _package_names(expected) == \
+        _ALLOWED_EXTRA_PACKAGES.get(split_rel, set())
+    assert not _package_names(expected) - _package_names(assembled)
+
+    for key in _FILE_KEYS + ("packages",):
+        assembled.pop(key, None)
+        expected.pop(key, None)
+    for key in _ALLOWED_EXTRA.get(split_rel, set()):
+        assembled.pop(key, None)
+
     assert _same_but_for_secrets(assembled, expected, _secret_values(split_main)), (
         f"{split_rel} does not assemble to {mono_rel}\n"
         f"assembled: {json.dumps(assembled, sort_keys=True)[:2000]}\n"
         f"expected:  {json.dumps(expected, sort_keys=True)[:2000]}")
+
+
+def test_the_laptop_split_drives_config_saver():
+    """The laptop split is the worked example of the whole workflow, so it must
+    keep declaring the piece that makes an archive self-sufficient."""
+    split_main = REPO / "config/laptop-p14s-split/main.json"
+    block = _assembled(split_main)["config_saver"]
+
+    assert block["timer_users"] == ["andres"]
+    assert block["source"]["url"].endswith("config-saver-aur.git")
+    assert len(block["source"]["ref"]) == 40
+    # config-saver ships own-configs.yaml as an EXAMPLE, and examples are never
+    # active — on a dasik machine it arrives from no package, so unless the
+    # config declares it, a restored archive brings back the data but not the
+    # configurations that say what to back up.
+    assert "own-configs" in block["configs"]
+
+
+def test_the_laptop_split_keeps_its_etc_as_real_files():
+    tree = REPO / "config/laptop-p14s-split/etc"
+    relative = {str(p.relative_to(tree)) for p in tree.rglob("*") if p.is_file()}
+
+    assert {"pam.d/sudo", "udev/rules.d/1-qudelix.rules",
+            "modprobe.d/nested_virt.conf"} <= relative
+    raw = json.loads((tree.parent / "main.json").read_text())
+    assert raw["etc_tree"] == "etc"
+    for key in _FILE_KEYS:
+        assert key not in raw, f"{key} should live in the tree now"
 
 
 @pytest.mark.parametrize("_mono_rel,split_rel", PAIRS)

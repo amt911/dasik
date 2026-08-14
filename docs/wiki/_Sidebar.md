@@ -5,6 +5,7 @@
 **Getting started**
 - [Installation](Installation)
 - [Quickstart](Quickstart)
+- [From zero](From-zero)
 - [Recipes](Recipes)
 
 **Reference**

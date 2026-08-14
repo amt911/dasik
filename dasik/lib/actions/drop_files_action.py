@@ -438,6 +438,40 @@ class DropFilesAction(AbstractAction):
         result["files"] = files_out
         return result
 
+    @staticmethod
+    def _write_content(path: str, content: str, mode: Optional[int]) -> None:
+        """Write a managed file, and never let a secret exist world-readable.
+
+        A declared mode is there because the content IS a secret — a WireGuard
+        or NetworkManager private key. Writing the content and chmod'ing after
+        put that key on disk readable by every user for the length of the write,
+        and left it that way for good if the process died in between.
+
+        So the mode is on the descriptor before any content reaches it:
+        O_CREAT's mode argument covers a new file, and fchmod covers one that
+        already existed — O_CREAT does not touch the mode of an existing file,
+        which is the case that matters (a key left at 0644 by an older dasik).
+
+        A symlink in the managed path is REMOVED first rather than written
+        through: following it would send dasik's content to the link's target —
+        a file it does not manage, at the target's permissions, which for a
+        secret is the same leak by another route — and leave the managed path
+        still a link, so the next plan asks for the same write again, for ever.
+        The removal lives here, on the only code path that writes, so every
+        caller gets it.
+        """
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        if os.path.islink(path):
+            os.remove(path)
+        if mode is None:
+            with open(path, "w") as f:
+                f.write(content)
+            return
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
+        os.fchmod(fd, mode)
+        with os.fdopen(fd, "w") as f:
+            f.write(content)
+
     def apply(self, changes) -> None:
         if self._target() is None:
             return
@@ -470,21 +504,11 @@ class DropFilesAction(AbstractAction):
                 os.remove(path)
 
     def _write_file(self, canonical: str, content: str, modes: Dict[str, int]) -> None:
-        """Write a managed file, replacing whatever is in its place.
-
-        A symlink is REMOVED first rather than written through: following it
-        would send dasik's content to the link's target — a file it does not
-        manage — and leave the managed path still a link, so the next plan asks
-        for the same write again, for ever.
-        """
-        path = self._abs(canonical)
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        if os.path.islink(path):
-            os.remove(path)
-        with open(path, "w") as f:
-            f.write(content)
-        if canonical in modes:                      # restrict secret files (0600)
-            os.chmod(path, modes[canonical])
+        """Write a managed file by its canonical path, replacing whatever is in
+        its place — a symlink included, and never through a world-readable
+        window. Both live in :meth:`_write_content`; this only resolves the path
+        and the file's declared mode."""
+        self._write_content(self._abs(canonical), content, modes.get(canonical))
 
     # -- legacy is_needed / execute / verify (old executor path) ------- #
 

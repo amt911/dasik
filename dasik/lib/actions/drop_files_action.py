@@ -164,7 +164,18 @@ class DropFilesAction(AbstractAction):
             elif self._read(p) != desired[p]:
                 changes.append(Change(_FILES_DOMAIN, Op.MODIFY, p, reason="content drift"))
         self._warn_shadowed([c.item for c in changes if c.op is not Op.DELETE])
-        return changes
+        return [self._explain_package_file(c) for c in changes]
+
+    def _explain_package_file(self, change: Change) -> Change:
+        """Say, in the plan itself, that a package file survives its removal."""
+        if change.op is not Op.DELETE:
+            return change
+        owner = self._pacman_owner(change.item)
+        if not owner:
+            return change
+        return Change(change.domain, change.op, change.item,
+                      reason=f"{change.reason}; owned by {owner} — a package file "
+                             "is left in place, not deleted")
 
     def _warn_shadowed(self, paths: List[str]) -> None:
         """Warn for each declared file that overrides one a package ships.
@@ -394,6 +405,21 @@ class DropFilesAction(AbstractAction):
             self._write_file(canonical, desired.get(canonical, ""), modes)
 
         for canonical in deletes:
+            # The declaration OVERRODE whatever the package ships; dropping it
+            # undoes the override, and removing the path would go further than
+            # that — `pacman -Qkk` then reports the file missing and the next
+            # upgrade of that package silently puts it back. dasik refuses to
+            # capture a package file (see import_state); it must not delete one
+            # either. A probe that fails means "unknown", and unknown deletes.
+            owner = self._pacman_owner(canonical)
+            if owner:
+                run_logger.get().warning(
+                    f"{canonical} is owned by the {owner} package",
+                    detail="the declaration that overrode it is gone, so dasik "
+                           "stops managing the file — but it is left in place. "
+                           f"Reinstall {owner} to get the package's own version "
+                           "back.")
+                continue
             path = self._abs(canonical)
             if os.path.exists(path):
                 os.remove(path)

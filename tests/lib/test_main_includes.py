@@ -49,10 +49,68 @@ def test_traversal_out_of_the_config_directory_is_refused(tmp_path, capsys):
     assert ".." in capsys.readouterr().err
 
 
-def test_sync_refuses_to_flatten_a_split_config(tmp_path, capsys):
+def _stub_capture(monkeypatch, captured):
+    """Make `sync` report *captured* as system reality, touching no system."""
+    class _Manifest:
+        @staticmethod
+        def to_dict():
+            return {}
+
+    class _Store:
+        def __init__(self, _target):
+            pass
+
+        @staticmethod
+        def load():
+            return _Manifest()
+
+    class _Reconciler:
+        def __init__(self, **_kwargs):
+            pass
+
+        @staticmethod
+        def sync():
+            return dict(captured), {"generation": 1}
+
+    monkeypatch.setattr(m, "StateStore", _Store)
+    monkeypatch.setattr(m, "Reconciler", _Reconciler)
+
+
+def test_sync_writes_through_a_split_config(tmp_path, monkeypatch, capsys):
+    """The whole point: a config kept in several files survives being synced."""
     main = _split(tmp_path)
-    before = main.read_text()
-    assert m._cmd_sync(main, "/mnt") == 1
-    err = capsys.readouterr().err
-    assert "flatten" in err
-    assert main.read_text() == before, "sync must not touch the file it refused"
+    _stub_capture(monkeypatch, {"hostname": "split-host",
+                                "packages": ["base", "linux", "git", "vim"]})
+
+    assert m._cmd_sync(main, "/") == 0
+
+    raw = json.loads(main.read_text())
+    # the directives are still there — the split was not undone
+    assert raw["hostname"] == {"$include_text": "hostname.txt"}
+    # the new package landed in the last member, the included file is untouched
+    assert raw["packages"]["$concat"][1] == ["git", "vim"]
+    assert json.loads((tmp_path / "packages.json").read_text()) == ["base", "linux"]
+
+
+def test_sync_of_a_converged_split_config_writes_nothing(tmp_path, monkeypatch, capsys):
+    main = _split(tmp_path)
+    before = {p: p.read_text() for p in tmp_path.iterdir() if p.is_file()}
+    _stub_capture(monkeypatch, {"hostname": "split-host",
+                                "packages": ["base", "linux", "git"]})
+
+    assert m._cmd_sync(main, "/") == 0
+
+    assert {p: p.read_text() for p in tmp_path.iterdir() if p.is_file()} == before
+    assert "already matches" in capsys.readouterr().out
+
+
+def test_sync_names_every_file_it_wrote(tmp_path, monkeypatch, capsys):
+    main = _split(tmp_path)
+    _stub_capture(monkeypatch, {"hostname": "other-host",
+                                "packages": ["base", "linux", "git"]})
+
+    assert m._cmd_sync(main, "/") == 0
+
+    out = capsys.readouterr().out
+    assert "hostname.txt" in out, "a file it rewrote must be named"
+    assert (tmp_path / "hostname.txt").read_text() == "other-host"

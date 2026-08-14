@@ -151,12 +151,10 @@ to the system; it **rewrites the config file** and leaves `<config>.bak`.
 - **No preflight.** `sync`'s job is to report reality, including incoherent
   reality.
 - An **undeclared** domain is still captured (bootstrap from `{}`).
-- It **refuses a config assembled from includes**, because `ConfigWriter` emits
-  one document and every `$include` would be flattened away. Sync into a scratch
-  copy and fold the changes back by hand:
-  ```bash
-  cp main.json /tmp/synced.json && sudo dasik sync /tmp/synced.json --target /
-  ```
+- A config **assembled from includes is written back through the split**: each
+  value returns to the file it came from, and a directive whose value did not
+  change is left alone — its file is not opened. Every file written is named in
+  the output ([Config splitting](Config-splitting.md#sync-writes-back-through-the-split)).
 - Values the seed's own toggles already derive are subtracted again, so the
   captured config keeps the toggle instead of its expansion.
 - Newly-added empty keys are dropped, so a bootstrap does not add `"packages": []`

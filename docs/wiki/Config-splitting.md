@@ -141,30 +141,51 @@ world-readable keyfiles, silently.
 
 ---
 
-## `sync` refuses a split config
+## `sync` writes back through the split
 
-```text
-main.json is assembled from includes ($include/$include_text/$concat) and sync
-would flatten it into a single file.
-Sync into a scratch copy instead and fold the changes back by hand:
-  cp main.json /tmp/synced.json && dasik sync /tmp/synced.json
-```
-
-`ConfigWriter` emits **one** document. Syncing in place would replace every
-directive with its resolved value: the split silently undone, and every secret
-inlined into the file you were keeping them out of. So dasik refuses, and the
-workflow is:
+`sync` used to refuse a split config outright: the only writer emitted **one**
+document, so syncing in place would have replaced every directive with its
+resolved value — the split undone and every secret inlined into the file you
+were keeping them out of. Since the writeback landed it does the right thing
+instead:
 
 ```bash
-cp main.json /tmp/synced.json
-sudo dasik sync /tmp/synced.json --target /
-diff <(jq -S . /tmp/synced.json) <(jq -S . <(python - <<'EOF'
-# or simply read the diff by eye
-EOF
-))
-# fold the interesting changes back into the right fragment by hand
-dasik check main.json
+sudo dasik sync main.json --target /
 ```
+
+```text
+Synced system reality into main.json (backup: main.json.bak).
+  wrote main.json
+  wrote packages.json
+```
+
+The rules, in order of how often they matter:
+
+| What | Happens |
+| --- | --- |
+| a directive whose value **did not change** | left alone — **its file is not even opened** |
+| `$include` whose value changed | written to *that* file, its own nested directives preserved |
+| `$include_text` / `$include_line` changed | that file is rewritten (`_text` verbatim; `_line` replaces the first line and keeps whatever you wrote below it) |
+| `$concat` gained entries | existing ones stay in their member, **new ones go to the last member** |
+| a key no fragment declares | lands in the root |
+
+**A converged machine writes nothing at all** — no file, no timestamp. That is
+what makes `sync` safe to run from a script that commits afterwards.
+
+**Your secret survives on purpose.** `hashed_password` is captured from the
+target's `/etc/shadow`, so on a converged machine it equals what is behind
+`{"$include_line": "secrets/hash"}` and the file is untouched. If you *changed*
+the password on the machine, the new hash is written to the secret file — the
+gitignored one — instead of being inlined into the config you commit.
+
+Two values cannot live in a file and are written inline instead, because the
+file would not read back as the same string: anything with a carriage return
+(`Path.read_text` translates newlines), and, for `$include_line`, a value that
+is empty, padded with whitespace, or contains any line break. dasik prefers an
+ugly inline value to a wrong one.
+
+The one thing it cannot guess: which member of a `$concat` a **new** entry
+belongs to. It goes to the last one, and moving it is a normal edit.
 
 ---
 

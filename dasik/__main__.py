@@ -34,6 +34,7 @@ from dasik.lib.actions.actions_handler_v2 import setup_actions
 from dasik.lib.actions.action_registry import get_default_registry
 from dasik.lib.logging import run_logger
 from dasik.lib.reconciler.reconciler import Reconciler
+from dasik.lib.json_parser.writeback import write_back
 from dasik.lib.state.config_writer import ConfigWriter
 from dasik.lib.state.generation_store import GenerationStore
 from dasik.lib.state.apply_lock import ApplyLock, ApplyLockBusy
@@ -429,19 +430,6 @@ def _cmd_sync(config_path: Path, target_root: str) -> int:
     if config is None:
         return 1
 
-    # …and for the same reason it must not flatten a config that was split
-    # across files: ConfigWriter emits one document, so every $include would be
-    # replaced by the resolved value and the split silently undone.
-    from dasik.lib.json_parser.includes import uses_includes
-    if uses_includes(json.loads(raw_text)):
-        print(
-            f"{config_path} is assembled from includes ($include/$include_text/"
-            "$concat) and sync would flatten it into a single file.\n"
-            "Sync into a scratch copy instead and fold the changes back by hand:\n"
-            f"  cp {config_path} /tmp/synced.json && dasik sync /tmp/synced.json",
-            file=sys.stderr)
-        return 1
-
     setup_actions()
     registry = get_default_registry()
     state_store = StateStore(target)
@@ -475,8 +463,15 @@ def _cmd_sync(config_path: Path, target_root: str) -> int:
 
     backup = config_path.with_suffix(config_path.suffix + ".bak")
     backup.write_text(raw_text)
-    ConfigWriter.write(new_config, config_path)
+    # Written THROUGH the directives: a config split across files keeps its
+    # split, and a value that did not change does not reopen its file. The
+    # backup covers the root only — the rest is what version control is for,
+    # which is also where a split config lives.
+    written = write_back(config_path, new_config)
     print(f"Synced system reality into {config_path} (backup: {backup}).")
+    if len(written) > 1 or (written and written[0] != config_path):
+        for path in written:
+            print(f"  wrote {path}")
     return 0
 
 

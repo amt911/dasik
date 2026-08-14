@@ -1,0 +1,2 @@
+# A udev rule that came from a directory, not from a JSON string.
+ACTION=="add", SUBSYSTEM=="virtio-ports", TAG+="dasik-vm"

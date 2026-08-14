@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional
 from .abstract_action import AbstractAction
 from .initramfs.base import detect_encryption
 from ..command_worker.command_worker import Command
+from ..exceptions.exceptions import ConfigValidationError
 from ..logging import run_logger
 from ..state.change import Change, Op
 
@@ -439,6 +440,36 @@ class DropFilesAction(AbstractAction):
         return result
 
     @staticmethod
+    def _ensure_parent(parent: str, canonical: str) -> None:
+        """Make the parent directory, or say exactly what is standing there.
+
+        `os.makedirs` fails with a bare errno when a component of the path is
+        not a usable directory, and the whole apply then dies naming nothing:
+
+            FileExistsError: [Errno 17] File exists: '/mnt/etc/sysctl.d'
+
+        A symlink that RESOLVES is written through on purpose — pointing an
+        /etc/*.d at another filesystem is a real setup, and that is what the
+        admin asked for. Only the broken shapes are refused.
+        """
+        try:
+            os.makedirs(parent, exist_ok=True)
+            return
+        except OSError as e:
+            if os.path.islink(parent):
+                raise ConfigValidationError(
+                    f"the parent of {canonical} is a symlink to "
+                    f"{os.readlink(parent)!r}, which does not resolve on the "
+                    "target, so the file has nowhere to go. Point it somewhere "
+                    "that exists, or drop the link.") from e
+            if os.path.exists(parent) and not os.path.isdir(parent):
+                raise ConfigValidationError(
+                    f"the parent of {canonical} is not a directory: something "
+                    "else is already in that place on the target. Move it out "
+                    "of the way, or point the declaration elsewhere.") from e
+            raise
+
+    @staticmethod
     def _write_content(path: str, content: str, mode: Optional[int]) -> None:
         """Write a managed file, and never let a secret exist world-readable.
 
@@ -458,9 +489,11 @@ class DropFilesAction(AbstractAction):
         secret is the same leak by another route — and leave the managed path
         still a link, so the next plan asks for the same write again, for ever.
         The removal lives here, on the only code path that writes, so every
-        caller gets it.
+        caller gets it — and so does :meth:`_ensure_parent`, which turns a
+        parent that cannot hold the file into a message that names it instead
+        of a bare `FileExistsError: [Errno 17]`.
         """
-        os.makedirs(os.path.dirname(path), exist_ok=True)
+        DropFilesAction._ensure_parent(os.path.dirname(path), path)
         if os.path.islink(path):
             os.remove(path)
         if mode is None:

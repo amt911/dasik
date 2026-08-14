@@ -230,8 +230,36 @@ def test_grub_install_uses_check_true(tmp_path):
     with patch("dasik.lib.actions.bootloader_action.Command.execute") as run:
         a._install()
     cmds = [c.args[0] for c in run.call_args_list]
-    assert cmds == ["pacman", "grub-install", "grub-mkconfig"]
+    assert cmds == ["pacman", "grub-install", "grub-install", "grub-mkconfig"]
     assert all(c.kwargs.get("check") is True for c in run.call_args_list)
+
+
+def test_grub_also_installs_the_removable_path(tmp_path):
+    """A GRUB machine that boots only from its NVRAM entry is a machine that
+    stops booting the moment the firmware forgets it — a CMOS reset, a moved
+    disk, a VM handed a fresh OVMF_VARS. `bootctl install` writes
+    \\EFI\\BOOT\\BOOTX64.EFI as well as its own path, so sd-boot machines
+    already survive that; grub-install does not unless asked.
+    """
+    a = BootloaderAction(_cfg(bootloader="grub"), _ctx(tmp_path))
+    with patch("dasik.lib.actions.bootloader_action.Command.execute") as run:
+        a._install()
+
+    grub_installs = [c.args[1] for c in run.call_args_list if c.args[0] == "grub-install"]
+    assert len(grub_installs) == 2
+    assert any("--removable" in args for args in grub_installs)
+    assert any("--bootloader-id=GRUB" in args and "--removable" not in args
+               for args in grub_installs)
+
+
+def test_the_removable_copy_targets_the_same_esp(tmp_path):
+    a = BootloaderAction(_cfg(bootloader="grub"), _ctx(tmp_path))
+    with patch("dasik.lib.actions.bootloader_action.Command.execute") as run:
+        a._install()
+
+    for args in (c.args[1] for c in run.call_args_list if c.args[0] == "grub-install"):
+        assert "--efi-directory=/boot" in args
+        assert "--target=x86_64-efi" in args
 
 
 # --- switching bootloader: the stale one must go -------------------------- #

@@ -230,7 +230,9 @@ def test_apply_creates_user_with_shell_groups_and_hash():
         a.apply([Change("users", Op.CREATE, "alice")])
     cmds = [(c.args[0], c.args[1]) for c in run.call_args_list]
     assert ("useradd", ["-m", "-s", "/usr/bin/zsh", "-G", "wheel,audio", "alice"]) in cmds
-    assert ("usermod", ["-p", "$6$a$h", "alice"]) in cmds
+    # The hash goes in on stdin, never in argv (usermod -p is visible in `ps`).
+    assert ("chpasswd", ["-e"]) in cmds
+    assert run.call_args_list[-1].kwargs["input"] == b"alice:$6$a$h\n"
 
 
 def test_apply_modify_sets_shell_groups_hash():
@@ -244,7 +246,8 @@ def test_apply_modify_sets_shell_groups_hash():
     cmds = [(c.args[0], c.args[1]) for c in run.call_args_list]
     assert ("usermod", ["-s", "/bin/bash", "alice"]) in cmds
     assert ("usermod", ["-G", "wheel", "alice"]) in cmds
-    assert ("usermod", ["-p", "$6$a$h", "alice"]) in cmds
+    assert ("chpasswd", ["-e"]) in cmds
+    assert run.call_args_list[-1].kwargs["input"] == b"alice:$6$a$h\n"
 
 
 def test_apply_modify_root_only_sets_password():
@@ -252,7 +255,8 @@ def test_apply_modify_root_only_sets_password():
     with patch("dasik.lib.actions.users_action.Command.execute") as run:
         a.apply([Change("users", Op.MODIFY, "root")])
     cmds = [(c.args[0], c.args[1]) for c in run.call_args_list]
-    assert cmds == [("usermod", ["-p", "$6$r$h", "root"])]
+    assert cmds == [("chpasswd", ["-e"])]
+    assert run.call_args_list[-1].kwargs["input"] == b"root:$6$r$h\n"
 
 
 def test_apply_delete_keeps_home_by_default():

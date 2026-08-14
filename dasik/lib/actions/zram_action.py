@@ -81,6 +81,38 @@ class ZramAction(ScalarV3Action):
         with open(path, "w") as f:
             f.write(_render(self._zram))
 
+    def plan(self, managed):
+        """The scalar comparison, plus the removal the base class cannot express.
+
+        `ScalarV3Action.plan` only ever proposes a MODIFY towards a non-empty
+        desired value, so an undeclared block proposed nothing at all and
+        /etc/systemd/zram-generator.conf stayed on the machine — inert while
+        zram-generator is uninstalled, and awake again the day the package comes
+        back. Every other quiet domain (oomd, the systemd *.conf drop-ins,
+        plymouthd.conf) takes its file back; this one now does too, and only
+        when the manifest says the file is dasik's.
+        """
+        from ..state.change import Change, Op
+
+        if self._zram:
+            return super().plan(managed)
+        if managed and self._actual_value():
+            return [Change(self._DOMAIN, Op.REMOVE, _CONF,
+                           reason="no longer declared")]
+        return []
+
+    def apply(self, changes) -> None:
+        from ..state.change import Op
+
+        removals = [c for c in changes if c.op is Op.REMOVE]
+        if removals:
+            try:
+                os.remove(self._path())
+            except OSError:
+                pass
+            return
+        super().apply(changes)
+
     def _import_fragment(self, value: str) -> dict:
         return {"zram": _parse(value)} if value else {}
 

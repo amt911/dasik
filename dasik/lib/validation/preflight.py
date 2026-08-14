@@ -105,14 +105,21 @@ _CRYPTTAB_FLAGS: Set[str] = {
     "readonly", "read-only", "verify", "bitlk", "fvault2", "tcrypt",
     "tcrypt-hidden", "tcrypt-system", "tcrypt-veracrypt", "same-cpu-crypt",
     "submit-from-crypt-cpus", "no-read-workqueue", "no-write-workqueue",
-    "_netdev", "netdev", "headless", "try-empty-password",
+    "_netdev", "netdev", "headless",
+    # Bare flags dasik itself writes or crypttab(5) documents without a value.
+    # `x-initrd.attach` lived in the key=value table below, so the line dasik's
+    # own dracut backend writes ("luks,x-initrd.attach") was rejected by `check`
+    # on every capture of an encrypted machine.
+    "x-initrd.attach", "keyfile-erase",
 }
+# crypttab(5) documents these as `name[=bool]`: both forms are valid.
+_CRYPTTAB_FLAG_OR_KEY: Set[str] = {"try-empty-password"}
 _CRYPTTAB_KEYS: Set[str] = {
     "cipher", "hash", "header", "key-slot", "keyfile-offset", "keyfile-size",
-    "keyfile-erase", "offset", "sector-size", "size", "skip", "timeout",
+    "offset", "sector-size", "size", "skip", "timeout",
     "tries", "token-timeout", "pkcs11-uri", "fido2-device", "fido2-cid",
     "fido2-rp", "tpm2-device", "tpm2-pcrs", "tpm2-signature", "tpm2-measure-pcr",
-    "x-systemd.device-timeout", "x-initrd.attach", "veracrypt-pim",
+    "x-systemd.device-timeout", "veracrypt-pim",
 }
 
 
@@ -354,7 +361,12 @@ def _check_crypttab(config: Dict[str, Any]) -> List[Issue]:
             if not opt:
                 continue
             key, sep, _value = opt.partition("=")
-            known = key in _CRYPTTAB_KEYS if sep else opt in _CRYPTTAB_FLAGS
+            if key in _CRYPTTAB_FLAG_OR_KEY:
+                known = True
+            elif sep:
+                known = key in _CRYPTTAB_KEYS
+            else:
+                known = opt in _CRYPTTAB_FLAGS
             if not known:
                 issues.append(Issue(
                     "error", "crypttab_bad_option",

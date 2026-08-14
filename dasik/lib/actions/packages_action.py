@@ -24,7 +24,7 @@ and forced to the AUR path for that read. ``sync`` re-emits it as the plain name
 Idempotent: a package already installed is not reinstalled.
 """
 from __future__ import annotations
-from typing import Any, List
+from typing import Any, Dict, List
 from .abstract_action import AbstractAction
 from .package_resolver import (
     PackageResolution,
@@ -471,38 +471,122 @@ class PackagesAction(AbstractAction):
             if name in installed and applied_refs.get(name) != self.package_sources[name].get("ref"):
                 changes.append(Change(self._PACMAN_DOMAIN, Op.MODIFY, name,
                                       reason=self._REF_CHANGED))
-        for name in sorted(set(managed) - set(desired)):
+        removals = sorted(set(managed) - set(desired))
+        for name in self._removable(removals, installed):
             changes.append(Change(self._PACMAN_DOMAIN, Op.REMOVE, name,
                                   reason="no longer declared"))
         return changes
 
+    def _removable(self, names: "list[str]", installed: set) -> "list[str]":
+        """*names* minus the ones pacman would refuse to remove.
+
+        A package another INSTALLED package still requires cannot go, and
+        `pacman -Rns` fails the whole transaction when one name in it is like
+        that — so the apply aborts before any other domain runs and the same
+        plan comes back forever. `audit` is the real case: dasik declares it for
+        the `apparmor` block, and pam, systemd, shadow, dbus and NetworkManager
+        all require it, so it can never leave an Arch system.
+
+        A requirer that is itself being removed does not count — removing both
+        together is a transaction pacman accepts.
+
+        A probe that cannot answer changes nothing: the removal is planned and
+        pacman gets to refuse it, exactly as before.
+        """
+        present = [n for n in names if n in installed]
+        if not present:
+            return list(names)
+        required_by = self._required_by(present)
+        going = set(names)
+        keep: list = []
+        for name in names:
+            blockers = sorted(set(required_by.get(name, ())) - going)
+            if not blockers:
+                keep.append(name)
+                continue
+            run_logger.get().warning(
+                f"not removing {name}: still required by "
+                f"{', '.join(blockers)}",
+                detail="pacman refuses a transaction that would break a "
+                       "dependency, and one such name aborts the whole apply. "
+                       "It stays installed and out of the plan; remove whatever "
+                       "requires it first if you really want it gone.",
+            )
+        return keep
+
+    def _required_by(self, names: "list[str]") -> "dict[str, list[str]]":
+        """{package: [installed packages that require it]}, from one -Qi call."""
+        target = getattr(self.context, "target", None) if self.context else None
+        if target is None:
+            return {}
+        try:
+            res = Command.execute("pacman", ["-Qi", *names], target=target)
+        except Exception:      # nosec B110 - no pacman to ask: plan as before
+            return {}
+        out = getattr(res, "stdout", b"") or b""
+        if isinstance(out, bytes):
+            out = out.decode("utf-8", errors="replace")
+        result: dict[str, list[str]] = {}
+        current = None
+        for line in out.splitlines():
+            key, _, value = line.partition(":")
+            key, value = key.strip(), value.strip()
+            if key == "Name":
+                current = value
+            elif key == "Required By" and current:
+                result[current] = [] if value in ("None", "") else value.split()
+        return result
+
     _REF_CHANGED = "source ref changed"
 
     def state_metadata(self) -> dict:
-        """Per-action state for the manifest: the applied Git SHA of every
-        declared ``package_sources`` package that is installed (PLAN v3 §10).
+        """Per-action state for the manifest: what was built, and from where.
 
-        Iterating only the current sources drops refs for packages no longer
+        ``source_refs`` (name -> applied SHA) answers "must this be rebuilt?".
+        ``sources`` records the **whole** declaration (url/ref/subdir) because
+        the SHA alone cannot rebuild anything: a package built from a Git
+        PKGBUILD exists in no repo and no AUR, so a ``sync`` that cannot name
+        its URL produces a config that silently drops it (PLAN v3 §10).
+
+        Iterating only the current sources drops entries for packages no longer
         declared or no longer Git-sourced. Returns ``{}`` when there is nothing
         to record so the reconciler merge stays clean."""
         installed = self._installed_all()
-        refs = {
-            name: src["ref"]
+        sources = {
+            name: dict(src)
             for name, src in self.package_sources.items()
             if name in installed and isinstance(src, dict) and src.get("ref")
         }
-        if not refs:
+        if not sources:
             return {}
-        return {self._PACMAN_DOMAIN: {"source_refs": refs}}
+        return {self._PACMAN_DOMAIN: {
+            "source_refs": {name: src["ref"] for name, src in sources.items()},
+            "sources": sources,
+        }}
 
-    def _applied_refs(self) -> dict:
-        """{name: applied_sha} recorded by the last apply, from the manifest."""
+    def _action_state(self) -> dict:
         manifest = getattr(self.context, "manifest", None) if self.context else None
         if not isinstance(manifest, dict):
             return {}
-        return (manifest.get("action_state", {})
-                        .get(self._PACMAN_DOMAIN, {})
-                        .get("source_refs", {}))
+        state = manifest.get("action_state", {}).get(self._PACMAN_DOMAIN, {})
+        return state if isinstance(state, dict) else {}
+
+    def _recorded_sources(self) -> dict:
+        """{name: source} recorded by the last apply. Empty for a manifest
+        written before ``sources`` existed — those hold a SHA and no URL, and a
+        source cannot be invented from a SHA."""
+        sources = self._action_state().get("sources", {})
+        return sources if isinstance(sources, dict) else {}
+
+    def _applied_refs(self) -> dict:
+        """{name: applied_sha} recorded by the last apply, from the manifest.
+        Reads the legacy ``source_refs`` map first so a manifest written by an
+        older dasik still answers the ref-drift question."""
+        refs = self._action_state().get("source_refs", {})
+        if isinstance(refs, dict) and refs:
+            return refs
+        return {name: src["ref"] for name, src in self._recorded_sources().items()
+                if isinstance(src, dict) and src.get("ref")}
 
     def managed_keys(self) -> dict:
         """Packages this action owns after apply (bare names).
@@ -548,11 +632,53 @@ class PackagesAction(AbstractAction):
                 result.append(bare)   # explicit / intent (not installed)
 
         for name in sorted(explicit - declared):   # new explicit packages
+            if self._is_debug_by_product(name, installed):
+                # `makepkg -si` builds and installs a split `-debug` package
+                # alongside the real one (Arch's default makepkg.conf asks for
+                # it). There is no `yay-debug` in any repo or in the AUR — it
+                # only exists as a by-product of building `yay` on THIS machine
+                # — so writing it into the config produces a capture that
+                # cannot be applied anywhere: the name resolves nowhere.
+                continue
             result.append(name)
         # …and whatever an enabled unit proves is there without being explicit.
         for name in sorted(self._unit_provider_packages() - declared - explicit):
             result.append({"name": name, "reason": "dep"})
-        return {self._PACMAN_DOMAIN: result}
+
+        captured: Dict[str, Any] = {self._PACMAN_DOMAIN: result}
+        sources = self._captured_sources(installed)
+        if sources:
+            captured["package_sources"] = sources
+        return captured
+
+    def _captured_sources(self, installed: set) -> dict:
+        """The ``package_sources`` a sync must carry back.
+
+        Declared beats recorded: the config is intent, so a ref the admin just
+        bumped survives the capture instead of being overwritten by whatever the
+        last apply happened to build. Only installed packages are reported —
+        a source for something absent would describe a machine that does not
+        exist.
+        """
+        out: Dict[str, Any] = {}
+        recorded = self._recorded_sources()
+        for name in sorted(set(recorded) | set(self.package_sources)):
+            if name not in installed:
+                continue
+            src = self.package_sources.get(name) or recorded.get(name)
+            if isinstance(src, dict) and src.get("url") and src.get("ref"):
+                out[name] = dict(src)
+        return out
+
+    @staticmethod
+    def _is_debug_by_product(name: str, installed: set) -> bool:
+        """True for a `<pkg>-debug` whose `<pkg>` is installed beside it.
+
+        A package that merely ends in -debug with no base next to it is
+        somebody's real package and is captured like any other.
+        """
+        base = name[: -len("-debug")] if name.endswith("-debug") else ""
+        return bool(base) and base in installed
 
     # ------------------------------------------------------------------ #
     #  v3 apply() — destructive                                          #
@@ -707,15 +833,8 @@ class PackagesAction(AbstractAction):
                 with self._optional_guard(optional_aur):
                     self._apply_aur_install(optional_aur, helper=helper)
 
-        # Enforce install reason (repo packages only). -S marks explicit by
-        # default, so a fresh explicit install needs no -D; a dep install does.
-        to_dep = [p for p in repo_installs if self._reason.get(p, "explicit") == "dep"]
-        to_dep += [p for p in modifies if self._reason.get(p, "explicit") == "dep"]
-        to_explicit = [p for p in modifies if self._reason.get(p, "explicit") == "explicit"]
-        if to_dep:
-            Command.execute("pacman", ["-D", "--asdeps", *to_dep], target=target, check=True)
-        if to_explicit:
-            Command.execute("pacman", ["-D", "--asexplicit", *to_explicit], target=target, check=True)
+        self._enforce_reasons(target, planned_modifies=modifies,
+                              installed_now=repo_installs)
 
         if removes:
             Command.execute(
@@ -772,6 +891,49 @@ class PackagesAction(AbstractAction):
             return res.returncode == 0
         except Exception:      # noqa: BLE001 - no pgrep: cannot tell
             return False
+
+    def _enforce_reasons(self, target, planned_modifies: "list[str]",
+                         installed_now: "list[str]") -> None:
+        """Make every declared package's install reason true, now.
+
+        Read from REALITY after the transaction, not from the plan. The plan is
+        computed before anything runs, so it cannot know that pacman will bring
+        a declared package in as a dependency of another one — `audit` arrives
+        with `apparmor`, and `pacman -S --needed` leaves an already-present
+        package's reason alone. Computing this from the plan left the correction
+        for the *next* apply: an apply that exits 0 and is not a no-op (#188).
+
+        Two things are known without probing and stay: the plan's own reason
+        MODIFY set, and what `pacman -S` just installed — it marks every one of
+        them explicit, so a dep-declared install needs the correction whatever
+        the probes report (and an explicit one needs nothing).
+        """
+        try:
+            installed = self._installed_all()
+            explicit = self.actual()
+        except Exception:      # noqa: BLE001 - no pacman to ask (a half-built
+            # target, a unit test): fall back to what this apply already knows.
+            # A probe that cannot answer must not abort an otherwise good apply.
+            installed, explicit = set(), set()
+        planned = set(planned_modifies)
+        fresh = set(installed_now)
+        candidates = set(self._reason) | planned | fresh
+
+        to_dep = sorted(
+            p for p in candidates
+            if self._reason.get(p, "explicit") == "dep"
+            and (p in explicit or p in planned or p in fresh)
+        )
+        to_explicit = sorted(
+            p for p in candidates
+            if self._reason.get(p, "explicit") == "explicit"
+            and ((p in installed and p not in explicit) or p in planned)
+        )
+        if to_dep:
+            Command.execute("pacman", ["-D", "--asdeps", *to_dep], target=target, check=True)
+        if to_explicit:
+            Command.execute("pacman", ["-D", "--asexplicit", *to_explicit],
+                            target=target, check=True)
 
     def _split_optional(self, names: "list[str]") -> "tuple[list[str], list[str]]":
         """(required, optional) preserving order."""

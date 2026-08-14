@@ -103,6 +103,14 @@ class MkinitcpioBackend(InitramfsBackend):
         # BEFORE sd-encrypt/encrypt — the wiki is explicit that a plymouth hook
         # placed after the crypt hook never takes over the passphrase prompt,
         # which on an encrypted machine means it cannot be unlocked at all.
+        if not self.has_plymouth:
+            # …and it GOES when the block goes. The computation starts from the
+            # hooks on disk and layers what the config asks for, so nothing used
+            # to subtract what it had stopped asking for: dropping the plymouth
+            # block removed the PACKAGE and left the hook, and `mkinitcpio -P`
+            # then fails with "Hook 'plymouth' cannot be found" — this apply and
+            # every kernel update after it, until somebody edits the file.
+            hooks = [h for h in hooks if h != "plymouth"]
         if self.has_plymouth and "plymouth" not in hooks:
             after = next((h for h in ("systemd", "udev", "base") if h in hooks), None)
             index = hooks.index(after) + 1 if after else 0

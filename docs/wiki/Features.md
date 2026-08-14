@@ -317,6 +317,38 @@ validated.
 
 ---
 
+## `containers` — the runtime, not the containers
+
+```json
+"containers": { "runtime": "podman", "rootless": true, "docker_compat": true }
+```
+
+One engine, installed and configured. dasik does not manage containers.
+
+| | podman | docker |
+| --- | --- | --- |
+| package | `podman` | `docker` |
+| unit | none (rootless podman runs no daemon); `podman.socket` with `api_socket` | `docker.service`, or `docker.socket` with `api_socket` |
+| group | none — that is the point | `docker`, for every declared user |
+| id maps | `subuid`/`subgid` per user | n/a |
+| daemon config | n/a | `daemon_json` → `/etc/docker/daemon.json` |
+| compose | `podman-compose` | `docker-compose` |
+
+A field belonging to the other engine is **refused, not ignored**: `daemon_json`
+under podman would describe a storage driver nobody applies, and every `plan`
+would still say "no changes".
+
+**The `docker` group is root-equivalent** — a member can bind-mount `/` into a
+container. That is not a reason to avoid it (there is no other way to use docker
+without root), it is a reason to know it.
+
+**subuid/subgid** is the one piece with no other owner. Rootless podman maps
+container uids into a range reserved for the user; `useradd` writes one for
+users it creates (shadow ≥ 4.11.1-3), so a fresh install converges to nothing,
+but an older account or one restored from a capture has none — and without it
+every rootless container fails to start. dasik allocates the next free range
+above whatever `/etc/subuid` already reserves.
+
 ## `config_saver` — backups of `$HOME`, and restoring them
 
 ```json

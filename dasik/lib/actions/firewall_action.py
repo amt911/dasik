@@ -211,10 +211,12 @@ class FirewallAction(AbstractAction):
         for change in changes:
             # Split here, never in the shell: `ufw allow 22/tcp` is two
             # arguments, and this string comes from the config.
-            Command.execute("ufw", change.item.split(), target=self._target())
+            # check=True: a rule ufw refused is a port left open (or shut) while
+            # the plan reports it applied.
+            Command.execute("ufw", change.item.split(), target=self._target(), check=True)
         # Non-interactive: plain `ufw enable` asks for confirmation and would
         # hang an unattended apply.
-        Command.execute("ufw", ["--force", "enable"], target=self._target())
+        Command.execute("ufw", ["--force", "enable"], target=self._target(), check=True)
 
     def _ufw_installed(self) -> bool:
         target = self._target()

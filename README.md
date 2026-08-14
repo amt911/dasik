@@ -35,6 +35,7 @@ dasik check  config.json                 # validate: JSON + schema + coherence  
 dasik plan   config.json                 # the dry run: every change, touches nothing
 dasik apply  config.json --target /mnt   # converge  (DESTRUCTIVE on install)
 dasik sync   config.json --target /      # capture the running system into the config
+dasik save   config.json                 # …and commit it to the config's Git repo
 dasik generations --target /             # what has been applied here
 dasik rollback --target /                # restore + re-apply a previous generation
 dasik hash-password                      # a crypt hash for users[].hashed_password

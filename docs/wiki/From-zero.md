@@ -196,11 +196,12 @@ Offline instead? Same thing from a pendrive: mount it, copy to
 ```bash
 sudo dasik plan  --target / /root/config/p14s/main.json    # what drifted
 sudo dasik apply --target / /root/config/p14s/main.json    # converge
-sudo dasik sync  /root/config/p14s/main.json               # capture back
+sudo dasik save  /root/config/p14s/main.json               # capture + commit + push
 ```
 
-Then commit what `sync` wrote. It names every file it touched, and it touches
-none at all when the machine already matches.
+`save` is `sync` plus the commit: it validates the capture before committing it,
+runs Git as **you** rather than as root, never stages a gitignored file (your
+secrets stay out), and does nothing at all when the machine already matches.
 
 ---
 
@@ -209,8 +210,9 @@ none at all when the machine already matches.
 1. **`--target`.** `plan`/`apply` default to `/mnt` (install time). On a running
    machine you must pass `--target /` or you are describing an empty directory.
 2. **The restore is a second apply, after the first boot.** See step 6.
-3. **`sudo dasik sync` writes as root.** The config lands in your repo owned by
-   `root:root` until `dasik save` exists; `sudo chown -R $USER:` fixes it.
+3. **`sudo dasik sync` writes as root** — the config lands in your repo owned by
+   `root:root`. `dasik save` hands it back to you; plain `sync` does not, so
+   `sudo chown -R $USER:` after it.
 4. **A sync log holds secrets.** It records what was read back, WireGuard
    private keys included. Do not commit `dasik-sync-*.log` — and prefer
    `--no-log` when syncing into a repository.

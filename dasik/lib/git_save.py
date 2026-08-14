@@ -50,7 +50,10 @@ def _run(repo: Path, args: Sequence[str], user: Optional[str] = None):
     shell — which is the same rule the AUR builder and the config-saver restore
     follow.
     """
-    git_args = ["-C", str(repo), *args]
+    # Absolute, always: `su -` is a login shell and lands in the user's home,
+    # so a relative path would address a different directory than the caller
+    # meant — silently, and usually one that is not a repository at all.
+    git_args = ["-C", str(Path(repo).resolve()), *args]
     if user is None:
         return Command.execute("git", git_args)
     # `su - <user> -c '<script>' -- sh <args…>`: the script is fixed and the
@@ -80,12 +83,19 @@ def invoking_user() -> Optional[str]:
     return user
 
 
-def repo_root(path: "str | Path") -> Optional[Path]:
-    """The Git work tree containing *path*, or None."""
+def repo_root(path: "str | Path", user: Optional[str] = None) -> Optional[Path]:
+    """The Git work tree containing *path*, or None.
+
+    Runs as *user* for the same reason the writes do, and it is not a nicety:
+    Git refuses a repository owned by somebody else ("detected dubious
+    ownership"), and `save` is root looking at a user's repository **by
+    definition**. As root this returns None on a perfectly good repository, and
+    `save` then reports "not a Git repository" on exactly the machine it was
+    written for.
+    """
     start = Path(path)
     directory = start.parent if start.is_file() or start.suffix else start
-    result = Command.execute(
-        "git", ["-C", str(directory), "rev-parse", "--show-toplevel"])
+    result = _run(directory, ["rev-parse", "--show-toplevel"], user)
     if getattr(result, "returncode", 1) != 0:
         return None
     out = result.stdout
@@ -95,14 +105,14 @@ def repo_root(path: "str | Path") -> Optional[Path]:
     return Path(root) if root else None
 
 
-def ignored_paths(repo: Path, paths: Iterable[Path]) -> Set[Path]:
+def ignored_paths(repo: Path, paths: Iterable[Path],
+                  user: Optional[str] = None) -> Set[Path]:
     """Which of *paths* Git is told to ignore."""
     paths = [Path(p) for p in paths]
     if not paths:
         return set()
     # check-ignore exits 1 when nothing matches, which is not an error here.
-    result = Command.execute(
-        "git", ["-C", str(repo), "check-ignore", *[str(p) for p in paths]])
+    result = _run(repo, ["check-ignore", *[str(p) for p in paths]], user)
     out = result.stdout
     if isinstance(out, bytes):
         out = out.decode("utf-8", errors="replace")
@@ -123,16 +133,16 @@ def chown_to(user: str, paths: Iterable[Path]) -> None:
 def commit_paths(repo: Path, paths: Sequence[Path], message: str,
                  push: bool = True, user: Optional[str] = None) -> SaveResult:
     """Stage *paths* (minus the ignored ones), commit, and optionally push."""
-    repo = Path(repo)
+    repo = Path(repo).resolve()
+    paths = [Path(p).resolve() for p in paths]
     result = SaveResult()
 
-    resolved_repo = repo.resolve()
     for path in paths:
-        if resolved_repo not in Path(path).resolve().parents:
+        if repo not in path.parents:
             raise GitSaveError(
                 f"{path} is outside the repository {repo} — refusing to commit it")
 
-    ignored = ignored_paths(repo, paths)
+    ignored = ignored_paths(repo, paths, user)
     result.skipped = sorted(ignored)
     staged = [p for p in paths if p not in ignored]
     if not staged:

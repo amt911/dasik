@@ -59,6 +59,39 @@ def test_repo_root_is_none_outside_a_repository(tmp_path):
     assert repo_root(tmp_path / "loose.json") is None
 
 
+def test_every_git_command_runs_as_the_invoking_user(repo, monkeypatch):
+    """Git refuses a repository owned by somebody else ("dubious ownership"),
+    and `save` runs as root over a user's repository by definition — so even
+    the read-only probes have to drop privileges, or `save` reports the repo as
+    "not a Git repository" on exactly the machine it was written for.
+    """
+    calls = []
+
+    class _Result:
+        returncode, stdout, stderr = 0, str(repo), ""
+
+    def _spy(cmd, args, **kwargs):
+        calls.append((cmd, args))
+        return _Result()
+
+    monkeypatch.setattr("dasik.lib.git_save.Command.execute", staticmethod(_spy))
+    # A relative config path is the ordinary case: `cd ~/config && sudo dasik
+    # save main.json`.
+    monkeypatch.chdir(repo)
+
+    repo_root("main.json", user="andres")
+    ignored_paths(Path("."), [Path("main.json")], user="andres")
+
+    assert calls, "no command ran"
+    for cmd, args in calls:
+        assert cmd == "su", f"{args} ran as root instead of as the user"
+        assert args[:2] == ["-", "andres"]
+        # `su -` is a login shell: it lands in the user's home, so a relative
+        # path would silently address the wrong directory.
+        directory = args[args.index("-C") + 1]
+        assert directory.startswith("/"), f"{directory} is relative"
+
+
 # --- what may be staged ------------------------------------------------------ #
 
 def test_an_ignored_file_is_reported_not_staged(repo):

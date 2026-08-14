@@ -22,6 +22,7 @@ removed only if this run created it).
 """
 from __future__ import annotations
 
+import contextlib
 import os
 from pathlib import Path
 from typing import Dict, List, Sequence, Set, Tuple
@@ -31,6 +32,7 @@ from .packages_action import PackagesAction, _validate_pkg_name
 from .package_resolver import AurUnavailableError, PackageResolver
 from ..command_worker.command_worker import Command
 from ..exceptions.exceptions import CommandExecutionError
+from ..logging import run_logger
 
 
 class AurInstaller:
@@ -114,8 +116,24 @@ class AurInstaller:
             self._run("useradd", ["-m", "-r", "-s", "/bin/bash", self.BUILD_USER],
                       check=True)
         sudoers_path = self._target.path(f"/etc/sudoers.d/{self.BUILD_USER}")
+        if os.path.exists(sudoers_path):
+            # `_cleanup` runs in a `finally`, which covers an exception but not
+            # SIGKILL, a full disk or the power going out. What survives that is
+            # a passwordless-sudo account nobody looks at again: the sudo domain
+            # owns only its own fragment, so the leftover is invisible to plan,
+            # to sync and to every apply that does not happen to build an AUR
+            # package. Say it, then take it over (this run removes it at the end).
+            run_logger.get().warning(
+                f"{sudoers_path} was already there: a previous AUR build did not "
+                "finish",
+                detail=f"it grants passwordless sudo to {self.BUILD_USER}. This "
+                       "run takes it over and removes it when the build ends; "
+                       "delete it by hand if you are not building anything.")
         with open(sudoers_path, "w", encoding="utf-8") as f:
             f.write(f"{self.BUILD_USER} ALL=(ALL) NOPASSWD: ALL\n")
+        # 0440: sudo's own convention, and not world-readable while it exists.
+        with contextlib.suppress(OSError):
+            os.chmod(sudoers_path, 0o440)
         return created
 
     def _cleanup(self, created_user: bool, sudoers_path: str) -> None:

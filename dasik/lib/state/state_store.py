@@ -1,4 +1,7 @@
 import json
+import contextlib
+import os
+import tempfile
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Any
@@ -48,6 +51,36 @@ class Manifest:
         )
 
 
+def write_json_atomically(path: Path, payload: dict[str, Any]) -> None:
+    """Write *payload* so a reader sees the old file or the new one, never half.
+
+    A power cut during an apply is not hypothetical (#214 came from one), and
+    `write_text` leaves a truncated file in the window between truncate and
+    flush. These files are dasik's record of what it owns and of what a
+    `rollback` would restore, so: same-directory temporary, fsync, rename —
+    which is atomic on POSIX.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # A temporary of its own per write. Sharing one name means two writers race
+    # for it and the loser dies on the rename ("No such file or directory:
+    # state.json.tmp -> state.json") — a crash half way through an apply that
+    # has already changed the machine, which is worse than the interleaving it
+    # replaced. mkstemp also covers threads and pid reuse, which a pid suffix
+    # does not.
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".tmp.")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(json.dumps(payload, indent=2))
+            f.flush()
+            os.fsync(f.fileno())
+        os.chmod(tmp, 0o644)          # mkstemp creates 0600; this file is public
+        os.replace(tmp, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
+
+
 class StateStore:
     """Reads/writes the dasik state manifest under <target>/var/lib/dasik."""
 
@@ -62,9 +95,21 @@ class StateStore:
         p = self.state_path
         if not p.exists():
             return Manifest()
-        return Manifest.from_dict(json.loads(p.read_text()))
+        try:
+            data = json.loads(p.read_text())
+        except json.JSONDecodeError as e:
+            # A manifest written before saves became atomic, or one a full disk
+            # truncated. It is recoverable — `sync` rebuilds ownership from the
+            # machine — so say that instead of raising json's parser error.
+            raise ValueError(
+                f"{p} is not valid JSON ({e}). dasik's record of what it owns is "
+                "unreadable; rebuild it from the machine with `dasik sync <config>` "
+                "(or delete the file to start owning nothing).") from e
+        return Manifest.from_dict(data)
 
     def save(self, manifest: Manifest) -> None:
-        p = self.state_path
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(json.dumps(manifest.to_dict(), indent=2))
+        """Write the manifest atomically.
+
+        This is the record of what dasik owns, so it lands whole or not at all.
+        """
+        write_json_atomically(self.state_path, manifest.to_dict())

@@ -590,3 +590,56 @@ def test_the_firewalld_backend_still_installs_firewalld():
     expanded = expand_config({"firewall": {"enable": True}})
     assert "firewalld" in expanded["packages"]
     assert "ufw" not in expanded["packages"]
+
+
+# --- a PKGBUILD that was never uploaded to the AUR ------------------------- #
+#
+# `package_sources` rides the `packages` domain: there is no `[package_sources]`
+# line in a plan, the package appears as an install (or, when its pinned commit
+# moves, as a modify). Both directions must be visible.
+
+_SRC = {"type": "pkgbuild-git",
+        "url": "https://git.example.org/pkgbuilds/config-saver.git",
+        "ref": "a520605367e13ec25db4c3c7e1c4bf46175ba8cd", "subdir": "."}
+_OTHER_SHA = "b" * 40
+
+
+def _git_pkg_plan(installed, managed, source_ref=None, declared=True):
+    from unittest.mock import MagicMock
+    from dasik.lib.actions.action_context import ActionContext
+    from dasik.lib.actions.packages_action import PackagesAction
+    from dasik.lib.target.target import Target
+
+    config = ({"packages": ["config-saver"], "package_sources": {"config-saver": _SRC}}
+              if declared else {"packages": []})
+    manifest = {"managed": {"packages": list(managed)}, "action_state": {}}
+    if source_ref:
+        manifest["action_state"] = {
+            "packages": {"sources": {"config-saver": dict(_SRC, ref=source_ref)}}}
+    action = PackagesAction(config, ActionContext(target=Target(root="/"),
+                                                  manifest=manifest))
+    action._installed_all = MagicMock(return_value=set(installed))
+    action.actual = MagicMock(return_value=set(installed))
+    return [(c.op.name, c.item, c.reason) for c in action.plan(managed=list(managed))]
+
+
+def test_a_git_sourced_package_missing_from_the_machine_is_planned():
+    assert _git_pkg_plan(installed=(), managed=()) == [
+        ("INSTALL", "config-saver", "")]
+
+
+def test_a_git_sourced_package_built_at_the_pinned_commit_plans_nothing():
+    assert _git_pkg_plan(installed=("config-saver",), managed=("config-saver",),
+                         source_ref=_SRC["ref"]) == []
+
+
+def test_moving_the_pinned_commit_plans_a_rebuild():
+    assert _git_pkg_plan(installed=("config-saver",), managed=("config-saver",),
+                         source_ref=_OTHER_SHA) == [
+        ("MODIFY", "config-saver", "source ref changed")]
+
+
+def test_dropping_the_declaration_removes_the_package_the_manifest_owns():
+    assert _git_pkg_plan(installed=("config-saver",), managed=("config-saver",),
+                         declared=False) == [
+        ("REMOVE", "config-saver", "no longer declared")]

@@ -15,8 +15,21 @@ import pytest
 
 
 def _run(*args, stdin=""):
+    """Drive the CLI in a session of its own, so `stdin` is really its input.
+
+    `hash-password` reads with `getpass`, which opens **/dev/tty** whenever the
+    process has a controlling terminal and IGNORES the pipe these tests write to
+    — the piped "hunter2" is never seen and the prompt goes to whoever is at the
+    keyboard. Under CI (no tty) getpass falls back to sys.stdin and the tests
+    passed; under the pre-push hook, which inherits the terminal of the `git
+    push`, the same two tests stopped at `Password:` and failed with an empty
+    password. `start_new_session=True` detaches the child from the terminal, so
+    /dev/tty cannot be opened and the fallback — reading the pipe — is the only
+    path, on a developer's machine exactly as in CI.
+    """
     return subprocess.run([sys.executable, "-m", "dasik", *args],
-                          capture_output=True, text=True, input=stdin)
+                          capture_output=True, text=True, input=stdin,
+                          start_new_session=True)
 
 
 def test_hash_password_accepts_the_common_flags():

@@ -87,7 +87,6 @@
   "power-profiles-daemon",
   "powertop",
   "pwgen",
-  "qemu-block-gluster",
   "qemu-block-iscsi",
   "qemu-full",
   "qemu-guest-agent",

@@ -84,3 +84,21 @@ def test_libva_mesa_driver_is_never_declared():
         assert "libva-mesa-driver" not in pkgs
         # …and what actually ships the VA-API driver is still installed.
         assert "mesa" in pkgs
+
+
+def test_a_retired_qemu_block_driver_is_never_declared():
+    """`qemu-block-gluster` is gone from the Arch repos (glusterfs' block driver
+    went with it). Naming a package that does not resolve aborts the whole
+    pacman transaction — in phase 3, with the disk already partitioned — so the
+    kvm toggle must not name it. `qemu-full` pulls whatever block drivers still
+    exist.
+
+    Caught by the CI job that resolves every declarable name, which is exactly
+    the guard the 2026-08-12 package audit asked for.
+    """
+    from dasik.lib.expand.toggles import expand_kvm
+
+    packages = expand_kvm({"kvm": {"install": True}})["packages"]
+
+    assert "qemu-block-gluster" not in packages
+    assert "qemu-full" in packages

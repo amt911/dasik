@@ -119,7 +119,6 @@
     "power-profiles-daemon",
     "powertop",
     "pwgen",
-    "qemu-block-gluster",
     "qemu-block-iscsi",
     "qemu-full",
     "qemu-guest-agent",
@@ -396,11 +395,11 @@
   "files": [
     {
       "path": "/etc/plasmalogin.conf.d/10-dasik.conf",
-      "content": "# Managed by dasik. Plasma Login Manager (plasmalogin.service) reads\n# /etc/plasmalogin.conf.d/*.conf — it is an SDDM fork, but it does NOT read\n# /etc/sddm.conf.d and it is fixed to the Breeze theme (no [Theme] key).\n# No [Autologin] here, unlike the desktop: on a laptop the login prompt is the\n# second factor after the LUKS passphrase.\n[General]\nHaltCommand=/usr/bin/systemctl poweroff\nRebootCommand=/usr/bin/systemctl reboot\n\n[Users]\nMaximumUid=60513\nMinimumUid=1000\n"
+      "content": "# Managed by dasik. Plasma Login Manager (plasmalogin.service) reads\n# /etc/plasmalogin.conf.d/*.conf \u2014 it is an SDDM fork, but it does NOT read\n# /etc/sddm.conf.d and it is fixed to the Breeze theme (no [Theme] key).\n# No [Autologin] here, unlike the desktop: on a laptop the login prompt is the\n# second factor after the LUKS passphrase.\n[General]\nHaltCommand=/usr/bin/systemctl poweroff\nRebootCommand=/usr/bin/systemctl reboot\n\n[Users]\nMaximumUid=60513\nMinimumUid=1000\n"
     },
     {
       "path": "/etc/pam.d/sudo",
-      "content": "#%PAM-1.0\n# Managed by dasik. Vendor file (sudo package) + fingerprint on top.\n# WARNING: fingerprint auth for sudo is the CVE-2024-37408 vector — a background\n# process can consume the prompt and obtain permissions without you touching the\n# reader. Delete the pam_fprintd line to go back to password-only sudo.\nauth       sufficient  pam_fprintd.so\nauth       include     system-auth\naccount    include     system-auth\nsession    include     system-auth\nsession    optional    pam_systemd.so class=none\n"
+      "content": "#%PAM-1.0\n# Managed by dasik. Vendor file (sudo package) + fingerprint on top.\n# WARNING: fingerprint auth for sudo is the CVE-2024-37408 vector \u2014 a background\n# process can consume the prompt and obtain permissions without you touching the\n# reader. Delete the pam_fprintd line to go back to password-only sudo.\nauth       sufficient  pam_fprintd.so\nauth       include     system-auth\naccount    include     system-auth\nsession    include     system-auth\nsession    optional    pam_systemd.so class=none\n"
     },
     {
       "path": "/etc/pam.d/polkit-1",
@@ -466,8 +465,12 @@
     "theme": "bgrt"
   },
   "reflector": {
-    "countries": ["ES"],
-    "protocols": ["https"],
+    "countries": [
+      "ES"
+    ],
+    "protocols": [
+      "https"
+    ],
     "latest": 20,
     "sort": "rate"
   },
@@ -477,5 +480,5 @@
     "resume=/dev/mapper/cryptswap",
     "quiet"
   ],
-  "notes": "Lenovo ThinkPad P14s Gen 2 (AMD Ryzen 7 PRO 5850U, Cezanne iGPU, no discrete GPU). Same as laptop-p14s.json PLUS the two block-B features of issue #173 (PR #175): the plymouth boot splash and the pendrive LUKS unlock. BEFORE APPLYING: (1) set both luks_password fields (they are placeholders — use the SAME passphrase on cryptroot and cryptswap so systemd's initrd password cache asks only once); (2) replace BOTH unlock_keydev placeholders with the pendrive's real filesystem UUID (`blkid -s UUID -o value /dev/sdX1`) — left as-is the initramfs finds no key device and every boot falls back to the passphrase; (3) confirm the disk is /dev/nvme0n1 with lsblk — wipe_disk is true; (4) size the swap partition to your RAM (32GiB assumed) or hibernation cannot fit; (5) regenerate hashed_password with `dasik hash-password`. PENDRIVE UNLOCK: dasik creates /keyfile-p14s-root and /keyfile-p14s-swap on the pendrive itself (512x4 random bytes, mode from the vfat mount since vfat has no permission bits), enrolls each as an EXTRA keyslot on its volume authorised by luks_password, and emits rd.luks.key=<uuid>=<path>:UUID=<keydev> plus rd.luks.options=<uuid>=keyfile-timeout=10s — that timeout is what makes a boot WITHOUT the pendrive fall back to the passphrase prompt instead of waiting forever. unlock_keydev_fs=vfat puts the vfat module (plus nls_cp437/nls_iso8859-1) in the initramfs; without it the key device cannot be read at boot. Keep the pendrive as safe as the passphrase: it opens the disk on its own. Un-declaring the unlock later removes the kernel parameter but NOT the keyslot — dasik reports it and you drop it yourself with `cryptsetup luksRemoveKey`. Note `dasik plan` mounts the pendrive read-only to check whether the key is already enrolled; without it attached the plan says so. PLYMOUTH: the block pulls the plymouth package, writes /etc/plymouth/plymouthd.conf ([Daemon] Theme=bgrt), derives `splash` on the cmdline and puts the hook/module in the initramfs (a theme change rebuilds the image). `quiet` is hand-declared above because dasik never derives it. In the UEFI set Sleep to 'Linux' (s2idle) — with 'Windows 10' the lid switch is flaky. Fingerprint: Synaptics 06cb:00bd, supported in-tree; enrol with `fprintd-enroll` and keep the reader firmware current via fwupd."
+  "notes": "Lenovo ThinkPad P14s Gen 2 (AMD Ryzen 7 PRO 5850U, Cezanne iGPU, no discrete GPU). Same as laptop-p14s.json PLUS the two block-B features of issue #173 (PR #175): the plymouth boot splash and the pendrive LUKS unlock. BEFORE APPLYING: (1) set both luks_password fields (they are placeholders \u2014 use the SAME passphrase on cryptroot and cryptswap so systemd's initrd password cache asks only once); (2) replace BOTH unlock_keydev placeholders with the pendrive's real filesystem UUID (`blkid -s UUID -o value /dev/sdX1`) \u2014 left as-is the initramfs finds no key device and every boot falls back to the passphrase; (3) confirm the disk is /dev/nvme0n1 with lsblk \u2014 wipe_disk is true; (4) size the swap partition to your RAM (32GiB assumed) or hibernation cannot fit; (5) regenerate hashed_password with `dasik hash-password`. PENDRIVE UNLOCK: dasik creates /keyfile-p14s-root and /keyfile-p14s-swap on the pendrive itself (512x4 random bytes, mode from the vfat mount since vfat has no permission bits), enrolls each as an EXTRA keyslot on its volume authorised by luks_password, and emits rd.luks.key=<uuid>=<path>:UUID=<keydev> plus rd.luks.options=<uuid>=keyfile-timeout=10s \u2014 that timeout is what makes a boot WITHOUT the pendrive fall back to the passphrase prompt instead of waiting forever. unlock_keydev_fs=vfat puts the vfat module (plus nls_cp437/nls_iso8859-1) in the initramfs; without it the key device cannot be read at boot. Keep the pendrive as safe as the passphrase: it opens the disk on its own. Un-declaring the unlock later removes the kernel parameter but NOT the keyslot \u2014 dasik reports it and you drop it yourself with `cryptsetup luksRemoveKey`. Note `dasik plan` mounts the pendrive read-only to check whether the key is already enrolled; without it attached the plan says so. PLYMOUTH: the block pulls the plymouth package, writes /etc/plymouth/plymouthd.conf ([Daemon] Theme=bgrt), derives `splash` on the cmdline and puts the hook/module in the initramfs (a theme change rebuilds the image). `quiet` is hand-declared above because dasik never derives it. In the UEFI set Sleep to 'Linux' (s2idle) \u2014 with 'Windows 10' the lid switch is flaky. Fingerprint: Synaptics 06cb:00bd, supported in-tree; enrol with `fprintd-enroll` and keep the reader firmware current via fwupd."
 }

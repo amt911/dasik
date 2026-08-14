@@ -6,9 +6,9 @@ out; covered via mocked `_install`). Target-aware.
 """
 from __future__ import annotations
 import os
-import subprocess
 from typing import Any, Dict
 from .abstract_action import AbstractAction
+from ..command_worker.command_worker import Command
 from ..state.change import Change, Op
 
 _FONTS_DIR = "/usr/local/share/fonts/WindowsFonts"
@@ -81,12 +81,19 @@ class MicrosoftFontsAction(AbstractAction):
 
     # --- the destructive bit (shelled out; mocked in tests) ----------- #
 
-    def _install(self) -> None:  # pragma: no cover - shells out to 7z/arch-chroot
-        root = self._target().root if self._target() is not None else "/mnt"
-        subprocess.run(
-            ["arch-chroot", root, "pacman", "--noconfirm", "--needed", "-S", "7zip"],
-            check=True,
-        )
+    def _install(self) -> None:  # pragma: no cover - shells out to 7z inside the target
+        """Extract the fonts out of a Windows ISO, inside the target.
+
+        Every step goes through Command.execute — not subprocess — so it lands
+        in the run log like everything else, gets the arch-chroot prefix from
+        one place, and fails with dasik's own message when a binary is missing.
+        A 7z extraction of somebody's Windows ISO is exactly the step you want
+        to be able to read afterwards.
+        """
+        t = self._target()
+        root = t.root if t is not None else "/mnt"
+        Command.execute("pacman", ["--noconfirm", "--needed", "-S", "7zip"],
+                        target=t, check=True)
         # /tmp here is inside the freshly-installed TARGET chroot during install
         # (single-user, no other local accounts yet), not the host /tmp — see the
         # B108 justification in [tool.bandit].
@@ -95,19 +102,13 @@ class MicrosoftFontsAction(AbstractAction):
             self.source_iso.replace(root, "", 1)
             if self.source_iso.startswith(root) else self.source_iso
         )
-        subprocess.run(
-            ["arch-chroot", root, "7z", "e", iso_inner, "sources/install.wim",
-             "-o/tmp/ms-fonts-work"], check=True,
-        )
-        subprocess.run(
-            ["arch-chroot", root, "7z", "e", "/tmp/ms-fonts-work/install.wim",
-             "1/Windows/Fonts/*.ttf", "1/Windows/Fonts/*.ttc",
-             "-o/tmp/ms-fonts-work/fonts/"], check=True,
-        )
-        subprocess.run(["arch-chroot", root, "mkdir", "-p", _FONTS_DIR], check=True)
-        subprocess.run(
-            ["arch-chroot", root, "sh", "-c",
-             f"cp /tmp/ms-fonts-work/fonts/* {_FONTS_DIR}/ && chmod 644 {_FONTS_DIR}/*"],
-            check=True,
-        )
-        subprocess.run(["arch-chroot", root, "fc-cache", "--force"], check=True)
+        Command.execute("7z", ["e", iso_inner, "sources/install.wim",
+                               "-o/tmp/ms-fonts-work"], target=t, check=True)
+        Command.execute("7z", ["e", "/tmp/ms-fonts-work/install.wim",
+                               "1/Windows/Fonts/*.ttf", "1/Windows/Fonts/*.ttc",
+                               "-o/tmp/ms-fonts-work/fonts/"], target=t, check=True)
+        Command.execute("mkdir", ["-p", _FONTS_DIR], target=t, check=True)
+        Command.execute("sh", ["-c",
+                               f"cp /tmp/ms-fonts-work/fonts/* {_FONTS_DIR}/ && "
+                               f"chmod 644 {_FONTS_DIR}/*"], target=t, check=True)
+        Command.execute("fc-cache", ["--force"], target=t, check=True)

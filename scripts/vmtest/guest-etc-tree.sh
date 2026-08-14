@@ -41,33 +41,51 @@ pacman -Q config-saver && echo "TREE-PKG ok" || { echo "TREE-PKG MISSING"; rc=1;
 
 echo "TREE-D: a copy of the config, as a real user keeps it"
 rm -rf /root/cfg && cp -r config/vm-etc-tree /root/cfg
+# dasik runs from the copied repo, so it stays importable after the cd. Without
+# this every command below fails with "No module named dasik" and the greps
+# that follow report success — a green run that proved nothing.
+export PYTHONPATH=/root/repo
 cd /root/cfg || { echo "TREE-DONE rc=92"; poweroff -f; }
+python -c 'import dasik' || { echo "TREE-IMPORT BROKEN"; echo "TREE-DONE rc=93"; poweroff -f; }
 
 echo "TREE-E: re-plan against the live host must be silent"
-$D plan main.json --target / $L > /tmp/plan1.txt 2>&1
+if ! $D plan main.json --target / $L > /tmp/plan1.txt 2>&1; then
+    echo "TREE-PLAN FAILED"; rc=1
+fi
 cat /tmp/plan1.txt
-grep -qE '^\s*[-+~] ' /tmp/plan1.txt && { echo "TREE-PLAN NOT-SILENT"; rc=1; } \
-                                     || echo "TREE-PLAN silent"
+if grep -qE '^\s*[-+~] ' /tmp/plan1.txt; then echo "TREE-PLAN NOT-SILENT"; rc=1
+else echo "TREE-PLAN silent"; fi
 
 echo "TREE-F: sync writes back INTO the tree"
-before_json=$(md5sum main.json | cut -d' ' -f1)
-$D sync main.json --target / $L > /tmp/sync.txt 2>&1
+if ! $D sync main.json --target / $L > /tmp/sync.txt 2>&1; then
+    echo "TREE-SYNC FAILED"; rc=1
+fi
 tail -20 /tmp/sync.txt
-# the bodies must NOT have moved into the JSON
-if grep -q '"content"' main.json; then echo "TREE-SYNC INLINED-BODIES"; rc=1;
-else echo "TREE-SYNC no inline bodies"; fi
+# No body belonging to the tree may have moved into the JSON. The config also
+# declares one `files` entry inline on purpose (the serial autologin drop-in),
+# so counting entries under the tree is the assertion — grepping for "content"
+# would match that one and always "fail".
+python - <<'PY' || rc=1
+import json, pathlib, sys
+raw = json.loads(pathlib.Path("main.json").read_text())
+tree = {f"/etc/{p.relative_to('etc')}" for p in pathlib.Path("etc").rglob("*") if p.is_file()}
+inlined = [e["path"] for e in raw.get("files", []) if e.get("path") in tree]
+print("TREE-SYNC INLINED-BODIES" if inlined else "TREE-SYNC no inline bodies", inlined)
+sys.exit(1 if inlined else 0)
+PY
 # and the tree must still hold real files
 for f in etc/pam.d/dasik-vm etc/profile.d/dasik-vm.sh; do
-    [ -s "$f" ] && echo "TREE-SYNC kept $f" || { echo "TREE-SYNC LOST $f"; rc=1; }
+    if [ -s "$f" ]; then echo "TREE-SYNC kept $f"; else echo "TREE-SYNC LOST $f"; rc=1; fi
 done
-echo "main.json md5 before=$before_json after=$(md5sum main.json | cut -d' ' -f1)"
 
 echo "TREE-G: the capture still validates and re-plans to nothing"
-$D check main.json || { echo "TREE-CHECK REFUSED-ITS-OWN-CAPTURE"; rc=1; }
-$D plan main.json --target / $L > /tmp/plan2.txt 2>&1
+if ! $D check main.json; then echo "TREE-CHECK REFUSED-ITS-OWN-CAPTURE"; rc=1; fi
+if ! $D plan main.json --target / $L > /tmp/plan2.txt 2>&1; then
+    echo "TREE-REPLAN FAILED"; rc=1
+fi
 cat /tmp/plan2.txt
-grep -qE '^\s*[-+~] ' /tmp/plan2.txt && { echo "TREE-REPLAN NOT-SILENT"; rc=1; } \
-                                      || echo "TREE-REPLAN silent"
+if grep -qE '^\s*[-+~] ' /tmp/plan2.txt; then echo "TREE-REPLAN NOT-SILENT"; rc=1
+else echo "TREE-REPLAN silent"; fi
 
 echo "TREE-H: config-saver has something to run (no exit 6)"
 ls -la /etc/config-saver/configs/ || true

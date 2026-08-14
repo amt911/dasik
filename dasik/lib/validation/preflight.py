@@ -20,9 +20,14 @@ contributed by toggles count as declared.
 from __future__ import annotations
 
 import os
+from difflib import get_close_matches
+from typing import get_args
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Set
 
+from pydantic import BaseModel
+
+from ..models.json_model import JsonModel
 from ..actions.swap_encryption import (
     crypttab_line,
     random_swap_partitions,
@@ -299,6 +304,71 @@ def _check_sudo(config: Dict[str, Any], packages: Set[str]) -> List[Issue]:
     return []
 
 
+def _check_unknown_keys(config: Dict[str, Any]) -> List[Issue]:
+    """Name every key dasik does not know, and guess what it meant.
+
+    The model deliberately IGNORES unknown keys so a config written for another
+    version stays loadable (tests/lib/json_parser: unknown top-level keys are
+    ignored). The cost is silence: a typo produces a machine quietly missing the
+    feature, with `check` and `plan` both saying nothing. So dasik says it here
+    — as a warning, which informs without aborting.
+
+    One level deep as well as at the root: `sudo.whel` is the same mistake.
+    `metadata` is free-form by design and never flagged.
+    """
+    known = set(JsonModel.model_fields)
+    issues: List[Issue] = []
+    for key, value in config.items():
+        if key in known:
+            nested = JsonModel.model_fields[key].annotation
+            issues += _check_nested_keys(key, value, nested)
+            continue
+        if key.startswith("$"):        # $include and friends: handled elsewhere
+            continue
+        issues.append(Issue("warning", "unknown_config_key",
+                            f"unknown key {key!r}: dasik ignores it, so whatever "
+                            f"it declares will not happen.{_did_you_mean(key, known)}"))
+    return issues
+
+
+def _check_nested_keys(block: str, value: Any, annotation: Any) -> List[Issue]:
+    """The same check inside one declared block, when its model is knowable."""
+    if block == "metadata" or not isinstance(value, dict):
+        return []
+    model = next((a for a in _annotation_models(annotation)), None)
+    if model is None:
+        return []
+    known = set(model.model_fields)
+    return [Issue("warning", "unknown_config_key",
+                  f"unknown key '{block}.{k}': dasik ignores it, so whatever it "
+                  f"declares will not happen.{_did_you_mean(k, known)}")
+            for k in value if k not in known]
+
+
+def _annotation_models(annotation: Any):
+    """The model an annotation IS, unwrapping Optional — never one it merely
+    CONTAINS.
+
+    `package_sources` is Dict[str, GitPackageSourceModel]: its keys are package
+    names the user chose, not model fields. Descending into it flagged every
+    real entry as a typo (`unknown key 'package_sources.config-saver'`), which
+    is exactly the noise this check exists to avoid. Same for `zram`, keyed by
+    device name. So: only a plain model, or Optional[model].
+    """
+    args = get_args(annotation)
+    candidates = [annotation]
+    if args and type(None) in args:            # Optional[X] / X | None
+        candidates += [a for a in args if a is not type(None)]
+    for candidate in candidates:
+        if isinstance(candidate, type) and issubclass(candidate, BaseModel):
+            yield candidate
+
+
+def _did_you_mean(key: str, known: Set[str]) -> str:
+    close = get_close_matches(key, sorted(known), n=1, cutoff=0.6)
+    return f" Did you mean {close[0]!r}?" if close else ""
+
+
 # Paths dasik writes from a domain of their own. A `files` entry aimed at one of
 # them is a second writer with different content, so the two undo each other on
 # every apply. /etc/crypttab is deliberately absent: dasik's own capture puts it
@@ -558,6 +628,7 @@ def preflight(config: Dict[str, Any],
     issues += _check_groups(config, packages)
     issues += _check_units(config, packages)
     issues += _check_sudo(config, packages)
+    issues += _check_unknown_keys(config)
     issues += _check_file_collisions(config)
     issues += _check_cpu(config, packages)
     issues += _check_firewall_backend(config, packages)

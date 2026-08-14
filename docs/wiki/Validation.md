@@ -165,7 +165,7 @@ These come from pydantic, not preflight, and fail the config outright:
 | a unit both enabled and disabled | `SystemdModel` |
 | a multi-line sudoers rule, or an `@include`/`#include` | `SudoModel` |
 | a `package_sources` key not present in `packages` | `JsonModel` |
-| a `ref` that is not a full 40-char SHA, or a non-github `url` | `GitPackageSourceModel` |
+| a `ref` that is not a full 40-char SHA, a non-HTTPS `url`, or a `url` carrying credentials | `GitPackageSourceModel` |
 | a line break in an `oomd`/`systemd_*_conf` value | `systemd_conf_model` |
 | `intel_pstate` with `mode: "guided"` | `CpuModel` |
 

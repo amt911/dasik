@@ -8,6 +8,7 @@ import re
 from typing import Any, Dict, List, Optional
 from .composite_action import CompositeV3Action
 from ..command_worker.command_worker import Command
+from ..exceptions.exceptions import ConfigValidationError
 
 _LOCALE_GEN = "/etc/locale.gen"
 _LOCALE_CONF = "/etc/locale.conf"
@@ -103,10 +104,30 @@ class LocaleAction(CompositeV3Action):
         state = self._actual_state()
         return {self._DOMAIN: state} if state is not None else {}
 
+    def _missing_from_locale_gen(self, text: str) -> List[str]:
+        """Declared locales that /etc/locale.gen does not list at all.
+
+        Enabling a locale means uncommenting its line; one that is not in the
+        file cannot be enabled, so writing LANG for it produces a machine that
+        never matches the config and a plan that repeats the same change for
+        ever. Both the commented and the already-enabled form count as present.
+        """
+        lines = {line.lstrip("#").strip() for line in text.splitlines() if line.strip()}
+        return [loc for loc in self._selected_locales if loc.strip() not in lines]
+
     def _set_value(self) -> None:  # pragma: no cover - writes /etc + runs locale-gen
         gen_path = self._p(_LOCALE_GEN)
         with open(gen_path, "r") as f:
             text = f.read()
+        missing = self._missing_from_locale_gen(text)
+        if missing:
+            raise ConfigValidationError(
+                f"{_LOCALE_GEN} on the target does not list {', '.join(missing)}. "
+                "A locale that is not in that file cannot be enabled, so nothing "
+                "was written — the apply would have reported success and the same "
+                "change would come back on every plan. Check the spelling against "
+                f"the target's {_LOCALE_GEN} (the charset half matters: "
+                "`en_US.UTF-8 UTF-8`).")
         text = re.sub(r"(^[a-z]+)", r"#\1", text, 0, re.MULTILINE)  # comment all
         for loc in self._selected_locales:
             text = text.replace(f"#{loc}", f"{loc}")

@@ -765,6 +765,9 @@ def _check_unlock_keyfile(config: Dict[str, Any]) -> List[Issue]:
 _EFI_BOOTLOADERS = {"sd-boot", "systemd-boot", "grub"}
 
 
+_CONFIG_SAVER_USER_DIR = ".config/config-saver/configs.d/"
+
+
 def _check_config_saver(config: Dict[str, Any]) -> List[Issue]:
     """A config-saver timer with no configuration to run.
 
@@ -784,14 +787,23 @@ def _check_config_saver(config: Dict[str, Any]) -> List[Issue]:
     users = block.get("timer_users") or []
     if not users or block.get("configs"):
         return []
+    # A document declared as a home file counts too: `sync` captures the user's
+    # own ~/.config/config-saver/configs.d that way, and `apply` writes it back,
+    # so the machine does have configurations. Warning anyway would train people
+    # to ignore the warning.
+    if any(isinstance(entry, dict)
+           and str(entry.get("path", "")).startswith(_CONFIG_SAVER_USER_DIR)
+           for entry in config.get("home_files") or []):
+        return []
     return [Issue(
         "warning", "config_saver_timer_without_configs",
         f"config-saver@{{{','.join(users)}}}.timer is enabled but "
         "`config_saver.configs` declares nothing, so /etc/config-saver/configs "
         "stays empty. Since config-saver 3.3.0 that is not a fallback to the "
         "shipped examples — it exits 6 ('No configurations found') on every "
-        "fire. Declare a configuration, or put one in the user's own "
-        "~/.config/config-saver/configs.d.")]
+        "fire. Declare a configuration, capture the user's own with `sync` "
+        "(they land in `home_files`), or put one in "
+        "~/.config/config-saver/configs.d by hand.")]
 
 
 def _check_efi(config: Dict[str, Any], efi_boot: Optional[bool]) -> List[Issue]:

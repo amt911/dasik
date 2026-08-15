@@ -137,3 +137,13 @@ def test_a_capture_check_would_refuse_is_not_committed(repo, monkeypatch, capsys
 
     assert _log(repo).count("\n") == 1, "a rejected capture must not be committed"
     assert "check" in capsys.readouterr().err.lower()
+
+
+def test_the_reported_version_matches_the_package():
+    """`--version` was a hardcoded literal, so it could drift from the version
+    the PKGBUILD builds — and the package smoke test compares them."""
+    from importlib.metadata import version
+    import subprocess as sp
+    reported = sp.run([__import__("sys").executable, "-m", "dasik", "--version"],
+                      capture_output=True, text=True, check=True).stdout.strip()
+    assert reported == f"dasik {version('dasik')}"

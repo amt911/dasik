@@ -26,7 +26,7 @@ monolithic handler; it now exits 2 and points you at `plan`/`apply`.
 
 | Flag | Meaning |
 | --- | --- |
-| `--version` | print `dasik 0.1.0` and exit |
+| `--version` | print `dasik <version>` and exit (read from the installed package, not a literal) |
 | `-v`, `--verbose` | echo the live command stream to the console and show errors in red; also adds a traceback to a crash |
 | `--log PATH` | write the run log here instead of the default |
 | `--no-log` | write no run log at all |
@@ -76,6 +76,13 @@ Read-only, no target, no root. Runs, in order:
 5. cross-field [preflight](Validation.md) on the **expanded** config.
 
 Prints `<config>: OK — valid dasik config.` and exits 0, or the reason and 1.
+
+**It does not depend on the machine running it.** `check` validates a *file* —
+routinely from another laptop, a container or a CI runner — so the preflight's
+environment checks are skipped here. The EFI one is the whole reason: refusing
+`sd-boot` because *this* host booted BIOS makes a perfectly good config
+unvalidatable. `plan` and `apply` still refuse it; they are about to install
+here.
 
 Use it on **both** ends of a round trip: on a config you wrote, and on a config
 `sync` just produced. A capture the tool then refuses is a broken capture.

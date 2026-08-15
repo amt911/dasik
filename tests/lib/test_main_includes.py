@@ -114,3 +114,29 @@ def test_sync_names_every_file_it_wrote(tmp_path, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "hostname.txt" in out, "a file it rewrote must be named"
     assert (tmp_path / "hostname.txt").read_text() == "other-host"
+
+
+def test_check_does_not_depend_on_the_validating_machine(tmp_path, monkeypatch, capsys):
+    """`check` validates a FILE. It has no target, and it is routinely run
+    somewhere other than the machine the config describes — another laptop, a
+    CI runner, a container. Refusing an EFI bootloader because *this* host
+    booted BIOS makes it impossible to validate a perfectly good config, which
+    is what broke the dasik-aur package smoke test.
+
+    `plan` and `apply` still refuse it: they are about to install here.
+    """
+    config = tmp_path / "efi.json"
+    config.write_text(json.dumps({
+        "bootloader": "sd-boot",
+        "disks": {"disks": [{"device": "/dev/vda", "partition_table": "gpt",
+                             "partitions": [{"label": "esp", "size": "512MiB",
+                                             "filesystem": "fat32",
+                                             "partition_type": "esp",
+                                             "mountpoint": "/boot"}]}]},
+    }))
+    # A machine that is NOT booted in EFI mode.
+    monkeypatch.setattr(m.os.path, "exists",
+                        lambda p: False if p == "/sys/firmware/efi" else True)
+
+    assert m._cmd_check(config) == 0
+    assert "OK" in capsys.readouterr().out

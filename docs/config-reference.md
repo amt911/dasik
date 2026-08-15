@@ -108,6 +108,8 @@ result back by hand.
 | `files` | list | Arbitrary `/etc/...` files (verbatim) |
 | `etc_tree` | string | Directory mirroring `/etc`; every file under it becomes a `files` entry ([Config splitting](wiki/Config-splitting.md)) |
 | `etc_tree_modes` | object | Tree-relative path → octal mode, for the modes Git cannot carry (`0600` on a keyfile) |
+| `home_tree` | string | Directory mirroring users' homes (`<tree>/<user>/<path>`); every file becomes a `home_files` entry |
+| `home_tree_modes` | object | Tree-relative path (`<user>/<path>`) → octal mode |
 | `home_files` | list | Files inside a user's `$HOME` (dotfiles, autostart entries) |
 | `zram` | object | `/etc/systemd/zram-generator.conf` |
 | `sudo` | object | `/etc/sudoers.d/10-dasik` — wheel access + extra rules |

@@ -98,6 +98,17 @@ class JsonModel(BaseModel):
         default_factory=list,
         description="Files inside a user's $HOME (dotfiles, autostart entries). "
                     "Path is relative to the home the machine declares.")
+    home_tree: Optional[str] = Field(
+        default=None,
+        description="Directory (relative to this config) mirroring users' homes, "
+                    "one subdirectory per USER: <tree>/<user>/<path>. Every file "
+                    "becomes a `home_files` entry. The /etc equivalent is "
+                    "`etc_tree`; this keeps a captured YAML document a readable "
+                    "file instead of an escaped JSON string.")
+    home_tree_modes: Dict[str, str] = Field(
+        default_factory=dict,
+        description="Tree-relative path (<user>/<path>) -> octal mode, for modes "
+                    "Git cannot carry. An executable file already becomes 0755.")
     kernel_cmdline: List[str] = Field(default_factory=list)
 
     # Toggles
@@ -144,7 +155,7 @@ class JsonModel(BaseModel):
         "oomd", "systemd_system_conf", "systemd_user_conf", mode="after"
     )(staticmethod(validate_ini_section))
 
-    @field_validator("etc_tree_modes")
+    @field_validator("etc_tree_modes", "home_tree_modes")
     @classmethod
     def _valid_tree_modes(cls, v: Dict[str, str]) -> Dict[str, str]:
         """Keys address a file inside the tree, so they follow the same rule the
@@ -152,7 +163,7 @@ class JsonModel(BaseModel):
         for path, mode in v.items():
             if path.startswith("/") or ".." in path.split("/"):
                 raise ValueError(
-                    f"etc_tree_modes key {path!r} must be relative to the tree "
+                    f"tree mode key {path!r} must be relative to the tree "
                     "and contain no '..' segment")
             _validate_mode(mode)
         return v

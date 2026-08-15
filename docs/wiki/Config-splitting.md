@@ -154,6 +154,36 @@ outside the config's own directory, and a missing tree.
 
 ---
 
+## `home_tree` — the same, for `$HOME`
+
+A captured `home_files` entry has the same problem an `/etc` file had: a YAML
+document with comments becomes one escaped line in JSON. `home_tree` is
+`etc_tree` with one extra level, because a home file is addressed as **(user,
+path)** rather than by absolute path — the machine decides where a home lives,
+and dasik reads its `/etc/passwd` to find out.
+
+```json
+"home_tree": "common/home"
+```
+
+```text
+common/home/
+└── andres/                                        ← a USER name, not a path
+    └── .config/config-saver/configs.d/zsh.yaml    → ~andres/.config/…/zsh.yaml
+```
+
+Everything else matches `etc_tree`: the executable bit becomes `0755`,
+`home_tree_modes` declares the rest, an explicit `home_files` entry wins, and
+`sync` **extracts into the tree** instead of inlining bodies. A file directly in
+the tree root is an error — the first level is a user, so there is nobody to
+own it.
+
+What it is for, concretely: `sync` captures the config-saver documents under
+`~/.config/config-saver/configs.d`, and with a tree declared they land in Git as
+the YAML files they are, comments and all, instead of as JSON strings.
+
+---
+
 ## Rules
 
 | Rule | Why |

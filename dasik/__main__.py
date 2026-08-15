@@ -37,6 +37,7 @@ from dasik.lib.actions.action_registry import get_default_registry
 from dasik.lib.logging import run_logger
 from dasik.lib.reconciler.reconciler import Reconciler
 from dasik.lib.json_parser.etc_tree import extract_to_etc_tree
+from dasik.lib.json_parser.home_tree import extract_to_home_tree
 from dasik.lib.json_parser.writeback import write_back
 from dasik.lib.state.config_writer import ConfigWriter
 from dasik.lib.state.generation_store import GenerationStore
@@ -324,8 +325,10 @@ def _load_validated_config(config_path: Path) -> Optional[dict]:
     # entries here for the same reason: only the loader knows where the config
     # is, and every action downstream sees ordinary entries.
     from dasik.lib.json_parser.etc_tree import ConfigTreeError, expand_etc_tree
+    from dasik.lib.json_parser.home_tree import expand_home_tree
     try:
         config = expand_etc_tree(config, config_path.parent)
+        config = expand_home_tree(config, config_path.parent)
     except ConfigTreeError as e:
         print(f"Error in {config_path}: {e}", file=sys.stderr)
         return None
@@ -529,21 +532,23 @@ def _sync_capture(config_path: Path, target_root: str) -> "tuple[int, list[Path]
 
     # `etc_tree` describes the shape of the REPOSITORY, not of the machine, so
     # no action captures it and it has to survive the capture explicitly.
-    if config.get("etc_tree") and not new_config.get("etc_tree"):
-        new_config["etc_tree"] = config["etc_tree"]
+    for key in ("etc_tree", "home_tree"):
+        if config.get(key) and not new_config.get(key):
+            new_config[key] = config[key]
     # With a tree declared, captured /etc bodies go into it rather than into the
     # JSON — otherwise a capture undoes the split from the other direction.
     extraction = extract_to_etc_tree(new_config, config_path.parent)
+    home = extract_to_home_tree(extraction.config, config_path.parent)
 
     # Written THROUGH the directives: a config split across files keeps its
     # split, and a value that did not change does not reopen its file. The tree
     # writes ride along so the JSON and the tree can never disagree. The backup
     # covers the root only — the rest is what version control is for, which is
     # also where a split config lives.
-    written = write_back(config_path, extraction.config,
-                         extra_writes=extraction.writes,
-                         deletions=extraction.deletions)
-    for path, mode in extraction.modes.items():
+    written = write_back(config_path, home.config,
+                         extra_writes={**extraction.writes, **home.writes},
+                         deletions=extraction.deletions | home.deletions)
+    for path, mode in {**extraction.modes, **home.modes}.items():
         os.chmod(path, mode)
     print(f"Synced system reality into {config_path} (backup: {backup}).")
     if len(written) > 1 or (written and written[0] != config_path):
@@ -778,9 +783,11 @@ def _cmd_check(config_path: Path) -> int:
     # is also what makes it the way to verify a split before applying it.
     from dasik.lib.json_parser.includes import ConfigIncludeError, resolve_includes
     from dasik.lib.json_parser.etc_tree import ConfigTreeError, expand_etc_tree
+    from dasik.lib.json_parser.home_tree import expand_home_tree
     try:
         data = resolve_includes(data, config_path.parent)
         data = expand_etc_tree(data, config_path.parent)
+        data = expand_home_tree(data, config_path.parent)
     except (ConfigIncludeError, ConfigTreeError) as e:
         print(f"Error in {config_path}: {e}", file=sys.stderr)
         return 1

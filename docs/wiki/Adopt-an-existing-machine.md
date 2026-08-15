@@ -171,68 +171,55 @@ directories:
   - "$CONFIG_DIR/config-saver/configs.d"
 ```
 
-### Where the documents live — pick ONE
+### Where the documents live — one place, decided
 
-The question everybody asks here is *"do I have to keep them in two places?"*
-No. Two arrangements work; keeping both means editing both, forever, for
-nothing.
+**You edit them in `~/.config/config-saver/configs.d/*.yaml`, on the machine.
+That is the only place anything is edited by hand.** Everything else is dasik
+moving them around for you:
 
-**A — declared in the dasik config.** `apply` writes them to
-`/etc/config-saver/configs`, so a fresh machine has the policy **before you log
-in**, without depending on a restore:
+```text
+you edit     ~/.config/config-saver/configs.d/zsh.yaml        (the machine)
+dasik save   captures it into the repo  →  common/home/andres/…/zsh.yaml
+dasik apply  writes it onto the next machine, before first login
+```
+
+Declare the tree once in the config, and the loop is closed:
 
 ```json
-"config_saver": {
-  "source": {"url": "https://github.com/amt911/config-saver-aur.git",
-             "ref": "<40-char commit sha>", "subdir": "."},
-  "configs": { "$include": "config-saver-configs.json" },
-  "timer_users": ["andres"]
-}
+"home_tree": "common/home"
 ```
 
-The documents become JSON (config-saver reads both formats, and JSON
-round-trips exactly, which is why `sync` captures them that way). The cost is
-that YAML comments do not survive the conversion.
+The repo copy under `common/home/` is a **capture, not a second source** — the
+same way `packages` in a synced config reflects what pacman has. `home_tree`
+keeps the documents as real YAML files, comments intact, reviewable in a diff.
+You never edit them there.
 
-**B — kept as YAML in `~/.config/config-saver/configs.d`.** dasik declares only
-the package and whose timer runs; the documents are yours. This works because
-of one document:
+Why the machine side is the editing side: config-saver reads `configs.d`
+**live**, so an edit is testable immediately (`config-saver --compress`), with
+no root and no apply in between. It is the same loop dasik uses everywhere —
+reality changes, `sync` captures it, `apply` reproduces it.
 
-```yaml
-# own-configs.yaml
-directories:
-  - "$CONFIG_DIR/config-saver/configs.d"
-```
+Two rules keep it honest:
 
-That archives the directory the documents live in, so **a restore brings the
-documents back along with the data**. Without it, B loses them on a reinstall —
-which is why config-saver ships that example and why it is worth declaring.
+- **Run `save` after editing.** A day-2 `apply` converges the machine to the
+  repo — that is its job — so an edit you never saved is reverted by the next
+  apply. `dasik plan` shows the drift either way, before anything is touched.
+- **Keep `own-configs` declared** (one line). It puts the documents inside the
+  backup archive too, so the archive alone can rebuild a machine even when the
+  config repo is out of reach:
 
-**And `sync` captures them.** `home_files` scans that one directory — the only
-part of a home it will look at, because it holds nothing but policy — so the
-documents you edit end up in the config, with their comments, without you
-copying anything. `apply` then writes them on a fresh machine **before anyone
-logs in**, which is what B used to be missing:
+  ```yaml
+  # own-configs.yaml
+  directories:
+    - "$CONFIG_DIR/config-saver/configs.d"
+  ```
 
-```json
-"home_files": [
-  { "user": "andres",
-    "path": ".config/config-saver/configs.d/zsh.yaml",
-    "content": "# why this path is here\ndirectories:\n  - \"$HOME/.zshrc\"\n" }
-]
-```
-
-That is the whole cycle with one source: **you edit the YAML, `save` captures
-and commits it, `apply` puts it back.** Same as packages, units and `/etc`.
-
-| Pick | When |
-| --- | --- |
-| **B** *(recommended)* | you write documents as YAML and want them versioned without maintaining a second copy |
-| **A** | you would rather declare them as JSON in the config by hand — one fewer moving part, at the cost of the comments |
-
-Declaring the *same* documents in both is the one arrangement to avoid: dasik
-writes `/etc`, your YAML sits in `~/.config`, both levels are read and merged,
-and every change has to be made twice to keep them agreeing.
+*The alternatives exist, and are not recommended.* Editing the repo tree and
+`apply`-ing it onto the machine works (the tree is declarative like everything
+else), but pick one editing side and stay there — editing both gives the same
+document two histories. Declaring the documents as JSON in
+`config_saver.configs` writes them to `/etc/config-saver/configs` as a second
+active level; with `home_tree` carrying them there is no reason to.
 
 ## 5. Set up encryption before the first archive
 
@@ -247,6 +234,9 @@ age has **two modes**, and that is the whole confusion:
 | --- | --- | --- | --- |
 | **Public key** | the **public** key (`age1qz…`, safe to publish) | the **private** key (`AGE-SECRET-KEY-1…`, a file) | **yes** |
 | **Passphrase** (`age -p`) | a password it prompts for | the same password | no |
+
+**Recommended: the key pair.** A timer cannot type a passphrase, and the
+passphrase route leaves plaintext archives waiting on disk until you do.
 
 The asymmetry is the point: **encrypting does not need the secret**. That is
 what lets config-saver encrypt your backup at 03:00 without you there — it
@@ -272,16 +262,10 @@ age -d -i ~/.config/age/key.txt -o test.txt test.age
 `-r` is the *recipient* (public key); `-i` is the *identity* (the file holding
 the private key).
 
-### Wire it into config-saver — in the document the MACHINE reads
+### Wire it into config-saver
 
-`encrypt` goes in the configuration document, per configuration. The catch is
-that there are two places a document can come from, and editing the wrong one
-changes nothing:
-
-| Where the document lives | Edit this when | Format |
-| --- | --- | --- |
-| `~/.config/config-saver/configs.d/*.yaml` | you wrote it by hand, on this machine | YAML |
-| `/etc/config-saver/configs/*.json` — **written by `dasik apply`** | it is declared in your dasik config | edit the config, then apply |
+`encrypt` goes in the document itself, per configuration — the same YAML you
+already edit in `~/.config/config-saver/configs.d/`:
 
 ```yaml
 # ~/.config/config-saver/configs.d/dotfiles.yaml
@@ -293,20 +277,9 @@ encrypt:
 directories: [ … ]
 ```
 
-```json
-// the same thing declared in dasik: common/config-saver-configs.json
-"dotfiles": {
-  "normalize_content": true,
-  "encrypt": { "method": "age", "recipients": ["age1qz9…"] },
-  "directories": [ "…" ]
-}
-```
-
-**Declaring it in the dasik config does nothing until `dasik apply` runs** —
-that is what writes `/etc/config-saver/configs/`. On the machine you are
-capturing *from*, which by definition dasik has not installed, the documents
-that count are the ones in your `~/.config`. Both levels are read and merged,
-so the two can coexist; the user's copy wins on a name collision.
+Nothing else to touch: the next `dasik save` captures the document, `encrypt`
+block included, into `common/home/…` like any other edit. The public key in a
+repository is fine — publishable is what a public key *is*.
 
 ### The one thing that can go wrong
 

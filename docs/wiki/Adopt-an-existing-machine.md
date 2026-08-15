@@ -192,30 +192,77 @@ level. They merge, and the user's copy wins on a name collision.
 ## 5. Set up encryption before the first archive
 
 **A `.tar.gz` is compressed, not encrypted**, and this one holds browser
-profiles, SSH config, whatever else you listed. config-saver encrypts natively,
-so the daily timer produces encrypted archives without you being there:
+profiles, SSH config, whatever else you listed.
+
+### age in one table
+
+age has **two modes**, and that is the whole confusion:
+
+| Mode | You encrypt with | You decrypt with | Works unattended |
+| --- | --- | --- | --- |
+| **Public key** | the **public** key (`age1qz…`, safe to publish) | the **private** key (`AGE-SECRET-KEY-1…`, a file) | **yes** |
+| **Passphrase** (`age -p`) | a password it prompts for | the same password | no |
+
+The asymmetry is the point: **encrypting does not need the secret**. That is
+what lets config-saver encrypt your backup at 03:00 without you there — it
+carries the *public* key in its configuration, and that key can sit in a Git
+repository in plain sight. Only decrypting needs the private key, and you do
+that by hand, once, when you reinstall.
+
+### Three commands
 
 ```bash
-age-keygen -o ~/.config/age/key.txt      # prints the PUBLIC key: age1…
+# 1. create the pair (once, ever)
+mkdir -p ~/.config/age && age-keygen -o ~/.config/age/key.txt
+#    prints:  Public key: age1qz9…      <- this is what goes in the config
+chmod 600 ~/.config/age/key.txt
+
+# 2. encrypt by hand (config-saver will do this for you; this is to see it work)
+age -r age1qz9… -o test.age test.txt
+
+# 3. decrypt
+age -d -i ~/.config/age/key.txt -o test.txt test.age
 ```
 
-Add it to the document:
+`-r` is the *recipient* (public key); `-i` is the *identity* (the file holding
+the private key).
+
+### Wire it into config-saver
+
+Per configuration, in the document itself:
 
 ```yaml
 encrypt:
   method: age
   recipients:
-    - age1qz…            # the public key printed above
+    - age1qz9…           # the public key printed above
 ```
 
-**Put the private key somewhere the archive is not.** It cannot live only
-inside what it decrypts. A password manager, or a printed copy in a drawer —
-losing it means losing every archive.
+From then on every archive comes out `.tar.gz.age`, the timer's included. In
+the JSON form dasik writes (`config-saver-configs.json`):
 
-Prefer no key to manage? `age -p` (a passphrase, prompted) works on the archive
-after the fact and is the manual alternative. The trade-off is real: an
-unattended timer cannot type a passphrase, so a plaintext archive sits on disk
-until you get round to it.
+```json
+"dotfiles": {
+  "normalize_content": true,
+  "encrypt": { "method": "age", "recipients": ["age1qz9…"] },
+  "directories": [ "…" ]
+}
+```
+
+### The one thing that can go wrong
+
+**Lose `key.txt` and every archive is gone.** There is no recovery, and it
+cannot live only inside the thing it decrypts. Copy it into a password manager
+the moment you create it — it is a two-line file:
+
+```bash
+cat ~/.config/age/key.txt      # paste into your password manager
+```
+
+A passphrase instead (`age -p archive.tar.gz`) leaves nothing to custody, and
+that is its whole appeal — but an unattended timer cannot type one, so a
+plaintext archive of your `$HOME` sits on disk until you get round to it.
+Choose deliberately.
 
 ## 6. First archive, and publish it
 

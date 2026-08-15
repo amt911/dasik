@@ -207,6 +207,28 @@ Committed: torre: sync 2026-08-15
 Pushed to origin.
 ```
 
+### `--home OWNER/REPO`
+
+Also publishes the `$HOME` archives config-saver produced — the **newest of each
+configuration**, to one release per machine, named after the hostname the config
+declares:
+
+```text
+Published 7 archive(s) to amt911/config-saver-personal-config (archlinux-torre-amd)
+```
+
+The archives live in a **different** repository from the configs, and the name
+is not guessed: one holds text you read in a diff, the other hundreds of
+megabytes that change daily. Existing releases are updated with `--clobber`, so
+there is one release per machine holding its latest, rather than a pile nobody
+prunes.
+
+**A plaintext archive is refused, and nothing is uploaded.** A release asset is
+a URL and `$HOME` holds browser profiles and SSH config, so an archive that is
+not `.age`/`.gpg` stops the publish with the fix in the message (declare
+`encrypt:` in the config-saver document). Publishing runs *after* the commit and
+never fails the capture.
+
 The `<config>.bak` that `sync` leaves is **removed once the commit holds the
 capture** (the previous commit is a better backup), and kept when nothing was
 committed.

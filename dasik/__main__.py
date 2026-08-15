@@ -48,6 +48,8 @@ from dasik.lib.expand import expand_config, subtract_contributions
 from dasik.lib.exceptions.exceptions import PasswordHashError
 from dasik.lib.git_save import (GitSaveError, chown_to, commit_paths,
                                 invoking_user, repo_root)
+from dasik.lib.home_archive import (HomeArchiveError, DEFAULT_ROOT,
+                                    latest_archives, publish_archives)
 from dasik.lib.passwords import SHA512, YESCRYPT, hash_password
 
 
@@ -202,6 +204,12 @@ def _build_parser() -> argparse.ArgumentParser:
     save_p.add_argument(
         "--no-push", action="store_true",
         help="Commit but do not push.",
+    )
+    save_p.add_argument(
+        "--home", metavar="OWNER/REPO", default=None,
+        help="Also publish the newest config-saver archive of each "
+             "configuration to this repository's <hostname> release. Encrypted "
+             "archives only.",
     )
 
     gens_p = sub.add_parser(
@@ -545,7 +553,7 @@ def _sync_capture(config_path: Path, target_root: str) -> "tuple[int, list[Path]
 
 
 def _cmd_save(config_path: Path, target_root: str, message: Optional[str],
-              push: bool) -> int:
+              push: bool, home_repo: str = "") -> int:
     """`sync`, then commit what it wrote — the whole cycle as one command.
 
     The order is the point. `check` runs on the capture BEFORE the commit,
@@ -583,12 +591,12 @@ def _cmd_save(config_path: Path, target_root: str, message: Optional[str],
               file=sys.stderr)
         return 1
 
+    # The hostname the CONFIG declares, not this machine's: the commit and the
+    # release both document the machine the config describes, which is what you
+    # want when one repository holds several of them.
+    captured = _load_validated_config(config_path) or {}
+    host = captured.get("hostname") or os.uname().nodename
     if message is None:
-        # The hostname the CONFIG declares, not this machine's: the commit
-        # documents the machine the config describes, which is what you want
-        # when one repository holds several of them.
-        captured = _load_validated_config(config_path) or {}
-        host = captured.get("hostname") or os.uname().nodename
         message = f"{host}: sync {datetime.now().strftime('%Y-%m-%d')}"
 
     try:
@@ -610,11 +618,31 @@ def _cmd_save(config_path: Path, target_root: str, message: Optional[str],
     backup.unlink(missing_ok=True)
 
     print(f"Committed: {message}")
+    if home_repo:
+        _publish_home(home_repo, user, host)
     if result.push_error:
         print(f"Not pushed: {result.push_error}", file=sys.stderr)
     elif result.pushed:
         print("Pushed to origin.")
     return 0
+
+
+def _publish_home(home_repo: str, user: Optional[str], host: str) -> None:
+    """Publish the newest config-saver archive of each configuration.
+
+    Separate from the config repository on purpose: one holds text you read in
+    a diff, the other holds hundreds of megabytes that change daily. A failure
+    here is reported, never fatal — the capture is already committed.
+    """
+    import pwd
+    home = Path(pwd.getpwnam(user).pw_dir) if user else Path.home()
+    try:
+        archives = latest_archives(home / DEFAULT_ROOT)
+        publish_archives(home_repo, host, archives, user)
+    except HomeArchiveError as e:
+        print(f"Not published: {e}", file=sys.stderr)
+        return
+    print(f"Published {len(archives)} archive(s) to {home_repo} ({host})")
 
 
 def _cmd_generations(target_root: str) -> int:
@@ -830,7 +858,8 @@ def main(argv: Optional[list[str]] = None) -> int:
             path = _validate_config_file(args.config)
             if path is None:
                 return 1
-            return _cmd_save(path, args.target, args.message, not args.no_push)
+            return _cmd_save(path, args.target, args.message, not args.no_push,
+                             home_repo=args.home or "")
 
         if args.verb == "generations":
             return _cmd_generations(args.target)

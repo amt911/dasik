@@ -29,6 +29,11 @@ validation:
 | `{"$include_line": "secrets/hash"}` | that file's first line, stripped — for secrets |
 | `{"$concat": [ ... ]}` | the lists inside it, flattened into one |
 
+Two directories do the same job for whole trees of files: `etc_tree` mirrors
+`/etc`, `home_tree` mirrors users' homes (`<tree>/<user>/<path>`). Every file
+under them becomes a `files` / `home_files` entry, and `sync` extracts back into
+them.
+
 ```json
 {
   "hostname": "archlinux-p14s",
@@ -78,9 +83,11 @@ with its hash and passphrase in `secrets/`). `tests/lib/test_split_configs.py`
 asserts each one assembles to exactly its single-file counterpart, so the two
 forms cannot drift.
 
-**`sync` refuses a config assembled this way** — it rewrites the file it is given
-and would flatten the split into one document. Sync a scratch copy and fold the
-result back by hand.
+**`sync` writes back through the split**: each value returns to the file it came
+from, and a directive whose value did not change is left alone — its file is not
+even opened. With `etc_tree`/`home_tree` declared, captured file bodies are
+written into those directories instead of inlined
+([Config splitting](wiki/Config-splitting.md#sync-writes-back-through-the-split)).
 
 ---
 

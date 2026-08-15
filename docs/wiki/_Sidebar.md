@@ -7,6 +7,7 @@
 - [Quickstart](Quickstart)
 - [From zero](From-zero)
 - [Adopt an existing machine](Adopt-an-existing-machine)
+- [Config splitting](Config-splitting)
 - [Recipes](Recipes)
 
 **Reference**
@@ -20,7 +21,6 @@
 - [AppArmor](AppArmor)
 - [PAM hardening](PAM)
 - [Firewall](Firewall)
-- [Config splitting](Config-splitting)
 
 **How it works**
 - [Workflows and state](Workflows)

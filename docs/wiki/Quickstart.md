@@ -24,6 +24,13 @@ Get networking up (`iwctl` for wifi), then install dasik →
 Start from a tracked sample and edit it — `config/install-simple.json` is the
 smallest realistic one, `config/vm-minimal.json` the smallest that boots.
 
+> **A config for a machine you keep does not stay one file.** The shape that
+> survives contact with a real system is a directory: the blocks in fragments,
+> `/etc` and `$HOME` as real files in `etc/` and `home/`, secrets gitignored.
+> `config/laptop-p14s-split/` is that shape, and
+> [Config splitting](Config-splitting.md) is how to get there. The single file
+> below is the same config flattened, and it is the right way to *start*.
+
 ```json
 {
   "hostname": "my-arch",
@@ -101,6 +108,44 @@ Read every line. Destructive changes are marked:
 If a disk is populated and you did **not** set `wipe_disk`, dasik refuses to
 repartition it and says so — it will never silently reformat a disk that has
 data on it.
+
+### 3b. Rehearse it in a VM — by hand
+
+Before a config touches hardware, install it in QEMU. Not the automated harness:
+**you** at the guest's console, running the same commands you will run for real.
+
+```bash
+cp -r ~/config/thinkpad ~/config/vm-test          # a copy, so the real one is untouched
+cp ~/config/thinkpad.json ~/config/vm-test.json
+```
+
+Two edits make it VM-shaped, and they are the only two:
+
+| In the copy | Why |
+| --- | --- |
+| `"device": "/dev/vda"` | the guest disk. The harness **refuses** anything resembling real hardware (`/dev/sd*`, `/dev/nvme*`) |
+| a smaller swap (`"2GiB"`) | a laptop sized for hibernation does not fit in a VM image |
+
+Its `secrets/` are its own — a fragment resolves `{"$include_line": "secrets/…"}`
+against **its own** directory, so the copy needs its own files (fake ones are
+fine; they are gitignored either way).
+
+```bash
+dasik check ~/config/vm-test.json                 # must pass before booting anything
+
+export DASIK_VM_ISO=/path/to/archlinux.iso
+scripts/vmtest/qemu.sh run-iso                    # boots the ISO with the repo on 9p
+```
+
+In the guest: mount the repo, install dasik, and drive it yourself —
+`dasik plan`, read it, `dasik apply`, reboot. Nothing on the host is touched;
+the guest disk is a qcow2 file. Details and the other flows (unattended install,
+day-2 convergence, boot-unlock) are in
+[`docs/vm-testing.md`](https://github.com/amt911/dasik/blob/main/docs/vm-testing.md).
+
+> A rehearsal catches the things a dry run cannot: a package that no longer
+> exists, a unit whose name changed, an `apply` that stops half way. That is
+> what it is for.
 
 ### 4. Apply
 

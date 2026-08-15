@@ -60,3 +60,27 @@ def test_no_config_saver_block_is_silent():
     cfg = {"packages": ["firefox"]}
     assert [w for w in _warnings(cfg)
             if w.code == "config_saver_timer_without_configs"] == []
+
+
+def test_documents_declared_as_home_files_count(tmp_path):
+    """Since `sync` captures the user's documents into `home_files`, that is a
+    perfectly good way to declare them — and the machine will have them. A
+    warning here trains people to ignore warnings."""
+    cfg = {"packages": ["config-saver"],
+           "config_saver": {"timer_users": ["andres"]},
+           "home_files": [
+               {"user": "andres",
+                "path": ".config/config-saver/configs.d/zsh.yaml",
+                "content": "directories: []\n"}]}
+
+    assert [w for w in _warnings(cfg)
+            if w.code == "config_saver_timer_without_configs"] == []
+
+
+def test_an_unrelated_home_file_does_not_count(tmp_path):
+    cfg = {"packages": ["config-saver"],
+           "config_saver": {"timer_users": ["andres"]},
+           "home_files": [{"user": "andres", "path": ".zshrc", "content": "x\n"}]}
+
+    assert len([w for w in _warnings(cfg)
+                if w.code == "config_saver_timer_without_configs"]) == 1

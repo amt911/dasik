@@ -126,6 +126,11 @@ git add -A && git commit -m "capture archlinux-p14s"
 gh repo create dasik-personal-config --private --source=. --push
 ```
 
+> **More than one machine?** They share one repository, and the layout is
+> forced by a rule rather than chosen: `$include` refuses `..`, so a machine
+> directory cannot reach `../common/` and the configs live at the root. See
+> [Several machines, one repository](Config-splitting.md#several-machines-one-repository).
+
 ## 4. Decide what config-saver saves
 
 config-saver reads **documents** that name directories and files. Since 3.3.0

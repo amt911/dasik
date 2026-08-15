@@ -53,6 +53,10 @@ Three mechanisms do this, and they are worth telling apart:
 `config/laptop-p14s-split/` in the dasik repo is exactly this shape, and is kept
 provably equivalent to the single-file `config/laptop-p14s.json` by a test.
 
+For **several machines in one repository**, the same three mechanisms plus one
+constraint that decides the layout — see
+[Several machines, one repository](Config-splitting.md#several-machines-one-repository).
+
 ## 1. Seed the private repo from the machine you have
 
 Do this **before** you wipe anything. On the old machine:

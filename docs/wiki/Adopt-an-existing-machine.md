@@ -315,6 +315,16 @@ gh release upload archlinux-p14s <new>.tar.gz.age --clobber \
     -R amt911/config-saver-personal-config
 ```
 
+Or let `save` do both halves at once — the capture and the archives:
+
+```bash
+sudo dasik save archlinux-p14s.json --home amt911/config-saver-personal-config
+```
+
+It picks the newest archive of **each** configuration (skipping the
+`description.txt` each run leaves beside them), refuses to publish anything
+that is not encrypted, and updates the machine's release in place.
+
 A real run, for scale: seven documents, **275 MB** of assets, of which
 `wallpapers` was 65 MB and `claude-conversations` 210 MB. That is why they are
 release assets and not commits.

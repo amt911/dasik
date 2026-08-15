@@ -147,3 +147,43 @@ def test_the_reported_version_matches_the_package():
     reported = sp.run([__import__("sys").executable, "-m", "dasik", "--version"],
                       capture_output=True, text=True, check=True).stdout.strip()
     assert reported == f"dasik {version('dasik')}"
+
+
+def test_home_publishes_the_newest_archive_of_each_configuration(repo, monkeypatch,
+                                                                 tmp_path, capsys):
+    """`--home` is the whole "how do I upload all of them" question: the newest
+    archive of every configuration, to one release per machine."""
+    archives = tmp_path / "configs"
+    for name in ("zsh", "wallpapers"):
+        d = archives / name / "20260815-120000"
+        d.mkdir(parents=True)
+        (d / f"{name}-20260815-120000.tar.gz.age").write_text("x")
+
+    published = {}
+    monkeypatch.setattr(m, "invoking_user", lambda: None)
+    monkeypatch.setattr(m, "latest_archives", lambda root: {
+        p.parent.parent.name: p for p in archives.glob("*/*/*.age")})
+    monkeypatch.setattr(m, "publish_archives",
+                        lambda repo, tag, arch, user=None: published.update(
+                            {"repo": repo, "tag": tag, "n": len(arch)}))
+    _stub_capture(monkeypatch, {"hostname": "torre"})
+
+    rc = m._cmd_save(repo / "main.json", "/", message=None, push=False,
+                     home_repo="amt911/config-saver-personal-config")
+
+    assert rc == 0
+    assert published == {"repo": "amt911/config-saver-personal-config",
+                         "tag": "torre", "n": 2}
+    assert "2 archive" in capsys.readouterr().out
+
+
+def test_home_needs_a_repository_to_publish_to(repo, monkeypatch, capsys):
+    """There is no deriving it: the archives live in a different repository
+    from the configs, and guessing the name would publish $HOME somewhere
+    nobody chose."""
+    _stub_capture(monkeypatch, {"hostname": "torre"})
+
+    rc = m._cmd_save(repo / "main.json", "/", message=None, push=False,
+                     home_repo="")
+
+    assert rc == 0     # the capture still happened; only --home was skipped

@@ -138,6 +138,57 @@ gh repo create dasik-personal-config --private --source=. --push
 
 ## 4. Decide what config-saver saves
 
+### You have none yet — this is where the first one comes from
+
+Fresh install of config-saver, nothing configured: `config-saver --show-configs`
+says *"No saved configurations found"*, and `--compress` refuses with the two
+levels and a ready-made command:
+
+```text
+  yours         : ~/.config/config-saver/configs.d
+  examples      : /usr/share/config-saver/configs (never used on their own)
+Copy an example to your own directory to get started:
+  mkdir -p ~/.config/config-saver/configs.d && cp /usr/share/config-saver/configs/zsh.yaml ~/.config/config-saver/configs.d/
+```
+
+The package ships seven examples — `zsh`, `default-config` (a KDE desktop),
+`wallpapers`, `claude`, `own-configs`, … — and **none of them is active**. That
+is deliberate: `default-config` reaches `~/.ssh` and `~/.config/rclone`, and
+installing a package must not start a daily timer archiving credentials nobody
+chose.
+
+So the first document appears one of two ways, and both are a decision you make
+**once**, on the machine you already have:
+
+```bash
+mkdir -p ~/.config/config-saver/configs.d
+
+# a) start from an example and trim it to what you actually want
+cp /usr/share/config-saver/configs/zsh.yaml ~/.config/config-saver/configs.d/
+
+# b) or write one — a document is this small
+cat > ~/.config/config-saver/configs.d/dotfiles.yaml <<'YAML'
+normalize_content: true
+directories:
+  - source: "$HOME"
+    files: [.zshrc, .gitconfig]
+  - "$CONFIG_DIR/kdeglobals"
+YAML
+```
+
+Copy `own-configs.yaml` too — one line, and it is what makes an archive able to
+rebuild a machine on its own:
+
+```bash
+cp /usr/share/config-saver/configs/own-configs.yaml ~/.config/config-saver/configs.d/
+```
+
+From then on nothing is ever copied again: `save` captures them into the repo,
+`apply` writes them onto the next machine. This paragraph is the only place in
+the whole workflow where a file is copied by hand.
+
+### The three levels
+
 config-saver reads **documents** that name directories and files. Since 3.3.0
 there are three levels, two of them active and merged by file name (the user's
 wins):
@@ -199,9 +250,9 @@ is the question everyone asks, and the answer is **never**:
 | — | writes the documents onto a fresh machine's `configs.d` (`apply`, before first login) |
 | — | propagates deletions: a document you remove leaves the repo on the next `save` |
 
-The one copy that exists at all is optional and happens once in your life:
-starting from a shipped example instead of a blank file —
-`cp /usr/share/config-saver/configs/zsh.yaml ~/.config/config-saver/configs.d/`.
+The one copy that exists at all is the first document, once, on this machine —
+[above](#you-have-none-yet--this-is-where-the-first-one-comes-from). After that,
+nothing is copied by hand again.
 
 The repo copy under `common/home/` is a **capture, not a second source** — the
 same way `packages` in a synced config reflects what pacman has. `home_tree`

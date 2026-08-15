@@ -232,27 +232,41 @@ age -d -i ~/.config/age/key.txt -o test.txt test.age
 `-r` is the *recipient* (public key); `-i` is the *identity* (the file holding
 the private key).
 
-### Wire it into config-saver
+### Wire it into config-saver — in the document the MACHINE reads
 
-Per configuration, in the document itself:
+`encrypt` goes in the configuration document, per configuration. The catch is
+that there are two places a document can come from, and editing the wrong one
+changes nothing:
+
+| Where the document lives | Edit this when | Format |
+| --- | --- | --- |
+| `~/.config/config-saver/configs.d/*.yaml` | you wrote it by hand, on this machine | YAML |
+| `/etc/config-saver/configs/*.json` — **written by `dasik apply`** | it is declared in your dasik config | edit the config, then apply |
 
 ```yaml
+# ~/.config/config-saver/configs.d/dotfiles.yaml
+normalize_content: true
 encrypt:
   method: age
   recipients:
     - age1qz9…           # the public key printed above
+directories: [ … ]
 ```
 
-From then on every archive comes out `.tar.gz.age`, the timer's included. In
-the JSON form dasik writes (`config-saver-configs.json`):
-
 ```json
+// the same thing declared in dasik: common/config-saver-configs.json
 "dotfiles": {
   "normalize_content": true,
   "encrypt": { "method": "age", "recipients": ["age1qz9…"] },
   "directories": [ "…" ]
 }
 ```
+
+**Declaring it in the dasik config does nothing until `dasik apply` runs** —
+that is what writes `/etc/config-saver/configs/`. On the machine you are
+capturing *from*, which by definition dasik has not installed, the documents
+that count are the ones in your `~/.config`. Both levels are read and merged,
+so the two can coexist; the user's copy wins on a name collision.
 
 ### The one thing that can go wrong
 
@@ -272,14 +286,25 @@ Choose deliberately.
 ## 6. First archive, and publish it
 
 ```bash
-config-saver --show-configs                       # what it found
-config-saver --compress                           # runs every document
-config-saver --export-config dotfiles --output ~/home.tar.gz.age
+config-saver --show-configs      # THE NAMES ARE YOURS — one per document it found
+#   - claude
+#   - kvm-switch
+#   - own-configs
+#   - wallpapers
+
+config-saver --compress                            # runs every document
+config-saver --export-config <name> --output ~/home.tar.gz.age
 
 gh repo create config-saver-data --private
 gh release create home-p14s ~/home.tar.gz.age -R amt911/config-saver-data \
     -n 'archlinux-p14s $HOME, age-encrypted'
 ```
+
+A configuration's **name is its file name** — `zsh.yaml` is `zsh`. There is no
+`dotfiles` unless you wrote a `dotfiles.yaml` (or declared one in the dasik
+config and applied it), so run `--show-configs` and use what is actually there.
+`--compress` on its own runs **all** of them, which is usually what you want;
+`--export-config` is for pulling one archive out to publish.
 
 Later captures replace it in place — one tag, always the newest archive:
 
@@ -425,5 +450,10 @@ published one refreshed (`gh release upload … --clobber`).
    reloaded but not re-armed, so `systemctl list-timers` shows an empty `NEXT`
    and no backup ever runs. `sudo systemctl restart config-saver@$USER.timer`
    (the package names the affected timers on upgrade).
-7. **Never commit a run log or an archive.** The `.gitignore` in step 3 covers
+7. **A configuration's name is its file name**, and declaring one in the dasik
+   config does not create it until `apply` runs. On the machine you are
+   capturing *from*, the documents that exist are the ones in
+   `~/.config/config-saver/configs.d`. `config-saver --show-configs` is the
+   answer to "what can I export?" — there is no `dotfiles` unless you made one.
+8. **Never commit a run log or an archive.** The `.gitignore` in step 3 covers
    the logs; archives are release assets and never enter Git.

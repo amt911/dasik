@@ -330,16 +330,23 @@ Publish that set as **one release per machine** on the private data repository:
 gh repo create config-saver-personal-config --private     # once
 
 cd ~/.config/config-saver/configs
-gh release create archlinux-p14s $(ls -1 */<timestamp>/*.age) \
+gh release create archlinux-p14s \
+    $(for d in */; do find "$d" -name '*.age' | sort | tail -1; done) \
     -R amt911/config-saver-personal-config \
     -n 'Encrypted $HOME archives. The private age key is NOT here.'
 ```
 
+That `for` picks the newest `.age` of each configuration, and pastes cleanly in
+bash **and zsh** (a bare glob would abort zsh on a configuration that has no
+archive yet, like one that needs root).
+
 Later runs replace the assets in place — one tag per machine, always the newest:
 
 ```bash
-gh release upload archlinux-p14s <new>.tar.gz.age --clobber \
-    -R amt911/config-saver-personal-config
+cd ~/.config/config-saver/configs
+gh release upload archlinux-p14s \
+    $(for d in */; do find "$d" -name '*.age' | sort | tail -1; done) \
+    --clobber -R amt911/config-saver-personal-config
 ```
 
 Or let `save` do both halves at once — the capture and the archives:

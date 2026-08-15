@@ -29,6 +29,13 @@ from ..state.change import Change, Op
 _DOMAIN = "home_files"
 
 
+# Home directories whose entire contents are declarative policy, and therefore
+# safe to capture. `configs.d` holds config-saver documents: a short list of what
+# to back up, in a directory nothing else writes to. Adding to this list means
+# claiming the same about another directory — a home is otherwise off limits.
+_SCANNED_HOME_DIRS = (".config/config-saver/configs.d",)
+
+
 class HomeFilesAction(AbstractAction):
     """Manage files under users' home directories."""
 
@@ -247,11 +254,16 @@ class HomeFilesAction(AbstractAction):
     # -- sync -------------------------------------------------------------- #
 
     def import_state(self, managed=None) -> dict:
-        """Report the declared entries plus the paths the manifest owns.
+        """Report the declared entries, what the manifest owns, and the
+        config-saver documents a user wrote by hand.
 
-        Deliberately not a directory scan: a home holds ssh keys, browser
-        profiles and gigabytes of state, none of which belongs in a config file.
-        What dasik put there is exactly what it can honestly report.
+        A home is **not** scanned: it holds ssh keys, browser profiles and
+        gigabytes of state, none of which belongs in a config file. The one
+        exception is a directory that holds nothing else —
+        ``.config/config-saver/configs.d``, which is pure declarative policy
+        (what to back up) and short. Capturing it is what lets you keep the
+        documents in one place and still have them on a machine dasik installs
+        BEFORE anyone logs in, instead of only after an archive is restored.
         """
         if self._target() is None:
             return {_DOMAIN: []}
@@ -280,7 +292,51 @@ class HomeFilesAction(AbstractAction):
             out.append({"user": user, "path": rel, "content": self._read(canonical)})
             seen.add(canonical)
 
+        out.extend(self._discover_scanned(passwd, seen))
         return {_DOMAIN: out}
+
+    def _discover_scanned(self, passwd: Dict[str, Tuple[str, int, int]],
+                          seen: set) -> List[Dict[str, Any]]:
+        """Files in the few home directories that hold only policy."""
+        found: List[Dict[str, Any]] = []
+        for user, (home, uid, _gid) in sorted(passwd.items()):
+            # Somebody who logs in and writes backup documents; a system
+            # account's home is not a place to go looking.
+            if not 1000 <= uid < 65534:
+                continue
+            for relative_dir in _SCANNED_HOME_DIRS:
+                directory = f"{home.rstrip('/')}/{relative_dir}"
+                for name in self._list_dir(directory):
+                    canonical = f"{directory}/{name}"
+                    if canonical in seen or self._is_symlink(canonical):
+                        continue
+                    content = self._read_text(canonical)
+                    if content is None:      # binary, unreadable, or a directory
+                        continue
+                    found.append({"user": user,
+                                  "path": f"{relative_dir}/{name}",
+                                  "content": content})
+                    seen.add(canonical)
+        return found
+
+    def _list_dir(self, canonical: str) -> List[str]:
+        try:
+            return sorted(os.listdir(self._abs(canonical)))
+        except OSError:
+            return []
+
+    def _is_symlink(self, canonical: str) -> bool:
+        return os.path.islink(self._abs(canonical))
+
+    def _read_text(self, canonical: str) -> Optional[str]:
+        path = self._abs(canonical)
+        if not os.path.isfile(path):
+            return None
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                return handle.read()
+        except (OSError, UnicodeDecodeError):
+            return None
 
     @staticmethod
     def _owner_of(canonical: str, passwd: Dict[str, Tuple[str, int, int]]

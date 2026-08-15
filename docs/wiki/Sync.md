@@ -48,6 +48,7 @@ something.
 | `users` | real users (uid ≥ 1000) plus root's hash from `/etc/shadow`; shell and groups refreshed from reality | root with no password ⇒ the declaration is dropped, not invented |
 | `systemd` | every enabled unit/socket, declared or not | declared intent kept, drift appended; `disable_units` preserved |
 | `files` + the `/etc` sections | local files under `/etc/{udev/rules.d,modprobe.d,modules-load.d,sysctl.d,tmpfiles.d,sddm.conf.d,profile.d}`; `/etc/crypttab` when it has real lines; `/etc/wireguard/*.conf`; NetworkManager `*.nmconnection` of type wireguard (mode `0600`) | symlinks and **pacman-owned** files are skipped (`pacman -Qo`); declared entries win over discovered ones |
+| `home_files` | the declared entries, what the manifest owns, and **the config-saver documents** under `~/.config/config-saver/configs.d` of every real user | the rest of a home is never scanned — ssh keys, browser profiles, state |
 | `locales` | `/etc/locale.gen`, `/etc/locale.conf`, `/etc/vconsole.conf` | |
 | `timezone` | the `/etc/localtime` symlink target | reports the machine, not the config |
 | `network` | `/etc/hostname`, whether the default hosts block is present | `network.type` passed through verbatim (it has no file) |

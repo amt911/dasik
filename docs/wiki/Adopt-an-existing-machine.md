@@ -203,20 +203,31 @@ That archives the directory the documents live in, so **a restore brings the
 documents back along with the data**. Without it, B loses them on a reinstall —
 which is why config-saver ships that example and why it is worth declaring.
 
-The cost is named by dasik itself: between the first boot of a fresh machine
-and the restore, `/etc/config-saver/configs` is empty and the timer exits 6.
-`dasik plan` warns about exactly that combination
-(`config_saver_timer_without_configs`). Nothing is lost — there is nothing to
-back up yet.
+**And `sync` captures them.** `home_files` scans that one directory — the only
+part of a home it will look at, because it holds nothing but policy — so the
+documents you edit end up in the config, with their comments, without you
+copying anything. `apply` then writes them on a fresh machine **before anyone
+logs in**, which is what B used to be missing:
+
+```json
+"home_files": [
+  { "user": "andres",
+    "path": ".config/config-saver/configs.d/zsh.yaml",
+    "content": "# why this path is here\ndirectories:\n  - \"$HOME/.zshrc\"\n" }
+]
+```
+
+That is the whole cycle with one source: **you edit the YAML, `save` captures
+and commits it, `apply` puts it back.** Same as packages, units and `/etc`.
 
 | Pick | When |
 | --- | --- |
-| **A** | starting from nothing, or you want a fresh machine to have the policy before anyone logs in |
-| **B** | your documents already exist as commented YAML, and `own-configs` is declared |
+| **B** *(recommended)* | you write documents as YAML and want them versioned without maintaining a second copy |
+| **A** | you would rather declare them as JSON in the config by hand — one fewer moving part, at the cost of the comments |
 
 Declaring the *same* documents in both is the one arrangement to avoid: dasik
 writes `/etc`, your YAML sits in `~/.config`, both levels are read and merged,
-and now every change has to be made twice to keep them agreeing.
+and every change has to be made twice to keep them agreeing.
 
 ## 5. Set up encryption before the first archive
 

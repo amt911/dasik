@@ -2,15 +2,16 @@
 
 **[Home](Home)**
 
-**Getting started**
+**Start here**
+- [**Adopt an existing machine**](Adopt-an-existing-machine)
+
+**Smaller entry points**
 - [Installation](Installation)
 - [Quickstart](Quickstart)
-- [From zero](From-zero)
-- [Adopt an existing machine](Adopt-an-existing-machine)
-- [Config splitting](Config-splitting)
 - [Recipes](Recipes)
 
 **Reference**
+- [Config splitting](Config-splitting)
 - [CLI](CLI)
 - [Configuration](Configuration)
 - [Disks and encryption](Disks)

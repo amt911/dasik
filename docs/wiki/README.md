@@ -17,15 +17,34 @@ are already running (`--target /`). Same config, same verbs.
 
 ---
 
-## Pick your entry point
+## Start here
+
+**One path, in order.** [Adopt an existing
+machine](Adopt-an-existing-machine.md) takes a hand-built Arch install and ends
+with a machine you can wipe and get back:
+
+| | |
+| --- | --- |
+| 1–3 | install both tools, capture the machine into a config, make it a repository |
+| 4–6 | what config-saver saves, encryption, the first published archive |
+| 7 | **rehearse the install in a VM** |
+| 8–9 | reinstall for real, bring `$HOME` back |
+| 10 | the day-to-day loop: `dasik save` |
+
+Two smaller entry points, if that is genuinely what you want:
 
 | I want to… | Page |
 | --- | --- |
-| Install dasik and know what it needs | **[Installation](Installation.md)** |
-| Install a machine from the ISO, start to finish | **[Quickstart](Quickstart.md)** |
-| Lay a config out the way a kept machine needs: fragments, `/etc` and `$HOME` as files, secrets out | **[Config splitting](Config-splitting.md)** |
-| Do the whole thing from zero: private repos, `$HOME`, install, day two | **[From zero](From-zero.md)** |
-| Turn a machine you built by hand into a reproducible one | **[Adopt an existing machine](Adopt-an-existing-machine.md)** |
+| install **one** machine from **one** config file, no repository | [Quickstart](Quickstart.md) |
+| install dasik and know what it needs | [Installation](Installation.md) |
+
+---
+
+## Reference
+
+| I want to… | Page |
+| --- | --- |
+| lay a config out the way a kept machine needs (fragments, `/etc` and `$HOME` as files, secrets out) | **[Config splitting](Config-splitting.md)** |
 | Look up a verb, a flag, an exit code | **[CLI reference](CLI.md)** |
 | Look up **every** JSON field there is | **[Configuration reference](Configuration.md)** |
 | Partition, encrypt with LUKS, lay out btrfs subvolumes | **[Disks and encryption](Disks.md)** |

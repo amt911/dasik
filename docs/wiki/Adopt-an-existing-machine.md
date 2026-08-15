@@ -1,14 +1,19 @@
 # Adopting a machine you already have
 
-The starting point here is the common one: **an Arch install you built by hand,
-with neither dasik nor config-saver on it**. By the end you can wipe that
-machine and get it back — the system from one repository, your `$HOME` from an
-encrypted archive.
+> **Start here.** This is the recommended path and the only one you need to
+> read: it goes from a machine you built by hand to one you can wipe and get
+> back. Everything else in this wiki is reference you reach for *from* here.
+
+The starting point is the common one: **an Arch install you built by hand, with
+neither dasik nor config-saver on it**. By the end you can wipe that machine and
+get it back — the system from one repository, your `$HOME` from an encrypted
+archive.
 
 Nothing below touches a disk until step 7, and step 7 says so loudly.
 
-> Already running both, and just want the install path? That is
-> [From zero](From-zero.md). This page is how you get *to* that point.
+> Already running both tools and only need the install itself? Jump to
+> [7. Rehearse it in a VM](#7-rehearse-it-in-a-vm-first) and
+> [8. Reinstall](#8-reinstall--this-is-the-destructive-part).
 
 ## What you will end up with
 
@@ -405,7 +410,43 @@ dasik check archlinux-p14s/main.json
 git commit -am "arm archlinux-p14s for reinstall" && git push
 ```
 
-## 7. Reinstall — this is the destructive part
+## 7. Rehearse it in a VM first
+
+The config has never installed anything yet. Prove it does before it touches a
+disk you care about — by hand, at the guest console, running the commands you
+are about to run for real:
+
+```bash
+cp -r ~/config/archlinux-p14s ~/config/vm-test        # a copy; the real one stays put
+cp ~/config/archlinux-p14s.json ~/config/vm-test.json
+```
+
+Two edits, and only two:
+
+| In the copy | Why |
+| --- | --- |
+| `"device": "/dev/vda"` | the guest disk — the harness **refuses** `/dev/sd*`, `/dev/nvme*` and friends |
+| a smaller swap (`"2GiB"`) | a partition sized for hibernation does not fit in a VM image |
+
+The copy needs its **own** `secrets/`: a fragment resolves
+`{"$include_line": "secrets/…"}` against its own directory, so fake values are
+fine there (they are gitignored either way).
+
+```bash
+dasik check ~/config/vm-test.json          # must pass before booting anything
+export DASIK_VM_ISO=/path/to/archlinux.iso
+scripts/vmtest/qemu.sh run-iso             # the ISO, with the repo on 9p
+```
+
+Inside the guest: install dasik, `dasik plan`, read it, `dasik apply`, reboot.
+The host is untouched; the guest disk is a qcow2 file. More flows (unattended
+install, day-2, boot-unlock) in
+[`docs/vm-testing.md`](https://github.com/amt911/dasik/blob/main/docs/vm-testing.md).
+
+A rehearsal catches what a dry run cannot: a package that no longer exists, a
+unit whose name changed, an `apply` that stops half way.
+
+## 8. Reinstall — this is the destructive part
 
 Boot the Arch ISO in **UEFI** mode, get networking up (`iwctl`), then:
 
@@ -438,7 +479,7 @@ dasik apply main.json          # DESTRUCTIVE: partitions, formats, pacstraps
 The config carries both tools as packages built from their PKGBUILDs, so the
 installed machine has dasik and config-saver already.
 
-## 8. Reboot, then bring `$HOME` back
+## 9. Reboot, then bring `$HOME` back
 
 **Not during the install.** `restore.archive` is a path *inside the target*, and
 the target does not exist until `apply` has partitioned it.
@@ -480,7 +521,7 @@ config-saver --decompress -i home.tar.gz.age --identity ~/.config/age/key.txt
 Then put the age key back where it belongs (`~/.config/age/key.txt`, mode
 `0600`) so the timer can encrypt again.
 
-## 9. From now on
+## 10. From now on
 
 ```bash
 sudo dasik plan --target / ~/config/archlinux-p14s.json    # what drifted

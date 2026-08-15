@@ -7,6 +7,14 @@ a dracut + LUKS + FIDO2 + bluetooth setup, and test it in a KVM before trusting 
 > 📖 For the full list of config fields, see
 > [config-reference.md](config-reference.md).
 
+> 🧭 **Want the whole story instead of just the capture?**
+> [Adopt an existing machine](wiki/Adopt-an-existing-machine.md) starts from a
+> hand-built Arch with neither dasik nor config-saver on it and ends with a
+> machine you can wipe and get back: installing both tools, capturing the system
+> from `{}`, the two private repositories, what config-saver saves and how the
+> archive is encrypted, the reinstall, and the day-two loop. This page is the
+> capture step of that guide, in more depth.
+
 > **Mental model.** dasik has two directions:
 > - **`sync`** — *system → config* (read-only to the system; writes the JSON). This
 >   is "copy my config".

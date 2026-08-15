@@ -13,6 +13,7 @@ in your own secrets (exactly what the .example files tell you to do) must not
 strictly.
 """
 import json
+import shutil
 from pathlib import Path
 
 import pytest
@@ -26,6 +27,31 @@ PAIRS = [
     ("config/test-config.json", "config/test-config-split/main.json"),
     ("config/laptop-p14s.json", "config/laptop-p14s-split/main.json"),
 ]
+
+
+def _with_fake_secrets(split_main: Path, tmp_path: Path) -> Path:
+    """A copy of the split with placeholder secrets, for a checkout that has none.
+
+    The real ones are gitignored, so relying on them means the comparison is
+    skipped exactly where it matters most — a clean clone, i.e. CI. (It did:
+    this file's own laptop assertions failed on main for a day because a
+    developer machine had the secrets and the runner did not.)
+    """
+    scratch = tmp_path / split_main.parent.name
+    shutil.copytree(split_main.parent, scratch)
+    secrets = scratch / "secrets"
+    if secrets.is_dir():
+        for example in secrets.glob("*.example"):
+            real = example.with_suffix("")
+            if real.exists():
+                continue
+            # A hash has to look like one: the model refuses a plaintext
+            # password outright, which is the point of that validator.
+            plausible = ("$6$dasiktest$c2VjcmV0.placeholder.hash.for.tests"
+                         if "hash" in real.name or "password" in real.name
+                         else "placeholder")
+            real.write_text(plausible + "\n")
+    return scratch / split_main.name
 
 
 def _assembled(split_main: Path):
@@ -109,14 +135,12 @@ def _same_but_for_secrets(assembled, expected, secrets: set) -> bool:
 
 
 @pytest.mark.parametrize("mono_rel,split_rel", PAIRS)
-def test_split_assembles_to_the_single_file_config(mono_rel, split_rel):
+def test_split_assembles_to_the_single_file_config(mono_rel, split_rel, tmp_path):
     mono, split_main = REPO / mono_rel, REPO / split_rel
     if not mono.exists() or not split_main.exists():
         pytest.skip(f"{mono_rel} is not present in this checkout")
-    if not (split_main.parent / "secrets" / "hashed-password").exists() \
-            and (split_main.parent / "secrets").exists():
-        pytest.skip("secrets/ not filled in (copy the .example files)")
 
+    split_main = _with_fake_secrets(split_main, tmp_path)
     assembled = _assembled(split_main)
     expected = json.loads(mono.read_text())
     # The split carries its own note about being a split; the rest must match.
@@ -143,10 +167,11 @@ def test_split_assembles_to_the_single_file_config(mono_rel, split_rel):
         f"expected:  {json.dumps(expected, sort_keys=True)[:2000]}")
 
 
-def test_the_laptop_split_drives_config_saver():
+def test_the_laptop_split_drives_config_saver(tmp_path):
     """The laptop split is the worked example of the whole workflow, so it must
     keep declaring the piece that makes an archive self-sufficient."""
-    split_main = REPO / "config/laptop-p14s-split/main.json"
+    split_main = _with_fake_secrets(
+        REPO / "config/laptop-p14s-split/main.json", tmp_path)
     block = _assembled(split_main)["config_saver"]
 
     assert block["timer_users"] == ["andres"]
@@ -172,14 +197,11 @@ def test_the_laptop_split_keeps_its_etc_as_real_files():
 
 
 @pytest.mark.parametrize("_mono_rel,split_rel", PAIRS)
-def test_the_assembled_split_still_validates(_mono_rel, split_rel):
+def test_the_assembled_split_still_validates(_mono_rel, split_rel, tmp_path):
     split_main = REPO / split_rel
     if not split_main.exists():
         pytest.skip(f"{split_rel} is not present in this checkout")
-    if (split_main.parent / "secrets").exists() \
-            and not (split_main.parent / "secrets" / "hashed-password").exists():
-        pytest.skip("secrets/ not filled in (copy the .example files)")
-    JsonModel.model_validate(_assembled(split_main))
+    JsonModel.model_validate(_assembled(_with_fake_secrets(split_main, tmp_path)))
 
 
 def test_the_split_example_needs_no_secrets_to_validate():

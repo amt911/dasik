@@ -115,6 +115,7 @@ source is versioned in [`docs/wiki/`](docs/wiki/) and published from there.
 | --- | --- |
 | [Installation](https://github.com/amt911/dasik/wiki/Installation) · [Quickstart](https://github.com/amt911/dasik/wiki/Quickstart) | get a machine installed |
 | [From zero](https://github.com/amt911/dasik/wiki/From-zero) | the whole path: private config repo, `$HOME` archive, install, day two |
+| [Adopt an existing machine](https://github.com/amt911/dasik/wiki/Adopt-an-existing-machine) | you already have an Arch install and neither tool: capture it, put it in Git, reinstall from it |
 | [CLI](https://github.com/amt911/dasik/wiki/CLI) | every verb, flag and exit code |
 | [Configuration](https://github.com/amt911/dasik/wiki/Configuration) | **every JSON field there is** |
 | [Disks](https://github.com/amt911/dasik/wiki/Disks) · [Boot](https://github.com/amt911/dasik/wiki/Boot) · [Packages](https://github.com/amt911/dasik/wiki/Packages) · [Features](https://github.com/amt911/dasik/wiki/Features) | the deep dives |

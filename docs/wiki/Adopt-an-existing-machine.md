@@ -15,7 +15,7 @@ Nothing below touches a disk until step 7, and step 7 says so loudly.
 | | Holds | Visibility |
 | --- | --- | --- |
 | `dasik-personal-config` | the machine's config, its `/etc` tree, its secrets | **private** |
-| `config-saver-data` | what config-saver backs up, and the archives themselves (as release assets) | **private** |
+| `config-saver-personal-config` | the archives themselves, as **release assets** — one release per machine | **private** |
 | [`dasik-aur`](https://github.com/amt911/dasik-aur) · [`config-saver-aur`](https://github.com/amt911/config-saver-aur) | the two PKGBUILDs | public |
 
 Two private repositories rather than one, because they hold different things
@@ -185,7 +185,7 @@ a fresh machine has them before you log in, because `apply` writes them:
 `config-saver-configs.json` is the same documents in JSON (config-saver reads
 both; JSON round-trips exactly, which is why `sync` captures them that way).
 
-**B — kept in the `config-saver-data` repository**. Useful when the same
+**B — kept in the `config-saver-personal-config` repository**. Useful when the same
 documents must work on machines that do *not* run dasik: clone it into
 `~/.config/config-saver/configs.d` and let the user level pick them up. The
 cost is a second place to keep in step, and dasik will not put them on a fresh
@@ -292,25 +292,45 @@ config-saver --show-configs      # THE NAMES ARE YOURS — one per document it f
 #   - own-configs
 #   - wallpapers
 
-config-saver --compress                            # runs every document
-config-saver --export-config <name> --output ~/home.tar.gz.age
-
-gh repo create config-saver-data --private
-gh release create home-p14s ~/home.tar.gz.age -R amt911/config-saver-data \
-    -n 'archlinux-p14s $HOME, age-encrypted'
+config-saver --compress          # runs every document; encrypted because they say so
 ```
 
-A configuration's **name is its file name** — `zsh.yaml` is `zsh`. There is no
-`dotfiles` unless you wrote a `dotfiles.yaml` (or declared one in the dasik
-config and applied it), so run `--show-configs` and use what is actually there.
-`--compress` on its own runs **all** of them, which is usually what you want;
-`--export-config` is for pulling one archive out to publish.
-
-Later captures replace it in place — one tag, always the newest archive:
+Each run writes
+`~/.config/config-saver/configs/<name>/<timestamp>/<name>-<timestamp>.tar.gz.age`.
+Publish that set as **one release per machine** on the private data repository:
 
 ```bash
-gh release upload home-p14s ~/home.tar.gz.age --clobber -R amt911/config-saver-data
+gh repo create config-saver-personal-config --private     # once
+
+cd ~/.config/config-saver/configs
+gh release create archlinux-p14s $(ls -1 */<timestamp>/*.age) \
+    -R amt911/config-saver-personal-config \
+    -n 'Encrypted $HOME archives. The private age key is NOT here.'
 ```
+
+Later runs replace the assets in place — one tag per machine, always the newest:
+
+```bash
+gh release upload archlinux-p14s <new>.tar.gz.age --clobber \
+    -R amt911/config-saver-personal-config
+```
+
+A real run, for scale: seven documents, **275 MB** of assets, of which
+`wallpapers` was 65 MB and `claude-conversations` 210 MB. That is why they are
+release assets and not commits.
+
+> **A document that needs root is skipped**, with a note naming it. Anything
+> under `/etc` is in that category — and on a machine dasik manages, `/etc` is
+> dasik's job, so archiving it means two sources of truth for the same files.
+
+> **Nothing prunes the archives.** Every run keeps its own timestamped
+> directory, so a daily timer grows without limit: a real machine had **114
+> copies of `wallpapers`, 7.2 GB**, on a disk at 96%. Until config-saver learns
+> retention, prune them yourself:
+> ```bash
+> find ~/.config/config-saver/configs -mindepth 2 -maxdepth 2 -type d |
+>     sort | head -n -3 | xargs -r rm -rf     # keep the newest 3 per document
+> ```
 
 Enable the timer so this keeps happening:
 
@@ -380,7 +400,7 @@ the target does not exist until `apply` has partitioned it.
 
 ```bash
 gh auth login
-gh release download home-p14s -R amt911/config-saver-data
+gh release download archlinux-p14s -R amt911/config-saver-personal-config
 ```
 
 **An age-encrypted archive has to be decrypted first.** dasik's restore runs
@@ -455,5 +475,7 @@ published one refreshed (`gh release upload … --clobber`).
    capturing *from*, the documents that exist are the ones in
    `~/.config/config-saver/configs.d`. `config-saver --show-configs` is the
    answer to "what can I export?" — there is no `dotfiles` unless you made one.
-8. **Never commit a run log or an archive.** The `.gitignore` in step 3 covers
+8. **Nothing prunes the archives.** A daily timer keeps every run forever;
+   114 copies of one document filled 7.2 GB on a machine already at 96%.
+9. **Never commit a run log or an archive.** The `.gitignore` in step 3 covers
    the logs; archives are release assets and never enter Git.

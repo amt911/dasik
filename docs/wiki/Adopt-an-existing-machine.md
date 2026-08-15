@@ -81,7 +81,12 @@ Two things to fix by hand before this config is worth keeping:
   meant for reinstalling declares a passphrase instead.
 
 > `sudo dasik sync` writes as root, so the files land `root:root`. `sudo chown
-> -R $USER: .` — or use `dasik save` from step 9, which hands them back for you.
+> -R $USER: .` — or use `dasik save` from step 10, which hands them back for you.
+
+> **This will not be the last capture.** It runs before config-saver has any
+> documents (step 4) and before the archives exist (step 6), so you capture
+> again once those are in place. Capturing is cheap and idempotent: on a machine
+> that has not changed, it writes nothing at all.
 
 ## 3. Make it a repository
 
@@ -278,6 +283,47 @@ Two rules keep it honest:
   directories:
     - "$CONFIG_DIR/config-saver/configs.d"
   ```
+
+### When they enter the repository — the capture you have to run
+
+Step 2 captured the machine **before** these documents existed, so the repo does
+not have them yet. Declare the tree once, then capture again:
+
+```json
+"home_tree": "common/home"
+```
+
+```bash
+sudo dasik save archlinux-p14s.json          # or: sudo dasik sync … && git commit
+```
+
+```text
+Synced system reality into archlinux-p14s.json (backup: archlinux-p14s.json.bak).
+  wrote common/home/andres/.config/config-saver/configs.d/dotfiles.yaml
+  wrote common/home/andres/.config/config-saver/configs.d/own-configs.yaml
+Committed: archlinux-p14s: sync 2026-08-15
+```
+
+That directory is where they land, and its shape is not arbitrary:
+
+```text
+common/home/                ← the value of home_tree
+└── andres/                 ← a USER name; the machine's /etc/passwd says where that home is
+    └── .config/config-saver/configs.d/
+        ├── dotfiles.yaml   ← the file you wrote, verbatim, comments and all
+        └── own-configs.yaml
+```
+
+**Nobody copied anything.** `sync` scans that one directory of the home (the
+only part of a home it will look at), and `home_tree` writes what it finds as
+files instead of JSON strings. From here it maintains itself: edit a document
+and the next `save` updates the repo; delete one and the next `save` removes it
+from the repo too.
+
+And the payoff, which is the whole reason for the detour: `apply` on a machine
+that has never seen your `$HOME` writes those documents into its
+`~/.config/config-saver/configs.d` **before you log in** — so its timer has
+something to back up from the first day, without restoring anything.
 
 *The alternatives exist, and are not recommended.* Editing the repo tree and
 `apply`-ing it onto the machine works (the tree is declarative like everything

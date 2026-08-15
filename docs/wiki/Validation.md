@@ -132,10 +132,15 @@ ESP is gone.
 filesystem happens to provide that module, the initramfs cannot read the device
 and the boot falls back to the passphrase.
 
-### `no_efi_firmware`
+### `no_efi_firmware`  *(`plan` / `apply` only)*
 
 **error.** The config partitions disks, declares an EFI bootloader, and
 `/sys/firmware/efi` does not exist — the installer is not booted in EFI mode.
+
+This is the one check about **the machine running dasik** rather than about the
+config, so `check` skips it: `check` validates a file, often from another
+laptop or a CI runner, and refusing `sd-boot` there would make a perfectly good
+config unvalidatable.
 
 This one is worth understanding: `bootctl install` does **not** fail on a legacy
 BIOS boot. It prints "Not booted with EFI, skipping EFI variable setup", writes

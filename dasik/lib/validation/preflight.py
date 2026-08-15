@@ -821,11 +821,19 @@ def _check_efi(config: Dict[str, Any], efi_boot: Optional[bool]) -> List[Issue]:
 
 
 def preflight(config: Dict[str, Any],
-              efi_boot: Optional[bool] = None) -> List[Issue]:
+              efi_boot: Optional[bool] = None,
+              environment: bool = True) -> List[Issue]:
     """Return every cross-field issue found in *config* (expanded form).
 
     *efi_boot* describes the environment the installer runs in; it is probed
     from /sys/firmware/efi when not given, and passed explicitly by tests.
+
+    *environment* selects whether checks about **the machine running dasik**
+    (rather than about the config) are included. `plan` and `apply` want them —
+    they are about to install here. `check` does not: it validates a file, has
+    no target, and is routinely run somewhere else entirely (another laptop, a
+    CI runner, a container), where refusing an EFI bootloader for the host's
+    firmware makes a perfectly good config unvalidatable.
     """
     if efi_boot is None:
         efi_boot = os.path.exists("/sys/firmware/efi")
@@ -846,5 +854,6 @@ def preflight(config: Dict[str, Any],
     issues += _check_random_swap(config)
     issues += _check_unlock_keyfile(config)
     issues += _check_config_saver(config)
-    issues += _check_efi(config, efi_boot)
+    if environment:
+        issues += _check_efi(config, efi_boot)
     return issues

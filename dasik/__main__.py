@@ -56,6 +56,20 @@ from dasik.lib.passwords import SHA512, YESCRYPT, hash_password
 _LOGGED_VERBS = {"plan", "apply", "sync", "save", "rollback", "generations"}
 
 
+def _version() -> str:
+    """The installed package's version, not a literal.
+
+    A hardcoded string drifts from pyproject.toml the first time somebody
+    bumps one and not the other — and the package's own smoke test compares
+    `dasik --version` against what the PKGBUILD built.
+    """
+    try:
+        from importlib.metadata import version
+        return version("dasik")
+    except Exception:      # nosec B110 - running from a source tree, uninstalled
+        return "0.0.0+unknown"
+
+
 def _default_log_path(verb: str) -> Path:
     """``./dasik-<verb>-<YYYYmmdd-HHMMSS>.log`` in the current directory."""
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -105,7 +119,8 @@ def _build_parser() -> argparse.ArgumentParser:
         prog="dasik",
         description="Declarative Arch Linux installer / configuration manager",
     )
-    parser.add_argument("--version", action="version", version="%(prog)s 0.1.0")
+    parser.add_argument("--version", action="version",
+                        version=f"%(prog)s {_version()}")
     parser.add_argument("-v", "--verbose", action="store_true",
                         help="Echo the live command stream and show errors in red")
     parser.add_argument("--log", default=None,
@@ -326,7 +341,7 @@ def _preflight_or_none(config: dict) -> Optional[dict]:
     entry), and it must be caught before the first partition is touched.
     """
     from dasik.lib.validation.preflight import has_errors, preflight, render
-    issues = preflight(config)
+    issues = preflight(config, environment=False)
     if has_errors(issues):
         print("Config is not coherent — refusing to continue:\n" + render(issues),
               file=sys.stderr)

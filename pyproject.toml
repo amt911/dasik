@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dasik"
-version = "0.1.0"
+version = "0.2.0"
 description = "Arch Linux installation and configuration tool"
 readme = "README.md"
 requires-python = ">=3.10"

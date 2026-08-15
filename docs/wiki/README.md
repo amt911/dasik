@@ -24,6 +24,7 @@ are already running (`--target /`). Same config, same verbs.
 | Install dasik and know what it needs | **[Installation](Installation.md)** |
 | Install a machine from the ISO, start to finish | **[Quickstart](Quickstart.md)** |
 | Do the whole thing from zero: private repos, `$HOME`, install, day two | **[From zero](From-zero.md)** |
+| Turn a machine you built by hand into a reproducible one | **[Adopt an existing machine](Adopt-an-existing-machine.md)** |
 | Look up a verb, a flag, an exit code | **[CLI reference](CLI.md)** |
 | Look up **every** JSON field there is | **[Configuration reference](Configuration.md)** |
 | Partition, encrypt with LUKS, lay out btrfs subvolumes | **[Disks and encryption](Disks.md)** |

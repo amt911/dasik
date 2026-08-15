@@ -16,6 +16,12 @@ packaging, and it is public:
 The `$HOME` archive is **not** a repository. It is a release asset on the
 private one — Git is bad at gigabytes of browser profile.
 
+> **Starting from a machine you built by hand, with neither tool installed?**
+> Start at [Adopt an existing machine](Adopt-an-existing-machine.md): it covers
+> installing both, capturing the machine into a config from `{}`, creating the
+> two private repositories, and arming the capture for a reinstall. Then come
+> back here.
+
 ---
 
 ## 0. What lives where

@@ -6,6 +6,7 @@
 - [Installation](Installation)
 - [Quickstart](Quickstart)
 - [From zero](From-zero)
+- [Adopt an existing machine](Adopt-an-existing-machine)
 - [Recipes](Recipes)
 
 **Reference**

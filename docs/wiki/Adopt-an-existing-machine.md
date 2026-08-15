@@ -189,6 +189,20 @@ Declare the tree once in the config, and the loop is closed:
 "home_tree": "common/home"
 ```
 
+To be precise about who does what — because "do I have to copy these around?"
+is the question everyone asks, and the answer is **never**:
+
+| You, by hand | dasik, on its own |
+| --- | --- |
+| write or edit a document — that is *deciding what to back up*, which no tool can guess | captures it into the repo on `save`, comments intact |
+| run `sudo dasik save` after changing something | commits as you, pushes, publishes the archives (`--home`) |
+| — | writes the documents onto a fresh machine's `configs.d` (`apply`, before first login) |
+| — | propagates deletions: a document you remove leaves the repo on the next `save` |
+
+The one copy that exists at all is optional and happens once in your life:
+starting from a shipped example instead of a blank file —
+`cp /usr/share/config-saver/configs/zsh.yaml ~/.config/config-saver/configs.d/`.
+
 The repo copy under `common/home/` is a **capture, not a second source** — the
 same way `packages` in a synced config reflects what pacman has. `home_tree`
 keeps the documents as real YAML files, comments intact, reviewable in a diff.

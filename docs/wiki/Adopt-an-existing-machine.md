@@ -166,12 +166,15 @@ directories:
   - "$CONFIG_DIR/config-saver/configs.d"
 ```
 
-### Where the documents live
+### Where the documents live — pick ONE
 
-Two arrangements. They differ in one thing: whether dasik owns them.
+The question everybody asks here is *"do I have to keep them in two places?"*
+No. Two arrangements work; keeping both means editing both, forever, for
+nothing.
 
-**A — declared in the dasik config** *(recommended)*. One source of truth, and
-a fresh machine has them before you log in, because `apply` writes them:
+**A — declared in the dasik config.** `apply` writes them to
+`/etc/config-saver/configs`, so a fresh machine has the policy **before you log
+in**, without depending on a restore:
 
 ```json
 "config_saver": {
@@ -182,17 +185,38 @@ a fresh machine has them before you log in, because `apply` writes them:
 }
 ```
 
-`config-saver-configs.json` is the same documents in JSON (config-saver reads
-both; JSON round-trips exactly, which is why `sync` captures them that way).
+The documents become JSON (config-saver reads both formats, and JSON
+round-trips exactly, which is why `sync` captures them that way). The cost is
+that YAML comments do not survive the conversion.
 
-**B — kept in the `config-saver-personal-config` repository**. Useful when the same
-documents must work on machines that do *not* run dasik: clone it into
-`~/.config/config-saver/configs.d` and let the user level pick them up. The
-cost is a second place to keep in step, and dasik will not put them on a fresh
-machine for you.
+**B — kept as YAML in `~/.config/config-saver/configs.d`.** dasik declares only
+the package and whose timer runs; the documents are yours. This works because
+of one document:
 
-You can do both: the system-wide policy from dasik, personal extras in the user
-level. They merge, and the user's copy wins on a name collision.
+```yaml
+# own-configs.yaml
+directories:
+  - "$CONFIG_DIR/config-saver/configs.d"
+```
+
+That archives the directory the documents live in, so **a restore brings the
+documents back along with the data**. Without it, B loses them on a reinstall —
+which is why config-saver ships that example and why it is worth declaring.
+
+The cost is named by dasik itself: between the first boot of a fresh machine
+and the restore, `/etc/config-saver/configs` is empty and the timer exits 6.
+`dasik plan` warns about exactly that combination
+(`config_saver_timer_without_configs`). Nothing is lost — there is nothing to
+back up yet.
+
+| Pick | When |
+| --- | --- |
+| **A** | starting from nothing, or you want a fresh machine to have the policy before anyone logs in |
+| **B** | your documents already exist as commented YAML, and `own-configs` is declared |
+
+Declaring the *same* documents in both is the one arrangement to avoid: dasik
+writes `/etc`, your YAML sits in `~/.config`, both levels are read and merged,
+and now every change has to be made twice to keep them agreeing.
 
 ## 5. Set up encryption before the first archive
 
@@ -448,9 +472,19 @@ Then put the age key back where it belongs (`~/.config/age/key.txt`, mode
 ## 9. From now on
 
 ```bash
-sudo dasik plan --target / ~/config/archlinux-p14s/main.json   # what drifted
-sudo dasik save ~/config/archlinux-p14s/main.json              # capture + commit + push
+sudo dasik plan --target / ~/config/archlinux-p14s.json    # what drifted
+
+sudo dasik save ~/config/archlinux-p14s.json \
+    --home amt911/config-saver-personal-config             # both halves, one command
 ```
+
+`save` captures the machine, validates the capture, commits it as **you** (not
+as root) and pushes. `--home` adds the other half: the **newest archive of each
+config-saver configuration**, published to that machine's release — refusing
+outright if any of them is not encrypted, because a release asset is a URL.
+
+Without `--home` it is a shell pipeline you have to remember, and getting it
+wrong publishes an old archive or the `description.txt` sitting next to it.
 
 `save` validates the capture *before* committing it, runs Git as you rather
 than as root, hands back ownership of what it wrote, and never stages a

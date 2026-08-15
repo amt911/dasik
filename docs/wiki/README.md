@@ -23,6 +23,7 @@ are already running (`--target /`). Same config, same verbs.
 | --- | --- |
 | Install dasik and know what it needs | **[Installation](Installation.md)** |
 | Install a machine from the ISO, start to finish | **[Quickstart](Quickstart.md)** |
+| Lay a config out the way a kept machine needs: fragments, `/etc` and `$HOME` as files, secrets out | **[Config splitting](Config-splitting.md)** |
 | Do the whole thing from zero: private repos, `$HOME`, install, day two | **[From zero](From-zero.md)** |
 | Turn a machine you built by hand into a reproducible one | **[Adopt an existing machine](Adopt-an-existing-machine.md)** |
 | Look up a verb, a flag, an exit code | **[CLI reference](CLI.md)** |
@@ -31,7 +32,6 @@ are already running (`--target /`). Same config, same verbs.
 | Choose a bootloader, an initramfs, kernel parameters, a splash | **[Boot chain](Boot.md)** |
 | Declare packages, AUR packages, a Git PKGBUILD, mirrors | **[Packages](Packages.md)** |
 | Know what each feature block actually installs | **[Feature blocks](Features.md)** |
-| Split a 400-line config into readable files, keep secrets out | **[Config splitting](Config-splitting.md)** |
 | Understand plan/apply/ownership/generations/rollback | **[Workflows and state](Workflows.md)** |
 | Know exactly what `sync` can and cannot capture | **[Sync](Sync.md)** |
 | Understand a preflight error before it aborts an install | **[Validation](Validation.md)** |

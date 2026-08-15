@@ -1,8 +1,24 @@
 # Config splitting and secrets
 
-A real config is dominated by two things that do not belong inline: a long
-package list, and verbatim file bodies (PAM snippets, udev rules, ini
-fragments) that have to be JSON-escaped into one line. Four directives fix both.
+**This is what a config for a machine you actually keep looks like.** One file
+is how you start; a directory is how it ends up, because a real config is
+dominated by two things that do not belong inline — a long package list, and
+verbatim file bodies (PAM snippets, udev rules, YAML documents) that would have
+to be JSON-escaped onto one line.
+
+Four directives and two directory trees fix that:
+
+| Mechanism | For |
+| --- | --- |
+| [`$include`](#include--parsed-json) | a block in its own file |
+| [`$include_text`](#include_text--raw-text) · [`$include_line`](#include_line--the-first-line-stripped) | one file body · one secret |
+| [`$concat`](#concat--flatten-lists) | a package list split by theme |
+| [`etc_tree`](#etc_tree--a-directory-that-mirrors-etc) | **every** `/etc` file, as a directory |
+| [`home_tree`](#home_tree--the-same-for-home) | the same for users' homes |
+
+`sync` writes back through all of them, so the shape survives a capture: values
+return to the file they came from and file bodies land in the trees rather than
+in the JSON.
 
 ```json
 {

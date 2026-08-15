@@ -265,6 +265,93 @@ belongs to. It goes to the last one, and moving it is a normal edit.
 
 ---
 
+## Several machines, one repository
+
+The layout is not a matter of taste — one rule decides it. **`$include`
+resolves relative to the file that names it and refuses `..`**: a config may
+only pull in files at or below its own directory.
+
+```text
+Error: include path '../common/pkgs.json' must not contain '..' — a config may
+only pull in files at or below its own directory
+```
+
+So a directory per machine *cannot* reach `../common/`. The config that pulls
+from both its own fragments and the shared ones has to sit **above** them,
+which means the machine configs live at the repository root:
+
+```text
+dasik-personal-config/
+├── thinkpad.json             ← one config per machine, at the root
+├── desktop.json
+├── common/                   ← identical on every machine
+│   ├── locales.json
+│   └── packages-base.json
+├── thinkpad/                 ← only this machine
+│   ├── disks.json  packages.json  users.json …
+│   ├── etc/                  ← its /etc tree
+│   │   └── pam.d/sudo
+│   └── secrets/              ← gitignored
+└── desktop/
+```
+
+```json
+{
+  "hostname": "thinkpad",
+  "locales": { "$include": "common/locales.json" },
+  "users":   { "$include": "thinkpad/users.json" },
+  "packages": { "$concat": [
+    { "$include": "common/packages-base.json" },
+    { "$include": "thinkpad/packages.json" }
+  ]},
+  "etc_tree": "thinkpad/etc"
+}
+```
+
+That config assembles to the shared packages **followed by** the machine's own,
+`/etc/pam.d/sudo` from `thinkpad/etc/`, and everything else per machine.
+
+### The part that surprises people
+
+A fragment resolves its own includes against **its own** directory, not the
+root's. So `thinkpad/users.json` keeps saying:
+
+```json
+"hashed_password": { "$include_line": "secrets/hashed-password" }
+```
+
+— not `thinkpad/secrets/…`. Fragments move as a unit, which is what makes a
+machine directory copy-able into another repository.
+
+### What belongs in `common/`
+
+Only what you want **identical** everywhere, because that is what it means: a
+change there changes every machine on its next apply. Locales, keyboard layout,
+a package base, the config-saver documents. Not disks, not users, not hostname,
+and not the packages that exist for one machine's hardware.
+
+Splitting packages is worth doing early — `$concat` is exactly for it — but
+splitting them *wrong* is worse than not splitting: a "base" that quietly
+carries `thinkpad-acpi-utils` will install it on the desktop too.
+
+### Adding a machine
+
+```bash
+# on the new machine
+sudo dasik sync newhost.json --target /    # captures it from {}
+dasik check newhost.json
+```
+
+Then move machine-specific blocks into `newhost/`, point the includes at the
+new paths, set `etc_tree` to `newhost/etc`, and re-run `dasik check`. Each
+machine keeps its own `secrets/` (gitignored) and its own generations; the
+repository is shared, the state is not.
+
+`dasik save` works from any of them: it commits to the same repository, as the
+user who ran it, without staging anything Git is told to ignore.
+
+---
+
 ## When to split
 
 | Signal | Split |

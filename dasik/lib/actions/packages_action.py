@@ -96,6 +96,8 @@ class PackagesAction(AbstractAction):
         self.aur_pkgs: List[str] = []
         self._reason: dict[str, str] = {}   # bare name -> "explicit"|"dep"
         self._legacy_aur: set[str] = set()  # names to force onto the AUR path
+        # frozenset of queried names -> {group: {member, …}}; see _group_members.
+        self._group_cache: dict[frozenset, dict[str, set[str]]] = {}
         # Packages declared `{"name": …, "optional": true}`: their install may
         # fail without aborting the apply (see apply()). Never claimed as managed.
         self.optional_packages: set[str] = set()
@@ -284,7 +286,19 @@ class PackagesAction(AbstractAction):
     _PACMAN_DOMAIN = "packages"
 
     def actual(self) -> set[str]:
-        """Set of explicitly-installed packages on the target (``pacman -Qqe``)."""
+        """Explicitly-installed packages (``pacman -Qqe``), plus every declared
+        pacman **group** whose members are all installed.
+
+        The group half is what keeps ownership. After a sync the reconciler
+        records ``actual ∩ (owned ∪ declared)`` (``_owned_after_sync``), and no
+        group name is ever an installed package — so without this every sync
+        quietly dispossessed the group, and dropping it from the config
+        afterwards removed nothing at all. Found by driving the matrix in a VM:
+        every other step passed and only the removal was silent.
+
+        A group is reported only when complete, for the same reason
+        :meth:`plan` calls it converged only then.
+        """
         target = getattr(self.context, "target", None) if self.context else None
         if target is None:
             return set()
@@ -292,7 +306,13 @@ class PackagesAction(AbstractAction):
         stdout = getattr(result, "stdout", b"") or b""
         if isinstance(stdout, bytes):
             stdout = stdout.decode("utf-8", errors="replace")
-        return {line.strip() for line in stdout.splitlines() if line.strip()}
+        explicit = {line.strip() for line in stdout.splitlines() if line.strip()}
+        groups = self._group_members(self.desired)
+        if groups:
+            installed = self._installed_all()
+            explicit |= {name for name, members in groups.items()
+                         if not members - installed}
+        return explicit
 
     def _installed_all(self) -> set[str]:
         """All installed packages (any reason): pacman -Qq."""
@@ -308,6 +328,72 @@ class PackagesAction(AbstractAction):
     def _reason_of(self, pkg: str) -> str:
         """Install reason of an installed package: explicit if in -Qqe else dep."""
         return "explicit" if pkg in self.actual() else "dep"
+
+    def _group_members(self, names) -> "dict[str, set[str]]":
+        """``{group: {member, …}}`` for whichever *names* are pacman groups.
+
+        `apply` has always understood groups (``PackageResolver.repo_groups``);
+        `plan` and `import_state` did not, because both work from
+        ``pacman -Qq``/``-Qqe``, which list *packages*. A declared ``xorg`` was
+        therefore planned forever and rewritten into its members by the first
+        sync. This is the missing half.
+
+        One ``pacman -Sg a b c`` answers for every name at once, two columns
+        (``<group> <member>``) per line. A name that is not a group contributes
+        no rows — pacman reports it on stderr and carries on with the rest — so
+        nothing here has to tell the two cases apart.
+
+        A probe that cannot answer yields ``{}``, and every name then behaves as
+        it did before groups were understood: planned as a package. That fails
+        towards over-reporting a change; claiming convergence for a group nobody
+        managed to check is the error worth avoiding. The membership map is
+        therefore published only once the output has been read to the end — a
+        read that dies half way through would otherwise leave a group holding
+        part of its members, which is exactly the shape that reads as converged.
+        """
+        wanted = frozenset(names)
+        if not wanted:
+            return {}
+        cached = self._group_cache.get(wanted)
+        if cached is not None:
+            return cached
+        target = getattr(self.context, "target", None) if self.context else None
+        members: dict[str, set[str]] = {}
+        if target is not None:
+            try:
+                result = Command.execute(
+                    "pacman", ["-Sg", *sorted(wanted)], target=target)
+                out = getattr(result, "stdout", b"") or b""
+                if isinstance(out, bytes):
+                    out = out.decode("utf-8", errors="replace")
+                parsed: dict[str, set[str]] = {}
+                for line in out.splitlines():
+                    parts = line.split()
+                    if len(parts) == 2 and parts[0] in wanted:
+                        parsed.setdefault(parts[0], set()).add(parts[1])
+                members = parsed    # only a complete read is published
+            except Exception:   # noqa: BLE001 - unanswerable probe = no groups
+                members = {}
+        self._group_cache[wanted] = members
+        return members
+
+    @staticmethod
+    def _expand_group_removals(names, groups, installed) -> "list[str]":
+        """*names* with every group replaced by its **installed** members.
+
+        ``pacman -R xorg`` expands the group itself, so a plan that announced
+        the bare group name would hide which packages actually leave — and
+        would slip past :meth:`_removable`, whose whole job is to keep one
+        undeletable member from aborting the entire apply.
+        """
+        out: list[str] = []
+        for name in names:
+            members = groups.get(name)
+            if members is None:
+                out.append(name)
+                continue
+            out.extend(sorted(m for m in members if m in installed))
+        return out
 
     def _enabled_units(self) -> list[str]:
         """Unit files the target has enabled, bare templates excluded.
@@ -411,15 +497,34 @@ class PackagesAction(AbstractAction):
         Source-agnostic: the plan lists names to install/remove; ``apply()``
         resolves each name's origin. ``pacman -Qqe`` sees repo and AUR packages
         alike once installed, so the installed check is uniform.
+
+        A declared **pacman group** is the exception, because no group name is
+        ever an installed package: it counts as satisfied when every one of its
+        members is installed, and is planned as the group — one
+        ``pacman -S xorg`` is the transaction ``apply`` actually runs.
         """
         from ..state.change import Change, Op
 
         desired = list(self.desired)
         installed = self._installed_all()
         explicit = self.actual()
+        owned_not_declared = set(managed) - set(desired)
+        # One query covering both directions, so a plan costs one `pacman -Sg`.
+        groups = self._group_members(set(desired) | owned_not_declared)
+        # A member of a DECLARED group is still declared — by the group. Without
+        # this, replacing a captured member list with the group it came from
+        # makes one apply install the group and then delete packages out of it,
+        # because `apply` installs before it removes.
+        covered: set = set()
+        for name in desired:
+            covered |= groups.get(name, set())
+        removals = sorted(owned_not_declared - covered)
 
         changes: list = []
         for name in sorted(n for n in desired if n not in installed):
+            members = groups.get(name)
+            if members is not None and not members - installed:
+                continue    # every member present: the group is converged
             changes.append(Change(self._PACMAN_DOMAIN, Op.INSTALL, name))
         # reason MODIFY: names carrying a declared reason (never the legacy AUR
         # ones), installed, whose reason drifted.
@@ -437,8 +542,8 @@ class PackagesAction(AbstractAction):
             if name in installed and applied_refs.get(name) != self.package_sources[name].get("ref"):
                 changes.append(Change(self._PACMAN_DOMAIN, Op.MODIFY, name,
                                       reason=self._REF_CHANGED))
-        removals = sorted(set(managed) - set(desired))
-        for name in self._removable(removals, installed):
+        expanded = self._expand_group_removals(removals, groups, installed)
+        for name in self._removable(expanded, installed):
             changes.append(Change(self._PACMAN_DOMAIN, Op.REMOVE, name,
                                   reason="no longer declared"))
         return changes
@@ -572,12 +677,26 @@ class PackagesAction(AbstractAction):
         Undeclared explicit packages (``pacman -Qqe`` \\ declared, incl. AUR) are
         appended as plain names — no ``aur-`` prefix, because ``apply`` now
         resolves the source. Transitive dependencies are never captured.
+
+        A declared **pacman group** is kept as the group, and its members are
+        not re-emitted beside it: ``pacman -Qqe`` reports the members, and
+        writing those back would replace the declaration with the thing it
+        stands for — the next save would then have nothing left to keep. Members
+        are covered whether or not the group is complete, because the config is
+        intent: a half-installed group is a divergence for ``plan`` to report,
+        not a reason for the capture to rewrite what the admin wrote.
         """
         explicit = self.actual()
         installed = self._installed_all()
 
         def _bare(name: str) -> str:
             return name[len(AUR_PREFIX):] if name.startswith(AUR_PREFIX) else name
+
+        declared_names = {_bare(e["name"] if isinstance(e, dict) else e)
+                          for e in self._original}
+        covered: set = set()
+        for members in self._group_members(declared_names).values():
+            covered |= members
 
         result: list = []
         declared: set = set()
@@ -597,7 +716,7 @@ class PackagesAction(AbstractAction):
             else:
                 result.append(bare)   # explicit / intent (not installed)
 
-        for name in sorted(explicit - declared):   # new explicit packages
+        for name in sorted(explicit - declared - covered):   # new explicit packages
             if self._is_debug_by_product(name, installed):
                 # `makepkg -si` builds and installs a split `-debug` package
                 # alongside the real one (Arch's default makepkg.conf asks for
@@ -608,7 +727,8 @@ class PackagesAction(AbstractAction):
                 continue
             result.append(name)
         # …and whatever an enabled unit proves is there without being explicit.
-        for name in sorted(self._unit_provider_packages() - declared - explicit):
+        for name in sorted(self._unit_provider_packages()
+                           - declared - explicit - covered):
             result.append({"name": name, "reason": "dep"})
 
         captured: Dict[str, Any] = {self._PACMAN_DOMAIN: result}

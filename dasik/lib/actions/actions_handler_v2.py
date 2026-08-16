@@ -67,6 +67,7 @@ def setup_actions() -> None:
     from .wireguard_action import WireguardAction
     from .plymouth_action import PlymouthAction
     from .luks_keyfile_action import LuksKeyfileAction
+    from .luks_token_action import LuksTokenAction
     from .encrypted_swap_action import EncryptedSwapAction
     from .apparmor_action import ApparmorAction
     from .auditd_conf_action import AuditdConfAction
@@ -84,6 +85,16 @@ def setup_actions() -> None:
     # around an rd.luks.key that would otherwise open nothing.
     register_action(
         action_class=LuksKeyfileAction,
+        config_key='__root__',   # reads `disks` — the unlock lives per partition
+        is_optional=True,
+    )
+    # The hardware tokens, for the same reason and in the same place: enrolling
+    # them inside _process_disk only ever ran while FORMATTING, so an installed
+    # machine could not gain a TPM2/FIDO2 keyslot, and a failed enrolment was
+    # never retried (issue #242). The volume is open by now, and the enrolment
+    # must precede the boot entry that names `tpm2-device=auto`.
+    register_action(
+        action_class=LuksTokenAction,
         config_key='__root__',   # reads `disks` — the unlock lives per partition
         is_optional=True,
     )

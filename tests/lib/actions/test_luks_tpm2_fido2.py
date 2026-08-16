@@ -32,28 +32,10 @@ def test_model_accepts_tpm2_fido2():
     assert p.unlock_tpm2 and p.unlock_fido2
 
 
-def _enroll(kind):
-    p = Partition(label="ROOT", size="rest", filesystem="ext4", encrypt=True,
-                  luks_name="cryptroot", luks_password="pw")
-    a = DiskPartitionAction(config=None)
-    with patch("dasik.lib.actions.disk_partition_action.Command.execute") as ex:
-        a._enroll_cryptenroll("/dev/vda2", p, kind)
-    return ex.call_args
-
-
-def test_tpm2_enroll_calls_cryptenroll_with_password_env():
-    c = _enroll("--tpm2-device=auto")
-    assert c.args == ("systemd-cryptenroll", ["--tpm2-device=auto", "/dev/vda2"])
-    assert c.kwargs["env"] == {"PASSWORD": "pw"}
-
-
-def test_enroll_skipped_without_password():
-    p = Partition(label="ROOT", size="rest", filesystem="ext4", encrypt=True,
-                  luks_name="cryptroot", unlock_tpm2=True)   # no password
-    a = DiskPartitionAction(config=None)
-    with patch("dasik.lib.actions.disk_partition_action.Command.execute") as ex:
-        a._enroll_cryptenroll("/dev/vda2", p, "--tpm2-device=auto")
-    ex.assert_not_called()
+# The enrolment itself moved to LuksTokenAction (issue #242): inside the disk
+# action it only ever ran while FORMATTING, so an installed machine could never
+# gain a token. What it does with the passphrase is unchanged and asserted in
+# tests/lib/actions/test_luks_token_action.py.
 
 
 def _cmdline(**flags):

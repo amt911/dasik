@@ -619,14 +619,19 @@ cmd_drive() {
     local ovmf; ovmf="$(_ovmf_args "$work")"
     if [ -z "$ovmf" ]; then die "drive needs OVMF to boot the UEFI image."; fi
 
+    # The TPM too: a guest script that enrols a TPM2 keyslot day-2 needs the
+    # same emulated device the install had, and its state persists in <work>/tpm.
+    _start_tpm "$work"
+
     local qargs="-enable-kvm -cpu host -m $DASIK_VM_RAM -smp $DASIK_VM_CPUS -display none -monitor none"
     qargs="$qargs $ovmf -drive file=$image,if=virtio,format=qcow2 -boot c $(_keydev_args)"
+    qargs="$qargs $TPM_QARGS"
     qargs="$qargs -virtfs local,path=$REPO_ROOT,mount_tag=dasik,security_model=none,readonly=on"
     qargs="$qargs -netdev user,id=n0 -device virtio-net,netdev=n0"
     qargs="$qargs -serial unix:$sock,server,nowait -no-reboot"
 
     log "QEMU drive command ($guest -> $marker):"; echo "  qemu-system-x86_64 $qargs"
-    [ "$dry" -eq 1 ] && { log "(dry-run) not launching."; return 0; }
+    [ "$dry" -eq 1 ] && { log "(dry-run) not launching."; _stop_tpm; return 0; }
 
     local timeout_s="${DASIK_VM_DRIVE_TIMEOUT:-900}"
     log "Booting installed image and driving $guest against target / …"
@@ -640,7 +645,7 @@ cmd_drive() {
     python3 day2_driver.py "$sock" "$timeout_s" "$guest" "$marker" | tee "$work/drive.log"
     local rc=${PIPESTATUS[0]}
     set -e
-    kill "$qpid" 2>/dev/null || true; wait 2>/dev/null || true
+    kill "$qpid" 2>/dev/null || true; _stop_tpm; wait 2>/dev/null || true
 
     echo; log "Drive highlights:"
     grep -aE "OK:|BAD:|$marker|No changes|Rolled back|Synced" "$work/drive.log" 2>/dev/null | tail -40

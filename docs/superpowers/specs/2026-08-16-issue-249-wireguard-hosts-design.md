@@ -18,30 +18,55 @@ Issue: [#249](https://github.com/amt911/dasik/issues/249)
 
 Three deliverables, shipped as three PRs.
 
-## A. The `wireguard` block is dead code, and three sample configs declare it
+## A. The `wireguard` block half-works, and the half that works leaks the private key
 
-`JsonModel.wireguard` exists (`dasik/lib/models/wireguard_model.py`), and **no action reads
-it**. Nothing plans it, nothing applies it, nothing captures it. Measured:
+`expand_wireguard` (`dasik/lib/expand/toggles.py:73`) does deliver a wg-quick tunnel:
+`wireguard-tools`, `wg-quick@<iface>.service`, and the conf written to
+`/etc/wireguard/<iface>.conf`. What is missing is what #249 asks for — and two defects,
+both measured, not guessed.
+
+**Defect 1 — the tunnel is written world-readable.** The toggle contributes no `mode`:
+
+```python
+$ python -c "from dasik.lib.expand import expand_config; ..."
+expanded files: [{'path': '/etc/wireguard/wg0.conf', 'content': '[Interface]\nPrivateKey = …'}]
+mode present?  [None]
+```
+
+and `DropFilesAction._write_content` with `mode=None` falls to a plain `open(path, "w")`,
+i.e. `0644`. The writer's own docstring is the indictment:
+
+> A declared mode is there because the content IS a secret — a WireGuard or NetworkManager
+> private key.
+
+`EtcFile.mode` has existed since #162 and this is the one caller that most needs it and does
+not use it. wg-quick warns and carries on, so nothing ever failed loudly.
+
+**Defect 2 — `sync` captures the same private key twice.** `DropFilesAction._discover_wireguard`
+reports the conf with `mode: "0600"`; the toggle contributes the same file *without* a mode, so
+`subtract_contributions` compares two unequal dicts and strips nothing:
 
 ```
-$ grep -rn "wireguard" dasik/lib/actions/actions_handler_v2.py   # the registry
-(no output)
-$ grep -l '"wireguard"' config/*.json
-config/install-chunga.json
-config/vm-chunga-full.json
-config/install-megamix.json
+after subtract, files kept: [{'path': '/etc/wireguard/wg0.conf', 'content': '…', 'mode': '0600'}]
 ```
 
-So the flagship sample config declares a VPN that never gets installed, and `plan` is
-silent about it — the exact failure mode CLAUDE.md calls a bug ("a declared block that
-converges but never shows up in `dasik plan`"), in its worst form: it does not converge
-either. A comment in `drop_files_action.py:312` even claims the opposite —
+The captured config then carries the tunnel in the `wireguard` block **and** as a `files`
+entry. Turning the block off afterwards no longer removes the tunnel: the orphan `files` entry
+keeps writing it.
+
+**What is missing outright:** the NetworkManager backend (#249's actual request), a tunnel that
+lives in a file next to the config instead of as an escaped one-liner inside the JSON, and a
+capture that comes back as the block rather than as a raw file. Three tracked configs declare
+the block — `install-chunga.json`, `vm-chunga-full.json`, `install-megamix.json` — so all three
+ship a world-readable key today.
+
+A comment in `drop_files_action.py:312` claims the capture is already handled —
 
 ```python
 # captures it verbatim (as the `wireguard` config block already does)
 ```
 
-— which is stale: only the `files` capture exists.
+— which is what Defect 2 disproves.
 
 ### The decisions taken (dialogue, 2026-08-16)
 
@@ -99,9 +124,10 @@ Model (`wireguard_model.py`, replacing the dead `WireguardModel`):
 it never did anything, so nothing can regress, and a silent re-interpretation of a block that
 holds a private key is worse than an error. The three sample configs are migrated.
 
-### How it is delivered: an expand toggle over domains that already exist
+### How it is delivered: the existing expand toggle, rewritten
 
-No new file-writing domain. `expand_wireguard(config)` contributes, per tunnel:
+No new file-writing domain: `expand_wireguard` already is one, and it is rewritten rather than
+replaced — now per tunnel, with the `mode` that Defect 1 is missing:
 
 | Backend | Contributions |
 | --- | --- |

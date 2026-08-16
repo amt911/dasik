@@ -17,7 +17,7 @@ from .kvm_model import KvmModel
 from .cups_model import CupsModel
 from .ms_fonts_model import MicrosoftFontsModel
 from .firewall_model import FirewallModel
-from .wireguard_model import WireguardModel
+from .wireguard_model import WireguardTunnel
 from .snapper_model import SnapperModel
 from .sudo_model import SudoModel
 from .cpu_model import CpuModel
@@ -129,7 +129,13 @@ class JsonModel(BaseModel):
     cups: Optional[CupsModel] = None
     microsoft_fonts: Optional[MicrosoftFontsModel] = None
     firewall: Optional[FirewallModel] = None
-    wireguard: Optional[WireguardModel] = None
+    wireguard: Optional[List[WireguardTunnel]] = Field(
+        default=None,
+        description=(
+            "WireGuard tunnels. Each names a `source` file next to the config, "
+            "in the format its backend reads: a wg-quick .conf or a "
+            "NetworkManager .nmconnection. dasik places it verbatim at 0600 "
+            "and never converts between the two."))
     snapper: Optional[SnapperModel] = None
     sudo: Optional[SudoModel] = None
     cpu: Optional[CpuModel] = None

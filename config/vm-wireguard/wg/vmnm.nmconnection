@@ -1,0 +1,26 @@
+# NetworkManager's own keyfile format (nm-settings-keyfile(5)). dasik writes it
+# to /etc/NetworkManager/system-connections/ at 0600, which is all NM needs:
+# its keyfile plugin reads the directory at startup, so this works during an
+# install, inside the chroot, with no daemon and no nmcli.
+[connection]
+id=vmnm
+type=wireguard
+interface-name=vmnm
+autoconnect=false
+
+[wireguard]
+listen-port=51872
+private-key=KhMbhD0j8kXKXZe/aye3EwSCp14sY3B/Y2sE+9/88Jw=
+private-key-flags=0
+
+[wireguard-peer.zR2vO8Ac6dyr3szitUaj+ygeEg6zozecAtCg950G1IE=]
+endpoint=10.10.0.1:51820
+allowed-ips=10.10.0.3/32;
+
+[ipv4]
+address1=10.10.0.4/24
+method=manual
+
+[ipv6]
+addr-gen-mode=default
+method=disabled

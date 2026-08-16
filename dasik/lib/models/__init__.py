@@ -24,7 +24,7 @@ from dasik.lib.models.kvm_model import KvmModel
 from dasik.lib.models.cups_model import CupsModel
 from dasik.lib.models.ms_fonts_model import MicrosoftFontsModel
 from dasik.lib.models.firewall_model import FirewallModel
-from dasik.lib.models.wireguard_model import WireguardModel
+from dasik.lib.models.wireguard_model import WireguardTunnel
 
 __all__ = [
     "JsonModel",
@@ -51,5 +51,5 @@ __all__ = [
     "CupsModel",
     "MicrosoftFontsModel",
     "FirewallModel",
-    "WireguardModel",
+    "WireguardTunnel",
 ]

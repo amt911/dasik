@@ -112,17 +112,18 @@ def test_crypttab_absent_no_entry(tmp_path):
     assert all(f["path"] != "/etc/crypttab" for f in frag["files"])
 
 
-def test_discovers_wireguard_confs_into_files(tmp_path):
+def test_wireguard_confs_are_not_discovered_here_any_more(tmp_path):
+    # WireguardAction owns /etc/wireguard and captures it as the `wireguard`
+    # block. While BOTH owned it, a sync wrote the same private key twice: this
+    # entry carried mode 0600, the toggle contributed the same path without one,
+    # so subtract_contributions compared two unequal dicts and stripped neither
+    # — and the orphan `files` entry kept writing the tunnel after the block was
+    # turned off.
     (tmp_path / "etc/wireguard").mkdir(parents=True)
     (tmp_path / "etc/wireguard/wg0.conf").write_text(
-        "[Interface]\nPrivateKey = SECRET=\nAddress = 10.0.0.2/32\n"
-        "[Peer]\nPublicKey = PUB=\nEndpoint = vpn.example:51820\n")
-    (tmp_path / "etc/wireguard/wg1.conf").write_text("[Interface]\nPrivateKey = K2=\n")
-    (tmp_path / "etc/wireguard/README").write_text("not a conf")  # ignored (no .conf)
+        "[Interface]\nPrivateKey = SECRET=\n")
     frag = _discover(tmp_path)
-    wg = {f["path"]: f["content"] for f in frag["files"] if "/etc/wireguard/" in f["path"]}
-    assert set(wg) == {"/etc/wireguard/wg0.conf", "/etc/wireguard/wg1.conf"}
-    assert "PrivateKey = SECRET=" in wg["/etc/wireguard/wg0.conf"]
+    assert all("/etc/wireguard/" not in f["path"] for f in frag["files"])
 
 
 def test_wireguard_absent_no_files(tmp_path):
@@ -151,7 +152,8 @@ import os as _os
 import stat as _stat
 
 
-def test_discovers_nm_wireguard_connection(tmp_path):
+def test_nm_wireguard_keyfiles_are_not_discovered_here_any_more(tmp_path):
+    # Same ownership move; the wifi keyfile was never captured either way.
     d = tmp_path / "etc/NetworkManager/system-connections"
     d.mkdir(parents=True)
     (d / "wg-home.nmconnection").write_text(
@@ -160,25 +162,13 @@ def test_discovers_nm_wireguard_connection(tmp_path):
     (d / "MyWifi.nmconnection").write_text(
         "[connection]\nid=MyWifi\ntype=wifi\n\n[wifi-security]\npsk=hunter2\n")
     frag = _discover(tmp_path)
-    wg = {f["path"]: f for f in frag["files"] if "system-connections" in f["path"]}
-    assert list(wg) == ["/etc/NetworkManager/system-connections/wg-home.nmconnection"]
-    entry = wg["/etc/NetworkManager/system-connections/wg-home.nmconnection"]
-    assert entry["mode"] == "0600"
-    assert "private-key=SECRETKEY=" in entry["content"]      # secret captured verbatim
+    assert all("system-connections" not in f["path"] for f in frag["files"])
 
 
 def test_nm_wireguard_absent_dir_no_crash(tmp_path):
     (tmp_path / "etc").mkdir(parents=True)
     frag = _discover(tmp_path)
     assert all("system-connections" not in f["path"] for f in frag["files"])
-
-
-def test_wireguard_conf_gets_0600_mode(tmp_path):
-    (tmp_path / "etc/wireguard").mkdir(parents=True)
-    (tmp_path / "etc/wireguard/wg0.conf").write_text("[Interface]\nPrivateKey = K=\n")
-    frag = _discover(tmp_path)
-    wg = next(f for f in frag["files"] if f["path"] == "/etc/wireguard/wg0.conf")
-    assert wg["mode"] == "0600"
 
 
 def test_apply_chmods_file_with_mode(tmp_path):

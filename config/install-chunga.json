@@ -61,11 +61,9 @@
     "rich_rules": ["rule service name=\"ssh\" accept limit value=\"2/m\""]
   },
 
-  "wireguard": {
-    "enable": true,
-    "interface_name": "wg0",
-    "config_content": "[Interface]\nAddress = 10.0.0.2/24\nPrivateKey = <YOUR_PRIVATE_KEY>\n\n[Peer]\nPublicKey = <SERVER_PUBLIC_KEY>\nEndpoint = vpn.example.com:51820\nAllowedIPs = 0.0.0.0/0\nPersistentKeepalive = 25"
-  },
+  "wireguard": [
+    { "name": "wg0", "source": "wg/example.conf" }
+  ],
 
   "systemd": {
     "enable_units": ["NetworkManager.service", "libvirtd.service"],

@@ -64,6 +64,7 @@ def setup_actions() -> None:
     from .pacman_hooks_action import PacmanHooksAction
     from .cpu_action import CpuAction
     from .reflector_action import ReflectorAction
+    from .wireguard_action import WireguardAction
     from .plymouth_action import PlymouthAction
     from .luks_keyfile_action import LuksKeyfileAction
     from .encrypted_swap_action import EncryptedSwapAction
@@ -270,6 +271,15 @@ def setup_actions() -> None:
     register_action(
         action_class=PlymouthAction,
         config_key='__root__',  # reads root-level `plymouth`
+        is_optional=True,
+    )
+    # Same shape, and the reason it is not DropFilesAction's job any more: with
+    # both owning /etc/wireguard, a bootstrap sync captured the same private key
+    # twice — once as the block, once as a `files` entry that then kept the
+    # tunnel alive after the block was turned off.
+    register_action(
+        action_class=WireguardAction,
+        config_key='__root__',  # reads root-level `wireguard`
         is_optional=True,
     )
     # Capture-only as well: AppArmor converges through the toggle (package,

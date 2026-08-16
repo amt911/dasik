@@ -852,3 +852,84 @@ def test_an_unowned_home_file_is_never_deleted(tmp_path):
     (d / "apparmor-notify.desktop").write_text("[Desktop Entry]\n")
 
     assert _home_plan(tmp_path, {"users": _NOTIFY["users"]}) == []
+
+
+# --- wireguard tunnels (issue #249) ---------------------------------------- #
+#
+# A tunnel rides the `files` domain (plus a package and, for wg-quick, a unit),
+# so "visible in the plan" means the keyfile shows up there — with the mode that
+# keeps a private key off 0644.
+
+_WGQ = "[Interface]\nAddress = 10.0.0.2/24\nPrivateKey = SECRET\n"
+_NMC = "[connection]\nid=work\ntype=wireguard\n\n[wireguard]\nprivate-key=S\n"
+_WG_CONF = "/etc/wireguard/eu-mad.conf"
+_NM_CONF = "/etc/NetworkManager/system-connections/work.nmconnection"
+
+
+def _tunnel(name="eu-mad", content=_WGQ, **kw):
+    tunnel = {"name": name, "source": f"wg/{name}.conf", "content": content}
+    tunnel.update(kw)
+    return {"wireguard": [tunnel]}
+
+
+def _files_plan(tmp_path, config, managed=()):
+    action = DropFilesAction(expand_config(config), _ctx(tmp_path))
+    return [(c.op.name, c.item) for c in action.plan(managed=list(managed))]
+
+
+def test_a_wg_quick_tunnel_missing_from_the_target_is_planned(tmp_path):
+    assert _files_plan(tmp_path, _tunnel()) == [("CREATE", _WG_CONF)]
+
+
+def test_a_wg_quick_tunnel_already_on_the_target_plans_nothing(tmp_path):
+    path = tmp_path / _WG_CONF.lstrip("/")
+    path.parent.mkdir(parents=True)
+    path.write_text(_WGQ)
+    path.chmod(0o600)
+
+    assert _files_plan(tmp_path, _tunnel(), managed=[_WG_CONF]) == []
+
+
+def test_a_tunnel_left_at_0644_is_planned_back_to_0600(tmp_path):
+    """The mode is desired state: wg-quick warns and carries on with a
+    world-readable key, so nothing else would ever report this."""
+    path = tmp_path / _WG_CONF.lstrip("/")
+    path.parent.mkdir(parents=True)
+    path.write_text(_WGQ)
+    path.chmod(0o644)
+
+    assert _files_plan(tmp_path, _tunnel(), managed=[_WG_CONF]) == [
+        ("MODIFY", _WG_CONF)]
+
+
+def test_an_nm_tunnel_missing_from_the_target_is_planned(tmp_path):
+    assert _files_plan(tmp_path, _tunnel(name="work", content=_NMC)) == [
+        ("CREATE", _NM_CONF)]
+
+
+def test_dropping_the_block_removes_the_tunnel_dasik_owns(tmp_path):
+    path = tmp_path / _WG_CONF.lstrip("/")
+    path.parent.mkdir(parents=True)
+    path.write_text(_WGQ)
+
+    assert _files_plan(tmp_path, {}, managed=[_WG_CONF]) == [
+        ("DELETE", _WG_CONF)]
+
+
+def test_an_unowned_tunnel_is_never_deleted(tmp_path):
+    """Somebody else's /etc/wireguard/other.conf is not dasik's to remove."""
+    path = tmp_path / "etc/wireguard/other.conf"
+    path.parent.mkdir(parents=True)
+    path.write_text(_WGQ)
+
+    assert _files_plan(tmp_path, {}) == []
+
+
+def test_the_wg_quick_unit_is_planned_as_a_unit():
+    assert _units_planned(expand_config(_tunnel())) == ["wg-quick@eu-mad.service"]
+
+
+def test_a_tunnel_with_enable_false_plans_the_file_but_no_unit(tmp_path):
+    config = _tunnel(enable=False)
+    assert _files_plan(tmp_path, config) == [("CREATE", _WG_CONF)]
+    assert _units_planned(expand_config(config)) == []

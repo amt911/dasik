@@ -284,7 +284,7 @@ each one pulls in: **[Features](Features.md)**.
 | `cups` | `{install}` | cups, cups-pdf, system-config-printer, sane, sane-airscan + `cups.socket` |
 | `kvm` | `{install}` | the QEMU/libvirt stack, `libvirtd`/`virtlogd`, nested-virt modprobe conf, `libvirt` group for every user |
 | `firewall` | `{enable, allowed_services, remove_services, rich_rules}` | firewalld + the public zone rules |
-| `wireguard` | `{enable, interface_name="wg0", config_content}` | wireguard-tools, `wg-quick@<iface>.service`, `/etc/wireguard/<iface>.conf` |
+| `wireguard` | `[{name, source, backend="auto", enable=true}]` | the tunnel file placed at `0600` where its backend reads it, plus (wg-quick) `wireguard-tools` and `wg-quick@<name>.service`. See [VPN](VPN.md) |
 | `snapper` | `{enable, configs=[{name,subvolume}]}` | snapper + snap-pac + timeline/cleanup timers |
 | `hardware_acceleration` | `{enable, install_codecs=true}` | VA-API/VDPAU tools, plus per-driver extras from `drivers` |
 | `microsoft_fonts` | `{install, source_iso}` | extracts the fonts from a Windows ISO |

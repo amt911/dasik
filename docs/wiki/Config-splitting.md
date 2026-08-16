@@ -251,9 +251,9 @@ config/*/secrets/
 ```
 
 Things that are secret in a dasik config: `users[].hashed_password` (a hash, but
-crackable), `disks[].partitions[].luks_password` (**plaintext**),
-`wireguard.config_content` and any `files` entry holding a WireGuard or
-NetworkManager keyfile (private keys).
+crackable), `disks[].partitions[].luks_password` (**plaintext**), every file a
+`wireguard` tunnel names in its `source` and any `files` entry holding a
+WireGuard or NetworkManager keyfile (private keys).
 
 Give secret files `"mode": "0600"` — NetworkManager and `wg-quick` **ignore**
 world-readable keyfiles, silently.

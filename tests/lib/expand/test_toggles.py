@@ -59,17 +59,19 @@ def test_kvm_does_not_pull_conflicting_iptables_nft():
 
 def test_wireguard_disabled_empty():
     assert expand_wireguard({}) == {}
-    assert expand_wireguard({"wireguard": {"enable": False}}) == {}
+    assert expand_wireguard({"wireguard": []}) == {}
 
 
 def test_wireguard_enabled():
-    out = expand_wireguard({"wireguard": {
-        "enable": True, "interface_name": "wg0", "config_content": "[Interface]\n",
-    }})
+    out = expand_wireguard({"wireguard": [
+        {"name": "wg0", "source": "wg/wg0.conf", "content": "[Interface]\n"},
+    ]})
     assert out["packages"] == ["wireguard-tools"]
     assert out["units"] == ["wg-quick@wg0.service"]
     assert out["files"][0]["path"] == "/etc/wireguard/wg0.conf"
     assert out["files"][0]["content"] == "[Interface]\n"
+    # The body is a private key: never at the writer's default 0644.
+    assert out["files"][0]["mode"] == "0600"
 
 
 def test_firewall_disabled_empty():

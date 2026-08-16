@@ -7,7 +7,7 @@ Returns {} (no contribution) when the toggle is absent or disabled.
 """
 from __future__ import annotations
 import json
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 
 def expand_bluetooth(config: Dict[str, Any]) -> Dict[str, Any]:
@@ -70,19 +70,86 @@ def expand_kvm(config: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+_WG_DIR = "/etc/wireguard"
+_NM_DIR = "/etc/NetworkManager/system-connections"
+
+
+def resolve_backend(content: str, declared: str, name: str) -> str:
+    """Which tool reads this file — decided by the file, never converted.
+
+    A `.nmconnection` can only be served by NetworkManager and a wg-quick conf
+    only by wg-quick, so the source IS the backend. A declared backend that
+    disagrees is worth stopping for rather than translating: the two formats
+    hold the same private key in different shapes, and a silent conversion is a
+    second copy of a secret that nobody reviewed.
+    """
+    flat = content.replace(" ", "")
+    is_nm = "[connection]" in flat and "type=wireguard" in flat
+    is_wgq = "[Interface]" in content
+    found = "networkmanager" if is_nm else "wg-quick" if is_wgq else ""
+    if not found:
+        raise ValueError(
+            f"wireguard tunnel {name!r}: the source file is in neither format — "
+            "expected a wg-quick conf with an [Interface] section, or a "
+            "NetworkManager keyfile with [connection] type=wireguard")
+    if declared not in ("auto", found):
+        shape = "wg-quick" if found == "wg-quick" else "NetworkManager keyfile"
+        raise ValueError(
+            f"wireguard tunnel {name!r} declares backend {declared}, but its "
+            f"source file is in {shape} format. dasik does not convert between "
+            f'the two. Either use backend "{found}", or import it yourself and '
+            "declare the result:\n"
+            "    nmcli connection import type wireguard file <the .conf>")
+    return found
+
+
 def expand_wireguard(config: Dict[str, Any]) -> Dict[str, Any]:
-    cfg = config.get("wireguard") or {}
-    if not cfg.get("enable"):
+    """Place each declared tunnel where its backend looks for it.
+
+    Both backends are served by writing a file, which is what makes an
+    install-time apply possible for either: NetworkManager's keyfile plugin
+    reads /etc/NetworkManager/system-connections at startup, so no running
+    daemon and no `nmcli` are needed inside the chroot (`nmcli --offline
+    connection import` does not exist — the command refuses offline mode).
+
+    The mode is not decoration. wg-quick and NetworkManager both ignore a
+    world-readable keyfile — one with a warning, the other in silence — and the
+    body of the file is the interface's private key.
+    """
+    tunnels = config.get("wireguard") or []
+    if not isinstance(tunnels, list):
         return {}
-    iface = cfg.get("interface_name", "wg0")
-    return {
-        "packages": ["wireguard-tools"],
-        "units": [f"wg-quick@{iface}.service"],
-        "files": [{
-            "path": f"/etc/wireguard/{iface}.conf",
-            "content": cfg.get("config_content", ""),
-        }],
-    }
+    packages: List[str] = []
+    units: List[str] = []
+    files: List[Dict[str, Any]] = []
+    for tunnel in tunnels:
+        if not isinstance(tunnel, dict):
+            continue
+        content = tunnel.get("content")
+        if not content:
+            # The loader fills this from `source`; an unreadable source already
+            # raised there, so there is nothing to place and nothing to say.
+            continue
+        name = tunnel.get("name", "")
+        backend = resolve_backend(content, tunnel.get("backend", "auto"), name)
+        if backend == "networkmanager":
+            files.append({"path": f"{_NM_DIR}/{name}.nmconnection",
+                          "content": content, "mode": "0600"})
+            packages.append("networkmanager")
+        else:
+            files.append({"path": f"{_WG_DIR}/{name}.conf",
+                          "content": content, "mode": "0600"})
+            packages.append("wireguard-tools")
+            if tunnel.get("enable", True):
+                units.append(f"wg-quick@{name}.service")
+    out: Dict[str, Any] = {}
+    if packages:
+        out["packages"] = packages
+    if units:
+        out["units"] = units
+    if files:
+        out["files"] = files
+    return out
 
 
 def expand_snapper(config: Dict[str, Any]) -> Dict[str, Any]:

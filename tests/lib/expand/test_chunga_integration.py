@@ -7,12 +7,19 @@ wireguard, bluetooth, cups, multiple users. Individual disk combos (LUKS, btrfs
 + subvolumes, TPM2, snapper) are each QEMU-verified elsewhere; this guards the
 *combination* at the config/expand layer.
 """
+from pathlib import Path
+
 from dasik.lib.expand import expand_config
 from dasik.lib.json_parser.json_parser import JsonParser
+from dasik.lib.json_parser.wireguard_source import expand_wireguard_sources
 
 
 def _expanded():
-    return expand_config(JsonParser("config/install-chunga.json").debug())
+    # The same order the CLI loads in: a tunnel names a file relative to the
+    # config, so only a loader that knows where the config is can read it.
+    config = JsonParser("config/install-chunga.json").debug()
+    config = expand_wireguard_sources(config, Path("config"))
+    return expand_config(config)
 
 
 def _pkgs(exp):

@@ -128,7 +128,8 @@ written into those directories instead of inlined
 | `firewall` | object | firewalld **or** ufw — see below |
 | `containers` | object | Container runtime: podman or docker (the engine, not the containers) |
 | `config_saver` | object | config-saver: the package, its backup documents, its timers, and restoring an archive into `$HOME` |
-| `bluetooth`, `hardware_acceleration`, `kvm`, `cups`, `microsoft_fonts`, `wireguard`, `snapper` | object | Feature toggles |
+| `bluetooth`, `hardware_acceleration`, `kvm`, `cups`, `microsoft_fonts`, `snapper` | object | Feature toggles |
+| `wireguard` | list | Tunnels, each naming a file next to the config (see below) |
 | `enable_trim`, `enable_microcode`, `remove_home_on_delete`, `sysrq` | bool | Simple toggles |
 | `metadata`, `notes` | object / string | Free-form; not applied |
 
@@ -989,13 +990,24 @@ port+protocol, protocol value, the action (`accept`/`reject`/`drop`) and its rat
 dropping a clause of an access rule (e.g. `accept limit value="2/m"`) would
 silently widen it.
 
-### `wireguard`  *(sync ✓ via `files`)*
+### `wireguard`  *(a LIST of tunnels; sync ✓ as its own block)*
+
+Each tunnel names a file **next to the config**, in the format its backend
+already reads. dasik never converts between the two.
 
 | Field | Type | Default | Notes |
 | --- | --- | --- | --- |
-| `enable` | bool | `false` | Installs `wireguard-tools` + `wg-quick@<iface>`. |
-| `interface_name` | string | `wg0` | |
-| `config_content` | string | `null` | Full `/etc/wireguard/<iface>.conf` (holds the private key — keep the config private). |
+| `name` | string | — | Interface / connection id. 1-15 chars of `[A-Za-z0-9_=+.-]` (IFNAMSIZ). |
+| `source` | string | — | Path to the tunnel file, relative to the config that names it. No `..`, no absolute path, no symlink. |
+| `backend` | `auto`\|`wg-quick`\|`networkmanager` | `auto` | `auto` reads the file's own format; a declared backend that disagrees is an error, not a conversion. |
+| `enable` | bool | `true` | wg-quick only: enable `wg-quick@<name>.service`. |
+
+`wg-quick` gets `/etc/wireguard/<name>.conf` + `wireguard-tools` + the unit;
+`networkmanager` gets `/etc/NetworkManager/system-connections/<name>.nmconnection`
+and nothing else (NM's keyfile plugin reads the directory itself, which is why
+this works during an install with no daemon). **Both are written `0600`** — the
+body is the interface's private key, and wg-quick warns while NetworkManager
+silently ignores a world-readable one.
 
 ### `snapper`  *(sync ✓)*
 
@@ -1127,8 +1139,7 @@ One config exercising every section — validate a copy with `dasik check`
     "remove_services": ["ssh"],
     "rich_rules": ["rule family=\"ipv4\" source address=\"192.168.1.0/24\" accept"]
   },
-  "wireguard": { "enable": true, "interface_name": "wg0",
-    "config_content": "[Interface]\nPrivateKey = ...\nAddress = 10.0.0.2/32\n[Peer]\nPublicKey = ...\nEndpoint = vpn.example:51820\n" },
+  "wireguard": [{ "name": "wg0", "source": "wg/example.conf" }],
   "snapper": { "enable": true, "configs": [{ "name": "root", "subvolume": "/" }] },
   "metadata": { "author": "andres", "created": "2026-07" },
   "notes": "Free-form notes; not applied."

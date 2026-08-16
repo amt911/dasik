@@ -22,6 +22,7 @@
 - [AppArmor](AppArmor)
 - [PAM hardening](PAM)
 - [Firewall](Firewall)
+- [VPN (WireGuard)](VPN)
 
 **How it works**
 - [Workflows and state](Workflows)

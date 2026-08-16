@@ -74,6 +74,8 @@
     "linux",
     "linux-firmware",
     "sudo",
-    "vim"
+    "python",
+    "python-pydantic",
+    "python-colorama"
   ]
 }

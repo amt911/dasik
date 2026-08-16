@@ -102,21 +102,25 @@ every single apply.
 
 ### wireguard
 
+A list of tunnels, each naming the file its backend already reads — dasik never
+converts between the two formats. Full page: [VPN (WireGuard)](VPN.md).
+
 ```json
-"wireguard": { "enable": true, "interface_name": "wg0",
-               "config_content": "[Interface]\nPrivateKey = …" }
+"wireguard": [
+  { "name": "eu-mad", "source": "wg/eu-mad.conf" },
+  { "name": "work",   "source": "wg/work.nmconnection" }
+]
 ```
 
-| Contributes | |
-| --- | --- |
-| packages | `wireguard-tools` |
-| units | `wg-quick@<interface_name>.service` |
-| files | `/etc/wireguard/<interface_name>.conf` |
+| Contributes | wg-quick | networkmanager |
+| --- | --- | --- |
+| packages | `wireguard-tools` | `networkmanager` |
+| units | `wg-quick@<name>.service` | — (NM reads the directory itself) |
+| files | `/etc/wireguard/<name>.conf` `0600` | `/etc/NetworkManager/system-connections/<name>.nmconnection` `0600` |
 
-The content holds a private key. Keep it out of the committed config with
-`{"$include_text": "secrets/wg0.conf"}` and give the file mode `0600` —
-`wg-quick` ignores a world-readable config. See
-[Config splitting](Config-splitting.md#secrets).
+The body is a private key, which is why it lives in a file with a mode rather
+than inline in JSON, and why `0600` is not optional: `wg-quick` warns about a
+world-readable conf and NetworkManager ignores one in silence.
 
 ### snapper
 

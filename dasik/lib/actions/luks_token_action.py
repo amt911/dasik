@@ -291,14 +291,6 @@ class LuksTokenAction(AbstractAction):
         header. Capturing them here too would state the same fact twice."""
         return {}
 
-    # --- legacy executor path ------------------------------------------- #
-
-    def is_needed(self) -> bool:
-        return bool(self.plan(managed=[]))
-
-    def execute(self) -> None:
-        self.apply(self.plan(managed=[]))
-
 
 def _flag_for(kind: str) -> str:
     for name, _flag, enrol, _token in _KINDS:

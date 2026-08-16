@@ -352,8 +352,4 @@ class FirewallAction(AbstractAction):
             frag["rich_rules"] = rich
         return {"firewall": frag}
 
-    def is_needed(self) -> bool:
-        return bool(self.plan(managed=[]))
 
-    def execute(self) -> None:
-        self.apply(self.plan(managed=[]))

@@ -268,45 +268,11 @@ class PackagesAction(AbstractAction):
     #  idempotency (legacy v2 shims)
     # ------------------------------------------------------------------ #
 
-    def is_needed(self) -> bool:
-        return bool(self._missing(self.desired))
 
     # ------------------------------------------------------------------ #
     #  execute (legacy v2 path)
     # ------------------------------------------------------------------ #
 
-    def execute(self) -> None:
-        # 1. Official packages ------------------------------------------------
-        missing_pacman = self._missing(self.pacman_pkgs)
-        if missing_pacman:
-            print(f"  Installing {len(missing_pacman)} official packages …")
-            Command.execute(
-                "pacman",
-                ["--noconfirm", "--needed", "-S"] + missing_pacman,
-                run_as_chroot=True,
-            )
-
-        # 2. AUR packages -----------------------------------------------------
-        missing_aur = self._missing(self.aur_pkgs)
-        if not missing_aur:
-            return
-
-        print(f"  Installing {len(missing_aur)} AUR packages …")
-        self._ensure_aur_prerequisites()
-
-        # Try to install an AUR helper first (yay/paru)
-        helper = self._install_aur_helper()
-
-        if helper:
-            self._install_aur_with_helper(helper, missing_aur)
-        else:
-            # Fallback: build each AUR package individually via makepkg
-            for pkg in missing_aur:
-                if not self._is_installed(pkg):
-                    print(f"    Building AUR package: {pkg}")
-                    self._install_single_aur_pkg(pkg)
-
-        self._cleanup_aur_user()
 
     def verify(self) -> bool:
         return not self._missing(self.desired)

@@ -594,25 +594,6 @@ class KernelCmdlineAction(AbstractAction):
     def is_optional(self) -> bool:
         return True
 
-    def is_needed(self) -> bool:
-        if not self.desired_params:
-            return False
-        return bool(self._missing_params())
-
-    def execute(self) -> None:
-        missing = self._missing_params()
-        if not missing:
-            return
-
-        addition = " ".join(missing)
-
-        if self.bootloader == "grub":
-            self._append_grub(addition)
-            # Regenerate grub config
-            subprocess.run(["arch-chroot", "/mnt", "grub-mkconfig", "-o", "/boot/grub/grub.cfg"], check=True)
-        else:
-            for entry in self._sdboot_entries():
-                self._append_sdboot(entry, addition)
 
     def _append_grub(self, addition: str) -> None:
         path = self._grub_file()

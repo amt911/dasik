@@ -60,13 +60,7 @@ class ScalarV3Action(AbstractAction):
         value = self._actual_value() or self._desired_value()
         return self._import_fragment(value) if value else {}
 
-    # --- legacy executor path (concrete defaults over the same hooks) -- #
 
-    def is_needed(self) -> bool:
-        return bool(self.plan(managed=[]))
-
-    def execute(self) -> None:
-        self._set_value()
 
     def verify(self) -> bool:
         return not self.plan(managed=[])

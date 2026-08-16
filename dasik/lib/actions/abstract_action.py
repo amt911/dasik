@@ -38,26 +38,27 @@ class AbstractAction(ABC):
         """
         return False
     
-    @abstractmethod
     def is_needed(self) -> bool:
-        """Check if this action needs to be executed.
-        
-        This is the idempotency check - return True if the system
-        state differs from desired configuration.
-        
-        Returns:
-            True if action needs to run, False if already configured
+        """The idempotency check, answered by ``plan()``.
+
+        This and :meth:`execute` are the pre-v3 contract, kept because
+        ``ActionExecutor`` and a number of tests still enter through them. They
+        are NOT a second implementation: each is two lines over ``plan()`` /
+        ``apply()``, so there is exactly one description of what an action does.
+
+        They used to be abstract, and every action wrote its own — which is how
+        `PackagesAction.execute()` ended up installing packages with no
+        `check=True` (a failed pacman, silent) while its `apply()` had grown the
+        reason probes, the removability guard and the lock detection; and how
+        `SystemdAction.execute()` kept calling `arch-chroot /mnt` directly,
+        ignoring the target entirely. Two implementations of one job, one of
+        them a decade behind and still importable (issue #238).
         """
-        ...
-    
-    @abstractmethod
+        return bool(self.plan(managed=[]))
+
     def execute(self) -> None:
-        """Execute the configuration changes.
-        
-        This should only be called if is_needed() returns True.
-        Raises exception on failure.
-        """
-        ...
+        """Apply what :meth:`plan` found. See :meth:`is_needed`."""
+        self.apply(self.plan(managed=[]))
     
     def verify(self) -> bool:
         """Verify the configuration was applied correctly.

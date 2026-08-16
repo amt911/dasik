@@ -146,10 +146,4 @@ class CpuAction(AbstractAction):
             block["governor"] = governor
         return {self._DOMAIN: block}
 
-    # --- legacy executor path ------------------------------------------- #
 
-    def is_needed(self) -> bool:
-        return False
-
-    def execute(self) -> None:
-        return None

@@ -375,8 +375,4 @@ class PamAction(AbstractAction):
 
     # --- legacy executor bridge ---------------------------------------------- #
 
-    def is_needed(self) -> bool:
-        return bool(self.plan(managed=[]))
 
-    def execute(self) -> None:
-        self.apply(self.plan(managed=[]))

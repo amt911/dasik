@@ -189,10 +189,4 @@ class ApparmorAction(AbstractAction):
                 homes.append(parts[5])
         return homes
 
-    # --- legacy executor path ---------------------------------------------- #
 
-    def is_needed(self) -> bool:
-        return False
-
-    def execute(self) -> None:
-        return None

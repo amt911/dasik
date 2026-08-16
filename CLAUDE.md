@@ -134,11 +134,12 @@ Every change runs against the **mounted install target at `/mnt`**, typically vi
 `AbstractAction` (`dasik/lib/actions/abstract_action.py`) is the contract for every action:
 
 - `name` (property) — human-readable label.
-- `is_needed() -> bool` — **the idempotency check.** Inspect real system state under `/mnt`; return `False` when already in the desired state. This is what makes re-runs no-ops.
-- `execute() -> None` — apply changes; only called when `is_needed()` is `True`.
+- `plan(managed) -> list[Change]` — **the idempotency check.** Inspect real system state under the target, diff against the config, and return the changes. An empty list means converged, which is what makes re-runs no-ops.
+- `apply(changes) -> None` — carry out exactly what `plan()` returned.
+- `is_needed() -> bool` / `execute() -> None` — the pre-v3 pair, **inherited, never overridden**: the base class answers them as `bool(self.plan(managed=[]))` and `self.apply(self.plan(managed=[]))`. Writing your own is a second implementation, and `tests/lib/actions/test_executor_shims_delegate.py` fails if you do (issue #238).
 - `verify() -> bool` — optional post-check (default `True`).
 
-`do_action()` and the `_before_check`/`after_check`/`KEY_NAME` members are **vestigial** shims (the legacy handler that used them is gone — PR #151); a couple of actions still carry them but nothing calls them. New code uses `plan()/apply()/import_state()` (and the `is_needed()/execute()/verify()` executor shims).
+`do_action()` and the `_before_check`/`after_check`/`KEY_NAME` members are **vestigial** shims (the legacy handler that used them is gone — PR #151); a couple of actions still carry them but nothing calls them. New code uses `plan()/apply()/import_state()`. `is_needed()/execute()` survive only as the base class's two-line delegation, so `ActionExecutor` and the older tests keep working without a second implementation behind them.
 
 Actions are registered in `actions_handler_v2.setup_actions()` with `register_action(action_class, config_key, is_optional, required_fields, depends_on)`. `config_key='__root__'` means the action reads root-level config fields (e.g. `DropFilesAction`, `MkinitcpioAction`). `ActionExecutor` walks the registry in order; **ordering matters** (disk/base first, boot last) and two orderings are load-bearing:
 
@@ -150,7 +151,7 @@ Actions are registered in `actions_handler_v2.setup_actions()` with `register_ac
 To mirror "add an option to a NixOS module":
 
 1. **Model** — add a pydantic model in `dasik/lib/models/<thing>_model.py`; wire it into `JsonModel` (`dasik/lib/models/json_model.py`) as an `Optional[...]` field (use `Optional`/`default_factory` so it stays optional — the whole point is many optional sections).
-2. **Action** — create `dasik/lib/actions/<thing>_action.py` subclassing `AbstractAction`; implement `name`, `is_needed`, `execute`, `verify`. Shell out via `Command.execute(...)` (`dasik/lib/command_worker/`), passing `run_as_chroot=True` for changes inside the target.
+2. **Action** — create `dasik/lib/actions/<thing>_action.py` subclassing `AbstractAction`; implement `name`, `plan`, `apply`, `import_state` (and `verify` if it needs a post-check). Do NOT write `is_needed`/`execute`: they are inherited and delegate. Shell out via `Command.execute(...)` (`dasik/lib/command_worker/`), passing `run_as_chroot=True` for changes inside the target.
 3. **Register** — add a `register_action(...)` call in `setup_actions()` at the correct phase, `is_optional=True` for optional sections.
 4. **Config sample** — add/extend a JSON under `config/` so the option is exercised.
 5. **Detectability** — prove `plan` sees it *and* `sync` reads it back, in BOTH directions (see the two rules below).

@@ -18,8 +18,6 @@ _MARKER = "/usr/bin/pacman"
 _DOMAIN = "base"
 
 
-
-
 # pacstrap exits 0 even when a hook it ran FAILED — alpm reports the hook's
 # failure on its own output and carries on. The 2026-07-19 install shows
 # mkinitcpio failing inside pacstrap ("the image may not be complete",
@@ -149,11 +147,7 @@ class BaseInstallAction(AbstractAction):
 
     # --- legacy executor bridge --------------------------------------- #
 
-    def is_needed(self) -> bool:
-        return not self._installed()
 
-    def execute(self) -> None:
-        self._install()
 
     def verify(self) -> bool:
         return self._installed()

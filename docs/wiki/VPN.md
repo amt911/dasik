@@ -27,6 +27,48 @@ tool looks for it, at mode `0600`, and gets out of the way.
 | `wg-quick` | `/etc/wireguard/<name>.conf` | installs `wireguard-tools`, enables `wg-quick@<name>.service` |
 | `networkmanager` | `/etc/NetworkManager/system-connections/<name>.nmconnection` | nothing else: NM's keyfile plugin reads the directory itself |
 
+
+## A wg-quick conf served by NetworkManager
+
+The two formats are not interchangeable — a `.conf` is read by
+`wg-quick@<name>.service`, a `.nmconnection` by NetworkManager's keyfile
+plugin — so normally the file you have decides the backend, and `backend:
+auto` says exactly that.
+
+One direction converts, because a tool exists that does it properly:
+
+```json
+{"name": "vpn-es", "source": "wg/vpn-es.conf",
+ "backend": "networkmanager", "enable": true}
+```
+
+dasik runs `nmcli --offline connection add` **on the target** and writes what it
+prints to `/etc/NetworkManager/system-connections/<name>.nmconnection`, mode
+0600. `--offline` is the whole trick: it needs no running daemon and no D-Bus,
+so it works inside the chroot an install runs in, where `nmcli connection
+import` cannot (`import` refuses offline mode outright). nmcli — not dasik —
+reshapes the private key, which was the real objection to converting at all.
+
+`enable` becomes `connection.autoconnect`, and the connection id, uuid and
+interface name all come from `name`. The uuid is derived from that name rather
+than left to nmcli, which invents a random one per call: without that the
+keyfile differs on every run and the domain never converges.
+
+**Why you would want it.** A `.conf` is what a provider hands you and is the
+portable format — it works under either network manager. A keyfile only works
+under NetworkManager, but it is the only one that appears in the KDE applet
+with a switch. This lets the repository keep the portable file and the machine
+get the native one.
+
+**The other direction is still refused.** nmcli cannot emit a wg-quick conf and
+wg-quick cannot read a keyfile, so a `.nmconnection` declared `wg-quick` is an
+error rather than an invention.
+
+**On a fresh install the plan is quiet about it.** The conversion needs `nmcli`,
+which arrives with the `networkmanager` package the same apply installs, so at
+plan time against an empty target there is nothing to ask. The apply does it,
+and every later plan reports it normally.
+
 ## The fields
 
 | Field | Default | Meaning |
@@ -51,17 +93,18 @@ Declaring a NetworkManager keyfile on a `systemd-networkd` machine is a
 
 ## Declaring a backend that disagrees with the file
 
-An error, with the fix in the message:
+`.conf` + `networkmanager` is the convertible pair and is handled above. The
+other way round is an error, because nothing can carry it out:
 
 ```
-wireguard tunnel 'work' declares backend networkmanager, but its source file is
-in wg-quick format. dasik does not convert between the two. Either use backend
-"wg-quick", or import it yourself and declare the result:
-    nmcli connection import type wireguard file <the .conf>
+wireguard tunnel 'work' declares backend wg-quick, but its source file is a
+NetworkManager keyfile. dasik does not convert that direction: nmcli cannot
+emit a wg-quick conf, and wg-quick cannot read a keyfile. Use backend
+"networkmanager", or declare the wg-quick conf the tunnel came from.
 ```
 
-NetworkManager can import a wg-quick conf, and that is the supported way across:
-run the import once, then declare the `.nmconnection` it produced.
+A file in neither format is an error too — a tunnel nobody can read is worth
+proving early rather than at boot.
 
 ## The mode is not decoration
 

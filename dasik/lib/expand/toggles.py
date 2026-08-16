@@ -70,6 +70,8 @@ def expand_kvm(config: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+from ..actions.wireguard_nm import wants_nm_conversion
+
 _WG_DIR = "/etc/wireguard"
 _NM_DIR = "/etc/NetworkManager/system-connections"
 
@@ -92,14 +94,19 @@ def resolve_backend(content: str, declared: str, name: str) -> str:
             f"wireguard tunnel {name!r}: the source file is in neither format — "
             "expected a wg-quick conf with an [Interface] section, or a "
             "NetworkManager keyfile with [connection] type=wireguard")
+    if declared == "networkmanager" and found == "wg-quick":
+        # The one convertible direction. `nmcli --offline connection add`
+        # writes the keyfile without a daemon, so nmcli — not dasik — reshapes
+        # the private key, and it works inside a chroot. See
+        # :mod:`dasik.lib.actions.wireguard_nm`.
+        return "networkmanager"
     if declared not in ("auto", found):
-        shape = "wg-quick" if found == "wg-quick" else "NetworkManager keyfile"
         raise ValueError(
             f"wireguard tunnel {name!r} declares backend {declared}, but its "
-            f"source file is in {shape} format. dasik does not convert between "
-            f'the two. Either use backend "{found}", or import it yourself and '
-            "declare the result:\n"
-            "    nmcli connection import type wireguard file <the .conf>")
+            "source file is a NetworkManager keyfile. dasik does not convert "
+            "that direction: nmcli cannot emit a wg-quick conf, and wg-quick "
+            'cannot read a keyfile. Use backend "networkmanager", or declare '
+            "the wg-quick conf the tunnel came from.")
     return found
 
 
@@ -131,11 +138,18 @@ def expand_wireguard(config: Dict[str, Any]) -> Dict[str, Any]:
             # raised there, so there is nothing to place and nothing to say.
             continue
         name = tunnel.get("name", "")
-        backend = resolve_backend(content, tunnel.get("backend", "auto"), name)
+        declared = tunnel.get("backend", "auto")
+        backend = resolve_backend(content, declared, name)
         if backend == "networkmanager":
+            packages.append("networkmanager")
+            if wants_nm_conversion(content, declared):
+                # WireguardAction owns this one: the keyfile does not exist yet
+                # — nmcli builds it on the target — so there is no content to
+                # contribute here, and two owners for one path is exactly the
+                # double-capture this module's header warns about.
+                continue
             files.append({"path": f"{_NM_DIR}/{name}.nmconnection",
                           "content": content, "mode": "0600"})
-            packages.append("networkmanager")
         else:
             files.append({"path": f"{_WG_DIR}/{name}.conf",
                           "content": content, "mode": "0600"})

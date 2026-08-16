@@ -40,10 +40,17 @@ def test_two_tunnels_with_the_same_name_is_an_error():
     assert has_errors(issues) and "eu-mad" in _text(issues)
 
 
-def test_a_backend_that_contradicts_the_file_is_an_error_naming_the_import():
-    issues = preflight(_cfg(_t(backend="networkmanager")))
+def test_a_conf_asked_for_networkmanager_passes_preflight():
+    """It used to be refused here with an `nmcli connection import` line to run
+    by hand. dasik converts it itself now, with `nmcli --offline connection
+    add`, which needs no daemon and so works during an install too."""
+    assert not has_errors(preflight(_cfg(_t(backend="networkmanager"))))
+
+
+def test_a_keyfile_asked_for_wg_quick_is_still_an_error():
+    from tests.lib.validation.test_preflight_wireguard import NMC as _NMC  # noqa
+    issues = preflight(_cfg(_t(backend="wg-quick", content=_NMC)))
     assert has_errors(issues)
-    assert "nmcli connection import" in _text(issues)
 
 
 def test_a_file_in_neither_format_is_an_error():

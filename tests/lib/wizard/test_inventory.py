@@ -138,3 +138,36 @@ def test_round_trips_from_a_real_lsblk_dump():
     disks = parse_lsblk(json.loads(raw))
 
     assert disks[0].size_human == "8G"
+
+
+# --- what is not an install target ------------------------------------------ #
+
+def test_a_floppy_is_not_offered():
+    """QEMU gives every guest a /dev/fd0 of 4096 bytes, and it sorts FIRST — so
+    the disk menu opened with a floppy selected and the wizard would happily
+    have composed an ESP for it. Seen on a real VM run."""
+    data = {"blockdevices": [
+        {"name": "fd0", "path": "/dev/fd0", "type": "disk", "size": 4096},
+        {"name": "vda", "path": "/dev/vda", "type": "disk", "size": 8589934592},
+    ]}
+
+    assert [d.path for d in parse_lsblk(data)] == ["/dev/vda"]
+
+
+def test_a_card_reader_with_no_media_is_not_offered():
+    """Size 0 means there is nothing in the slot."""
+    data = {"blockdevices": [
+        {"name": "mmcblk0", "path": "/dev/mmcblk0", "type": "disk", "size": 0},
+        {"name": "vda", "path": "/dev/vda", "type": "disk", "size": 8589934592},
+    ]}
+
+    assert [d.path for d in parse_lsblk(data)] == ["/dev/vda"]
+
+
+def test_a_small_but_real_usb_stick_is_still_offered():
+    """The floor is for pseudo-devices, not for people with small disks."""
+    data = {"blockdevices": [
+        {"name": "sdb", "path": "/dev/sdb", "type": "disk", "size": 2 * 1024 ** 3},
+    ]}
+
+    assert [d.path for d in parse_lsblk(data)] == ["/dev/sdb"]

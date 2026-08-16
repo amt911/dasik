@@ -16,6 +16,7 @@ import curses
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence
 
+from ..models.disk_model import Partition
 from .inventory import DiskInfo
 from .recipes import RECIPES, Options, custom_disk, find
 
@@ -82,23 +83,72 @@ def menu(screen, title: str, rows: Sequence[str]) -> Optional[int]:
             index = min(len(rows) - 1, index + 1)
 
 
+def size_error(value: str) -> Optional[str]:
+    """The model's own complaint about a size, or None if it likes it.
+
+    Asked HERE rather than three screens later: a stray key in the ESP size
+    field used to reach the recipe build and take the whole session down with a
+    pydantic traceback (seen on a VM run).
+    """
+    try:
+        Partition(label="probe", size=value, filesystem="ext4",
+                  partition_type="linux")
+    except Exception as e:      # noqa: BLE001 - pydantic's message is the answer
+        return _first_complaint(e)
+    return None
+
+
+def label_error(value: str) -> Optional[str]:
+    try:
+        Partition(label=value, size="rest", filesystem="ext4",
+                  partition_type="linux")
+    except Exception as e:      # noqa: BLE001
+        return _first_complaint(e)
+    return None
+
+
+def _first_complaint(error: Exception) -> str:
+    """The one useful line out of a pydantic ValidationError."""
+    for line in str(error).splitlines():
+        line = line.strip()
+        if line.startswith("Value error,"):
+            return line[len("Value error,"):].strip()
+        if line.startswith(("String should", "Input should", "Value should")):
+            return line
+    return str(error).splitlines()[-1].strip()
+
+
 def prompt(screen, title: str, label: str, default: str = "",
-           secret: bool = False) -> Optional[str]:
+           secret: bool = False, validate=None) -> Optional[str]:
     """A one-line editor. Empty input keeps *default*; ESC abandons.
 
     *secret* echoes asterisks — the LUKS passphrase is typed on a screen that
     may well be a projector, a serial log, or someone's shoulder.
+
+    *validate* returns a complaint or None. A value it rejects is shown back
+    with the reason and asked again, rather than travelling on to fail
+    somewhere the user cannot see.
     """
     buffer = ""
+    complaint = ""
     while True:
         shown = "*" * len(buffer) if secret else buffer
         hint = f" [{default}]" if default and not secret else ""
-        _frame(screen, title, [f"{label}{hint}:", f"  {shown}"])
+        body = [f"{label}{hint}:", f"  {shown}"]
+        if complaint:
+            body += ["", f"  ! {complaint}"]
+        _frame(screen, title, body)
         key = screen.getch()
         if key == _ESC:
             return None
         if key in _ENTER:
-            return buffer if buffer else default
+            value = buffer if buffer else default
+            if validate is not None:
+                complaint = validate(value) or ""
+                if complaint:
+                    buffer = ""
+                    continue
+            return value
         if key in _BACKSPACE:
             buffer = buffer[:-1]
         elif 32 <= key < 127:
@@ -136,7 +186,8 @@ def _pick_recipe(screen) -> Optional[str]:
 def _ask_options(screen, device: str, recipe_key: str,
                  wipe: bool) -> "Optional[tuple[Options, Optional[str]]]":
     """The tunables the chosen recipe actually uses, and nothing else."""
-    esp = prompt(screen, "Sizes", "ESP size", default="512MiB")
+    esp = prompt(screen, "Sizes", "ESP size", default="512MiB",
+                 validate=size_error)
     if esp is None:
         return None
     values: Dict[str, Any] = {"esp_size": esp, "wipe": wipe}
@@ -153,7 +204,8 @@ def _ask_options(screen, device: str, recipe_key: str,
             return None
 
     if recipe_key in ("luks-btrfs-swap", "luks-btrfs-hibernate"):
-        swap = prompt(screen, "Swap", "swap size", default="8GiB")
+        swap = prompt(screen, "Swap", "swap size", default="8GiB",
+                      validate=size_error)
         if swap is None:
             return None
         values["swap_size"] = swap
@@ -166,11 +218,12 @@ def _ask_partitions(screen, device: str) -> Optional[List[Dict[str, Any]]]:
     partitions: List[Dict[str, Any]] = []
     while True:
         number = len(partitions) + 1
-        label = prompt(screen, f"Partition {number}", "label", default="")
+        label = prompt(screen, f"Partition {number}", "label", default="",
+                       validate=label_error)
         if label is None:
             return None
         size = prompt(screen, f"Partition {number}", "size (e.g. 512MiB, 50%, rest)",
-                      default="rest")
+                      default="rest", validate=size_error)
         if size is None:
             return None
         index = menu(screen, f"Partition {number}: filesystem", list(_FILESYSTEMS))

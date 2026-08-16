@@ -22,10 +22,16 @@ tput longname 2>/dev/null || echo "(no terminfo longname)"
 echo "WIZ-A: the wizard sees the guest's real disks"
 lsblk -J -b -o NAME,PATH,TYPE,FSTYPE,LABEL,SIZE,MOUNTPOINT,PTTYPE | head -30
 
-# Keys: disk (enter) · layout row 2 = LUKS+btrfs (down, enter) · ESP size (enter)
-# · LUKS name (enter) · passphrase "vmpass" (enter) · hostname (enter)
-# · review (enter = write). The disk is NOT empty (the guest is installed on
-# it), so the wizard asks to erase: answer y right after the layout.
+# Keys, in the order the screens ask:
+#   disk (enter)                     — /dev/vda, the only target now that the
+#                                      4 KiB floppy QEMU invents is filtered out
+#   layout: down, enter              — ESP + LUKS + btrfs
+#   erase this disk? y               — the guest IS installed on /dev/vda
+#   ESP size (enter = 512MiB)
+#   LUKS mapper name (enter = cryptroot)
+#   passphrase "vmpass" (enter)
+#   hostname (enter = archlinux)
+#   review (enter = write)
 printf '\r\033[B\ry\r\rvmpass\r\r\r' > /root/keys
 
 echo "WIZ-B: drive real curses through a pty"

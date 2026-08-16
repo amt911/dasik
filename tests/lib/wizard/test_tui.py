@@ -11,7 +11,8 @@ import curses
 import pytest
 
 from dasik.lib.wizard.inventory import DiskInfo, PartitionInfo
-from dasik.lib.wizard.tui import Choices, confirm, menu, prompt, run_wizard
+from dasik.lib.wizard.tui import (Choices, confirm, label_error, menu, prompt,
+                                  run_wizard, size_error)
 
 ENTER = 10
 ESC = 27
@@ -226,3 +227,68 @@ def test_the_custom_row_is_offered_and_composes_from_typed_partitions():
     assert [p["label"] for p in choices.custom_partitions] == ["ESP", "root"]
     assert choices.custom_partitions[0]["filesystem"] == "fat32"
     assert choices.custom_partitions[1]["size"] == "rest"
+
+
+# --- typing something the model will refuse ---------------------------------- #
+
+def test_a_bad_size_is_re_asked_instead_of_ending_the_session():
+    """Seen on a VM: a stray key landed in the ESP size field, the recipe build
+    raised deep inside curses, and the whole wizard died with a pydantic
+    traceback dressed up as "could not start the wizard's screen". A prompt
+    that knows what it is asking for can just ask again."""
+    screen = FakeScreen(_keys("y") + [ENTER] + _keys("512MiB") + [ENTER])
+
+    value = prompt(screen, "Sizes", "ESP size", default="512MiB",
+                   validate=size_error)
+
+    assert value == "512MiB"
+    assert "unit" in screen.drawn().lower()      # it said why
+
+
+def test_a_validated_prompt_still_takes_the_default():
+    assert prompt(FakeScreen([ENTER]), "Sizes", "ESP size", default="512MiB",
+                  validate=size_error) == "512MiB"
+
+
+def test_a_validated_prompt_can_still_be_abandoned():
+    assert prompt(FakeScreen([ESC]), "Sizes", "s", default="", validate=size_error) is None
+
+
+@pytest.mark.parametrize("value", ["512MiB", "50%", "rest", "1GB", "8GiB"])
+def test_the_sizes_the_model_accepts_pass_the_prompt_check(value):
+    assert size_error(value) is None
+
+
+@pytest.mark.parametrize("value", ["y", "512", "big", ""])
+def test_the_sizes_it_does_not_are_named(value):
+    assert size_error(value)
+
+
+@pytest.mark.parametrize("value", ["-1MiB", "abcMiB", "0MiB"])
+def test_the_prompt_is_exactly_as_strict_as_the_model_and_no_more(value):
+    """These are nonsense and the model accepts them: `validate_size` only
+    checks the SUFFIX. Filed as its own issue — the wizard deliberately mirrors
+    the schema rather than inventing a second, stricter set of rules, which is
+    the divergence that took 247 lines to remove from the action shims (#238).
+    When the model tightens, this prompt tightens with it, and this test is the
+    one that will fail to say so.
+    """
+    assert size_error(value) is None
+
+
+def test_a_bad_label_is_re_asked_too():
+    screen = FakeScreen(_keys("a/b") + [ENTER] + _keys("root") + [ENTER])
+
+    assert prompt(screen, "Partition", "label", default="",
+                  validate=label_error) == "root"
+
+
+def test_the_whole_flow_survives_a_typo_in_a_size():
+    # disk · recipe ext4 · esp size "y" (refused, re-asked) · "512MiB" · hostname · review
+    keys = ([ENTER, ENTER] + _keys("y") + [ENTER] + _keys("512MiB")
+            + [ENTER, ENTER, ENTER])
+
+    choices = _run(keys)
+
+    assert choices is not None
+    assert choices.options.esp_size == "512MiB"

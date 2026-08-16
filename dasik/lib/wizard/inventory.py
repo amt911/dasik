@@ -15,6 +15,13 @@ from typing import Any, Dict, List, Optional, Tuple
 # Only these are things you install onto. loop devices, CD-ROMs and the ISO's
 # own squashfs are not offered.
 _DISK_TYPE = "disk"
+# …and neither are these, which lsblk still calls disks. QEMU hands every guest
+# a 4 KiB /dev/fd0 that sorts FIRST, so the menu opened with a floppy selected
+# and the wizard would have composed an ESP for it (seen on a VM run). A card
+# reader with nothing in it reports size 0. The floor is low on purpose: it is
+# for pseudo-devices, not for people with small disks.
+_MIN_TARGET_BYTES = 1024 ** 3
+_NOT_A_TARGET = ("fd",)
 
 _UNITS = (("T", 1000 ** 4), ("G", 1000 ** 3), ("M", 1000 ** 2), ("K", 1000))
 
@@ -149,6 +156,19 @@ def parse_lsblk(data: Any) -> List[DiskInfo]:
     for node in devices:
         if not isinstance(node, dict) or node.get("type") != _DISK_TYPE:
             continue
+        name = str(node.get("name") or "")
+        raw_size = node.get("size")
+        size = _as_bytes(raw_size)
+        # "unknown" and "zero" are different answers. A dump taken WITHOUT -b
+        # reports `931.5G`, which this cannot parse — dropping those would make
+        # `--from-lsblk` silently lose every disk in the file. Only a size lsblk
+        # really reported as a number is allowed to disqualify a device.
+        known = isinstance(raw_size, int) and not isinstance(raw_size, bool) or (
+            isinstance(raw_size, str) and raw_size.isdigit())
+        if name.startswith(_NOT_A_TARGET):
+            continue
+        if known and size < _MIN_TARGET_BYTES:
+            continue
         partitions = []
         for child in node.get("children") or []:
             if not isinstance(child, dict) or child.get("type") != "part":
@@ -160,8 +180,8 @@ def parse_lsblk(data: Any) -> List[DiskInfo]:
                                      info.label, mount)
             partitions.append(info)
         disks.append(DiskInfo(
-            path=node.get("path") or f"/dev/{node.get('name', '')}",
-            size=_as_bytes(node.get("size")),
+            path=node.get("path") or f"/dev/{name}",
+            size=size,
             pttype=node.get("pttype") or "",
             partitions=tuple(partitions),
         ))

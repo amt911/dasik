@@ -22,17 +22,17 @@ tput longname 2>/dev/null || echo "(no terminfo longname)"
 echo "WIZ-A: the wizard sees the guest's real disks"
 lsblk -J -b -o NAME,PATH,TYPE,FSTYPE,LABEL,SIZE,MOUNTPOINT,PTTYPE | head -30
 
-# Keys, in the order the screens ask:
-#   disk (enter)                     — /dev/vda, the only target now that the
-#                                      4 KiB floppy QEMU invents is filtered out
-#   layout: down, enter              — ESP + LUKS + btrfs
-#   erase this disk? y               — the guest IS installed on /dev/vda
-#   ESP size (enter = 512MiB)
-#   LUKS mapper name (enter = cryptroot)
-#   passphrase "vmpass" (enter)
-#   hostname (enter = archlinux)
-#   review (enter = write)
-printf '\r\033[B\ry\r\rvmpass\r\r\r' > /root/keys
+# Keys, in the order the screens ask. NOTE the arrow form is terminal-specific:
+# this console is vt220, whose kcud1 is ESC [ B (CSI). An xterm in application
+# cursor mode wants ESC O B (SS3) instead. ncurses decodes whichever its
+# terminfo says; a script has to match the terminal it is typing into, or the
+# bytes arrive as a bare ESC plus junk — which the wizard now shrugs off rather
+# than treating as "abandon".
+#   disk (enter)          — /dev/vda, now that the 4 KiB floppy is filtered out
+#   layout: down, enter   — ESP + encrypted btrfs root, with subvolumes
+#   NOT EMPTY: down, enter — row 2 = "Simulate", i.e. compose WITHOUT erasing
+#   ESP size (enter) · LUKS name (enter) · passphrase · hostname · review
+printf '\r\033[B\r\033[B\r\r\rvmpass\r\r\r' > /root/keys
 
 # The guest image persists between runs, so a leftover from a previous pass
 # would be "verified" instead of what this run wrote — and the wizard would
@@ -47,7 +47,13 @@ echo "wizard exit=$wizard_rc"
 [ "$wizard_rc" -eq 0 ] || { echo "WIZ-EXIT BAD"; rc=1; }
 tail -20 /root/wiz.out
 
-echo "WIZ-C: it wrote a config, and the passphrase is NOT in it"
+echo "WIZ-C: it wrote a config — a SIMULATION, with nothing erased"
+python - <<'PY' || rc=1
+import json, pathlib, sys
+disk = json.loads(pathlib.Path("/root/wiz/main.json").read_text())["disks"]["disks"][0]
+print("device:", disk["device"], "wipe_disk:", disk["wipe_disk"])
+sys.exit(0 if disk["wipe_disk"] is False else 1)
+PY
 if [ -f /root/wiz/main.json ]; then
     cat /root/wiz/main.json
 else
@@ -72,10 +78,12 @@ head -12 /root/plan.txt
 # The exact line, not just the word somewhere: this is the gate the whole
 # design rests on — the wizard composed it, and `plan` is what announces the
 # erase before anything happens.
-grep -qE '^\s*\+ \[disks\] .*(/dev/vda)' /root/plan.txt \
-    || { echo "WIZ-PLAN-NO-DISKS"; rc=1; }
+# A simulation must NOT plan a repartition: dasik refuses a populated disk that
+# does not declare wipe_disk, and the wizard composed exactly that.
 grep -qiE 'ERASES|DESTRUCTIVE' /root/plan.txt \
-    || { echo "WIZ-PLAN-NOT-LOUD"; rc=1; }
+    && { echo "WIZ-SIMULATION-PLANNED-AN-ERASE"; rc=1; }
+grep -qiE 'skip|does not match' /root/plan.txt \
+    || { echo "WIZ-PLAN-DID-NOT-SKIP"; head -20 /root/plan.txt; }
 
 echo "WIZ-F: nothing was partitioned — the guest's own layout is untouched"
 lsblk -no NAME,FSTYPE,MOUNTPOINT /dev/vda

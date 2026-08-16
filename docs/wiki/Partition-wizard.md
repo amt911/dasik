@@ -54,11 +54,32 @@ custom path:
 
 | Layout | What you get |
 | --- | --- |
-| **ESP + ext4 root** | the simplest thing that boots. No encryption |
-| **ESP + LUKS + btrfs subvolumes** | encrypted root with `@`, `@home`, `@log`, `@pkg`, `@.snapshots` and `compress-force=zstd:3` |
-| **…and a swap with a random key** | adds `swap_encryption: random` — **cannot hibernate**, by design |
-| **…and a LUKS swap that can hibernate** | adds a swap inside LUKS **and** `resume=/dev/mapper/cryptswap` |
+| **ESP + ext4 root** | no encryption; the simplest thing that boots |
+| **ESP + encrypted (LUKS) btrfs root, with subvolumes** | no swap. `@`, `@home`, `@log`, `@pkg`, `@.snapshots`, `compress-force=zstd:3` |
+| **ESP + encrypted btrfs root + encrypted swap (random key)** | the same plus swap. The swap key is new on every boot, so it **cannot hibernate** |
+| **ESP + encrypted btrfs root + encrypted swap (LUKS, hibernates)** | the same, but the swap has a keyslot, so a hibernation image can be read back. Adds `resume=` |
 | **Custom** | one partition at a time, validated as a set before it reaches a screen |
+
+Every row names the whole layout, and the partitions it would create are listed
+under the cursor as you move — so choosing does not depend on remembering what
+each name implies:
+
+```text
+Which layout?
+  ESP + ext4 root
+  ESP + encrypted (LUKS) btrfs root, with subvolumes
+  ESP + encrypted btrfs root + encrypted swap (random key)
+  ESP + encrypted btrfs root + encrypted swap (LUKS, hibernates)
+  Custom — compose the partitions yourself
+
+  Same as above plus swap. The swap key is new on every boot, so it is safe
+  but CANNOT hibernate.
+
+  ESP      512MiB fat32  -> /boot
+  swap       8GiB swap   [random key, cannot hibernate]
+  root       rest btrfs  [LUKS cryptroot]
+           subvolumes: @->/ @home->/home @log->/var/log @pkg->… @.snapshots->/.snapshots
+```
 
 The hibernate one adds a `kernel_cmdline` entry because `resume=` is not derived
 from anything: without it the machine has a swap it can never resume from. The
@@ -87,12 +108,36 @@ the reference alone would hand you something the tool rejects.
 - **Install onto a floppy or an empty card slot.** Devices under 1 GiB and
   anything named `fd*` are not offered — QEMU hands every guest a 4 KiB
   `/dev/fd0` that `lsblk` calls a disk and sorts first.
-- **Erase a populated disk by accident.** A disk that is not empty has to be
-  confirmed, and declining abandons rather than composing a layout `plan` would
-  refuse anyway (dasik never silently reformats).
+- **Erase a populated disk by accident.** A disk that is not empty does not get
+  a yes/no with a default; it gets two rows you have to choose between —
+  *ERASE* or *Simulate* (below).
 - **Type a size the schema will not take.** Sizes and labels are checked at the
   prompt by asking the model, and a refusal is shown with its reason and asked
   again.
+
+## Simulating on a disk that is full
+
+A disk with no free space is still worth pointing the wizard at: you may want to
+see what a layout would be, keep the block for later, or hand it to another
+machine. So the "this disk is not empty" screen offers both:
+
+```text
+This disk is not empty
+  ERASE /dev/sda — set wipe_disk, so `dasik apply` repartitions it
+  Simulate — compose the layout WITHOUT erasing /dev/sda
+```
+
+**Simulate writes the same config with `wipe_disk: false`.** Nothing is erased,
+and `dasik plan` then says so rather than proposing anything:
+
+```text
+Warning: /dev/vda is populated and does not match the declared layout;
+         set wipe_disk:true to repartition. Skipping.
+```
+
+That is dasik's own rule — it never silently reformats a populated disk — so the
+simulation is safe by construction rather than by the wizard being careful. The
+review screen says which of the two you picked before it writes anything.
 
 ## The terminal it needs
 
@@ -102,6 +147,10 @@ reverse video for the selected row, no colour pairs, no line-drawing characters.
 
 Run from a pipe or a script, it says so and exits rather than ending a
 partitioning session on `setupterm: could not find terminal`.
+
+A **stray `ESC` never abandons a menu** — `q` does. An arrow key *is* an escape
+sequence, and on a slow line its `ESC` can arrive alone, so a menu that quit on
+`ESC` would quit on the very keys it tells you to use.
 
 ## Where the pieces live
 

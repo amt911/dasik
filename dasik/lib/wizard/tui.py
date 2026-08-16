@@ -24,6 +24,16 @@ _ENTER = (10, 13, curses.KEY_ENTER)
 _ESC = 27
 _BACKSPACE = (curses.KEY_BACKSPACE, 127, 8)
 _QUIT = (ord("q"), ord("Q"))
+# What is left of an arrow key when its escape sequence arrives in pieces:
+# ESC [ B. On a slow serial line the ESC can reach the application alone,
+# ncurses' ESCDELAY expires, and getch() hands back a bare 27 followed by the
+# rest as ordinary characters. A menu that quit on ESC therefore quit on an
+# arrow — the very keys it tells you to use. Proved with a pty that delivers
+# [10, 27, 91] where a terminal would have said KEY_DOWN.
+_SEQUENCE_LEAD = (ord("["), ord("O"))
+# Everything a sequence may carry, and the subset that ENDS one.
+_SEQUENCE_TAIL = tuple(ord(c) for c in "ABCDFHPQRS~0123456789;")
+_SEQUENCE_FINAL = tuple(ord(c) for c in "ABCDFHPQRS~")
 
 _TITLE = "dasik — partition wizard"
 _FOOTER = "[↑↓] move   [enter] choose   [q] quit — nothing is written until the end"
@@ -65,16 +75,30 @@ def _frame(screen, title: str, body: Sequence[str], selected: int = -1) -> None:
     screen.refresh()
 
 
-def menu(screen, title: str, rows: Sequence[str]) -> Optional[int]:
-    """A row picker. Returns the index, or None if abandoned."""
+def menu(screen, title: str, rows: Sequence[str],
+         details: Optional[Sequence[Sequence[str]]] = None) -> Optional[int]:
+    """A row picker. Returns the index, or None if abandoned.
+
+    *details* is one block of lines per row, shown under the list for whichever
+    row the cursor is on — so a layout can be understood while choosing it
+    rather than after.
+    """
     if not rows:
         return None
     index = 0
     while True:
-        _frame(screen, title, rows, selected=index)
+        body = list(rows)
+        if details and index < len(details) and details[index]:
+            detail = details[index]
+            body = body + [""] + [f"  {line}" for line in
+                                  ([detail] if isinstance(detail, str) else detail)]
+        _frame(screen, title, body, selected=index)
         key = screen.getch()
-        if key in _QUIT or key == _ESC:
+        if key in _QUIT:
             return None
+        if key == _ESC or key in _SEQUENCE_LEAD or key in _SEQUENCE_TAIL:
+            # A menu is left with `q`, never with ESC: see _SEQUENCE_LEAD.
+            continue
         if key in _ENTER:
             return index
         if key == curses.KEY_UP:
@@ -147,6 +171,11 @@ def prompt(screen, title: str, label: str, default: str = "",
         _frame(screen, title, body)
         key = screen.getch()
         if key == _ESC:
+            # Cancel — unless this is the head of a split arrow, in which case
+            # its leftovers belong in nobody's buffer. Peeked, never waited for:
+            # blocking here would mean ESC did nothing until the next keypress.
+            if _swallow_sequence(screen):
+                continue
             return None
         if key in _ENTER:
             value = buffer if buffer else default
@@ -160,6 +189,34 @@ def prompt(screen, title: str, label: str, default: str = "",
             buffer = buffer[:-1]
         elif 32 <= key < 127:
             buffer += chr(key)
+
+
+def _peek(screen) -> Optional[int]:
+    """The next key if one is already waiting, else None. Never blocks."""
+    nodelay = getattr(screen, "nodelay", None)
+    if nodelay is None:
+        return None
+    nodelay(True)
+    try:
+        key = screen.getch()
+    finally:
+        nodelay(False)
+    return None if key in (-1, None) else key
+
+
+def _swallow_sequence(screen) -> bool:
+    """After an ESC: eat the rest of an escape sequence, if that is what it was.
+
+    Returns True when the ESC turned out to be an arrow (or another sequence)
+    and has been consumed whole, False when it was a real ESC keypress.
+    """
+    lead = _peek(screen)
+    if lead not in _SEQUENCE_LEAD:
+        return False
+    while True:
+        tail = _peek(screen)
+        if tail is None or tail in _SEQUENCE_FINAL:
+            return True
 
 
 def confirm(screen, title: str, question: str) -> bool:
@@ -182,9 +239,12 @@ def _pick_disk(screen, disks: List[DiskInfo]) -> Optional[DiskInfo]:
 
 
 def _pick_recipe(screen) -> Optional[str]:
-    rows = [f"{r.title} — {r.detail}" for r in RECIPES]
+    rows = [r.title for r in RECIPES]
+    details: List[Sequence[str]] = [[r.detail, ""] + r.summary() for r in RECIPES]
     rows.append("Custom — compose the partitions yourself")
-    index = menu(screen, "Which layout?", rows)
+    details.append(["One partition at a time: label, size, filesystem, mountpoint.",
+                    "Checked as a set before it is accepted."])
+    index = menu(screen, "Which layout?", rows, details=details)
     if index is None:
         return None
     return "custom" if index == len(RECIPES) else RECIPES[index].key
@@ -303,13 +363,25 @@ def run_wizard(screen, disks: List[DiskInfo]) -> Optional[Choices]:
 
     wipe = False
     if not disk.is_empty:
-        if not confirm(screen, "This disk is not empty",
-                       f"{disk.describe()} — erase it?"):
-            # A populated disk without wipe_disk is refused by plan() anyway
-            # (dasik never silently reformats), so composing it would produce a
-            # config that cannot install and does not say why.
+        # NOT a yes/no that abandons on "no". Saying no used to end the session,
+        # which left no way to just look at what a layout would be — and looking
+        # is what an assistant that never applies is for. Both answers compose;
+        # only one of them arms the destructive flag.
+        choice = menu(
+            screen, "This disk is not empty",
+            [f"ERASE {disk.path} — set wipe_disk, so `dasik apply` repartitions it",
+             f"Simulate — compose the layout WITHOUT erasing {disk.path}"],
+            details=[
+                [f"{disk.describe()}", "",
+                 "Nothing happens now. `dasik plan` will announce the erase, and",
+                 "only `dasik apply` carries it out."],
+                ["The config is written with wipe_disk: false, so `dasik plan`",
+                 "SKIPS this disk with a warning — dasik never silently",
+                 "reformats a populated one. Useful to see the block, to keep it",
+                 "for later, or to edit the flag yourself when you mean it."]])
+        if choice is None:
             return None
-        wipe = True
+        wipe = choice == 0
 
     if recipe_key == "custom":
         partitions = _ask_partitions(screen, disk.path)
@@ -336,6 +408,10 @@ def run_wizard(screen, disks: List[DiskInfo]) -> Optional[Choices]:
     warnings = []
     if wipe:
         warnings.append(f"{disk.path} holds data and will be ERASED by `dasik apply`.")
+    elif not disk.is_empty:
+        warnings.append(
+            f"Simulation: {disk.path} holds data and wipe_disk is false, so "
+            f"`dasik plan` will SKIP this disk rather than repartition it.")
     _frame(screen, "Review", _review_lines(disk.path, stanza, warnings))
     key = screen.getch()
     if key in _QUIT or key == _ESC:

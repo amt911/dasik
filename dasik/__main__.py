@@ -267,6 +267,27 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     check_p.add_argument("config", help="Path to the JSON configuration file")
 
+    wizard_p = sub.add_parser(
+        "partition-wizard",
+        parents=[common],
+        help="Compose a `disks` block from the real disks (writes a config; "
+             "NEVER partitions anything)",
+    )
+    wizard_p.add_argument(
+        "--output", default=None,
+        help="Write a new config here. Refuses to overwrite unless --force.")
+    wizard_p.add_argument(
+        "--merge-into", default=None,
+        help="Replace the `disks` block of an EXISTING config, keeping the rest.")
+    wizard_p.add_argument(
+        "--force", action="store_true",
+        help="Allow --output to replace a file that already exists.")
+    wizard_p.add_argument(
+        "--from-lsblk", default=None,
+        help="Read the inventory from a recorded `lsblk -J` file instead of the "
+             "live system. For testing, and for composing a config for a machine "
+             "you are not sitting at.")
+
     hash_p = sub.add_parser(
         "hash-password",
         parents=[common],   # -v/--log/--no-log, like every other verb
@@ -286,7 +307,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 _KNOWN_VERBS = {"plan", "apply", "sync", "save", "generations", "rollback",
-                "check", "hash-password"}
+                "check", "hash-password", "partition-wizard"}
 
 
 def _is_legacy_invocation(raw: list[str]) -> Optional[str]:
@@ -801,6 +822,133 @@ def _reject_no_verb(config_path_str: str) -> int:
     return 2
 
 
+def _open_curses(disks):
+    """`curses.wrapper` around the wizard. Split out so a test can make it fail.
+
+    The wrapper restores the terminal even when the wizard raises, which matters
+    on the installer ISO: a half-initialised curses session leaves a console
+    nobody can type into, and there is no window manager to escape to.
+    """
+    import curses
+    from dasik.lib.wizard.tui import run_wizard
+    return curses.wrapper(lambda screen: run_wizard(screen, disks))
+
+
+def _run_wizard_screens(disks):
+    """Drive the screens, turning "there is no terminal" into a sentence.
+
+    Run from a script, or with stdin redirected, curses ends the session with
+    `setupterm: could not find terminal` and nothing else — which is not what
+    anyone wants to read at the end of a partitioning session. The wizard is
+    interactive by nature; the useful answer is to say so, and to name the flag
+    that composes a config without a screen.
+    """
+    if not sys.stdin.isatty():
+        print("Error: partition-wizard needs a terminal — stdin is not a tty. "
+              "Run it directly on the machine (a serial console is fine), not "
+              "from a pipe or a script.", file=sys.stderr)
+        return None
+    try:
+        return _open_curses(disks)
+    except Exception as e:      # noqa: BLE001 - curses failing to start at all
+        print(f"Error: could not start the wizard's screen: {e}", file=sys.stderr)
+        return None
+
+
+def _cmd_partition_wizard(output: Optional[str] = None,
+                          merge_into: Optional[str] = None,
+                          force: bool = False,
+                          from_lsblk: Optional[str] = None) -> int:
+    """Compose a `disks` block from the real disks. Writes a config; never
+    partitions anything.
+
+    The split is the point (issue #190): partitioning is the one irreversible
+    thing dasik does, so the assistant stops at the file. `plan` stays the last
+    gate before a disk is erased.
+    """
+    import json as _json
+    from dasik.lib.wizard import compose as _compose
+    from dasik.lib.wizard.inventory import parse_lsblk, read_inventory
+    from dasik.lib.wizard.recipes import custom_disk, find
+
+    if not output and not merge_into:
+        print("Error: partition-wizard needs --output <file> or "
+              "--merge-into <file>.", file=sys.stderr)
+        return 2
+
+    if from_lsblk:
+        try:
+            disks = parse_lsblk(_json.loads(Path(from_lsblk).read_text()))
+        except (OSError, _json.JSONDecodeError) as e:
+            print(f"Error: cannot read {from_lsblk}: {e}", file=sys.stderr)
+            return 1
+    else:
+        disks = read_inventory()
+
+    if not disks:
+        print("Error: no disks found. `lsblk -J` reported none — run this on "
+              "the machine you mean to install, or pass --from-lsblk.",
+              file=sys.stderr)
+        return 1
+
+    choices = _run_wizard_screens(disks)
+    if choices is None:
+        print("Wizard abandoned — nothing was written.")
+        return 1
+
+    if choices.recipe_key == "custom":
+        stanza = custom_disk(choices.device, choices.custom_partitions,
+                             wipe=choices.options.wipe)
+        from dasik.lib.wizard.recipes import Contribution
+        built = Contribution(disk=stanza)
+    else:
+        built = find(choices.recipe_key).build(choices.options)
+
+    target = Path(merge_into) if merge_into else Path(output)  # type: ignore[arg-type]
+    if merge_into:
+        try:
+            existing = _json.loads(target.read_text())
+        except (OSError, _json.JSONDecodeError) as e:
+            print(f"Error: cannot read {target}: {e}", file=sys.stderr)
+            return 1
+        config = _compose.merge_into(existing, built)
+    else:
+        config = _compose.compose(built, hostname=choices.hostname)
+
+    # The secret first: a config whose `$include_line` points at a file that
+    # does not exist is one `check` refuses, and writing it after would leave a
+    # window where the config on disk is invalid.
+    secret_path = None
+    if choices.passphrase:
+        secret_path = _compose.write_secret(
+            target, choices.options.secret, choices.passphrase)
+
+    try:
+        _compose.write_config(target, config, overwrite=bool(merge_into) or force)
+    except FileExistsError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+    print(f"Wrote {target}")
+    if secret_path:
+        print(f"Wrote {secret_path} (mode 0600) — keep it out of Git.")
+    for note in built.notes:
+        print(f"  note: {note}")
+
+    # Say whether what was just written is loadable, rather than leaving it to
+    # be discovered later.
+    if _cmd_check(target) != 0:
+        print("The composed config did not validate — please report this.",
+              file=sys.stderr)
+        return 1
+
+    print("")
+    print("Nothing has been partitioned. Next:")
+    print(f"  dasik plan {target}      # review every change first")
+    print(f"  dasik apply {target}     # and only then, the destructive part")
+    return 0
+
+
 def _cmd_check(config_path: Path) -> int:
     """Validate a config: JSON syntax + the pydantic schema. Read-only, no target.
     Exit 0 when valid, 1 with a readable error otherwise."""
@@ -907,6 +1055,10 @@ def main(argv: Optional[list[str]] = None) -> int:
 
         if args.verb == "generations":
             return _cmd_generations(args.target, getattr(args, "prune", None))
+        if args.verb == "partition-wizard":
+            return _cmd_partition_wizard(
+                output=args.output, merge_into=args.merge_into,
+                force=args.force, from_lsblk=args.from_lsblk)
 
         if args.verb == "rollback":
             return _cmd_rollback(args.target, args.generation, args.yes)

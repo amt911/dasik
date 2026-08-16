@@ -1,8 +1,9 @@
 import json
 import os
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, List
 
 from ..target.target import Target
 from .state_store import write_json_atomically
@@ -79,6 +80,43 @@ class GenerationStore:
             gens.append(GenInfo(number=int(p.name), is_current=(p.name == current),
                                 partial=self._is_partial(p)))
         return gens
+
+    def prune(self, keep: int) -> List[int]:
+        """Delete all but the *keep* most recent generations. Returns what went.
+
+        Explicit only — there is no automatic cap on ``apply`` and no
+        ``keep_generations`` in the config, because both delete history as a
+        side effect of something else, and the generation somebody is about to
+        roll back to is exactly the one an automatic policy takes.
+
+        Two things are never deleted whatever *keep* says:
+
+        * the **current** generation, which is what the machine is running;
+        * the newest **complete** one, because ``restore`` refuses a partial
+          generation — pruning down to nothing but partials would leave a
+          history that cannot be rolled back to at all.
+        """
+        if keep < 1:
+            raise ValueError("keep must be at least 1: a history with no "
+                             "generations in it cannot be rolled back to.")
+        gens = self.list()
+        if len(gens) <= keep:
+            return []
+
+        survivors = {g.number for g in gens[-keep:]}
+        survivors |= {g.number for g in gens if g.is_current}
+        newest_complete = next(
+            (g.number for g in reversed(gens) if not g.partial), None)
+        if newest_complete is not None:
+            survivors.add(newest_complete)
+
+        removed: List[int] = []
+        for gen in gens:
+            if gen.number in survivors:
+                continue
+            shutil.rmtree(self.base_dir / str(gen.number), ignore_errors=True)
+            removed.append(gen.number)
+        return removed
 
     def restore(self, number: int) -> tuple[dict[str, Any], dict[str, Any]]:
         gen_dir = self.base_dir / str(number)

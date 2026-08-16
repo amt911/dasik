@@ -377,8 +377,8 @@ for making a captured layout portable.
 | `unlock_keyfile` | string | `null` | Key file added as an extra LUKS key for auto boot-unlock (`rd.luks.key`). dasik creates it if missing. **With** `unlock_keydev` the path is relative to that device's root; **without** it, an absolute path inside the target, embedded into the initramfs. |
 | `unlock_keydev` | string | `null` | Device holding `unlock_keyfile` (e.g. a USB pendrive): a bare FS UUID, or an explicit `UUID=`/`PARTUUID=`/`LABEL=`/`/dev/…`. |
 | `unlock_keydev_fs` | string | `null` | Filesystem of `unlock_keydev` (`vfat`, `exfat`, `ext4`, `btrfs`, `xfs`) — the module the initramfs needs to read it. |
-| `unlock_tpm2` | bool | `false` | Enroll a TPM2 keyslot (passwordless). |
-| `unlock_fido2` | bool | `false` | Enroll a FIDO2 token (needs the physical key at enroll **and** boot). |
+| `unlock_tpm2` | bool | `false` | Enroll a TPM2 keyslot (passwordless). Its own domain (`luks_token`): planned when the header lacks it, silent when it has it, and the keyslot is WIPED when the flag is dropped — unless that would leave the volume with no passphrase. Enrolling needs `luks_password` to authorise the new keyslot. |
+| `unlock_fido2` | bool | `false` | Enroll a FIDO2 token (needs the physical key at enroll **and** boot). Same `luks_token` domain and same rules as `unlock_tpm2`. |
 | `luks_options` | list[str] | `[]` | Extra verbatim `rd.luks.options` tokens (e.g. `token-timeout=10s`). |
 | `mount_options` | list[str] | `[]` | Extra mount options for the partition. |
 | `btrfs_subvolumes` | list | `[]` | Only for `btrfs` (below). |

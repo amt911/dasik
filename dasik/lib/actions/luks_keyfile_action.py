@@ -244,6 +244,36 @@ class LuksKeyfileAction(AbstractAction):
                            "luksRemoveKey` once you have another way in"))
         return changes
 
+    def actual(self) -> set:
+        """The keyfiles the volumes really accept.
+
+        Not decoration: ``Reconciler._owned_after_sync`` records
+        ``actual & (claimable | declared)``, so an action that leaves the base
+        class's empty set here is disowned by **every** sync — and after one,
+        un-declaring the keyfile no longer reports the keyslot it leaves
+        behind. Found while giving the hardware tokens the same treatment
+        (issue #242), where the same omission silently kept a TPM2 keyslot for
+        ever.
+        """
+        out: set = set()
+        for part, luks_name, keyfile in self._declared():
+            if not self._key_device_present(part):
+                continue
+            mountpoint = None
+            try:
+                mountpoint = self._mount_keydev(part, read_only=True)
+                local = self._local_path(keyfile, mountpoint)
+                if not os.path.exists(local):
+                    continue
+                device = self._luks_device(luks_name)
+                if device and self._key_works(device, local):
+                    out.add(self._item(luks_name, keyfile))
+            except Exception:      # nosec B112 - an unreadable key device owns nothing
+                continue
+            finally:
+                self._umount_keydev(mountpoint)
+        return out
+
     def managed_keys(self) -> dict:
         return {self._DOMAIN: [self._item(name, keyfile)
                                for _part, name, keyfile in self._declared()]}

@@ -277,3 +277,38 @@ def test_chmod_failing_on_a_filesystem_without_modes_is_not_fatal():
          patch("os.open", return_value=99), patch("os.close"), \
          patch("os.fchmod", side_effect=PermissionError("fat")):
         action._create_keyfile("/run/dasik-key/keyfile")     # must not raise
+
+
+# --- ownership must survive a sync ------------------------------------------ #
+
+def test_actual_reports_the_keyfile_the_volume_really_accepts(tmp_path, monkeypatch):
+    """Without this the domain is disowned by every sync.
+
+    `Reconciler._owned_after_sync` records `actual & (claimable | declared)`,
+    and the base class's `actual()` is an empty set — so after any sync,
+    dropping `unlock_keyfile` stopped reporting the keyslot it leaves behind.
+    Same defect the token domain hit on a real VM (issue #242).
+    """
+    action = LuksKeyfileAction({"disks": {"disks": [{"partitions": [
+        {"label": "ROOT", "encrypt": True, "luks_name": "cryptroot",
+         "unlock_keyfile": "/crypto_keyfile.bin"}]}]}}, None)
+    action._luks_device = lambda name: "/dev/vda2"
+    action._mount_keydev = lambda part, read_only=False: None
+    action._umount_keydev = lambda mountpoint: None
+    monkeypatch.setattr("os.path.exists", lambda p: True)
+    action._key_works = staticmethod(lambda device, local: True)
+
+    assert action.actual() == {"cryptroot:/crypto_keyfile.bin"}
+
+
+def test_actual_is_empty_when_the_key_does_not_open_the_volume(monkeypatch):
+    action = LuksKeyfileAction({"disks": {"disks": [{"partitions": [
+        {"label": "ROOT", "encrypt": True, "luks_name": "cryptroot",
+         "unlock_keyfile": "/crypto_keyfile.bin"}]}]}}, None)
+    action._luks_device = lambda name: "/dev/vda2"
+    action._mount_keydev = lambda part, read_only=False: None
+    action._umount_keydev = lambda mountpoint: None
+    monkeypatch.setattr("os.path.exists", lambda p: True)
+    action._key_works = staticmethod(lambda device, local: False)
+
+    assert action.actual() == set()

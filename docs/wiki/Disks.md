@@ -144,6 +144,52 @@ which lives on the unencrypted ESP.** Anyone with the disk can read it.
 Preflight warns; it is only defensible if your threat model is a powered-off
 machine whose ESP is gone.
 
+### Hardware tokens (TPM2 / FIDO2)
+
+`unlock_tpm2` and `unlock_fido2` are a domain of their own (`luks_token`), which
+means they behave like everything else in dasik: **planned when the header lacks
+them, silent when it has them, removed when you drop the flag.**
+
+That was not always true. Enrolment used to happen inside the disk action,
+immediately after `luksFormat` — code that only runs while a disk is being
+FORMATTED. On an installed machine, adding `unlock_fido2: true` therefore did
+nothing at all except add `fido2-device=auto` to the kernel command line,
+pointing at a token nobody had enrolled; a failed enrolment was never retried;
+and dropping the flag left the keyslot behind for good.
+
+```
++ [luks_token] install cryptroot:tpm2  (not enrolled in the LUKS header)
+- [luks_token] remove cryptroot:tpm2   (no longer declared — the keyslot is wiped
+                                        (a passphrase keyslot remains))
+```
+
+**Enrolling needs the passphrase.** `systemd-cryptenroll` authorises the new
+keyslot with an existing one, so `luks_password` must be in the config for that
+apply. `sync` never captures a passphrase, so a config captured from a machine
+cannot enrol by itself — the plan says so instead of failing at apply time:
+
+```
++ [luks_token] install cryptroot:tpm2  (not enrolled, and no luks_password to
+   authorise it with (sync never captures the passphrase — declare it for this
+   apply, or enrol by hand))
+```
+
+**Removing is guarded.** A REMOVE wipes the keyslot with
+`systemd-cryptenroll --wipe-slot=`, and dasik refuses when that keyslot is the
+only one in the header — wiping the last way into a volume is how a disk is
+lost. It says so and keeps the slot:
+
+```
+NOTE: keeping the tpm2 keyslot on cryptroot: it is the only keyslot in the
+header, and wiping it would leave the volume with no passphrase and no way in.
+Add one with `cryptsetup luksAddKey` first.
+```
+
+A token dasik does **not** own (someone enrolled it by hand) is never wiped.
+
+FIDO2 needs the key plugged in and touched at enrolment; TPM2 does not, and is
+what the QEMU harness verifies (`config/vm-luks-token/`, swtpm).
+
 ### Btrfs subvolumes
 
 | Field | Type | Default |

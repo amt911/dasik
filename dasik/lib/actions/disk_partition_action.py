@@ -1426,32 +1426,13 @@ class DiskPartitionAction(AbstractAction):
             Command.execute("cryptsetup", ["luksFormat", "--type", "luks2", *uuid_args, device])
             Command.execute("cryptsetup", ["open", device, name])
 
-        # The extra key for automatic boot unlock (a pendrive keyfile) is NOT
-        # enrolled here: LuksKeyfileAction owns it, so it also works on an
-        # already-installed machine — this path only runs while formatting.
-
-        # Optional hardware-backed keyslots for passwordless unlock.
-        if partition.unlock_tpm2:
-            self._enroll_cryptenroll(device, partition, "--tpm2-device=auto")
-        if partition.unlock_fido2:
-            self._enroll_cryptenroll(device, partition, "--fido2-device=auto")
+        # Neither the pendrive keyfile NOR the hardware tokens are enrolled
+        # here. LuksKeyfileAction and LuksTokenAction own them, and both run
+        # immediately after this action with the volume already open — so they
+        # work on an already-installed machine too, which this path never could:
+        # it only runs while FORMATTING (issue #242).
 
         return f"/dev/mapper/{name}"
-
-    def _enroll_cryptenroll(self, device: str, partition: Partition, kind: str) -> None:
-        """Enroll a TPM2/FIDO2 keyslot with systemd-cryptenroll, authorised by the
-        existing passphrase via $PASSWORD (the passphrase stays as a fallback).
-        """
-        if partition.luks_password is None:
-            print(f"NOTE: {kind} enroll skipped ({partition.label}): needs luks_password.")
-            return
-        # check=True: every way this fails is a way the machine ends up with
-        # `fido2-device=auto` on its command line and no token in the header —
-        # the key not plugged in, never touched, needing a PIN, no TPM in the
-        # box. Silently, with the install reporting success. The passphrase
-        # still works, so the failure is recoverable; it just has to be said.
-        Command.execute("systemd-cryptenroll", [kind, device],
-                        env={"PASSWORD": partition.luks_password}, check=True)
 
     def _create_btrfs_subvolumes(self, device: str, subvolumes: List[BtrfsSubvolume]) -> None:
         """Create btrfs subvolumes.

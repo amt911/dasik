@@ -49,7 +49,10 @@ class NetworkAction(CompositeV3Action):
         self.type: str = net.get("type", "")
         self.hostname: str = cfg.get("hostname", "")
         _validate_hostname(self.hostname)
-        self.add_default_hosts: bool = net.get("add_default_hosts", False)
+        # Same default as NetworkModel, and it has to be repeated here because
+        # the action reads the RAW dict: a model-only default would leave the
+        # schema promising a block the action then never writes.
+        self.add_default_hosts: bool = net.get("add_default_hosts", True)
 
     @property
     def name(self) -> str:

@@ -58,7 +58,7 @@ The domain is a **record**: any drift in the three values produces one `~ modify
 | Field | Type | Default | Notes |
 | --- | --- | --- | --- |
 | `network.type` | `"NetworkManager"` \| `"systemd-networkd"` | *(required if the block exists)* | validated on apply; not part of the drift record (it has no file of its own) |
-| `network.add_default_hosts` | bool | `false` | writes the standard `localhost` block into `/etc/hosts` |
+| `network.add_default_hosts` | bool | `true` | writes the `/etc/hosts` block the Arch wiki recommends (`127.0.0.1 localhost`, `::1 localhost`, `127.0.1.1 <hostname>`). `false` leaves the file to whoever else manages it |
 
 Declaring `network` does **not** install NetworkManager. Put `networkmanager` in
 `packages` and `NetworkManager.service` in `systemd.enable_units`.

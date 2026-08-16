@@ -27,6 +27,13 @@ holds the list of devices.
    the disk is `wipe_disk: true` **or** has no partition table at all. A
    populated disk that does not match the declared layout is *skipped* with a
    warning — dasik never silently reformats data.
+   "Has no partition table" means dasik *read the disk and found none*, never
+   "dasik could not tell". `parted` reports a blank disk as
+   `Partition Table: unknown`, and prints that line whenever it managed to open
+   the device at all — so an answer without it (no permission, no such device)
+   is treated as "a table exists" and routes to the skip. Run as a normal user,
+   `plan` therefore reports every disk as populated-and-skipped rather than
+   offering to erase one it never managed to look at.
 2. **The repartition is marked destructive in the plan**, even though its op
    reads `install`, and it names what is on the device:
    ```text

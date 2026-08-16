@@ -531,6 +531,17 @@ not know whether the package exists, so it refuses rather than skip.
 > The deprecated `aur-<name>` prefix is still accepted (with a warning) for
 > configs produced by older syncs; `sync` rewrites it back to the plain name.
 
+A **pacman group** may be declared by name — `"xorg"`, `"texlive"` — and stands
+for its members. No group name is ever an installed package, so every verb has
+its own answer for one: `plan` calls the group converged when **all** its
+members are installed and otherwise plans the group itself (`apply` runs one
+`pacman -S xorg`); `sync` keeps the group and does not re-emit its members; and
+dropping it from the config plans the removal of the **members**, since that is
+what `pacman -R` on a group expands to. Replacing a captured member list with
+the group it came from removes nothing. A group installs everything in it, which
+may include members the machine did not have (`xorg` carries
+`xorg-server-src`) — `pacman -Sgq <group>` lists them.
+
 `sync` captures the explicit packages (`pacman -Qqe`) **plus the package behind
 every enabled unit**, as `{"name": "...", "reason": "dep"}` when pacman has it
 installed as a dependency. Explicit alone is not enough: a service whose provider

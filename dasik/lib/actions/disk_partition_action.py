@@ -1008,7 +1008,14 @@ class DiskPartitionAction(AbstractAction):
                 r"(?:Partition Table|Tabla de particiones):\s*(\S+)", stdout
             )
             if not m:
-                return False
+                # No verdict line at all: parted never managed to OPEN the
+                # device, so this is the same "we do not know" as the except
+                # below — NOT evidence of an empty disk. It reaches here with
+                # exit status 0 and an empty stdout (the error goes to stderr),
+                # which is why nothing raises: `parted -s /dev/nvme0n1 print`
+                # run without permission does exactly that, and returning False
+                # made plan() offer to ERASE a disk holding a live root.
+                return True
             return m.group(1).strip().lower() not in ("unknown", "loop", "none")
         except Exception:
             # Fail SAFE: a probe that could not RUN (parted/arch-chroot missing,

@@ -166,11 +166,13 @@ def _mutating(run):
     """The pacman calls that CHANGE something.
 
     apply() also probes `pacman -Qq`/`-Qqe` at the end to make the install
-    reasons true against reality (issue #188), so counting every call would
-    count those read-only queries too.
+    reasons true against reality (issue #188), and `-Sg` to tell a declared
+    pacman group from a package, so counting every call would count those
+    read-only queries too.
     """
     return [c for c in run.call_args_list
-            if c.args[0] == "pacman" and c.args[1][0] not in ("-Qq", "-Qqe", "-D")]
+            if c.args[0] == "pacman"
+            and c.args[1][0] not in ("-Qq", "-Qqe", "-D", "-Sg")]
 
 
 def test_apply_install_routes_pacman_pkgs_through_pacman_S():
@@ -240,8 +242,9 @@ def test_apply_aur_install_uses_makepkg_path():
          patch("dasik.lib.actions.packages_action.Command.execute") as run:
         a.apply(changes)
     aur_install.assert_called_once_with(["yay"], helper="yay")
-    # No pacman -S call (no pacman pkgs to install)
-    for call in run.call_args_list:
+    # No pacman -S call (no pacman pkgs to install). The read-only probes are
+    # not that: `-Sg yay` only asks whether the name is a pacman group.
+    for call in _mutating(run):
         assert "-S" not in call.args[1] or "base-devel" in call.args[1]
         # _apply_aur_install is mocked, so any Command.execute here would be
         # incidental setup we did not stub. Assert it is not a bulk pacman -S

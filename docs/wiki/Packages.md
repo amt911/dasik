@@ -38,6 +38,45 @@ Package names are validated against the Arch grammar
 (`[a-zA-Z0-9][a-zA-Z0-9@._+-]*`, no leading `-`) before they ever reach a
 pacman argv.
 
+---
+
+## Declaring a group
+
+A pacman group may be named directly, and stands for its members:
+
+```json
+"packages": ["base", "linux", "xorg", "texlive", "texlive-lang"]
+```
+
+This is worth knowing about because **no group name is ever an installed
+package**. `pacman -Qq` lists packages; nothing on the machine is ever called
+`xorg`. So each verb needs its own answer, and dasik gives it one:
+
+| Verb | A declared group |
+| --- | --- |
+| `plan` | converged when **every** member is installed; otherwise planned as the group, because `apply` runs one `pacman -S xorg` and not 49 installs |
+| `apply` | resolves the group and installs it in the same transaction as the repo packages |
+| `sync` | keeps the group and does **not** re-emit its members beside it — writing them back would replace the declaration with the thing it stands for, and the next save would have nothing left to keep |
+| manifest | a complete declared group is what dasik owns, so a later removal has something to act on |
+| removal | dropping the group plans the removal of its **members** (what `pacman -R` on a group expands to), each still subject to the blocked-removal check |
+
+Two consequences worth stating outright:
+
+- **Migrating a capture is free.** A `sync` of a machine installed from the
+  `xorg` group lists the 49 members. Replacing them with `xorg` removes
+  nothing: a member of a declared group is still declared — by the group.
+- **A group installs everything in it.** `xorg` carries `xorg-server-src`,
+  which most machines do not have. `pacman -Sgq <group>` lists the members
+  before you commit to them; declaring the members individually is still an
+  option when you want a subset.
+
+A member the group does **not** cover is an ordinary package: `xorg-xeyes` is
+not in the `xorg` group, so a config that wants it declares it alongside.
+
+An unanswerable probe (no pacman on a half-built target) makes every name
+behave as a plain package — the group is planned rather than silently called
+converged.
+
 ## Install reasons
 
 | Form | pacman reason |

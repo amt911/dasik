@@ -47,7 +47,7 @@ something.
 | `packages` | every explicit package (`pacman -Qqe`) including AUR, as plain names; a declared package installed as a dep re-emitted as `{name, reason: "dep"}`; the package **behind an enabled unit**, as `dep` | transitive deps never captured; `optional` preserved as intent; a declared `aur-` prefix dropped |
 | `users` | real users (uid ≥ 1000) plus root's hash from `/etc/shadow`; shell and groups refreshed from reality | root with no password ⇒ the declaration is dropped, not invented |
 | `systemd` | every enabled unit/socket, declared or not | declared intent kept, drift appended; `disable_units` preserved |
-| `files` + the `/etc` sections | local files under `/etc/{udev/rules.d,modprobe.d,modules-load.d,sysctl.d,tmpfiles.d,sddm.conf.d,profile.d}`; `/etc/crypttab` when it has real lines; `/etc/wireguard/*.conf`; NetworkManager `*.nmconnection` of type wireguard (mode `0600`) | symlinks and **pacman-owned** files are skipped (`pacman -Qo`); declared entries win over discovered ones |
+| `files` + the `/etc` sections | local files under `/etc/{udev/rules.d,modprobe.d,modules-load.d,sysctl.d,tmpfiles.d,sddm.conf.d,profile.d}`; `/etc/ssh/sshd_config.d/*.conf`; `/etc/samba/smb.conf`; `/etc/crypttab` when it has real lines; `/etc/wireguard/*.conf`; NetworkManager `*.nmconnection` of type wireguard (mode `0600`) | symlinks and **pacman-owned** files are skipped (`pacman -Qo`); declared entries win over discovered ones |
 | `home_files` | the declared entries, what the manifest owns, and **the config-saver documents** under `~/.config/config-saver/configs.d` of every real user | the rest of a home is never scanned — ssh keys, browser profiles, state. With `home_tree` declared, the bodies are written into that directory rather than inlined |
 | `locales` | `/etc/locale.gen`, `/etc/locale.conf`, `/etc/vconsole.conf` | |
 | `timezone` | the `/etc/localtime` symlink target | reports the machine, not the config |
@@ -66,6 +66,23 @@ something.
 | `plymouth` | plymouth installed ⇒ the block, with the theme from `plymouthd.conf` | capture-only domain |
 | `sudo` | the fragment dasik owns | |
 | `microsoft_fonts` | whether the fonts are present | |
+
+### The two files that are not a drop-in directory
+
+`/etc/ssh/sshd_config.d/*.conf` and `/etc/samba/smb.conf` are captured because
+they were a one-way street: `apply` wrote them, `plan` showed them, and `sync`
+could not read them — so capturing a machine and re-applying the capture dropped
+an SSH hardening drop-in and every Samba share the machine had.
+
+Only `*.conf` is taken from `sshd_config.d`, because that is what sshd's
+`Include` reads; a `.pacnew` or an editor backup sitting there changes nothing
+and does not belong in a config. `/etc/ssh/sshd_config` itself is pacman-owned
+and skipped like any vendor file — the drop-in directory is where an admin's
+changes belong.
+
+`/etc/samba` is handled by whitelisting **exactly one path**. `smbpasswd`,
+`secrets.tdb` and `passdb.tdb` are then unreachable by construction, which is a
+stronger guarantee than a deny-list somebody has to keep complete.
 
 ## Capture-only domains
 

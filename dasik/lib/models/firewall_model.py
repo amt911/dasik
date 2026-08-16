@@ -1,6 +1,6 @@
 """Models for firewall configuration (firewalld or ufw)."""
 import re
-from typing import List, Literal
+from typing import Dict, List, Literal
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 # A ufw rule as dasik accepts it: an action plus a target that ufw REPORTS the
@@ -16,6 +16,26 @@ _UFW_RULE_RE = re.compile(
 # /etc/services — those are the ones ufw rewrites.
 _SERVICE_NAME_TRAP = {"ssh", "http", "https", "ftp", "smtp", "dns", "domain",
                       "telnet", "imap", "pop3", "ntp", "snmp", "ldap", "smb"}
+
+
+class FirewallZoneModel(BaseModel):
+    """One firewalld zone other than `public`.
+
+    ``allowed_services`` is the zone's **complete** service list, not a diff.
+    ``remove_services`` exists at the top level only because firewalld's
+    upstream `public` allows `ssh` and `dhcpv6-client` out of the box; naming a
+    zone explicitly is already the whole statement, so there is nothing to
+    subtract and the field is refused here rather than mean something different
+    per zone.
+    """
+    model_config = {"extra": "forbid"}
+
+    allowed_services: List[str] = Field(
+        default_factory=list,
+        description="The complete list of services this zone allows.")
+    rich_rules: List[str] = Field(
+        default_factory=list,
+        description="Rich rules for this zone (firewall-cmd --add-rich-rule syntax).")
 
 
 class FirewallModel(BaseModel):
@@ -45,6 +65,13 @@ class FirewallModel(BaseModel):
         default_factory=list,
         description="ufw only: verbatim rules, '<action> <target>' — e.g. "
                     "'allow 22/tcp', 'limit 22/tcp', 'allow Syncthing'."
+    )
+    zones: Dict[str, FirewallZoneModel] = Field(
+        default_factory=dict,
+        description="firewalld only: zones OTHER than `public`, each owned "
+                    "completely by dasik. The top-level fields are the public "
+                    "zone; this is for a machine that also customises `home`, "
+                    "`work`, `internal`…"
     )
 
     @field_validator("rules")
@@ -89,9 +116,20 @@ class FirewallModel(BaseModel):
                     "ufw denies all incoming traffic by default, so there is "
                     "nothing to remove."
                 )
+            if self.zones:
+                raise ValueError(
+                    "zones is firewalld-only: ufw has no concept of a zone. "
+                    "Express the rules as `rules` entries instead."
+                )
         elif self.rules:
             raise ValueError(
                 "rules is ufw-only syntax; with the firewalld backend use "
                 "allowed_services and rich_rules."
+            )
+        if "public" in self.zones:
+            raise ValueError(
+                "the public zone is the top-level allowed_services / "
+                "remove_services / rich_rules; declaring it again under `zones` "
+                "would let one config contradict itself."
             )
         return self

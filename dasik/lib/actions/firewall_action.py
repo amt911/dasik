@@ -14,14 +14,14 @@ the on-disk file differs from the desired content.
 """
 import os
 import re
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 
 from .abstract_action import AbstractAction
 from ..command_worker.command_worker import Command
 from ..exceptions.exceptions import ConfigValidationError
 from ..state.change import Change, Op
 
-_ZONE_PATH = "/etc/firewalld/zones/public.xml"
+_ZONES_DIR = "/etc/firewalld/zones"
 _UFW_BIN = "/usr/bin/ufw"
 # `ufw status` prints one rule per line as "<target> <ACTION IN> <source>".
 # Parsed rather than /etc/ufw/user.rules: that file is generated state only ufw
@@ -244,21 +244,49 @@ class FirewallAction(AbstractAction):
             path = _UFW_BIN
         return os.path.exists(path)
 
-    def _zone_file(self) -> str:
+    def _rooted(self, path: str) -> str:
+        """*path* under the target root, tolerating a target double with no
+        ``path()`` (the same allowance ``_ufw_installed`` already makes)."""
         t = self._target()
-        return t.path(_ZONE_PATH) if t is not None else "/mnt" + _ZONE_PATH
+        if t is None:
+            return "/mnt" + path
+        try:
+            return t.path(path)
+        except AttributeError:
+            return "/mnt" + path
 
-    def _desired_xml(self) -> str:
-        services = sorted((set(_DEFAULT_SERVICES) - set(self.remove)) | set(self.allowed))
-        lines = ['<?xml version="1.0" encoding="utf-8"?>', "<zone>", "  <short>Public</short>"]
+    def _zone_file(self, zone: str = "public") -> str:
+        return self._rooted(f"{_ZONES_DIR}/{zone}.xml")
+
+    def _extra_zones(self) -> "Dict[str, Any]":
+        """The declared zones other than `public`, as {name: spec-dict}."""
+        zones = self.config.get("zones") if isinstance(self.config, dict) else None
+        return dict(zones) if isinstance(zones, dict) else {}
+
+    def _declared_zones(self) -> "List[str]":
+        return ["public"] + sorted(self._extra_zones())
+
+    def _desired_xml(self, zone: str = "public") -> str:
+        if zone == "public":
+            services = sorted((set(_DEFAULT_SERVICES) - set(self.remove))
+                              | set(self.allowed))
+            rich = self.rich
+        else:
+            # An extra zone's allowed_services IS the list: naming a zone is
+            # already the whole statement, so nothing is merged in underneath it.
+            spec = self._extra_zones().get(zone) or {}
+            services = sorted(set(spec.get("allowed_services") or []))
+            rich = list(spec.get("rich_rules") or [])
+        lines = ['<?xml version="1.0" encoding="utf-8"?>', "<zone>",
+                 f"  <short>{zone.capitalize()}</short>"]
         lines += [f'  <service name="{s}"/>' for s in services]
-        lines += ["  " + _rich_rule_to_xml(r) for r in self.rich]
+        lines += ["  " + _rich_rule_to_xml(r) for r in rich]
         lines.append("</zone>")
         return "\n".join(lines) + "\n"
 
-    def _current_xml(self):
+    def _current_xml(self, zone: str = "public"):
         try:
-            with open(self._zone_file(), "r") as f:
+            with open(self._zone_file(zone), "r") as f:
                 return f.read()
         except FileNotFoundError:
             return None
@@ -269,16 +297,27 @@ class FirewallAction(AbstractAction):
         if self._is_ufw():
             live = set(self._live_ufw_rules())
             return {r for r in self._desired_ufw_rules() if r in live}
-        return {"public"} if (self.enable and self._current_xml() is not None) else set()
+        if not self.enable:
+            return set()
+        return {z for z in self._declared_zones()
+                if self._current_xml(z) is not None}
 
     def plan(self, managed):
         if not self.enable:
             return []
         if self._is_ufw():
             return self._plan_ufw(managed or ())
-        if self._current_xml() == self._desired_xml():
-            return []
-        return [Change(self._DOMAIN, Op.MODIFY, "public", reason="zone rules")]
+        declared = self._declared_zones()
+        changes = [Change(self._DOMAIN, Op.MODIFY, zone, reason="zone rules")
+                   for zone in declared
+                   if self._current_xml(zone) != self._desired_xml(zone)]
+        # A zone dasik wrote and the config no longer names keeps enforcing
+        # rules nothing declares; its file goes with the declaration.
+        for zone in sorted(set(managed or ()) - set(declared)):
+            if self._current_xml(zone) is not None:
+                changes.append(Change(self._DOMAIN, Op.REMOVE, zone,
+                                      reason="no longer declared"))
+        return changes
 
     def apply(self, changes) -> None:
         if not changes:
@@ -286,15 +325,22 @@ class FirewallAction(AbstractAction):
         if self._is_ufw():
             self._apply_ufw(changes)
             return
-        path = self._zone_file()
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w") as f:
-            f.write(self._desired_xml())
+        for change in changes:
+            path = self._zone_file(change.item)
+            if change.op is Op.REMOVE:
+                try:
+                    os.remove(path)
+                except FileNotFoundError:
+                    pass
+                continue
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w") as f:
+                f.write(self._desired_xml(change.item))
 
     def managed_keys(self) -> dict:
         if self._is_ufw():
             return {self._DOMAIN: self._desired_ufw_rules() if self.enable else []}
-        return {self._DOMAIN: ["public"] if self.enable else []}
+        return {self._DOMAIN: self._declared_zones() if self.enable else []}
 
     @staticmethod
     def _decode(out) -> str:
@@ -328,18 +374,46 @@ class FirewallAction(AbstractAction):
                                      "rules": rules}}
         return self._import_firewalld()
 
-    def _import_firewalld(self, managed=None) -> dict:
-        """Capture the live firewalld permanent public zone back into a `firewall`
-        block. `--list-rich-rules` returns rules in the same syntax `rich_rules`
-        expects, so they round-trip; allowed/removed services are the diff against
-        firewalld's upstream `public` defaults. Nothing captured when
-        firewall-offline-cmd is unavailable (sync leaves the section untouched)."""
-        services_txt = self._fw_query("--zone=public", "--list-services")
+    def _customised_zones(self) -> "List[str]":
+        """Zone names with a file in /etc/firewalld/zones on the target.
+
+        firewalld only writes a file there once a zone has been *changed* — the
+        untouched ones live in /usr/lib/firewalld/zones — so this is exactly
+        "the zones somebody customised". It also leaves `<zone>.xml.old` behind
+        when it rewrites one, hence the exact-suffix check: there is no zone
+        called `home.xml`.
+        """
+        try:
+            base = self._rooted(_ZONES_DIR)
+            names = sorted(os.listdir(base))
+        except OSError:
+            return []
+        return [n[:-len(".xml")] for n in names if n.endswith(".xml")]
+
+    def _live_zone(self, zone: str):
+        """`(services, rich_rules)` firewalld holds for *zone*, or None."""
+        services_txt = self._fw_query(f"--zone={zone}", "--list-services")
         if services_txt is None:
+            return None
+        rich_txt = self._fw_query(f"--zone={zone}", "--list-rich-rules") or ""
+        return (set(services_txt.split()),
+                [ln.strip() for ln in rich_txt.splitlines() if ln.strip()])
+
+    def _import_firewalld(self, managed=None) -> dict:
+        """Capture the live firewalld permanent zones back into a `firewall` block.
+
+        `--list-rich-rules` returns rules in the same syntax `rich_rules`
+        expects, so they round-trip; for `public`, allowed/removed services are
+        the diff against firewalld's upstream defaults. Every OTHER customised
+        zone comes back under `zones` with its complete service list — dasik used
+        to report only `public`, so a machine carrying a customised `home` lost
+        it the moment its capture was re-applied. Nothing is captured when
+        firewall-offline-cmd is unavailable (sync leaves the section untouched).
+        """
+        live = self._live_zone("public")
+        if live is None:
             return {}
-        services = set(services_txt.split())
-        rich_txt = self._fw_query("--zone=public", "--list-rich-rules") or ""
-        rich = [ln.strip() for ln in rich_txt.splitlines() if ln.strip()]
+        services, rich = live
 
         frag: dict = {"enable": True}
         allowed = sorted(services - set(_DEFAULT_SERVICES))
@@ -350,6 +424,21 @@ class FirewallAction(AbstractAction):
             frag["remove_services"] = removed
         if rich:
             frag["rich_rules"] = rich
+
+        zones: dict = {}
+        for zone in self._customised_zones():
+            if zone == "public":
+                continue
+            other = self._live_zone(zone)
+            if other is None:
+                continue
+            zone_services, zone_rich = other
+            spec: dict = {"allowed_services": sorted(zone_services)}
+            if zone_rich:
+                spec["rich_rules"] = zone_rich
+            zones[zone] = spec
+        if zones:
+            frag["zones"] = zones
         return {"firewall": frag}
 
 

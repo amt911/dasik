@@ -39,6 +39,21 @@ _ENV_PATH = "/etc/environment"
 _CRYPTTAB_PATH = "/etc/crypttab"
 _FILES_DOMAIN = "files"
 
+# Two more places a machine keeps admin-written configuration that no
+# `_SECTIONS` directory covers, discovered into `files` the way /etc/crypttab
+# already is. Both were one-way streets: `apply` wrote them and `sync` could not
+# read them, so capturing a machine and re-applying the capture dropped an SSH
+# hardening drop-in and every Samba share it had.
+#
+# `(directory, suffix)`: sshd reads `Include /etc/ssh/sshd_config.d/*.conf`, so
+# anything else in there is a leftover the daemon never reads (a .pacnew, an
+# editor backup) and capturing it would add a file that changes nothing.
+_DISCOVERED_DROP_IN_DIRS = (("/etc/ssh/sshd_config.d", ".conf"),)
+# Single files, by EXACT path. /etc/samba is whitelisted rather than blacklisted
+# on purpose: smbpasswd, secrets.tdb and passdb.tdb are then unreachable by
+# construction, which beats a deny-list somebody has to keep complete.
+_DISCOVERED_FILES = ("/etc/samba/smb.conf",)
+
 
 class DropFilesAction(AbstractAction):
     """Write config snippets into /etc/... directories on the target."""
@@ -322,6 +337,39 @@ class DropFilesAction(AbstractAction):
                 if ln.strip() and not ln.lstrip().startswith("#")]
         return text if real else None
 
+    def _discover_paths(self) -> "List[tuple]":
+        """`[(path, content)]` for the extra well-known locations.
+
+        Same two filters as :meth:`_discover_section` — a symlink or a
+        package-owned file is the distro's own default, and re-encoding it into
+        the config changes nothing — applied here per absolute path.
+        """
+        out: List[tuple] = []
+        for directory, suffix in _DISCOVERED_DROP_IN_DIRS:
+            base = self._abs(directory)
+            try:
+                names = sorted(os.listdir(base))
+            except OSError:
+                continue
+            for name in names:
+                if not name.endswith(suffix):
+                    continue
+                out.append((f"{directory}/{name}", os.path.join(base, name)))
+        out.extend((path, self._abs(path)) for path in _DISCOVERED_FILES)
+
+        found: List[tuple] = []
+        for canonical, abs_p in out:
+            if os.path.islink(abs_p) or not os.path.isfile(abs_p):
+                continue
+            if self._pkg_owned(canonical):
+                continue
+            try:
+                with open(abs_p, "r") as f:
+                    found.append((canonical, f.read()))
+            except OSError:
+                continue
+        return found
+
     def import_state(self, managed=None) -> dict:
         actual = self.actual()
         discover = self._target() is not None
@@ -382,6 +430,10 @@ class DropFilesAction(AbstractAction):
                 crypttab = self._discover_crypttab()
                 if crypttab is not None:
                     files_out.append({"path": _CRYPTTAB_PATH, "content": crypttab})
+            for path, content in self._discover_paths():
+                if path not in seen_paths:
+                    files_out.append({"path": path, "content": content})
+                    seen_paths.add(path)
         result["files"] = files_out
         return result
 

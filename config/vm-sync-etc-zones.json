@@ -1,0 +1,98 @@
+{
+  "metadata": {
+    "note": "The three things `sync` could not read back: an sshd_config.d drop-in, /etc/samba/smb.conf, and a firewalld zone other than `public`. All three were one-way streets — apply wrote them, plan showed them, sync did not see them — so capturing a machine and re-applying the capture dropped an SSH hardening file, every Samba share, and the whole `home` zone. For the QEMU VM harness (scripts/vmtest/qemu.sh install-driven, then drive guest-sync-etc-zones.sh ETCZONES-DONE). Targets the guest's /dev/vda. NOT for real hardware. Autologins root on ttyS0 and ships python-pydantic/python-colorama via pacman, so the driver gets a shell and dasik runs from the 9p-mounted repo with no network.",
+    "note_samba": "The samba PACKAGE is deliberately not installed: smb.conf is discovered as an admin-written file, and a machine that never installed samba is the case where a captured smb.conf must NOT come back as something a package owns."
+  },
+  "disks": {
+    "disks": [
+      {
+        "device": "/dev/vda",
+        "partition_table": "gpt",
+        "wipe_disk": false,
+        "partitions": [
+          {
+            "label": "ESP",
+            "size": "512MiB",
+            "filesystem": "fat32",
+            "partition_type": "esp",
+            "mountpoint": "/boot",
+            "format": true
+          },
+          {
+            "label": "ROOT",
+            "size": "rest",
+            "filesystem": "ext4",
+            "partition_type": "linux",
+            "mountpoint": "/",
+            "format": true
+          }
+        ]
+      }
+    ]
+  },
+  "enable_microcode": false,
+  "packages": [
+    "base",
+    "linux",
+    "linux-firmware",
+    "sudo",
+    "python",
+    "python-pydantic",
+    "python-colorama",
+    "openssh"
+  ],
+  "bootloader": "sd-boot",
+  "hostname": "dasik-etczones",
+  "kernel_cmdline": [
+    "console=ttyS0,115200"
+  ],
+  "timezone": {
+    "region": "Etc",
+    "city": "UTC"
+  },
+  "locales": {
+    "selected_locales": [
+      "en_US.UTF-8 UTF-8"
+    ],
+    "desired_locale": "en_US.UTF-8",
+    "desired_tty_layout": "us"
+  },
+  "firewall": {
+    "enable": true,
+    "allowed_services": [
+      "syncthing"
+    ],
+    "remove_services": [
+      "ssh"
+    ],
+    "rich_rules": [
+      "rule service name=\"ssh\" accept limit value=\"2/m\""
+    ],
+    "zones": {
+      "home": {
+        "allowed_services": [
+          "ssh",
+          "mdns",
+          "samba"
+        ]
+      }
+    }
+  },
+  "files": [
+    {
+      "path": "/etc/ssh/sshd_config.d/10-dasik.conf",
+      "content": "PermitRootLogin prohibit-password\nPasswordAuthentication no\n"
+    },
+    {
+      "path": "/etc/samba/smb.conf",
+      "content": "[global]\n   server role = standalone server\n\n[shared]\n   path = /srv/shared\n   read only = no\n"
+    },
+    {
+      "path": "/etc/systemd/system/serial-getty@ttyS0.service.d/autologin.conf",
+      "content": "[Service]\nExecStart=\nExecStart=-/sbin/agetty --autologin root --noclear --keep-baud 115200,38400,9600 %I $TERM\n"
+    }
+  ],
+  "network": {
+    "type": "systemd-networkd"
+  }
+}

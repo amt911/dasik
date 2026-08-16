@@ -81,14 +81,17 @@ def test_resolve_backend_tolerates_spaces_around_the_type():
                            "auto", "x") == "networkmanager"
 
 
-def test_an_explicit_backend_that_contradicts_the_file_is_an_error():
-    with pytest.raises(ValueError) as e:
-        resolve_backend(WGQ, "networkmanager", "work")
-    assert "nmcli connection import" in str(e.value)
+def test_a_conf_asked_for_networkmanager_is_converted_not_refused():
+    """The one convertible direction. `nmcli --offline connection add` builds
+    the keyfile without a daemon, so nmcli reshapes the private key and it
+    works inside a chroot — see dasik.lib.actions.wireguard_nm."""
+    assert resolve_backend(WGQ, "networkmanager", "work") == "networkmanager"
 
 
-def test_the_same_refusal_the_other_way_round():
-    with pytest.raises(ValueError):
+def test_the_refusal_survives_the_other_way_round():
+    """Still no conversion here: nmcli cannot emit a wg-quick conf, and
+    wg-quick cannot read a keyfile."""
+    with pytest.raises(ValueError, match="does not convert"):
         resolve_backend(NMC, "wg-quick", "work")
 
 

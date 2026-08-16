@@ -129,7 +129,7 @@ written into those directories instead of inlined
 | `containers` | object | Container runtime: podman or docker (the engine, not the containers) |
 | `config_saver` | object | config-saver: the package, its backup documents, its timers, and restoring an archive into `$HOME` |
 | `bluetooth`, `hardware_acceleration`, `kvm`, `cups`, `microsoft_fonts`, `snapper` | object | Feature toggles |
-| `wireguard` | list | Tunnels, each naming a file next to the config (see below) |
+| `wireguard` | list | Tunnels, each naming a file next to the config; a wg-quick `.conf` can be served by NetworkManager (see below) |
 | `enable_trim`, `enable_microcode`, `remove_home_on_delete`, `sysrq` | bool | Simple toggles |
 | `metadata`, `notes` | object / string | Free-form; not applied |
 

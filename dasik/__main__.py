@@ -326,9 +326,11 @@ def _load_validated_config(config_path: Path) -> Optional[dict]:
     # is, and every action downstream sees ordinary entries.
     from dasik.lib.json_parser.etc_tree import ConfigTreeError, expand_etc_tree
     from dasik.lib.json_parser.home_tree import expand_home_tree
+    from dasik.lib.json_parser.wireguard_source import expand_wireguard_sources
     try:
         config = expand_etc_tree(config, config_path.parent)
         config = expand_home_tree(config, config_path.parent)
+        config = expand_wireguard_sources(config, config_path.parent)
     except ConfigTreeError as e:
         print(f"Error in {config_path}: {e}", file=sys.stderr)
         return None
@@ -784,10 +786,12 @@ def _cmd_check(config_path: Path) -> int:
     from dasik.lib.json_parser.includes import ConfigIncludeError, resolve_includes
     from dasik.lib.json_parser.etc_tree import ConfigTreeError, expand_etc_tree
     from dasik.lib.json_parser.home_tree import expand_home_tree
+    from dasik.lib.json_parser.wireguard_source import expand_wireguard_sources
     try:
         data = resolve_includes(data, config_path.parent)
         data = expand_etc_tree(data, config_path.parent)
         data = expand_home_tree(data, config_path.parent)
+        data = expand_wireguard_sources(data, config_path.parent)
     except (ConfigIncludeError, ConfigTreeError) as e:
         print(f"Error in {config_path}: {e}", file=sys.stderr)
         return 1

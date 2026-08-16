@@ -34,10 +34,17 @@ lsblk -J -b -o NAME,PATH,TYPE,FSTYPE,LABEL,SIZE,MOUNTPOINT,PTTYPE | head -30
 #   review (enter = write)
 printf '\r\033[B\ry\r\rvmpass\r\r\r' > /root/keys
 
+# The guest image persists between runs, so a leftover from a previous pass
+# would be "verified" instead of what this run wrote — and the wizard would
+# refuse to overwrite it, quietly making every check below meaningless.
+rm -rf /root/wiz /root/wiz.out /root/wiz.typescript
+
 echo "WIZ-B: drive real curses through a pty"
 script -qec "$D partition-wizard --output /root/wiz/main.json $L" /root/wiz.typescript \
     < /root/keys > /root/wiz.out 2>&1
-echo "wizard exit=$?"
+wizard_rc=$?
+echo "wizard exit=$wizard_rc"
+[ "$wizard_rc" -eq 0 ] || { echo "WIZ-EXIT BAD"; rc=1; }
 tail -20 /root/wiz.out
 
 echo "WIZ-C: it wrote a config, and the passphrase is NOT in it"
@@ -56,13 +63,19 @@ echo "WIZ-D: what it wrote passes check"
 $D check /root/wiz/main.json $L || { echo "WIZ-CHECK FAILED"; rc=1; }
 
 echo "WIZ-E: and plan reads it — the composed layout is what shows up"
-# --target /mnt so nothing here touches the running system; the point is that
-# plan PARSES and reaches the disk domain, not that it converges.
-mkdir -p /mnt
-$D plan /root/wiz/main.json --target /mnt $L > /root/plan.txt 2>&1
-tail -25 /root/plan.txt
-grep -qE '\[disks\]|wipe_disk|ERASES' /root/plan.txt \
+# Against the LIVE target: `plan` is read-only, and a non-/ target would need
+# arch-chroot, which an installed guest does not carry. What is being proved is
+# that plan parses the composed block and ANNOUNCES the erase — the gate the
+# wizard deliberately leaves in front of the destructive half.
+$D plan /root/wiz/main.json --target / $L > /root/plan.txt 2>&1
+head -12 /root/plan.txt
+# The exact line, not just the word somewhere: this is the gate the whole
+# design rests on — the wizard composed it, and `plan` is what announces the
+# erase before anything happens.
+grep -qE '^\s*\+ \[disks\] .*(/dev/vda)' /root/plan.txt \
     || { echo "WIZ-PLAN-NO-DISKS"; rc=1; }
+grep -qiE 'ERASES|DESTRUCTIVE' /root/plan.txt \
+    || { echo "WIZ-PLAN-NOT-LOUD"; rc=1; }
 
 echo "WIZ-F: nothing was partitioned — the guest's own layout is untouched"
 lsblk -no NAME,FSTYPE,MOUNTPOINT /dev/vda

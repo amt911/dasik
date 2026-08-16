@@ -15,6 +15,7 @@
 - [CLI](CLI)
 - [Configuration](Configuration)
 - [Disks and encryption](Disks)
+- [Partition wizard](Partition-wizard)
 - [Swap](Swap)
 - [Boot chain](Boot)
 - [Packages](Packages)

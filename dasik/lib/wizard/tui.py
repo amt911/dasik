@@ -90,19 +90,26 @@ def size_error(value: str) -> Optional[str]:
     field used to reach the recipe build and take the whole session down with a
     pydantic traceback (seen on a VM run).
     """
-    try:
-        Partition(label="probe", size=value, filesystem="ext4",
-                  partition_type="linux")
-    except Exception as e:      # noqa: BLE001 - pydantic's message is the answer
-        return _first_complaint(e)
-    return None
+    return _partition_complaint({"label": "probe", "size": value,
+                                 "filesystem": "ext4", "partition_type": "linux"})
 
 
 def label_error(value: str) -> Optional[str]:
+    """The model's own complaint about a label, or None."""
+    return _partition_complaint({"label": value, "size": "rest",
+                                 "filesystem": "ext4", "partition_type": "linux"})
+
+
+def _partition_complaint(fields: Dict[str, Any]) -> Optional[str]:
+    """Ask the model, so the prompt is exactly as strict as the schema.
+
+    A second, stricter set of rules in the UI is the divergence that took 247
+    lines to remove from the action shims (#238); a looser one lets a typo
+    reach `parted` with the disk already wiped.
+    """
     try:
-        Partition(label=value, size="rest", filesystem="ext4",
-                  partition_type="linux")
-    except Exception as e:      # noqa: BLE001
+        Partition.model_validate(fields)
+    except Exception as e:      # noqa: BLE001 - pydantic's message is the answer
         return _first_complaint(e)
     return None
 

@@ -17,6 +17,7 @@ Source of truth: `dasik/__main__.py` (`_build_parser`, `_KNOWN_VERBS`).
 | [`save`](#save) | no | **yes** — and commits it | `/` | yes |
 | [`generations`](#generations) | `--prune` deletes HISTORY (never the system) | no | `/` | yes |
 | [`rollback`](#rollback) | **YES — destructive** | no | `/` | yes |
+| [`partition-wizard`](#partition-wizard) | no — writes a config, never partitions | **yes** (the config it composes) | *(reads the live disks)* | to read the disks |
 | [`hash-password`](#hash-password) | no | no | *(no target)* | no |
 
 There is **no** bare `dasik <config>` form. It was removed with the legacy
@@ -278,6 +279,18 @@ Two survivors are guaranteed whatever N says:
 
 `--prune 0` is refused. Pruning is destructive to **history only**: the running
 system is not touched, and the config files are not either.
+
+## `partition-wizard`
+
+```bash
+dasik partition-wizard --output FILE [--merge-into FILE] [--force] [--from-lsblk FILE]
+```
+
+A full-screen (curses) assistant that reads the real disks and writes a `disks`
+block. **It never partitions anything** — it composes a config and stops, so
+`plan` stays the last gate before a disk is erased.
+
+Full page: [Partition wizard](Partition-wizard.md).
 
 ## `rollback`
 

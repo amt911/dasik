@@ -795,3 +795,84 @@ def test_the_captured_document_is_not_also_a_hand_written_file(tmp_path):
     assert "/etc/config-saver/configs/dotfiles.json" not in paths
     assert "/etc/config-saver/configs/dotfiles.json" in \
         [f["path"] for f in expand_config(captured)["files"]]
+
+
+# --- wireguard tunnels (issue #249) ---------------------------------------- #
+
+_WGQ_BODY = "[Interface]\nAddress = 10.0.0.2/24\nPrivateKey = SECRET\n"
+_NMC_BODY = ("[connection]\nid=work\ntype=wireguard\n\n"
+             "[wireguard]\nprivate-key=SECRET\n")
+
+
+def _machine_with_tunnels(tmp_path, wg_quick=True, nm=True):
+    root = _machine(tmp_path)
+    if wg_quick:
+        (root / "etc/wireguard").mkdir(parents=True, exist_ok=True)
+        (root / "etc/wireguard/eu-mad.conf").write_text(_WGQ_BODY)
+    if nm:
+        d = root / "etc/NetworkManager/system-connections"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "work.nmconnection").write_text(_NMC_BODY)
+        (d / "MyWifi.nmconnection").write_text(
+            "[connection]\nid=MyWifi\ntype=wifi\n")
+    return root
+
+
+def test_sync_captures_a_tunnel_as_its_own_block(tmp_path):
+    captured = _synced(_machine_with_tunnels(tmp_path, nm=False))
+
+    assert captured["wireguard"] == [{
+        "name": "eu-mad", "source": "wg/eu-mad.conf", "backend": "wg-quick",
+        "enable": False, "content": _WGQ_BODY}]
+
+
+def test_sync_captures_both_backends_and_ignores_other_nm_connections(tmp_path):
+    captured = _synced(_machine_with_tunnels(tmp_path))
+
+    assert [(t["name"], t["backend"]) for t in captured["wireguard"]] == [
+        ("eu-mad", "wg-quick"), ("work", "networkmanager")]
+
+
+def test_a_machine_without_a_tunnel_invents_none(tmp_path):
+    assert "wireguard" not in _synced(_machine(tmp_path))
+
+
+def test_the_tunnel_is_captured_once_not_twice(tmp_path):
+    """The defect this ownership move fixes: while DropFilesAction discovered
+    /etc/wireguard too, the same private key came back as the block AND as a
+    `files` entry — and the orphan entry kept writing the tunnel after the
+    block was turned off."""
+    captured = _synced(_machine_with_tunnels(tmp_path))
+
+    paths = [f["path"] for f in captured.get("files", [])]
+    assert not [p for p in paths
+                if p.startswith("/etc/wireguard/")
+                or p.endswith("work.nmconnection")]
+
+
+def test_the_captured_tunnel_validates_and_replans_to_nothing(tmp_path):
+    """sync -> check -> plan, the invariant that matters: the capture has to be
+    a config dasik accepts, and one that proposes no further change."""
+    from dasik.lib.actions.drop_files_action import DropFilesAction
+    from dasik.lib.json_parser.wireguard_extract import extract_to_wireguard_dir
+
+    root = _machine_with_tunnels(tmp_path)
+    captured = _synced(root)
+
+    # `check`: the capture, with bodies extracted to files as sync writes them,
+    # is a config the schema accepts.
+    extracted = extract_to_wireguard_dir(captured, tmp_path / "repo")
+    JsonModel.model_validate(extracted.config)
+    assert set(extracted.writes) == {
+        tmp_path / "repo/wg/eu-mad.conf", tmp_path / "repo/wg/work.nmconnection"}
+
+    # `plan` on the captured config, against the machine it came from: silent.
+    (root / "etc/wireguard/eu-mad.conf").chmod(0o600)
+    (root / "etc/NetworkManager/system-connections/work.nmconnection").chmod(0o600)
+    action = DropFilesAction(expand_config(captured),
+                             ActionContext(target=Target(root=str(root))))
+    managed = ["/etc/wireguard/eu-mad.conf",
+               "/etc/NetworkManager/system-connections/work.nmconnection"]
+    # Scoped to the tunnels: this fake root also carries the block-A features,
+    # whose own drift is asserted by their own rows above.
+    assert [c for c in action.plan(managed=managed) if c.item in managed] == []

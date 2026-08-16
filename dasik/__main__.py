@@ -38,6 +38,7 @@ from dasik.lib.logging import run_logger
 from dasik.lib.reconciler.reconciler import Reconciler
 from dasik.lib.json_parser.etc_tree import extract_to_etc_tree
 from dasik.lib.json_parser.home_tree import extract_to_home_tree
+from dasik.lib.json_parser.wireguard_extract import extract_to_wireguard_dir
 from dasik.lib.json_parser.writeback import write_back
 from dasik.lib.state.config_writer import ConfigWriter
 from dasik.lib.state.generation_store import GenerationStore
@@ -541,16 +542,21 @@ def _sync_capture(config_path: Path, target_root: str) -> "tuple[int, list[Path]
     # JSON — otherwise a capture undoes the split from the other direction.
     extraction = extract_to_etc_tree(new_config, config_path.parent)
     home = extract_to_home_tree(extraction.config, config_path.parent)
+    # A tunnel is always a file next to the config, tree or no tree: its body is
+    # a private key, and a JSON string cannot carry the 0600 the file had.
+    wg = extract_to_wireguard_dir(home.config, config_path.parent)
 
     # Written THROUGH the directives: a config split across files keeps its
     # split, and a value that did not change does not reopen its file. The tree
     # writes ride along so the JSON and the tree can never disagree. The backup
     # covers the root only — the rest is what version control is for, which is
     # also where a split config lives.
-    written = write_back(config_path, home.config,
-                         extra_writes={**extraction.writes, **home.writes},
-                         deletions=extraction.deletions | home.deletions)
-    for path, mode in {**extraction.modes, **home.modes}.items():
+    written = write_back(config_path, wg.config,
+                         extra_writes={**extraction.writes, **home.writes,
+                                       **wg.writes},
+                         deletions=(extraction.deletions | home.deletions
+                                    | wg.deletions))
+    for path, mode in {**extraction.modes, **home.modes, **wg.modes}.items():
         os.chmod(path, mode)
     print(f"Synced system reality into {config_path} (backup: {backup}).")
     if len(written) > 1 or (written and written[0] != config_path):

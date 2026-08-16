@@ -309,62 +309,6 @@ class DropFilesAction(AbstractAction):
                 continue
         return out
 
-    def _discover_wireguard(self) -> "List[dict]":
-        """Every /etc/wireguard/*.conf as {path, content} (wg-quick interfaces).
-        These are always local (wireguard-tools ships no confs there), so no
-        pacman-owned filter. NOTE: a wg conf holds the interface PrivateKey — sync
-        captures it verbatim (as the `wireguard` config block already does), so the
-        secret lands in the JSON; keep synced configs private."""
-        base = self._abs("/etc/wireguard")
-        out: List[dict] = []
-        try:
-            names = sorted(os.listdir(base))
-        except OSError:
-            return out
-        for name in names:
-            if not name.endswith(".conf"):
-                continue
-            abs_p = os.path.join(base, name)
-            if os.path.islink(abs_p) or not os.path.isfile(abs_p):
-                continue
-            try:
-                with open(abs_p, "r") as f:
-                    out.append({"path": f"/etc/wireguard/{name}", "content": f.read(),
-                                "mode": "0600"})   # wg-quick refuses world-readable
-            except OSError:
-                continue
-        return out
-
-    def _discover_nm_wireguard(self) -> "List[dict]":
-        """NetworkManager WireGuard connections
-        (/etc/NetworkManager/system-connections/*.nmconnection with
-        `type=wireguard`) as {path, content, mode}. Only wireguard-type keyfiles
-        are captured — not wifi/ethernet. NOTE: these hold the interface
-        PrivateKey (and PSKs) in cleartext — keep synced configs private. NM
-        IGNORES a keyfile that isn't 0600, hence the mode."""
-        base = self._abs("/etc/NetworkManager/system-connections")
-        out: List[dict] = []
-        try:
-            names = sorted(os.listdir(base))
-        except OSError:
-            return out
-        for name in names:
-            if not name.endswith(".nmconnection"):
-                continue
-            abs_p = os.path.join(base, name)
-            if os.path.islink(abs_p) or not os.path.isfile(abs_p):
-                continue
-            try:
-                with open(abs_p, "r") as f:
-                    content = f.read()
-            except OSError:
-                continue
-            if re.search(r"^\s*type\s*=\s*wireguard\s*$", content, re.MULTILINE):
-                out.append({
-                    "path": f"/etc/NetworkManager/system-connections/{name}",
-                    "content": content, "mode": "0600"})
-        return out
-
     def _discover_crypttab(self) -> "Optional[str]":
         """The verbatim /etc/crypttab if it has any real (non-comment, non-blank)
         entry — e.g. an encrypted random-key swap that the disks/LUKS config does
@@ -428,10 +372,12 @@ class DropFilesAction(AbstractAction):
             files_out.append(out_entry)
             seen_paths.add(path)
         if discover:
-            for wg in self._discover_wireguard() + self._discover_nm_wireguard():
-                if wg["path"] not in seen_paths:
-                    files_out.append(wg)
-                    seen_paths.add(wg["path"])
+            # WireGuard tunnels (/etc/wireguard/*.conf and the NM keyfiles with
+            # type=wireguard) are NOT discovered here: WireguardAction owns them
+            # and captures them as the `wireguard` block. Discovering them here
+            # too reported the same private key twice — the entry carried mode
+            # 0600 while the toggle contributed the path without one, so the two
+            # never compared equal and subtract_contributions stripped neither.
             if _CRYPTTAB_PATH not in seen_paths:
                 crypttab = self._discover_crypttab()
                 if crypttab is not None:

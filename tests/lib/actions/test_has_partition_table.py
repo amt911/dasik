@@ -64,6 +64,35 @@ def test_bytes_stdout_is_handled(action):
         assert action._has_partition_table("/dev/loop0") is True
 
 
+_UNREADABLE = ""            # `parted -s /dev/nvme0n1 print` without permission
+_NOISE = "Model: Unknown (unknown)\nDisk /dev/sda: 500GB\n"   # no verdict line
+
+
+@pytest.mark.parametrize("output", [_UNREADABLE, _NOISE])
+def test_a_probe_that_answered_nothing_is_fail_safe_too(action, output):
+    """The failure the exception test does not cover: parted RUNS, exits 0, and
+    still says nothing usable.
+
+    `parted -s /dev/nvme0n1 print` as a non-root user prints "Error: Error
+    opening /dev/nvme0n1: Permission denied" — on **stderr**, with exit status
+    **0** and an empty stdout. Nothing raises, so the `except` fail-safe never
+    fires, and treating "no match" as "no table" made `plan()` announce
+
+        + [disks] install /dev/nvme0n1  (empty disk — ERASES …)  ** DESTRUCTIVE **
+
+    about a disk holding a live root filesystem. Found by running `dasik plan`
+    unprivileged against a real machine.
+
+    The distinction is exact and is the one this module already documents:
+    parted prints a "Partition Table:" line whenever it managed to OPEN the
+    device — "unknown" for a genuinely blank disk. So the absence of that line
+    never means "empty"; it means the probe did not answer, and an unanswered
+    probe on a disk-wiping tool must fail safe.
+    """
+    with _with_parted(output):
+        assert action._has_partition_table("/dev/nvme0n1") is True
+
+
 @pytest.mark.parametrize("exc", [
     RuntimeError("parted blew up"),
     CommandNotFoundException("parted"),

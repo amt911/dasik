@@ -89,6 +89,10 @@ history is append-only, and you can roll a rollback back.
 Rollback with no number picks the generation immediately before the current one,
 **skipping partial generations**.
 
+Generations are kept until you ask for them to go: `dasik generations --prune N`
+keeps the N most recent, always sparing the current one and the newest complete
+one. Nothing prunes automatically — see [CLI](CLI.md#prune-n) for why.
+
 ### Partial generations
 
 An apply that fails part-way has still mutated the machine. dasik persists what

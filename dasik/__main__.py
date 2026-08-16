@@ -224,6 +224,15 @@ def _build_parser() -> argparse.ArgumentParser:
         default="/",
         help="Root whose generations to list. Default: /.",
     )
+    gens_p.add_argument(
+        "--prune",
+        type=int,
+        metavar="N",
+        default=None,
+        help="Delete all but the N most recent generations. The current one and "
+             "the newest complete one are always kept. Destructive to HISTORY "
+             "only — the running system is not touched.",
+    )
 
     rollback_p = sub.add_parser(
         "rollback",
@@ -658,9 +667,27 @@ def _publish_home(home_repo: str, user: Optional[str], host: str) -> None:
     print(f"Published {len(archives)} archive(s) to {home_repo} ({host})")
 
 
-def _cmd_generations(target_root: str) -> int:
-    """List recorded generations, marking the current one."""
-    gens = GenerationStore(Target(root=target_root)).list()
+def _cmd_generations(target_root: str, prune: Optional[int] = None) -> int:
+    """List recorded generations, marking the current one; optionally prune.
+
+    Pruning is opt-in and explicit. There is deliberately no cap on `apply` and
+    no `keep_generations` in the config: both would delete history as a side
+    effect of something else, and the generation somebody is about to roll back
+    to is exactly the one an automatic policy takes (issue #233).
+    """
+    store = GenerationStore(Target(root=target_root))
+    if prune is not None:
+        try:
+            removed = store.prune(keep=prune)
+        except ValueError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            return 1
+        if removed:
+            print(f"Pruned {len(removed)} generation(s): "
+                  f"{', '.join(str(n) for n in removed)}")
+        else:
+            print("Nothing to prune.")
+    gens = store.list()
     if not gens:
         print("No generations recorded.")
         return 0
@@ -879,7 +906,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                              home_repo=args.home or "")
 
         if args.verb == "generations":
-            return _cmd_generations(args.target)
+            return _cmd_generations(args.target, getattr(args, "prune", None))
 
         if args.verb == "rollback":
             return _cmd_rollback(args.target, args.generation, args.yes)

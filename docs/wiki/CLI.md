@@ -15,7 +15,7 @@ Source of truth: `dasik/__main__.py` (`_build_parser`, `_KNOWN_VERBS`).
 | [`apply`](#apply) | **YES — destructive** | no | `/mnt` | yes |
 | [`sync`](#sync) | no | **yes** (writes `.bak`) | `/` | yes |
 | [`save`](#save) | no | **yes** — and commits it | `/` | yes |
-| [`generations`](#generations) | no | no | `/` | yes |
+| [`generations`](#generations) | `--prune` deletes HISTORY (never the system) | no | `/` | yes |
 | [`rollback`](#rollback) | **YES — destructive** | no | `/` | yes |
 | [`hash-password`](#hash-password) | no | no | *(no target)* | no |
 
@@ -239,7 +239,7 @@ written file outside the work tree, and a capture `check` rejects.
 ## `generations`
 
 ```bash
-dasik generations [--target /]
+dasik generations [--target /] [--prune N]
 ```
 
 Lists what has been applied under this target, from
@@ -252,7 +252,32 @@ Generation 3 (current)
 Generation 4 (partial — apply failed part-way)
 ```
 
-Read-only.
+Read-only without `--prune`.
+
+### `--prune N`
+
+Deletes all but the **N most recent** generations, and prints what went:
+
+```text
+$ dasik generations --prune 2
+Pruned 3 generation(s): 1, 2, 3
+Generation 4
+Generation 5 (current)
+```
+
+Nothing else deletes a generation. There is deliberately **no** cap on `apply`
+and **no** `keep_generations` in the config: both would delete history as a side
+effect of something else, and the generation you are about to roll back to is
+exactly the one an automatic policy takes.
+
+Two survivors are guaranteed whatever N says:
+
+- **the current generation** — it is what the machine is running;
+- **the newest complete one** — `rollback` refuses a partial generation, so a
+  prune that left only partials would leave a history nobody can roll back to.
+
+`--prune 0` is refused. Pruning is destructive to **history only**: the running
+system is not touched, and the config files are not either.
 
 ## `rollback`
 

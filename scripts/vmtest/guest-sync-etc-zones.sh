@@ -18,6 +18,14 @@ W=/root/etczones-work
 mkdir -p "$W"
 echo "ETCZONES: BEGIN"
 
+# Here dasik runs from a bare source tree over 9p with no distribution
+# installed, which is the case `dasik.__version__`'s fallback exists for: an
+# unguarded importlib.metadata lookup would make `import dasik` itself raise,
+# and every guest script would die on its first command.
+echo "ETCZONES-0: importing dasik from an uninstalled source tree"
+python -c "import dasik; print('ETCZONES-VERSION=' + dasik.__version__)"
+echo "ETCZONES-IMPORT-RC=$?"
+
 echo "ETCZONES-A: apply put the three things on the machine"
 cat /etc/ssh/sshd_config.d/10-dasik.conf
 cat /etc/samba/smb.conf

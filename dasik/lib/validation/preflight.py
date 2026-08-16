@@ -806,6 +806,53 @@ def _check_config_saver(config: Dict[str, Any]) -> List[Issue]:
         "~/.config/config-saver/configs.d by hand.")]
 
 
+def _check_wireguard(config: Dict[str, Any]) -> List[Issue]:
+    """A tunnel whose file nobody can read is a failure worth proving early.
+
+    The name is the interface, so two tunnels sharing one is a collision the
+    config states outright. A source in the wrong format for its declared
+    backend is the same kind of certainty — and the fix is not a conversion,
+    which is why the message hands over the `nmcli` line instead of doing it.
+
+    The NetworkManager-on-networkd case is only a warning: the keyfile is
+    written, nothing reads it, and dasik cannot prove the machine will not gain
+    NetworkManager by some other route.
+    """
+    from ..expand.toggles import resolve_backend
+
+    tunnels = config.get("wireguard") or []
+    if not isinstance(tunnels, list):
+        return []
+    issues: List[Issue] = []
+    seen: Set[str] = set()
+    net_type = (config.get("network") or {}).get("type")
+    for tunnel in tunnels:
+        if not isinstance(tunnel, dict):
+            continue
+        name = tunnel.get("name", "")
+        if name in seen:
+            issues.append(Issue(
+                "error", "wireguard_duplicate_name",
+                f"two wireguard tunnels are named {name!r}, and the name IS the "
+                f"interface: the second file would overwrite the first."))
+        seen.add(name)
+        content = tunnel.get("content")
+        if not content:
+            continue
+        try:
+            backend = resolve_backend(content, tunnel.get("backend", "auto"), name)
+        except ValueError as e:
+            issues.append(Issue("error", "wireguard_backend_mismatch", str(e)))
+            continue
+        if backend == "networkmanager" and net_type == "systemd-networkd":
+            issues.append(Issue(
+                "warning", "wireguard_nm_without_nm",
+                f"wireguard tunnel {name!r} is a NetworkManager keyfile, but "
+                f"network.type is systemd-networkd — the file is written and "
+                f"nothing reads it. A wg-quick conf works under either manager."))
+    return issues
+
+
 def _check_efi(config: Dict[str, Any], efi_boot: Optional[bool]) -> List[Issue]:
     """Refuse an EFI bootloader when the installer is not booted in EFI mode.
 
@@ -866,6 +913,7 @@ def preflight(config: Dict[str, Any],
     issues += _check_random_swap(config)
     issues += _check_unlock_keyfile(config)
     issues += _check_config_saver(config)
+    issues += _check_wireguard(config)
     if environment:
         issues += _check_efi(config, efi_boot)
     return issues

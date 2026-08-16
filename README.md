@@ -36,6 +36,7 @@ dasik plan   config.json                 # the dry run: every change, touches no
 dasik apply  config.json --target /mnt   # converge  (DESTRUCTIVE on install)
 dasik sync   config.json --target /      # capture the running system into the config
 dasik save   config.json                 # …and commit it to the config's Git repo
+dasik partition-wizard --output mine.json  # compose a disks block from the real disks
 dasik generations --target /             # what has been applied here
 dasik generations --prune 5             # keep the 5 newest (never the current one)
 dasik rollback --target /                # restore + re-apply a previous generation

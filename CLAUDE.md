@@ -359,6 +359,43 @@ that crashes before it ever reaches `is_needed()`.
   use `--dangerously-skip-permissions` only in a controlled local env — never against real
   hardware/disks (see *Safety*, below).
 
+## Every change gets a VM
+
+**Any change under `dasik/` is driven in a QEMU guest before it is called done.**
+Not "when it looks risky", not "when it touches disks" — every change. The
+harness is `scripts/vmtest/qemu.sh` (see [docs/vm-testing.md](docs/vm-testing.md));
+the usual pair is
+
+```bash
+export DASIK_VM_ISO=/path/to/archlinux-x86_64.iso
+export DASIK_VM_WORKDIR=/var/tmp/dasik-vmtest DASIK_VM_RAM=4096
+scripts/vmtest/qemu.sh install-driven config/vm-<feature>.json
+scripts/vmtest/qemu.sh drive $DASIK_VM_WORKDIR/vda.qcow2 guest-<feature>.sh <MARKER>-DONE
+```
+
+A change that has no config exercising it gets one (`config/vm-*.json`), and a
+guest script that asserts the behaviour end to end (`scripts/vmtest/guest-*.sh`,
+echoing `<MARKER>-…=rc` lines so the log is greppable). Start the VM from a
+**fresh** qcow2 whenever an earlier run mutated it, or the next run is testing a
+machine the previous test broke.
+
+**Why this is not negotiable.** The bugs this repo has actually shipped were all
+invisible to a green suite and to a careful reading, and every one of them was
+caught by a guest:
+
+| Bug | The suite said |
+| --- | --- |
+| `sync` dispossessed a declared pacman group, so removing it from the config removed nothing | 2860 passing |
+| a systemd drop-in another file outranked: planned, applied, planned again, forever | passing |
+| a `sync` whose output `dasik check` then rejected | passing |
+| `_process_disk` skipping the format on a fresh disk → empty fstab, aborted install | passing |
+| the initramfs written under a filename the bootloader does not look for | passing |
+
+The unit suite proves the decision; the guest proves the machine. Say plainly in
+the verdict which verbs ran for real in the guest and which were asserted with
+mocks. `apply` inside the guest is fine — it only ever touches the guest's own
+`/dev/vda`; **never** run it against the host.
+
 ## Safety — this tool is destructive
 
 - It **partitions disks, formats filesystems, and runs `pacman`** against `/mnt`. Treat any code path that reaches `execute()` as capable of wiping a disk.
@@ -379,6 +416,7 @@ that crashes before it ever reaches `is_needed()`.
 - **The legacy handler is gone** — the monolithic `actions_handler.py` and the no-verb `dasik <config>` fallback were removed (PR #151). Put all behavior in the v2/v3 registry/action path (`setup_actions()` + `plan()/apply()/import_state()`).
 - **Entry point is on v3** — `__main__`'s verbs (`plan`/`apply`/`sync`/`generations`/`rollback`) use the reconciler. A bare `dasik <config>` (no verb) is rejected with a pointer to `plan`/`apply`.
 - **Never run `execute()` against real hardware** — partitioning/`pacman`/`arch-chroot` are destructive. Mock `Command.execute` in tests.
+- **Every change to `dasik/` is tested in a VM before it is called done** — see [Every change gets a VM](#every-change-gets-a-vm). Not "when it seems risky": every change. The green suite is not the evidence.
 
 ## Git & GitHub
 

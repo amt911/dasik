@@ -125,7 +125,7 @@ written into those directories instead of inlined
 | `plymouth` | object | Boot splash: package, theme, initramfs hook/module, `splash` |
 | `apparmor` | object | Mandatory access control: package, unit, the `lsm=` kernel parameter, optional audit framework, local profiles |
 | `pam` | object | PAM hardening: account lockout, nproc limits, password policy |
-| `firewall` | object | firewalld **or** ufw — see below |
+| `firewall` | object | firewalld (one or more zones) **or** ufw — see below |
 | `containers` | object | Container runtime: podman or docker (the engine, not the containers) |
 | `config_saver` | object | config-saver: the package, its backup documents, its timers, and restoring an archive into `$HOME` |
 | `bluetooth`, `hardware_acceleration`, `kvm`, `cups`, `microsoft_fonts`, `snapper` | object | Feature toggles |

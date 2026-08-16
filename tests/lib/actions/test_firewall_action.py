@@ -17,7 +17,7 @@ from dasik.lib.state.change import Op
 def _fw(current=None, **cfg):
     cfg.setdefault("enable", True)
     a = FirewallAction(cfg, context=SimpleNamespace(target=object()))
-    a._current_xml = lambda: current
+    a._current_xml = lambda zone='public': current
     return a
 
 
@@ -81,7 +81,7 @@ def test_removed_default_service_absent_allowed_present():
 
 def test_converged_zone_is_a_noop():
     a = _fw(allowed_services=["syncthing"], remove_services=["ssh"])
-    a._current_xml = lambda: a._desired_xml()            # file already matches
+    a._current_xml = lambda zone="public": a._desired_xml(zone)            # file already matches
     assert a.plan([]) == []
     assert a.is_needed() is False
 
@@ -97,7 +97,7 @@ def test_remove_service_is_idempotent_across_applies():
     removed service stays absent from the written file)."""
     a = _fw(remove_services=["ssh"])
     written = a._desired_xml()
-    a._current_xml = lambda: written                     # simulate post-apply state
+    a._current_xml = lambda zone="public": written                     # simulate post-apply state
     assert a.plan([]) == []                              # no re-fire
     assert '<service name="ssh"/>' not in written
 
@@ -109,12 +109,12 @@ def test_disabled_plans_nothing():
 def test_apply_writes_zone_file(tmp_path):
     a = FirewallAction({"enable": True, "allowed_services": ["syncthing"]},
                        context=SimpleNamespace(target=None))
-    a._zone_file = lambda: str(tmp_path / "public.xml")
+    a._zone_file = lambda zone="public": str(tmp_path / f"{zone}.xml")
     a.apply(a.plan([]))
     written = (tmp_path / "public.xml").read_text()
     assert '<service name="syncthing"/>' in written
     # second apply is a no-op (content already matches)
-    a._current_xml = lambda: written
+    a._current_xml = lambda zone="public": written
     assert a.plan([]) == []
 
 

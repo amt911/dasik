@@ -27,6 +27,46 @@ one owns the whole rule set: whichever starts last wipes the other's rules, so
 the machine's actual policy would depend on unit ordering. preflight refuses a
 config that declares one backend while the other's package is also declared.
 
+## More than one zone
+
+The top-level fields **are** the `public` zone. A machine that also customises
+`home`, `work` or `internal` declares those under `zones`:
+
+```json
+"firewall": {
+  "enable": true,
+  "allowed_services": ["samba", "syncthing"],
+  "remove_services": ["ssh"],
+  "rich_rules": ["rule service name=\"ssh\" accept limit value=\"2/m\""],
+  "zones": {
+    "home": {"allowed_services": ["ssh", "mdns", "samba"]}
+  }
+}
+```
+
+An extra zone's `allowed_services` is its **complete** service list, not a diff:
+naming a zone is already the whole statement, so nothing is merged in
+underneath it — firewalld's own `home` allows `mdns` and `dhcpv6-client`, and a
+config that did not ask for them does not get them. `remove_services` therefore
+has no meaning inside a zone and the schema refuses it there. `public` is
+refused too: it is the top level, and two ways to say it would let one config
+contradict itself.
+
+Each declared zone is a **separate item** in the plan and in the manifest, so
+dropping one from the config deletes its file — a zone nothing declares any
+more must stop enforcing rules:
+
+```text
+~ [firewall] modify home  (zone rules)
+- [firewall] remove work  (no longer declared)
+```
+
+`sync` captures every zone that has a file in `/etc/firewalld/zones` — which is
+exactly the set somebody customised, since firewalld keeps the untouched ones in
+`/usr/lib/firewalld/zones`. Before this, only `public` was captured, so a
+machine carrying a customised `home` lost it the moment its capture was
+re-applied.
+
 ## Which fields belong to which backend
 
 | Field | firewalld | ufw |

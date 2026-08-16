@@ -471,7 +471,7 @@ block leaves the machine's `/etc/localtime` alone.
 | Field | Type | Default | Notes |
 | --- | --- | --- | --- |
 | `network.type` | `NetworkManager` \| `systemd-networkd` | — | **Installs and enables it.** `NetworkManager` adds the `networkmanager` package and `NetworkManager.service`; `systemd-networkd` needs no package (systemd ships it) and enables `systemd-networkd.service` + `systemd-resolved.service` plus a DHCP profile at `/etc/systemd/network/20-dasik-dhcp.network` — the unit alone matches no interface and configures nothing. Write any file under `/etc/systemd/network` yourself and yours is the only one. |
-| `network.add_default_hosts` | bool | `false` | Write the standard `/etc/hosts` entries. |
+| `network.add_default_hosts` | bool | `true` | Write the `/etc/hosts` block Network_configuration(7) recommends (`127.0.0.1 localhost`, `::1 localhost`, `127.0.1.1 <hostname>`). Without it, software that reads the file directly resolves the machine's own name over the network. Set `false` when something else manages the file. |
 | `hostname` | string | `""` | `/etc/hostname`. |
 
 ### `users`  *(sync ✓)*

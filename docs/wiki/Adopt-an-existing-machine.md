@@ -294,11 +294,11 @@ not have them yet. Declare the tree once, then capture again:
 ```
 
 ```bash
-sudo dasik save archlinux-p14s.json          # or: sudo dasik sync … && git commit
+sudo dasik save archlinux-p14s/main.json     # or: sudo dasik sync … && git commit
 ```
 
 ```text
-Synced system reality into archlinux-p14s.json (backup: archlinux-p14s.json.bak).
+Synced system reality into archlinux-p14s/main.json (backup: archlinux-p14s/main.json.bak).
   wrote common/home/andres/.config/config-saver/configs.d/dotfiles.yaml
   wrote common/home/andres/.config/config-saver/configs.d/own-configs.yaml
 Committed: archlinux-p14s: sync 2026-08-15
@@ -449,7 +449,7 @@ gh release upload archlinux-p14s \
 Or let `save` do both halves at once — the capture and the archives:
 
 ```bash
-sudo dasik save archlinux-p14s.json --home amt911/config-saver-personal-config
+sudo dasik save archlinux-p14s/main.json --home amt911/config-saver-personal-config
 ```
 
 It picks the newest archive of **each** configuration (skipping the
@@ -509,7 +509,6 @@ are about to run for real:
 
 ```bash
 cp -r ~/config/archlinux-p14s ~/config/vm-test        # a copy; the real one stays put
-cp ~/config/archlinux-p14s.json ~/config/vm-test.json
 ```
 
 Two edits, and only two:
@@ -524,7 +523,7 @@ The copy needs its **own** `secrets/`: a fragment resolves
 fine there (they are gitignored either way).
 
 ```bash
-dasik check ~/config/vm-test.json          # must pass before booting anything
+dasik check ~/config/vm-test/main.json     # must pass before booting anything
 export DASIK_VM_ISO=/path/to/archlinux.iso
 scripts/vmtest/qemu.sh run-iso             # the ISO, with the repo on 9p
 ```
@@ -570,13 +569,43 @@ dasik apply main.json          # DESTRUCTIVE: partitions, formats, pacstraps
 The config carries both tools as packages built from their PKGBUILDs, so the
 installed machine has dasik and config-saver already.
 
+**The ISO's `/root/config` does not survive the reboot** — the live system is a
+tmpfs in RAM, and `apply` never copies your repository into the target. dasik
+installs the machine the config describes; it does not install the config. The
+only copy it leaves behind is the generation snapshot
+(`/var/lib/dasik/generations/current/config.json`), which is a flattened
+snapshot, not your repository: no `$include` split, no `secrets/`, no Git.
+
+So the repository comes back the same way it got here — by cloning it. Nothing
+is lost if you skip this now.
+
 ## 9. Reboot, then bring `$HOME` back
+
+### First: the repository, back on the machine
+
+Log in as your user and clone it into `~/config` — this is the working copy
+every command from here on uses:
+
+```bash
+gh auth login
+gh repo clone amt911/dasik-personal-config ~/config
+sudo dasik plan --target / ~/config/archlinux-p14s/main.json   # should be near-silent
+```
+
+The `secrets/` are gitignored, so they are not in the clone. Put back the ones
+day-2 needs (`hashed-password` — the LUKS passphrase only matters at install
+time), or `plan` will refuse the config it cannot resolve.
+
+> Restoring `$HOME` below may bring an *older* `~/config` with it, if the
+> archive covered that directory. Clone after the restore in that case, or let
+> `git pull` sort it out — the repository is the authority, not the archive.
+
+### Then: `$HOME`
 
 **Not during the install.** `restore.archive` is a path *inside the target*, and
 the target does not exist until `apply` has partitioned it.
 
 ```bash
-gh auth login
 gh release download archlinux-p14s -R amt911/config-saver-personal-config
 ```
 
@@ -596,7 +625,7 @@ sudo mv /tmp/home.tar.gz /root/home.tar.gz
 ```
 
 ```bash
-sudo dasik apply --target / /root/config/archlinux-p14s/main.json
+sudo dasik apply --target / ~/config/archlinux-p14s/main.json
 ```
 
 That second apply does only the restore. dasik marks it by the archive's
@@ -615,11 +644,15 @@ Then put the age key back where it belongs (`~/.config/age/key.txt`, mode
 ## 10. From now on
 
 ```bash
-sudo dasik plan --target / ~/config/archlinux-p14s.json    # what drifted
+sudo dasik plan --target / ~/config/archlinux-p14s/main.json   # what drifted
 
-sudo dasik save ~/config/archlinux-p14s.json \
-    --home amt911/config-saver-personal-config             # both halves, one command
+sudo dasik save ~/config/archlinux-p14s/main.json \
+    --home amt911/config-saver-personal-config                 # both halves, one command
 ```
+
+Once `$HOME` is back, drop the `config_saver.restore` block you added in step 9:
+it names a path (`/root/home.tar.gz`) that will not exist next time, and it is
+install-time scaffolding, not something the machine should keep declaring.
 
 `save` captures the machine, validates the capture, commits it as **you** (not
 as root) and pushes. `--home` adds the other half: the **newest archive of each
@@ -644,25 +677,30 @@ published one refreshed (`gh release upload … --clobber`).
    directory. `sync`, `save`, `generations` and `rollback` already default to `/`.
 2. **The restore is a second apply, after the first boot.** There is nowhere to
    put the archive before the disk exists.
-3. **An encrypted archive needs decrypting before dasik's restore** — it passes
+3. **dasik does not install your config.** The ISO's `/root/config` is a tmpfs
+   and dies with the reboot; the installed machine holds only the flattened
+   generation snapshot under `/var/lib/dasik/generations/`. Clone the repository
+   back yourself (step 9) — that snapshot is your fallback if you ever lose it,
+   not the working copy.
+4. **An encrypted archive needs decrypting before dasik's restore** — it passes
    no `--identity`. Decrypt, then point `restore.archive` at the plain file.
-4. **A capture comes back with `wipe_disk: false`** and this machine's
+5. **A capture comes back with `wipe_disk: false`** and this machine's
    `luks_uuid`. Arming it for a reinstall is a deliberate edit (step 6).
-5. **config-saver with no document anywhere exits 6.** Since 3.3.0 there is no
+6. **config-saver with no document anywhere exits 6.** Since 3.3.0 there is no
    fallback to the shipped examples — they reach `~/.ssh` and `~/.config/rclone`,
    and installing a package must not start a daily timer that archives
    credentials nobody chose. `dasik plan` warns when `timer_users` is declared
    with an empty `configs`.
-6. **Upgrading config-saver leaves the timer inert.** A `.timer` that changed is
+7. **Upgrading config-saver leaves the timer inert.** A `.timer` that changed is
    reloaded but not re-armed, so `systemctl list-timers` shows an empty `NEXT`
    and no backup ever runs. `sudo systemctl restart config-saver@$USER.timer`
    (the package names the affected timers on upgrade).
-7. **A configuration's name is its file name**, and declaring one in the dasik
+8. **A configuration's name is its file name**, and declaring one in the dasik
    config does not create it until `apply` runs. On the machine you are
    capturing *from*, the documents that exist are the ones in
    `~/.config/config-saver/configs.d`. `config-saver --show-configs` is the
    answer to "what can I export?" — there is no `dotfiles` unless you made one.
-8. **Nothing prunes the archives.** A daily timer keeps every run forever;
+9. **Nothing prunes the archives.** A daily timer keeps every run forever;
    114 copies of one document filled 7.2 GB on a machine already at 96%.
-9. **Never commit a run log or an archive.** The `.gitignore` in step 3 covers
+10. **Never commit a run log or an archive.** The `.gitignore` in step 3 covers
    the logs; archives are release assets and never enter Git.

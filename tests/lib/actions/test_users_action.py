@@ -116,12 +116,32 @@ def test_legacy_needed_when_hash_differs():
 
 
 def test_legacy_not_needed_when_user_matches():
+    # alice is in wheel AND audio on the machine, and the declaration has to say
+    # so: `usermod -G` REPLACES the list, so a config naming only `wheel` really
+    # does mean "drop audio".
+    a = UsersAction(
+        [{"username": "alice", "hashed_password": "$6$a$alicehash",
+          "shell": "/usr/bin/zsh", "groups": ["wheel", "audio"]}], _ctx("/"))
+    with _open_tree():
+        assert a.is_needed() is False
+        assert a.verify() is True
+
+
+def test_a_group_the_machine_has_and_the_config_does_not_is_drift():
+    """The two implementations disagreed here, and this pins which one shipped.
+
+    `is_needed()` used to ask whether the declared groups were a SUBSET of the
+    real ones, so an extra group on the machine was invisible — while `plan()`
+    compares the sets and reports `groups`. The plan is the live path (it is what
+    the CLI runs) and it matches what apply does, since `usermod -G` replaces the
+    whole list. Delegating the shim to plan() made the two agree (issue #238).
+    """
     a = UsersAction(
         [{"username": "alice", "hashed_password": "$6$a$alicehash",
           "shell": "/usr/bin/zsh", "groups": ["wheel"]}], _ctx("/"))
     with _open_tree():
-        assert a.is_needed() is False
-        assert a.verify() is True
+        assert a.is_needed() is True
+        assert a._modify_reason("alice") == "groups"
 
 
 def test_legacy_root_only_checks_hash():

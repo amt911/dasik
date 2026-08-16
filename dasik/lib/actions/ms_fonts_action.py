@@ -70,11 +70,7 @@ class MicrosoftFontsAction(AbstractAction):
 
     # --- legacy executor bridge --------------------------------------- #
 
-    def is_needed(self) -> bool:
-        return bool(self.plan(managed=[]))
 
-    def execute(self) -> None:
-        self._install()
 
     def verify(self) -> bool:
         return self._fonts_present()

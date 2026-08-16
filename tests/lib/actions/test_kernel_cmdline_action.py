@@ -1,4 +1,7 @@
+from types import SimpleNamespace
 from unittest.mock import MagicMock, mock_open, patch
+
+from dasik.lib.target.target import Target
 
 from dasik.lib.actions.kernel_cmdline_action import KernelCmdlineAction
 
@@ -118,7 +121,12 @@ def test_is_needed_true_when_param_missing_grub():
 
 
 def test_not_needed_when_param_present_grub():
-    a = KernelCmdlineAction({"bootloader": "grub", "kernel_cmdline": ["quiet"]})
+    # A context is required now: `is_needed()` is two lines over `plan()`
+    # (issue #238), and the v3 reader is target-aware — `actual()` returns an
+    # empty set with no target rather than reading a hardcoded /mnt the way the
+    # old second implementation did.
+    a = KernelCmdlineAction({"bootloader": "grub", "kernel_cmdline": ["quiet"]},
+                            context=SimpleNamespace(target=Target(root="/")))
     with patch("dasik.lib.actions.kernel_cmdline_action.os.path.exists", return_value=True), \
          patch("builtins.open", mock_open(read_data='GRUB_CMDLINE_LINUX="quiet"\n')):
         assert a.is_needed() is False

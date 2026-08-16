@@ -1,13 +1,26 @@
-from unittest.mock import mock_open, patch
+from unittest.mock import MagicMock, mock_open, patch
 
 from dasik.lib.actions.drop_files_action import DropFilesAction, _sha256
 from dasik.lib.actions.action_context import ActionContext
 from dasik.lib.target.target import Target
 from dasik.lib.state.change import Change, Op
+from dasik.lib.logging import run_logger
 
 
 def _ctx(root="/"):
     return ActionContext(target=Target(root=root))
+
+
+def _quiet_logger():
+    """Neutralise the process-wide run logger for a test that plans.
+
+    `is_needed()` goes through `plan()` now (issue #238), and this domain warns
+    there. The logger is a singleton holding a stream, so under a different test
+    ORDER — mutmut runs the suite in its own copy — that stream can already be
+    closed, and the warning dies with "I/O operation on closed file". The
+    warning is not what these two are about.
+    """
+    return patch.object(run_logger, "get", return_value=MagicMock())
 
 
 def _cfg(udev=None, modprobe=None, profile=None, env=None):
@@ -75,7 +88,8 @@ def test_legacy_needed_when_file_absent():
 
 def test_legacy_not_needed_when_content_matches():
     a = DropFilesAction(_cfg(udev=[{"name": "a.rules", "content": "R"}]), _ctx("/"))
-    with patch("dasik.lib.actions.drop_files_action.os.path.exists", return_value=True), \
+    with _quiet_logger(), \
+         patch("dasik.lib.actions.drop_files_action.os.path.exists", return_value=True), \
          patch("builtins.open", mock_open(read_data="R")):
         assert a.is_needed() is False
         assert a.verify() is True
@@ -83,7 +97,8 @@ def test_legacy_not_needed_when_content_matches():
 
 def test_legacy_needed_when_content_differs():
     a = DropFilesAction(_cfg(udev=[{"name": "a.rules", "content": "NEW"}]), _ctx("/"))
-    with patch("dasik.lib.actions.drop_files_action.os.path.exists", return_value=True), \
+    with _quiet_logger(), \
+         patch("dasik.lib.actions.drop_files_action.os.path.exists", return_value=True), \
          patch("builtins.open", mock_open(read_data="OLD")):
         assert a.is_needed() is True
 

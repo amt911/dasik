@@ -15,7 +15,11 @@ def _enabled_map(enabled):
 
 
 def test_not_needed_when_all_units_enabled():
-    a = SystemdAction({"enable_units": ["sshd.service"], "enable_sockets": ["cups.socket"]})
+    # `is_needed()` is now two lines over `plan()` (issue #238), so the stub is
+    # the one plan() reads through — not the arch-chroot subprocess the old
+    # second implementation called with a hardcoded /mnt.
+    a = _action({"enable_units": ["sshd.service"], "enable_sockets": ["cups.socket"]},
+                actual=["sshd.service", "cups.socket"])
     with patch("dasik.lib.actions.systemd_action.subprocess.run",
                _enabled_map({"sshd.service", "cups.socket"})):
         assert a.is_needed() is False
@@ -190,15 +194,13 @@ def test_import_state_preserves_disable_units_and_excludes_them_from_drift():
 
 
 def test_legacy_is_needed_true_when_unit_to_disable_is_enabled():
-    a = SystemdAction({"disable_units": ["bluetooth.service"]})
-    with patch("dasik.lib.actions.systemd_action.subprocess.run",
-               _enabled_map({"bluetooth.service"})):
-        assert a.is_needed() is True
+    a = _action({"disable_units": ["bluetooth.service"]}, actual=["bluetooth.service"])
+    assert a.is_needed() is True
 
 
 def test_legacy_not_needed_when_disable_target_already_off():
-    a = SystemdAction({"enable_units": ["sshd.service"],
-                       "disable_units": ["bluetooth.service"]})
+    a = _action({"enable_units": ["sshd.service"],
+                 "disable_units": ["bluetooth.service"]}, actual=["sshd.service"])
     with patch("dasik.lib.actions.systemd_action.subprocess.run",
                _enabled_map({"sshd.service"})):
         assert a.is_needed() is False

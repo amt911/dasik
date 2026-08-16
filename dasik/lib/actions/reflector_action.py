@@ -98,14 +98,6 @@ class ReflectorAction(AbstractAction):
                 block[key] = options[flag][0]
         return {self._DOMAIN: block}
 
-    # --- legacy executor path ------------------------------------------- #
-
-    def is_needed(self) -> bool:
-        return False
-
-    def execute(self) -> None:
-        return None
-
 
 def _first_int(values: Optional[List[str]]) -> Optional[int]:
     if not values:

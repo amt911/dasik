@@ -491,15 +491,6 @@ class DropFilesAction(AbstractAction):
 
     # -- legacy is_needed / execute / verify (old executor path) ------- #
 
-    def is_needed(self) -> bool:
-        return any(self._needs_write(p, c) for p, c in self._desired().items())
-
-    def execute(self) -> None:
-        modes = self._file_modes()
-        for canonical, content in self._desired().items():
-            if self._needs_write(canonical, content):
-                self._write_file(canonical, content, modes)
-                print(f"  Wrote {self._abs(canonical)}")
 
     def verify(self) -> bool:
         return not any(self._needs_write(p, c) for p, c in self._desired().items())

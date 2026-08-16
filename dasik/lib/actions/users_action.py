@@ -321,43 +321,6 @@ class UsersAction(AbstractAction):
     #  legacy is_needed / execute / verify (old ActionExecutor path)
     # ------------------------------------------------------------------ #
 
-    def is_needed(self) -> bool:
-        for u in self.users:
-            name = u["username"]
-            if name == "root":
-                if u["hashed_password"] != self._hash("root"):
-                    return True
-                continue
-            if not self._user_exists(name):
-                return True
-            if u.get("shell", "/bin/bash") != self._shell(name):
-                return True
-            if set(u.get("groups", [])) - self._groups(name):
-                return True
-            if u["hashed_password"] != self._hash(name):
-                return True
-        return False
-
-    def execute(self) -> None:
-        target = self._target()
-        for u in self.users:
-            name = u["username"]
-            if name == "root":
-                self._set_password("root", u["hashed_password"], target)
-                continue
-            shell = u.get("shell", "/bin/bash")
-            groups = u.get("groups", [])
-            if self._user_exists(name):
-                Command.execute("usermod", ["-s", shell, name], target=target)
-                if groups:
-                    Command.execute("usermod", ["-G", ",".join(groups), name], target=target)
-            else:
-                argv = ["-m", "-s", shell]
-                if groups:
-                    argv += ["-G", ",".join(groups)]
-                argv.append(name)
-                Command.execute("useradd", argv, target=target)
-            self._set_password(name, u["hashed_password"], target)
 
     def verify(self) -> bool:
         for u in self.users:

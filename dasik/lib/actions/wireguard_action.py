@@ -144,10 +144,4 @@ class WireguardAction(AbstractAction):
             })
         return {self._DOMAIN: tunnels} if tunnels else {}
 
-    # --- legacy executor path ------------------------------------------- #
 
-    def is_needed(self) -> bool:
-        return False
-
-    def execute(self) -> None:
-        return None

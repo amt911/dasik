@@ -97,10 +97,4 @@ class PlymouthAction(AbstractAction):
         theme = self._theme()
         return {self._DOMAIN: {"theme": theme} if theme else {}}
 
-    # --- legacy executor path ------------------------------------------- #
 
-    def is_needed(self) -> bool:
-        return False
-
-    def execute(self) -> None:
-        return None

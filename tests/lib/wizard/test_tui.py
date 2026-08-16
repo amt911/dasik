@@ -27,6 +27,7 @@ class FakeScreen:
     def __init__(self, keys, height=24, width=80):
         self._keys = list(keys)
         self._size = (height, width)
+        self._nodelay = False
         self.lines = []          # everything ever drawn, for assertions
 
     # -- the curses surface ------------------------------------------- #
@@ -42,7 +43,13 @@ class FakeScreen:
     def addstr(self, y, x, text, *attrs):
         self.lines.append(text)
 
+    def nodelay(self, flag):
+        """Real curses returns -1 instead of blocking; so does this."""
+        self._nodelay = bool(flag)
+
     def getch(self):
+        if not self._keys and self._nodelay:
+            return -1
         if not self._keys:
             raise AssertionError(
                 "the wizard asked for a key and the script had none left; "
@@ -84,8 +91,8 @@ def test_menu_does_not_run_off_either_end():
 
 
 def test_menu_can_be_abandoned():
+    """With `q`. NOT with ESC — see the split-arrow tests below."""
     assert menu(FakeScreen([ord("q")]), "Pick", ["a"]) is None
-    assert menu(FakeScreen([ESC]), "Pick", ["a"]) is None
 
 
 def test_menu_draws_the_title_and_every_row():
@@ -163,18 +170,23 @@ def test_an_encrypted_recipe_asks_for_the_passphrase_and_keeps_it_out_of_the_scr
 
 
 def test_a_disk_that_holds_data_has_to_be_confirmed_before_it_is_wiped():
-    # disk · recipe ext4 · WIPE? (y) · esp size · hostname · review
-    choices = _run([ENTER, ENTER, ord("y"), ENTER, ENTER, ENTER],
+    # disk · recipe ext4 · [ERASE / simulate] -> row 1 = ERASE · esp · hostname
+    # · review. The erase is never the default of a y/n; it is a row you pick.
+    choices = _run([ENTER, ENTER, ENTER, ENTER, ENTER, ENTER],
                    disks=(_FULL_DISK,))
 
     assert choices.options.wipe is True
 
 
-def test_declining_the_wipe_abandons_rather_than_composing_something_useless():
-    """A populated disk without `wipe_disk` is refused by plan() anyway — dasik
-    never silently reformats. Composing it would produce a config that cannot
-    install and does not say why."""
-    assert _run([ENTER, ENTER, ord("n")], disks=(_FULL_DISK,)) is None
+def test_not_erasing_composes_a_simulation_instead_of_abandoning():
+    """It used to abandon, and that was wrong: an assistant that never applies
+    is exactly the tool you want to point at a full disk to see what a layout
+    WOULD be. The config is written with wipe_disk false, and the review says
+    plan will skip the disk."""
+    choices = _run([ENTER, ENTER, DOWN, ENTER, ENTER, ENTER, ENTER],
+                   disks=(_FULL_DISK,))
+
+    assert choices is not None and choices.options.wipe is False
 
 
 def test_an_empty_disk_is_never_asked_about_wiping():
@@ -193,7 +205,7 @@ def test_quitting_at_the_review_returns_nothing():
 
 
 def test_the_review_shows_the_layout_and_the_warnings_before_anything_is_written():
-    screen = FakeScreen([ENTER, ENTER, ord("y"), ENTER, ENTER, ENTER])
+    screen = FakeScreen([ENTER, ENTER, ENTER, ENTER, ENTER, ENTER])
 
     run_wizard(screen, [_FULL_DISK])
 
@@ -292,3 +304,108 @@ def test_the_whole_flow_survives_a_typo_in_a_size():
 
     assert choices is not None
     assert choices.options.esp_size == "512MiB"
+
+
+# --- a full disk must not force an erase ------------------------------------ #
+#
+# Reported after using it: on a disk with no free space the wizard asked "erase
+# it?", and answering no ABANDONED the session. There was no way to say "just
+# compose the block and show me" — which is the whole point of an assistant that
+# never applies.
+
+def test_a_populated_disk_offers_composing_without_erasing():
+    # disk · layout · [erase / simulate] -> row 2 = simulate · esp · hostname · review
+    choices = _run([ENTER, ENTER, DOWN, ENTER, ENTER, ENTER, ENTER],
+                   disks=(_FULL_DISK,))
+
+    assert choices is not None
+    assert choices.options.wipe is False
+
+
+def test_choosing_to_erase_still_sets_the_destructive_flag():
+    choices = _run([ENTER, ENTER, ENTER, ENTER, ENTER, ENTER], disks=(_FULL_DISK,))
+
+    assert choices.options.wipe is True
+
+
+def test_the_simulation_says_what_plan_will_do_with_it():
+    """A populated disk with wipe off is SKIPPED by plan — dasik never silently
+    reformats. The review has to say that, or the config looks installable."""
+    screen = FakeScreen([ENTER, ENTER, DOWN, ENTER, ENTER, ENTER, ENTER])
+
+    run_wizard(screen, [_FULL_DISK])
+
+    drawn = screen.drawn().lower()
+    assert "skip" in drawn or "not be repartitioned" in drawn
+
+
+def test_the_erase_screen_can_still_be_abandoned():
+    assert _run([ENTER, ENTER, ord("q")], disks=(_FULL_DISK,)) is None
+
+
+# --- the layout rows have to say what they give you -------------------------- #
+
+def test_every_layout_row_names_its_whole_layout():
+    """The rows read '…and a swap with a random key', which does not say it
+    includes LUKS and btrfs — reported as "no sé cómo elegir btrfs + swap
+    cifrada". Each row must stand on its own."""
+    screen = FakeScreen([ENTER, ord("q")])
+
+    run_wizard(screen, [_EMPTY_DISK])
+
+    rows = [line for line in screen.lines if "ESP" in line or "Custom" in line]
+    assert rows, "the layout menu was never drawn"
+    assert not any(row.lstrip().startswith("…") for row in rows)
+    for row in rows:
+        if "Custom" not in row:
+            assert "ESP" in row
+
+
+def test_the_selected_layout_is_described_partition_by_partition():
+    screen = FakeScreen([ENTER, DOWN, ord("q")])
+
+    run_wizard(screen, [_EMPTY_DISK])
+
+    drawn = screen.drawn()
+    assert "@home" in drawn          # the subvolumes of the highlighted row
+    assert "/boot" in drawn
+
+
+def test_menu_shows_the_detail_of_the_row_under_the_cursor():
+    screen = FakeScreen([DOWN, ENTER])
+
+    menu(screen, "Pick", ["a", "b"], details=["detail A", "detail B"])
+
+    assert "detail B" in screen.drawn()
+
+
+# --- a stray ESC must not end the session ------------------------------------ #
+#
+# An arrow key IS an escape sequence (ESC [ B). On a slow serial line the ESC
+# can arrive alone, ncurses' ESCDELAY expires, and getch() hands back a bare 27
+# — which used to abandon the whole wizard. Proved with a pty that delivers
+# [10, 27, 91] instead of KEY_DOWN: a menu that quits on ESC quits on an arrow.
+
+def test_a_bare_escape_does_not_leave_a_menu():
+    screen = FakeScreen([ESC, DOWN, ENTER])
+
+    assert menu(screen, "Pick", ["a", "b"]) == 1
+
+
+def test_the_leftovers_of_a_split_arrow_are_ignored_by_a_menu():
+    # ESC, '[', 'B' arriving as three separate keys — the pty case.
+    screen = FakeScreen([ESC, ord("["), ord("B"), DOWN, ENTER])
+
+    assert menu(screen, "Pick", ["a", "b"]) == 1
+
+
+def test_q_is_still_how_you_leave_a_menu():
+    assert menu(FakeScreen([ord("q")]), "Pick", ["a"]) is None
+
+
+def test_a_split_arrow_does_not_cancel_a_prompt_or_type_junk():
+    """In a text field the same bytes must not cancel it, and must not land in
+    the buffer as '[B' either."""
+    screen = FakeScreen([ESC, ord("["), ord("B")] + _keys("cryptroot") + [ENTER])
+
+    assert prompt(screen, "LUKS", "name", default="x") == "cryptroot"

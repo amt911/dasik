@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import copy
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from ..models.disk_model import DiskLayout
 
@@ -65,10 +65,46 @@ class Contribution:
 
 @dataclass(frozen=True)
 class Recipe:
+    """A layout, named so the row stands on its own.
+
+    The titles used to read "…and a swap with a random key", which does not say
+    that it also gives you LUKS and btrfs — you cannot pick a layout from a menu
+    of continuations. Every title now names the WHOLE layout.
+    """
+
     key: str
     title: str
     detail: str
     _build: Callable[[Options], Contribution]
+
+    def summary(self, options: "Optional[Options]" = None) -> List[str]:
+        """The partitions this layout would create, one line each.
+
+        Shown under the cursor in the menu, so choosing does not require
+        remembering what each name implies.
+        """
+        built = self.build(options or Options(device="/dev/…"))
+        lines = []
+        for part in built.disk["partitions"]:
+            bits = [f"{part['label']:<6}", f"{part['size']:>8}",
+                    f"{part['filesystem']:<6}"]
+            if part.get("mountpoint"):
+                bits.append(f"-> {part['mountpoint']}")
+            if part.get("encrypt"):
+                bits.append(f"[LUKS {part.get('luks_name')}]")
+            if part.get("swap_encryption") == "random":
+                bits.append("[random key, cannot hibernate]")
+            for subvol in part.get("btrfs_subvolumes") or []:
+                bits.append("")
+            lines.append(" ".join(b for b in bits if b))
+            subvols = part.get("btrfs_subvolumes") or []
+            if subvols:
+                lines.append("         subvolumes: " +
+                             " ".join(f"{s['name']}->{s['mountpoint']}"
+                                      for s in subvols))
+        for token in built.kernel_cmdline:
+            lines.append(f"         also adds: {token}")
+        return lines
 
     def build(self, options: Options) -> Contribution:
         contribution = self._build(options)
@@ -174,16 +210,22 @@ def _luks_btrfs_hibernate(options: Options) -> Contribution:
 
 
 RECIPES: Tuple[Recipe, ...] = (
-    Recipe("ext4", "ESP + ext4 root",
-           "The simplest thing that boots. No encryption.", _ext4),
-    Recipe("luks-btrfs", "ESP + LUKS + btrfs subvolumes",
-           "Encrypted root with the @/@home/@log/@pkg/@.snapshots layout.",
+    Recipe("ext4",
+           "ESP + ext4 root",
+           "No encryption. The simplest thing that boots.", _ext4),
+    Recipe("luks-btrfs",
+           "ESP + encrypted (LUKS) btrfs root, with subvolumes",
+           "No swap. Root inside LUKS, btrfs with @/@home/@log/@pkg/@.snapshots.",
            _luks_btrfs),
-    Recipe("luks-btrfs-swap", "…and a swap with a random key",
-           "Adds an encrypted swap. Cannot hibernate, by design.",
+    Recipe("luks-btrfs-swap",
+           "ESP + encrypted btrfs root + encrypted swap (random key)",
+           "Same as above plus swap. The swap key is new on every boot, so it "
+           "is safe but CANNOT hibernate.",
            _luks_btrfs_swap),
-    Recipe("luks-btrfs-hibernate", "…and a LUKS swap that can hibernate",
-           "Adds a swap inside LUKS plus the resume= parameter.",
+    Recipe("luks-btrfs-hibernate",
+           "ESP + encrypted btrfs root + encrypted swap (LUKS, hibernates)",
+           "Same as above, but the swap lives in LUKS with a keyslot, so a "
+           "hibernation image can be read back. Adds resume= too.",
            _luks_btrfs_hibernate),
 )
 

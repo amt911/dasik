@@ -1,0 +1,77 @@
+{
+  "metadata": {
+    "note": "A package_sources (pkgbuild-git) package whose makedepends lives in the AUR, not in any repository. `makepkg -s` syncs dependencies with pacman and therefore cannot get it: before dasik installed such a dependency itself the build died with `error: target not found: font-patcher` and took the whole apply with it. The PKGBUILD is the real one that hit this (amt911/ttf-atkinson-hyperlegible-nerd, `makedepends = font-patcher`). For the QEMU VM harness (scripts/vmtest/qemu.sh install-driven). NOT for real hardware. Needs network: it clones from GitHub and builds font-patcher from the AUR."
+  },
+  "disks": {
+    "disks": [
+      {
+        "device": "/dev/vda",
+        "partition_table": "gpt",
+        "wipe_disk": false,
+        "partitions": [
+          {
+            "label": "ESP",
+            "size": "512MiB",
+            "filesystem": "fat32",
+            "partition_type": "esp",
+            "mountpoint": "/boot",
+            "format": true
+          },
+          {
+            "label": "ROOT",
+            "size": "rest",
+            "filesystem": "ext4",
+            "partition_type": "linux",
+            "mountpoint": "/",
+            "format": true
+          }
+        ]
+      }
+    ]
+  },
+  "enable_microcode": false,
+  "packages": [
+    "base",
+    "linux",
+    "linux-firmware",
+    "sudo",
+    "git",
+    "python",
+    "python-pydantic",
+    "python-colorama",
+    "ttf-atkinson-hyperlegible-next-nerd-git"
+  ],
+  "package_sources": {
+    "ttf-atkinson-hyperlegible-next-nerd-git": {
+      "type": "pkgbuild-git",
+      "url": "https://github.com/amt911/ttf-atkinson-hyperlegible-nerd.git",
+      "ref": "51d259d4fbee428a2b4eebb43caeea65079707b3",
+      "subdir": "."
+    }
+  },
+  "bootloader": "sd-boot",
+  "hostname": "dasik-git-aur-makedep",
+  "kernel_cmdline": [
+    "console=ttyS0,115200"
+  ],
+  "timezone": {
+    "region": "Etc",
+    "city": "UTC"
+  },
+  "locales": {
+    "selected_locales": [
+      "en_US.UTF-8 UTF-8"
+    ],
+    "desired_locale": "en_US.UTF-8",
+    "desired_tty_layout": "us"
+  },
+  "network": {
+    "type": "systemd-networkd"
+  },
+  "files": [
+    {
+      "path": "/etc/systemd/system/serial-getty@ttyS0.service.d/autologin.conf",
+      "content": "[Service]\nExecStart=\nExecStart=-/sbin/agetty --autologin root --noclear --keep-baud 115200,38400,9600 %I $TERM\n"
+    }
+  ]
+}

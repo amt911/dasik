@@ -45,8 +45,19 @@ class PkgbuildGitInstaller:
     BUILD_USER = "_aurbuilder"
     BUILD_ROOT = "/home/_aurbuilder/dasik-git"
 
-    def __init__(self, target):
+    def __init__(self, target, build_deps=None):
+        """*build_deps*, when given, is called with the package's declared build
+        dependencies before makepkg runs.
+
+        `makepkg -s` syncs dependencies with pacman, which only knows the
+        configured repositories, so a makedepends living in the AUR aborts the
+        build with "target not found" and no ordering of the package list can
+        help: it has to be installed first. Deciding WHICH of the declared
+        dependencies the repositories lack belongs to the caller, which owns the
+        resolver; this class only reports what the PKGBUILD asks for.
+        """
         self._target = target
+        self._build_deps = build_deps
 
     # -- run --------------------------------------------------------------
 
@@ -92,10 +103,19 @@ class PkgbuildGitInstaller:
                 "useradd", ["-m", "-r", "-s", "/bin/bash", self.BUILD_USER],
                 target=self._target,
             )
+        self._write_sudoers()
+        return created
+
+    def _write_sudoers(self) -> None:
+        """Grant the build user passwordless sudo, which `makepkg -s`/`-i` need.
+
+        Written more than once on purpose: the AUR installer shares this user AND
+        this fragment, and removes the fragment when it finishes — which, when a
+        build dependency sends us through it, lands in the middle of this build.
+        """
         sudoers_path = self._target.path(f"/etc/sudoers.d/{self.BUILD_USER}")
         with open(sudoers_path, "w", encoding="utf-8") as f:
             f.write(f"{self.BUILD_USER} ALL=(ALL) NOPASSWD: ALL\n")
-        return created
 
     def _build_one(self, pkg: ResolvedGitPackage) -> None:
         name = pkg.name
@@ -129,12 +149,26 @@ class PkgbuildGitInstaller:
 
         # Identity gate: the package this PKGBUILD produces must include the
         # declared name, checked BEFORE building/installing anything.
-        names = self._read_pkgnames(pkg_dir)
+        info = self._read_srcinfo(pkg_dir)
+        names = self._parse_pkgnames(info)
         if name not in names:
             produced = ", ".join(sorted(names)) or "nothing"
             raise CommandExecutionError(
                 f"PKGBUILD source for {name} produces {produced}; refusing install"
             )
+
+        # Whatever the PKGBUILD needs to build that it does not itself produce.
+        # A split package naming its own sibling is not a missing dependency.
+        if self._build_deps is not None:
+            declared = {srcinfo.strip_version_constraint(d)
+                        for d in srcinfo.parse_depends(info)} - names
+            if declared:
+                self._build_deps(sorted(declared))
+                # The hook may have gone through the AUR installer, whose cleanup
+                # takes the shared sudoers fragment with it. Without this, the
+                # `sudo pacman -U` behind `makepkg -i` prompts for a password
+                # nobody can type and the build dies with exit 14.
+                self._write_sudoers()
 
         # Build + install as the unprivileged user (makepkg -s syncs deps via the
         # build user's passwordless sudo; -i installs; never runs as root).
@@ -148,17 +182,16 @@ class PkgbuildGitInstaller:
                 f"PKGBUILD source for {name}: package not present after install"
             )
 
-    def _read_pkgnames(self, pkg_dir: str) -> Set[str]:
-        """The ``pkgname`` set the PKGBUILD produces.
+    def _read_srcinfo(self, pkg_dir: str) -> str:
+        """The package's .SRCINFO text — pkgnames AND dependencies come from it.
 
         Prefers a committed ``.SRCINFO`` when present; otherwise regenerates it
         with ``makepkg --printsrcinfo`` as the build user (§8.7)."""
         host_srcinfo = self._target.path(f"{pkg_dir}/.SRCINFO")
         if os.path.exists(host_srcinfo):
-            return self._parse_pkgnames(Path(host_srcinfo).read_text())
-        out = self._text(self._run(_su_argv(
+            return Path(host_srcinfo).read_text()
+        return self._text(self._run(_su_argv(
             self.BUILD_USER, 'cd "$1" && makepkg --printsrcinfo', pkg_dir)).stdout)
-        return self._parse_pkgnames(out)
 
     @staticmethod
     def _parse_pkgnames(text: str) -> Set[str]:

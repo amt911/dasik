@@ -14,6 +14,14 @@ set -x
 CONFIG="$(sed -n 's/.*dasik_config=\([^ ]*\).*/\1/p' /proc/cmdline)"
 CONFIG="${CONFIG:-config/vm-minimal.json}"
 
+# dasik_verbose=1 echoes the live command stream to the console. Without it the
+# output of pacstrap/makepkg/… only reaches dasik's run log, which lives in the
+# ISO's tmpfs and dies with the guest — so a build that fails inside the chroot
+# leaves the host holding an exit code and no reason for it. Opt-in: it makes
+# the serial log an order of magnitude longer.
+VERBOSE=""
+grep -q 'dasik_verbose=1' /proc/cmdline && VERBOSE="-v"
+
 echo "DASIK-VM: BEGIN unattended install ($CONFIG)"
 
 # 1. Wait for the QEMU user-net gateway (host) to be reachable.
@@ -42,7 +50,7 @@ fi
 echo "DASIK-VM: plan"
 /root/venv/bin/dasik plan "$CONFIG" --target /mnt
 echo "DASIK-VM: apply (destructive, guest /dev/vda only)"
-/root/venv/bin/dasik apply "$CONFIG" --target /mnt --yes
+/root/venv/bin/dasik apply "$CONFIG" --target /mnt --yes $VERBOSE
 first_rc=$?
 echo "DASIK-VM: dasik apply exit=$first_rc"
 
@@ -58,7 +66,7 @@ echo "DASIK-VM: pacman db ->"; ls -d /mnt/var/lib/pacman 2>/dev/null && echo yes
 second_rc=0
 if [ "$first_rc" -eq 0 ]; then
     echo "DASIK-VM: second apply (expect no-op)"
-    /root/venv/bin/dasik apply "$CONFIG" --target /mnt --yes
+    /root/venv/bin/dasik apply "$CONFIG" --target /mnt --yes $VERBOSE
     second_rc=$?
     echo "DASIK-VM: second apply exit=$second_rc"
 else

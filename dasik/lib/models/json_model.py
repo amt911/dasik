@@ -27,6 +27,7 @@ from .apparmor_model import ApparmorModel
 from .pam_model import PamModel
 from .config_saver_model import ConfigSaverModel
 from .containers_model import ContainersModel
+from .tailscale_model import TailscaleModel
 from .systemd_conf_model import validate_ini_section
 
 
@@ -145,6 +146,9 @@ class JsonModel(BaseModel):
     pam: Optional[PamModel] = None
     config_saver: Optional[ConfigSaverModel] = None
     containers: Optional[ContainersModel] = None
+    # Preferences rendered into the tailscaled conffile. Declaring the block
+    # makes that file authoritative, so `tailscale set` stops moving these keys.
+    tailscale: Optional[TailscaleModel] = None
     # zram-generator: {device: {option: value}} mirroring zram-generator.conf ini.
     zram: Optional[Dict[str, Dict[str, Any]]] = None
     # The pacman-owned /etc/systemd/*.conf files, one block per file, each

@@ -876,3 +876,69 @@ def test_the_captured_tunnel_validates_and_replans_to_nothing(tmp_path):
     # Scoped to the tunnels: this fake root also carries the block-A features,
     # whose own drift is asserted by their own rows above.
     assert [c for c in action.plan(managed=managed) if c.item in managed] == []
+
+
+# --- tailscale preferences ------------------------------------------------- #
+#
+# The domain that prompted this block: `tailscale` the package and
+# `tailscaled.service` the unit were already declarable, so a machine looked
+# fully captured while every preference on it was invisible.
+
+def _ts_machine(tmp_path, block):
+    from dasik.lib.actions.tailscale_action import TailscaleAction
+    action = TailscaleAction({"tailscale": block},
+                             ActionContext(target=Target(root=str(tmp_path))))
+    action.apply(action.plan(managed=[]))
+    return tmp_path
+
+
+def _ts_captured(root, seed=None):
+    from dasik.lib.actions.tailscale_action import TailscaleAction
+    return TailscaleAction(seed or {},
+                           ActionContext(target=Target(root=str(root)))).import_state()
+
+
+def test_tailscale_prefs_are_captured_as_their_own_block(tmp_path):
+    root = _ts_machine(tmp_path, {"accept_routes": True, "ssh": False,
+                                  "advertise_routes": ["10.0.0.0/8"]})
+    assert _ts_captured(root) == {"tailscale": {
+        "accept_routes": True, "ssh": False,
+        "advertise_routes": ["10.0.0.0/8"]}}
+
+
+def test_a_machine_without_the_conffile_invents_no_tailscale_block(tmp_path):
+    assert _ts_captured(tmp_path) == {}
+
+
+def test_a_declared_block_the_machine_lacks_is_cleared_not_kept(tmp_path):
+    """sync reports the machine. Silence would leave the stale declaration, since
+    ConfigWriter.merge overwrites keys and never deletes them."""
+    assert _ts_captured(tmp_path, {"tailscale": {"accept_routes": True}}) == {
+        "tailscale": {}}
+
+
+def test_the_captured_tailscale_block_validates(tmp_path):
+    """`check` on a config `sync` just wrote — the round trip that keeps being
+    missed. A capture the tool then refuses is a broken capture."""
+    root = _ts_machine(tmp_path, {"accept_routes": True, "hostname": "box",
+                                  "operator": "andres"})
+    JsonModel.model_validate(_ts_captured(root))
+
+
+def test_sync_then_plan_is_silent_for_tailscale(tmp_path):
+    """The real invariant: capture, then plan the capture against the machine it
+    came from, and nothing is proposed."""
+    from dasik.lib.actions.tailscale_action import TailscaleAction
+    root = _ts_machine(tmp_path, {"accept_routes": True, "shields_up": False})
+    captured = _ts_captured(root)
+    action = TailscaleAction(expand_config(captured),
+                             ActionContext(target=Target(root=str(root))))
+    assert action.plan(managed=[]) == []
+
+
+def test_the_package_the_block_derives_is_not_written_back(tmp_path):
+    """subtract_contributions must strip what the toggle re-derives, or the
+    captured config grows a `tailscale` package line every round trip."""
+    original = {"tailscale": {"accept_routes": True}}
+    stripped = subtract_contributions(expand_config(original), original)
+    assert "tailscale" not in stripped.get("packages", [])

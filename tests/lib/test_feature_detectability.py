@@ -933,3 +933,52 @@ def test_a_tunnel_with_enable_false_plans_the_file_but_no_unit(tmp_path):
     config = _tunnel(enable=False)
     assert _files_plan(tmp_path, config) == [("CREATE", _WG_CONF)]
     assert _units_planned(expand_config(config)) == []
+
+
+# --- tailscale preferences (the conffile) ---------------------------------- #
+
+def _ts_plan(root, block, managed=()):
+    from dasik.lib.actions.tailscale_action import TailscaleAction
+    action = TailscaleAction({"tailscale": block} if block else {}, _ctx(root))
+    return [(c.op.name, c.item) for c in action.plan(managed=list(managed))]
+
+
+def test_tailscale_missing_on_the_target_is_planned(tmp_path):
+    assert _ts_plan(tmp_path, {"accept_routes": True})[0][0] == "MODIFY"
+
+
+def test_tailscale_already_applied_plans_nothing(tmp_path):
+    from dasik.lib.actions.tailscale_action import TailscaleAction
+    action = TailscaleAction({"tailscale": {"accept_routes": True}}, _ctx(tmp_path))
+    action.apply(action.plan(managed=[]))
+    assert _ts_plan(tmp_path, {"accept_routes": True}) == []
+
+
+def test_dropping_the_tailscale_block_removes_the_conffile_dasik_owns(tmp_path):
+    """An empty conffile still answers `config file is locked`, so the file has
+    to go rather than be blanked."""
+    from dasik.lib.actions.tailscale_action import TailscaleAction, _CONF
+    action = TailscaleAction({"tailscale": {"accept_routes": True}}, _ctx(tmp_path))
+    action.apply(action.plan(managed=[]))
+    assert _ts_plan(tmp_path, None, managed=[_CONF]) == [("REMOVE", _CONF)]
+
+
+def test_an_unowned_tailscale_conffile_is_left_alone(tmp_path):
+    from dasik.lib.actions.tailscale_action import _CONF
+    path = tmp_path / _CONF.lstrip("/")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('{"version":"alpha0","AcceptRoutes":true}')
+    assert _ts_plan(tmp_path, None) == []
+
+
+def test_the_tailscale_dropin_is_planned_as_a_file():
+    """Writing the conffile changes nothing until the daemon is told to read it,
+    so the flag must be visible in the plan too — as a `files` entry."""
+    merged = expand_config({"tailscale": {"accept_routes": True}})
+    assert "/etc/default/tailscaled" in [
+        f["path"] for f in merged["files"]]
+
+
+def test_the_tailscale_unit_is_planned_as_a_unit():
+    merged = expand_config({"tailscale": {"accept_routes": True}})
+    assert "tailscaled.service" in merged["systemd"]["enable_units"]

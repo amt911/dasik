@@ -58,6 +58,7 @@ def setup_actions() -> None:
     from .bootloader_action import BootloaderAction
     from .ms_fonts_action import MicrosoftFontsAction
     from .zram_action import ZramAction
+    from .tailscale_action import TailscaleAction
     from .systemd_conf_action import (
         OomdAction, SystemdSystemConfAction, SystemdUserConfAction,
     )
@@ -252,6 +253,14 @@ def setup_actions() -> None:
     register_action(
         action_class=ZramAction,
         config_key='__root__',  # reads root-level `zram` mapping
+        is_optional=True,
+    )
+    # Tailscale preferences, as the conffile the daemon reads. After
+    # PackagesAction (the package must exist) and alongside the drop-in that
+    # expand_tailscale contributes to `files`, which points the daemon at it.
+    register_action(
+        action_class=TailscaleAction,
+        config_key='__root__',  # reads root-level `tailscale` block
         is_optional=True,
     )
     # The pacman-owned /etc/systemd/*.conf files. DropFilesAction cannot own

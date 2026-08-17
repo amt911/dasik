@@ -312,6 +312,13 @@ class PackagesAction(AbstractAction):
             installed = self._installed_all()
             explicit |= {name for name, members in groups.items()
                          if not members - installed}
+        # Same reason as the group half: a DECLARED name that only a provider
+        # satisfies is never in `pacman -Qqe`, so without this the reconciler
+        # cannot own it — and dropping it from the config later removes nothing.
+        # Declared names only: actual() answers for what was asked about.
+        undeclared_by_name = [n for n in self.desired
+                              if n not in explicit and n not in groups]
+        explicit |= self._satisfied(undeclared_by_name, known_installed=explicit)
         return explicit
 
     def _installed_all(self) -> set[str]:
@@ -324,6 +331,52 @@ class PackagesAction(AbstractAction):
         if isinstance(stdout, bytes):
             stdout = stdout.decode("utf-8", errors="replace")
         return {line.strip() for line in stdout.splitlines() if line.strip()}
+
+    def _satisfied(self, names: "set[str] | list[str]",
+                   known_installed: "set[str] | None" = None) -> set:
+        """Of *names*, the ones pacman already considers satisfied.
+
+        `pacman -Qq` answers with package NAMES, so a name that survives only as
+        a ``Provides`` — `iptables-nft`, which `iptables` in core provides and
+        replaces — reads as missing forever: planned, applied, planned again,
+        with every apply reporting success. `pacman -T` is the question that
+        honours providers: it prints the dependencies NOT satisfied, so what
+        disappears from its output is present.
+
+        One call for the whole set, and only for names the installed list
+        already failed to explain.
+        """
+        target = getattr(self.context, "target", None) if self.context else None
+        wanted = sorted(names)
+        if target is None or not wanted:
+            return set()
+        # An empty machine cannot be providing anything, and this is the case
+        # that matters: on a fresh install the target is still an empty
+        # directory, arch-chroot cannot set it up, and the probe comes back
+        # rc!=0 with no output. Reading that as "nothing is unsatisfied" deleted
+        # the ENTIRE packages domain from the plan — a guest installed base and
+        # a bootloader, not one declared package, and reported rc=0.
+        if not known_installed:
+            return set()
+        # Fail-safe in ONE direction: an answer we cannot read means "not
+        # satisfied", so the name is planned and installed. The opposite would
+        # silently skip an install because a probe failed, and `pacman -S` on
+        # something already present is a no-op anyway. pacman's deptest speaks
+        # exactly two exit codes — 0 (all satisfied) and 127 (these are missing)
+        # — so anything else is not an answer to the question we asked.
+        try:
+            result = Command.execute("pacman", ["-T", *wanted], target=target)
+            if getattr(result, "returncode", 1) not in (0, 127):
+                return set()
+            stdout = getattr(result, "stdout", b"") or b""
+            if isinstance(stdout, bytes):
+                stdout = stdout.decode("utf-8", errors="replace")
+            if not isinstance(stdout, str):
+                return set()
+            missing = {line.strip() for line in stdout.splitlines() if line.strip()}
+        except Exception:      # nosec B110 - unreadable probe: nothing is satisfied
+            return set()
+        return set(wanted) - missing
 
     def _reason_of(self, pkg: str) -> str:
         """Install reason of an installed package: explicit if in -Qqe else dep."""
@@ -521,7 +574,15 @@ class PackagesAction(AbstractAction):
         removals = sorted(owned_not_declared - covered)
 
         changes: list = []
-        for name in sorted(n for n in desired if n not in installed):
+        candidates = sorted(n for n in desired if n not in installed)
+        # A declared name can be satisfied by a PROVIDER rather than by a package
+        # of that name, and then it is never in `pacman -Qq`. Asking only about
+        # what the installed list failed to explain keeps this to one call.
+        provided = self._satisfied([n for n in candidates if n not in groups],
+                                   known_installed=installed)
+        for name in candidates:
+            if name in provided:
+                continue    # an installed package provides it: converged
             members = groups.get(name)
             if members is not None and not members - installed:
                 continue    # every member present: the group is converged
@@ -1074,10 +1135,13 @@ class PackagesAction(AbstractAction):
             return
         resolution = self._resolve_sources(list(deps), target)
         if resolution.aur:
-            self._apply_aur_install(list(resolution.aur))
+            # The git installer wrote the sudoers fragment and still needs it
+            # after we return, so its presence is not a dead build's leftover.
+            self._apply_aur_install(list(resolution.aur), fragment_is_ours=True)
 
     def _apply_aur_install(self, pkgs: list[str], *,
-                           helper: "str | None" = None) -> None:
+                           helper: "str | None" = None,
+                           fragment_is_ours: bool = False) -> None:
         """Install ``resolution.aur`` via the hybrid :class:`AurInstaller`.
 
         *helper* is the declared yay/paru chosen from the full desired set (it may
@@ -1093,4 +1157,4 @@ class PackagesAction(AbstractAction):
             )
         from .aur_installer import AurInstaller
         AurInstaller(self.context.target, resolver=self._resolver).install(
-            pkgs, helper=helper)
+            pkgs, helper=helper, fragment_is_ours=fragment_is_ours)

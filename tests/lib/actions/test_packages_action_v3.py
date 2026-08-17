@@ -37,7 +37,13 @@ def _fake_command_run(stdout: bytes = b"", returncode: int = 0):
     # returns nothing by default, so these tests keep their "no AUR" assumption
     # (the aur- prefixing is covered by the dedicated foreign tests below).
     def fake(cmd, args=None, *a, **kw):
-        flag = (args or [None])[0]
+        args = list(args or [])
+        flag = args[0] if args else None
+        if flag == "-T":
+            # pacman -T prints what is NOT satisfied. Nothing here is provided
+            # by another package, so every name asked about comes back.
+            return MagicMock(stdout="\n".join(args[1:]).encode(), stderr=b"",
+                             returncode=127 if args[1:] else 0)
         out = b"" if flag == "-Qqm" else stdout
         return MagicMock(stdout=out, stderr=b"", returncode=returncode)
     return MagicMock(side_effect=fake)
@@ -166,13 +172,14 @@ def _mutating(run):
     """The pacman calls that CHANGE something.
 
     apply() also probes `pacman -Qq`/`-Qqe` at the end to make the install
-    reasons true against reality (issue #188), and `-Sg` to tell a declared
-    pacman group from a package, so counting every call would count those
-    read-only queries too.
+    reasons true against reality (issue #188), `-Sg` to tell a declared pacman
+    group from a package, and `-T` to see whether a declared name is already
+    satisfied by a PROVIDER, so counting every call would count those read-only
+    queries too.
     """
     return [c for c in run.call_args_list
             if c.args[0] == "pacman"
-            and c.args[1][0] not in ("-Qq", "-Qqe", "-D", "-Sg")]
+            and c.args[1][0] not in ("-Qq", "-Qqe", "-D", "-Sg", "-T")]
 
 
 def test_apply_install_routes_pacman_pkgs_through_pacman_S():
@@ -295,7 +302,7 @@ def test_apply_aur_install_delegates_to_aur_installer():
     assert call.kwargs.get("resolver") is a._resolver
     # and driven with the AUR package list + the chosen helper
     Installer.return_value.install.assert_called_once_with(
-        ["asunder"], helper="yay")
+        ["asunder"], helper="yay", fragment_is_ours=False)
 
 
 def test_apply_passes_declared_helper_when_only_rest_is_pending():
@@ -433,6 +440,12 @@ def _reason_fake(explicit=b"", installed=b""):
     """Command.execute fake: -Qqe -> explicit set, -Qq -> all installed."""
     def run(cmd, args, *a, **k):
         flag = args[0] if args else ""
+        if flag == "-T":
+            # what is NOT satisfied. Nothing here has a provider, so an empty
+            # answer (= "all satisfied") would silently promote a declared dep
+            # to explicit.
+            return MagicMock(stdout="\n".join(args[1:]).encode(), stderr=b"",
+                             returncode=127 if args[1:] else 0)
         out = explicit if flag == "-Qqe" else installed if flag == "-Qq" else b""
         return MagicMock(stdout=out, stderr=b"", returncode=0)
     return run
@@ -561,7 +574,13 @@ def test_import_state_reemits_legacy_aur_as_plain_name():
 def _pacman_dispatch(qqe=b"", qq=b"", qqm=b""):
     """Fake Command.execute dispatching by the pacman query flag."""
     def fake(cmd, args=None, *a, **kw):
-        flag = (args or [None])[0]
+        args = list(args or [])
+        flag = args[0] if args else None
+        if flag == "-T":
+            # NOT satisfied: nothing here is reached through a provider, and an
+            # empty answer would read as "already satisfied".
+            return MagicMock(stdout="\n".join(args[1:]).encode(), stderr=b"",
+                             returncode=127 if args[1:] else 0)
         out = {"-Qqe": qqe, "-Qq": qq, "-Qqm": qqm}.get(flag, b"")
         return MagicMock(stdout=out, stderr=b"", returncode=0)
     return fake

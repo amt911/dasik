@@ -34,6 +34,11 @@ def _fake_exec(table=None):
         else:                                       # Command.execute("pacman", ["-Qqe"])
             key = (cmd, (args or [""])[0] if args else "")
         out = table.get(key, b"")
+        # `pacman -T` prints what is NOT satisfied, so an empty default reads as
+        # "everything is already installed" and every plan comes out silent.
+        # Nothing in these fixtures is reached through a provider.
+        if not out and key == ("pacman", "-T"):
+            out = "\n".join((args or [])[1:]).encode()
         # A real genfstab always emits fstab content; base install now aborts on
         # an empty one (a mountless /etc/fstab would be non-bootable), so the fake
         # must mimic that rather than the impossible empty default.
@@ -142,6 +147,9 @@ def test_apply_expands_bluetooth_toggle_into_packages(tmp_path):
     def run(cmd, args=None, *a, **k):
         if cmd == "pacman" and args and args[0] == "-Qqe":
             return MagicMock(stdout=b"", stderr=b"", returncode=0)
+        if cmd == "pacman" and args and args[0] == "-T":     # unsatisfied deps
+            return MagicMock(stdout="\n".join(args[1:]).encode(),
+                             stderr=b"", returncode=127)
         if cmd == "pacman" and args and args[0] == "-Slq":   # resolver repo DB
             return MagicMock(stdout=_REPO_DB, stderr=b"", returncode=0)
         if cmd == "genfstab":                       # base install aborts on empty fstab

@@ -62,6 +62,26 @@ def test_a_first_run_says_nothing(tmp_path):
     logger.return_value.warning.assert_not_called()
 
 
+def test_a_caller_that_owns_the_fragment_is_not_told_a_build_died(tmp_path):
+    """A git package whose makedepends lives in the AUR comes through here from
+    INSIDE PkgbuildGitInstaller, which wrote that fragment seconds ago and still
+    needs it. The leftover warning then fires on every such build and says
+    something untrue — "a previous AUR build did not finish" — right where
+    somebody debugging a failed build will read it."""
+    path = tmp_path / "etc/sudoers.d/_aurbuilder"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("_aurbuilder ALL=(ALL) NOPASSWD: ALL\n")
+    inst = _installer(tmp_path)
+
+    with patch.object(AurInstaller, "_run", return_value=MagicMock(returncode=0)), \
+         patch("dasik.lib.actions.aur_installer.run_logger.get") as logger:
+        inst._ensure_prerequisites(fragment_is_ours=True)
+
+    logger.return_value.warning.assert_not_called()
+    # still written, because the build about to run needs it
+    assert path.exists()
+
+
 def test_cleanup_still_removes_it(tmp_path):
     inst = _installer(tmp_path)
     path = str(tmp_path / "etc/sudoers.d/_aurbuilder")

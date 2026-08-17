@@ -250,7 +250,7 @@ cmd_install() {
 
     # Pass the chosen config to the guest via the kernel cmdline so it installs
     # THIS config, not the hard-coded default.
-    local append="archisobasedir=arch archisolabel=$label cow_spacesize=2G copytoram=n console=ttyS0,115200 dasik_config=$config script=http://10.0.2.2:$port/install.sh"
+    local append="archisobasedir=arch archisolabel=$label cow_spacesize=2G copytoram=n console=ttyS0,115200 dasik_config=$config${DASIK_VM_VERBOSE:+ dasik_verbose=1} script=http://10.0.2.2:$port/install.sh"
     local qargs="-enable-kvm -cpu host -m $DASIK_VM_RAM -smp $DASIK_VM_CPUS -nographic -display none"
     qargs="$qargs $ovmf -kernel $kernel -initrd $initrd -append \"$append\""
     # ISO on virtio (OVMF does not enumerate the IDE -cdrom); qcow2 as vda.
@@ -266,7 +266,12 @@ cmd_install() {
 
     : > "$work/serial.log"
     log "Serving installer on 127.0.0.1:$port and booting guest (this takes minutes)…"
-    ( cd "$work/http" && python3 -m http.server "$port" --bind 127.0.0.1 >/dev/null 2>&1 ) &
+    _refuse_a_busy_http_port "$port"
+    # `exec`, for the same reason the qemu launch below needs it: without it $!
+    # is the SUBSHELL, `kill` takes only that, and python survives reparented to
+    # init still holding the port. Every earlier campaign leaked one, and the
+    # next run's guest then fetched the STALE install.sh those served.
+    ( cd "$work/http" && exec python3 -m http.server "$port" --bind 127.0.0.1 >/dev/null 2>&1 ) &
     local http_pid=$!
     local timeout_s="${DASIK_VM_INSTALL_TIMEOUT:-900}"
     eval "timeout $timeout_s qemu-system-x86_64 $qargs" >/dev/null 2>&1 &
@@ -296,6 +301,20 @@ cmd_install() {
 # with recent ISOs (2025.12+), leaving the guest stuck at `archiso login:`. Boots
 # with the serial on a unix socket and hands it to serial_driver.py, which logs in
 # as root and runs the same guest installer. Use this on modern ISOs.
+# The guest fetches install.sh from this port. A server left behind by an
+# earlier campaign keeps it, ours fails to bind in the background subshell where
+# nobody sees the error, and the guest silently downloads THAT run's installer
+# instead: on 2026-08-17 two full installs ran the wrong guest script and the
+# evidence they were supposed to produce never appeared. Refuse instead.
+_refuse_a_busy_http_port() {
+    local port="$1"
+    if curl -s --max-time 2 "http://127.0.0.1:$port/" > /dev/null 2>&1; then
+        die "something is already serving 127.0.0.1:$port — the guest would fetch
+  ITS install.sh, not this run's. Find it with:  pgrep -af 'http.server $port'
+  (then kill it, or set DASIK_VM_HTTP_PORT to a free port)."
+    fi
+}
+
 cmd_install_driven() {
     local config="config/vm-minimal.json" dry=0
     for a in "$@"; do case "$a" in --dry-run) dry=1;; *.json) config="$a";; esac; done
@@ -332,7 +351,7 @@ cmd_install_driven() {
     fi
 
     # NOTE: no `script=`; the driver runs the installer after logging in.
-    local append="archisobasedir=arch archisolabel=$label cow_spacesize=2G copytoram=n console=ttyS0,115200 dasik_config=$config"
+    local append="archisobasedir=arch archisolabel=$label cow_spacesize=2G copytoram=n console=ttyS0,115200 dasik_config=$config${DASIK_VM_VERBOSE:+ dasik_verbose=1}"
     local qargs="-enable-kvm -cpu host -m $DASIK_VM_RAM -smp $DASIK_VM_CPUS -display none -monitor none"
     qargs="$qargs $ovmf -kernel $kernel -initrd $initrd -append \"$append\""
     qargs="$qargs -drive file=$disk,if=virtio,format=qcow2 $(_keydev_args)"
@@ -345,7 +364,12 @@ cmd_install_driven() {
     log "QEMU install command:"; echo "  qemu-system-x86_64 $qargs"
     [ "$dry" -eq 1 ] && { log "(dry-run) not launching."; _stop_tpm; return 0; }
 
-    ( cd "$work/http" && python3 -m http.server "$port" --bind 127.0.0.1 >/dev/null 2>&1 ) &
+    _refuse_a_busy_http_port "$port"
+    # `exec`, for the same reason the qemu launch below needs it: without it $!
+    # is the SUBSHELL, `kill` takes only that, and python survives reparented to
+    # init still holding the port. Every earlier campaign leaked one, and the
+    # next run's guest then fetched the STALE install.sh those served.
+    ( cd "$work/http" && exec python3 -m http.server "$port" --bind 127.0.0.1 >/dev/null 2>&1 ) &
     local http_pid=$!
     local timeout_s="${DASIK_VM_INSTALL_TIMEOUT:-1500}"
     log "Booting guest and driving the install over serial (this takes minutes)…"

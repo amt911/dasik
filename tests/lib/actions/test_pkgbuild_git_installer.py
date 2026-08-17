@@ -90,8 +90,8 @@ class _Harness:
         return MagicMock(returncode=rc, stdout=out, stderr=b"")
 
 
-def _install(harness, pkg=None, srcinfo_on_disk=False):
-    inst = PkgbuildGitInstaller(Target(root="/"))
+def _install(harness, pkg=None, srcinfo_on_disk=False, build_deps=None):
+    inst = PkgbuildGitInstaller(Target(root="/"), build_deps=build_deps)
     with patch("dasik.lib.actions.pkgbuild_git_installer.Command.execute",
                side_effect=harness.command_execute), \
          patch("dasik.lib.actions.pkgbuild_git_installer.os.path.exists",
@@ -141,6 +141,109 @@ def test_post_install_verify_failure_raises():
     h = _Harness(installed=False)   # pacman -Q says not installed after build
     with pytest.raises(CommandExecutionError):
         _install(h)
+
+
+# --- build dependencies the repositories do not have ----------------------
+#
+# `makepkg -s` syncs dependencies with pacman, which only knows the configured
+# repositories. A makedepends that lives in the AUR therefore aborts the build
+# with "target not found", and no ordering of the package list can fix it: the
+# dependency has to be installed BEFORE makepkg runs. The installer hands its
+# declared build dependencies to a hook; resolving which of them are AUR-only
+# belongs to the caller, which owns the resolver.
+
+SRCINFO_AUR_MAKEDEP = """
+pkgbase = ttf-atkinson-hyperlegible-next-nerd-git
+\tmakedepends = font-patcher
+pkgname = ttf-atkinson-hyperlegible-next-nerd-git
+"""
+
+
+def _font_pkg():
+    return _pkg(name="ttf-atkinson-hyperlegible-next-nerd-git")
+
+
+def test_declared_build_deps_reach_the_hook_before_makepkg_runs():
+    h = _Harness(srcinfo=SRCINFO_AUR_MAKEDEP)
+    seen = []
+
+    def build_deps(deps):
+        seen.append(sorted(deps))
+        h.runs.append(["<deps-hook>"])
+
+    _install(h, pkg=_font_pkg(), build_deps=build_deps)
+
+    assert seen == [["font-patcher"]]
+    joined = [" ".join(r) for r in h.runs]
+    assert joined.index("<deps-hook>") < next(
+        i for i, j in enumerate(joined) if "makepkg -sri" in j)
+
+
+def test_a_dep_the_pkgbuild_itself_produces_is_not_offered():
+    """A split package depending on its own sibling is not a missing dep."""
+    h = _Harness(srcinfo=(
+        "pkgbase = foo\n\tdepends = foo-common\n"
+        "pkgname = foo\npkgname = foo-common\n"
+    ))
+    seen = []
+    _install(h, pkg=_pkg(name="foo"), build_deps=seen.append)
+    assert seen == [[]] or seen == []
+
+
+def test_version_constraints_are_stripped_from_deps():
+    h = _Harness(srcinfo=(
+        "pkgbase = x\n\tmakedepends = font-patcher>=3.1.0\n"
+        "\tdepends = python-fontforge=20230101\npkgname = x\n"
+    ))
+    seen = []
+    _install(h, pkg=_pkg(name="x"), build_deps=lambda d: seen.append(sorted(d)))
+    assert seen == [["font-patcher", "python-fontforge"]]
+
+
+def test_the_sudoers_fragment_survives_the_deps_hook():
+    """Installing an AUR build dependency runs the AUR installer, which shares
+    the _aurbuilder user AND its /etc/sudoers.d fragment — and removes the
+    fragment when it finishes. That happens in the middle of THIS build, so the
+    `sudo pacman -U` behind `makepkg -i` then has no passwordless sudo left:
+
+        sudo: a terminal is required to read the password
+        ==> WARNING: Failed to install built package(s).
+
+    measured in a guest, exit 14. The fragment has to be re-asserted after the
+    hook and before makepkg — the install()-level cleanup still removes it, so
+    nothing is left behind.
+    """
+    h = _Harness(srcinfo=SRCINFO_AUR_MAKEDEP)
+
+    def build_deps(deps):
+        h.runs.append(["<deps-hook>"])
+
+    def record_open(path, *a, **kw):
+        h.runs.append([f"<open {path}>"])
+        return MagicMock()
+
+    inst = PkgbuildGitInstaller(Target(root="/"), build_deps=build_deps)
+    with patch("dasik.lib.actions.pkgbuild_git_installer.Command.execute",
+               side_effect=h.command_execute), \
+         patch("dasik.lib.actions.pkgbuild_git_installer.os.path.exists",
+               return_value=False), \
+         patch("dasik.lib.actions.pkgbuild_git_installer.os.remove"), \
+         patch("builtins.open", side_effect=record_open):
+        inst.install([_font_pkg()])
+
+    joined = [" ".join(r) for r in h.runs]
+    hook = joined.index("<deps-hook>")
+    build = next(i for i, j in enumerate(joined) if "makepkg -sri" in j)
+    sudoers = [i for i, j in enumerate(joined) if "sudoers.d/_aurbuilder" in j]
+    assert any(hook < i < build for i in sudoers), (
+        f"sudoers written at {sudoers}, hook at {hook}, build at {build}")
+
+
+def test_without_a_hook_the_build_still_runs():
+    """The hook is optional: nothing else changes when no caller supplies one."""
+    h = _Harness(srcinfo=SRCINFO_AUR_MAKEDEP)
+    _install(h, pkg=_font_pkg())
+    assert any("makepkg -sri" in " ".join(r) for r in h.runs)
 
 
 def test_uses_committed_srcinfo_when_present():

@@ -1056,7 +1056,25 @@ class PackagesAction(AbstractAction):
                 "Git package install requires an action context with a target."
             )
         from .pkgbuild_git_installer import PkgbuildGitInstaller
-        PkgbuildGitInstaller(self.context.target).install(git_pkgs)
+        PkgbuildGitInstaller(self.context.target,
+                             build_deps=self._install_aur_build_deps).install(git_pkgs)
+
+    def _install_aur_build_deps(self, deps: list) -> None:
+        """Install a git package's declared build deps that no repository has.
+
+        `makepkg -s` syncs dependencies with pacman, so a makedepends living in
+        the AUR aborts the build ("target not found") no matter where the
+        package sits in the install order — git builds run before the AUR batch,
+        and reordering them would only move the problem to AUR packages that
+        depend on a git one. Repo dependencies are left alone: makepkg syncs
+        those itself, and doing it twice only slows the build down.
+        """
+        target = getattr(self.context, "target", None) if self.context else None
+        if target is None or not deps:
+            return
+        resolution = self._resolve_sources(list(deps), target)
+        if resolution.aur:
+            self._apply_aur_install(list(resolution.aur))
 
     def _apply_aur_install(self, pkgs: list[str], *,
                            helper: "str | None" = None) -> None:

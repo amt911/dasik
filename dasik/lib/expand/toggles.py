@@ -310,6 +310,50 @@ def expand_zram(config: Dict[str, Any]) -> Dict[str, Any]:
     return {"packages": ["zram-generator"]}
 
 
+# The daemon reads its conffile only when told to, and MEASURED in a guest
+# (scripts/vmtest/guest-tsprobe.sh): a drop-in setting `Environment=FLAGS=...`
+# does NOT reach it — the vendor unit's EnvironmentFile wins, with or without a
+# `systemctl daemon-reload`. What does work is writing the EnvironmentFile
+# itself, which pacman marks as a BACKUP file: the vendor's designated knob,
+# preserved across upgrades with a .pacnew rather than clobbered. The
+# alternative that also worked, a drop-in clearing and restating ExecStart, was
+# rejected because it duplicates a command line that changes with any release.
+_TAILSCALE_DEFAULTS = "/etc/default/tailscaled"
+_TAILSCALE_CONF = "/etc/tailscale/tailscaled.conf"
+# The vendor unit is `ExecStart=... --port=${PORT} $FLAGS`, so PORT has to be
+# written too — an empty ${PORT} is not a working command line.
+_TAILSCALE_DEFAULT_PORT = 41641
+
+
+def expand_tailscale(config: Dict[str, Any]) -> Dict[str, Any]:
+    """A declared `tailscale` block needs the daemon, its unit, and the flag that
+    points it at the conffile TailscaleAction writes.
+
+    Logging in is NOT part of this: the node key is the machine's identity in
+    the tailnet, so `tailscale up` stays manual and no auth key goes near a
+    config that lives in Git.
+    """
+    block = config.get("tailscale") or {}
+    if not block:
+        return {}
+    port = block.get("port") or _TAILSCALE_DEFAULT_PORT
+    return {
+        "packages": ["tailscale"],
+        "units": ["tailscaled.service"],
+        "files": [{
+            "path": _TAILSCALE_DEFAULTS,
+            "content": (
+                "# Managed by dasik: the EnvironmentFile the vendor unit reads.\n"
+                "# A tailscaled.service.d drop-in setting FLAGS does NOT reach the\n"
+                "# daemon — measured; this file wins. pacman lists it as a backup\n"
+                "# file, so an upgrade leaves it alone and writes a .pacnew.\n"
+                f'PORT="{port}"\n'
+                f'FLAGS="--config={_TAILSCALE_CONF}"\n'
+            ),
+        }],
+    }
+
+
 def expand_oomd(config: Dict[str, Any]) -> Dict[str, Any]:
     # Declared oomd settings need the daemon that reads them; systemd ships it,
     # so there is no package — only the unit. system.conf/user.conf configure
@@ -634,5 +678,6 @@ TOGGLES = [
     expand_drivers, expand_initramfs, expand_zram, expand_oomd, expand_cpu,
     expand_sdboot_update, expand_reflector, expand_plymouth,
     expand_apparmor, expand_pam, expand_config_saver, expand_containers,
+    expand_tailscale,
     expand_network,
 ]

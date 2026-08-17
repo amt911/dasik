@@ -126,6 +126,7 @@ written into those directories instead of inlined
 | `apparmor` | object | Mandatory access control: package, unit, the `lsm=` kernel parameter, optional audit framework, local profiles |
 | `pam` | object | PAM hardening: account lockout, nproc limits, password policy |
 | `firewall` | object | firewalld (one or more zones) **or** ufw — see below |
+| `tailscale` | object | Tailscale preferences, as `/etc/tailscale/tailscaled.conf` — see below |
 | `containers` | object | Container runtime: podman or docker (the engine, not the containers) |
 | `config_saver` | object | config-saver: the package, its backup documents, its timers, and restoring an archive into `$HOME` |
 | `bluetooth`, `hardware_acceleration`, `kvm`, `cups`, `microsoft_fonts`, `snapper` | object | Feature toggles |
@@ -342,6 +343,69 @@ firewalld converges as a file (`/etc/firewalld/zones/public.xml`, owned whole);
 ufw converges through its own CLI with `ufw status` as the read side.
 
 ---
+
+## `tailscale`  *(sync ✓)*
+
+Preferences written to `/etc/tailscale/tailscaled.conf`, the file
+`tailscaled --config` reads. Declaring the block also pulls the `tailscale`
+package, enables `tailscaled.service`, and writes `/etc/default/tailscaled` —
+the EnvironmentFile the vendor unit reads, and what actually points the daemon at
+the conffile. The conffile alone changes nothing.
+
+A `tailscaled.service.d` drop-in setting `FLAGS` does **not** work: measured in a
+guest, the EnvironmentFile wins, with or without `systemctl daemon-reload`.
+pacman lists `/etc/default/tailscaled` under `Backup Files`, so owning it is the
+vendor-sanctioned route and an upgrade writes a `.pacnew` rather than clobbering
+it. dasik writes `PORT` there as well, because the unit interpolates `${PORT}`
+and an empty one is not a working command line — hence the `port` field.
+
+```json
+"tailscale": {
+  "accept_routes": true,
+  "accept_dns": true,
+  "ssh": false,
+  "web_client": false,
+  "shields_up": false,
+  "exit_node": "auto:any",
+  "exit_node_allow_lan_access": true,
+  "advertise_routes": ["192.168.1.0/24"],
+  "advertise_exit_node": false,
+  "hostname": "archbox",
+  "operator": "andres",
+  "netfilter_mode": "on",
+  "port": 41641,
+  "posture_checking": false,
+  "server_url": "https://controlplane.tailscale.com"
+}
+```
+
+> ⚠️ **Declaring the block takes the keys away from the CLI.** While the conffile
+> is in use, `tailscale set --accept-routes` answers `can't reconfigure
+> tailscaled when using a config file; config file is locked`. That is the point
+> — it is what makes the domain visible to `plan` and capturable by `sync` — but
+> it does mean the CLI is no longer the place to change these. Remove the block
+> and dasik takes both files away, and the CLI works again.
+
+**Unset is not the same as declared-false.** A field left out leaves the
+preference to tailscale; a field set to `false` is dasik's, and locked. So
+declare what you mean to own, not everything.
+
+**There is no `auth_key`.** The conffile accepts one, but it is a tailnet
+credential and this config is meant for Git — `dasik save` commits it. Logging in
+stays a manual `tailscale up`: the node key in
+`/var/lib/tailscale/tailscaled.state` is that machine's identity in the tailnet,
+so it is not portable between machines even in principle.
+
+`advertise_routes` entries need an explicit prefix length: `"10.0.0.0/8"`, never
+`"10.0.0.0"`. tailscaled parses them with `netip.ParsePrefix`, which requires it,
+and refuses to start on a file it cannot parse.
+
+The underlying schema is `alpha0` and undocumented; every key dasik emits was
+verified against the binary (`scripts/vmtest/guest-tsspike.sh`). Three of the
+obvious guesses are wrong — the conffile says `RunSSHServer`, not `SSH`, and
+`AllowLANWhileUsingExitNode`, not the `ExitNodeAllowLANAccess` that
+`tailscale debug prefs` reports — which is why the map is explicit rather than
+mechanical case conversion.
 
 ## `disks`
 
@@ -1139,6 +1203,15 @@ One config exercising every section — validate a copy with `dasik check`
   "etc_environment": ["EDITOR=nvim", "MOZ_ENABLE_WAYLAND=1"],
   "files": [{ "path": "/etc/crypttab", "content": "swap LABEL=cryptswap /dev/urandom swap,cipher=aes-xts-plain64\n" }],
   "zram": { "zram0": { "zram-size": "min(ram / 2, 8192)", "swap-priority": 100 } },
+  "tailscale": {
+    "accept_routes": true,
+    "accept_dns": true,
+    "ssh": false,
+    "shields_up": false,
+    "advertise_routes": ["192.168.1.0/24"],
+    "operator": "andres",
+    "netfilter_mode": "on"
+  },
   "bluetooth": { "enable": true, "package": "bluez", "in_initramfs": true },
   "hardware_acceleration": { "enable": true, "install_codecs": true },
   "kvm": { "install": true },

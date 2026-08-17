@@ -67,6 +67,9 @@ def _dispatch(required_by=(), sg_error=None):
             return MagicMock(stdout=_sg_output(args[1:]).encode(), returncode=0)
         if args and args[0] == "-Qi":
             return _qi(required_by)
+        if args and args[0] == "-T":
+            # what is NOT satisfied: nothing here has a provider
+            return MagicMock(stdout="\n".join(args[1:]).encode(), returncode=127)
         return MagicMock(stdout=b"", returncode=0)
     return run
 

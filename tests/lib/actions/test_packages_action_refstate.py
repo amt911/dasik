@@ -26,6 +26,9 @@ def _action(manifest=None, installed=("config-saver",)):
     )
     a._installed_all = MagicMock(return_value=set(installed))  # type: ignore
     a.actual = MagicMock(return_value=set(installed))          # type: ignore
+    # Nothing is reached through a provider here. Stubbed like the two above,
+    # so the probe never asks the machine running the suite.
+    a._satisfied = MagicMock(return_value=set())               # type: ignore
     return a
 
 

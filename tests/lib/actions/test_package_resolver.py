@@ -19,15 +19,28 @@ from dasik.lib.exceptions.exceptions import ConfigValidationError
 from dasik.lib.target.target import Target
 
 
-def _pacman_db(repo=b"", groups=b""):
-    """Fake Command.execute: -Slq -> repo names, -Sgq -> group names."""
+def _pacman_db(repo=b"", groups=b"", provides=()):
+    """Fake Command.execute: -Slq -> repo names, -Sgq -> group names.
+
+    ``-Sp <name>`` is pacman resolving a name the way an install would, which
+    honours ``Provides``: it succeeds for *provides* and fails otherwise.
+    """
     from unittest.mock import MagicMock
 
+    calls = []
+
     def fake(cmd, args=None, *a, **kw):
-        flag = (args or [None])[0]
+        args = list(args or [])
+        calls.append([cmd, *args])
+        flag = args[0] if args else None
+        if flag == "-Sp":
+            wanted = args[-1]
+            return MagicMock(stdout=b"", stderr=b"",
+                             returncode=0 if wanted in provides else 1)
         out = repo if flag == "-Slq" else groups if flag == "-Sgq" else b""
         return MagicMock(stdout=out, stderr=b"", returncode=0)
 
+    fake.calls = calls  # type: ignore[attr-defined]
     return fake
 
 
@@ -51,10 +64,11 @@ def _aur_http(found):
     return http_get
 
 
-def _resolve(names, repo=b"", groups=b"", aur_found=(), http_get=None):
+def _resolve(names, repo=b"", groups=b"", aur_found=(), http_get=None,
+             provides=(), pacman=None):
     r = PackageResolver(http_get=http_get or _aur_http(aur_found))
-    with patch("dasik.lib.actions.package_resolver.Command.execute",
-               _pacman_db(repo=repo, groups=groups)):
+    pacman = pacman or _pacman_db(repo=repo, groups=groups, provides=provides)
+    with patch("dasik.lib.actions.package_resolver.Command.execute", pacman):
         return r.resolve(names, target=Target(root="/"))
 
 
@@ -94,6 +108,37 @@ def test_typo_absent_everywhere_is_unknown_not_unavailable():
     assert res.unknown == ["antigravity"]
     assert res.unavailable == []
     assert res.ok is False
+
+
+def test_a_name_that_only_exists_as_a_provides_resolves_to_repo():
+    """`iptables-nft` stopped being a package: iptables in core carries
+    `Provides: iptables-nft` and `Replaces: iptables-nft`. `pacman -Slq` lists
+    NAMES, so dasik called it sourceless and skipped it —
+
+        [WARNING] packages skipped because no source was found: …, iptables-nft
+
+    while `pacman -S iptables-nft` installs the provider without blinking.
+    """
+    res = _resolve(["iptables-nft"], repo=b"iptables\n", provides=["iptables-nft"])
+    assert res.repo == ["iptables-nft"]
+    assert res.unknown == [] and res.aur == []
+
+
+def test_a_name_nothing_provides_is_still_unknown():
+    """The probe must not turn every typo into a package."""
+    res = _resolve(["fierfox"], repo=b"firefox\n", provides=[])
+    assert res.unknown == ["fierfox"]
+    assert res.repo == []
+
+
+def test_the_provides_probe_only_runs_for_names_nothing_else_claimed():
+    """One pacman call per leftover name is fine; one per declared package is
+    not — a 300-package config would pay it 300 times for nothing."""
+    pacman = _pacman_db(repo=b"firefox\n", provides=["iptables-nft"])
+    res = _resolve(["firefox", "yay", "iptables-nft"], aur_found=["yay"], pacman=pacman)
+    probed = [c[-1] for c in pacman.calls if c[1:2] == ["-Sp"]]
+    assert probed == ["iptables-nft"]
+    assert res.repo == ["firefox", "iptables-nft"] and res.aur == ["yay"]
 
 
 def test_aur_network_failure_marks_unavailable_not_unknown():

@@ -202,8 +202,34 @@ class PackageResolver:
             return res
 
         for name in aur_candidates:
-            (res.aur if name in aur_found else res.unknown).append(name)
+            if name in aur_found:
+                res.aur.append(name)
+            elif self._is_provided(name, target):
+                res.repo.append(name)
+            else:
+                res.unknown.append(name)
         return res
+
+    def _is_provided(self, name: str, target) -> bool:
+        """Whether pacman can satisfy *name* the way an install would.
+
+        ``pacman -Slq`` lists package NAMES, so a name that survives only as a
+        ``Provides`` is absent from it — ``iptables-nft``, which ``iptables`` in
+        core both provides and replaces, was reported as having no source at all
+        while ``pacman -S iptables-nft`` installs the provider without blinking.
+
+        Ask pacman rather than reimplement provider selection. ``-p`` prints and
+        downloads nothing; ``--noconfirm`` takes the first provider instead of
+        waiting for an answer nobody can give inside a chroot. Only names that
+        missed repo, group, Git source AND the AUR get here, so this costs one
+        call per leftover, not one per declared package.
+        """
+        try:
+            result = Command.execute("pacman", ["-Sp", "--noconfirm", name],
+                                     target=target)
+        except Exception:      # nosec B110 - no pacman, or it refused: not provided
+            return False
+        return getattr(result, "returncode", 1) == 0
 
 
 def _default_http_get(url: str) -> bytes:

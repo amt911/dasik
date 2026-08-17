@@ -77,7 +77,8 @@ class AurInstaller:
 
     # -- entry point ------------------------------------------------------
 
-    def install(self, pkgs: List[str], *, helper: "str | None" = None) -> None:
+    def install(self, pkgs: List[str], *, helper: "str | None" = None,
+                fragment_is_ours: bool = False) -> None:
         """Install *pkgs*. *helper* is a declared yay/paru chosen by the caller
         from the full desired set — it may be pending in *pkgs* (build it) or
         already installed by an earlier partial apply (reuse it). ``None`` falls
@@ -91,7 +92,7 @@ class AurInstaller:
         if helper is not None and helper not in self.HELPERS:
             raise CommandExecutionError(f"Unsupported AUR helper {helper!r}")
         selected = helper or next((h for h in self.HELPERS if h in pkgs), None)
-        created = self._ensure_prerequisites()
+        created = self._ensure_prerequisites(fragment_is_ours=fragment_is_ours)
         sudoers_path = self._target.path(f"/etc/sudoers.d/{self.BUILD_USER}")
         try:
             if selected is not None:
@@ -104,10 +105,16 @@ class AurInstaller:
 
     # -- prerequisites / cleanup -----------------------------------------
 
-    def _ensure_prerequisites(self) -> bool:
+    def _ensure_prerequisites(self, fragment_is_ours: bool = False) -> bool:
         """Install base-devel + git and ensure the build user (+ passwordless
         sudo so makepkg can sync repo deps). Returns True if THIS run created the
-        user (so cleanup only removes a user we made)."""
+        user (so cleanup only removes a user we made).
+
+        *fragment_is_ours* says the caller wrote the sudoers fragment itself and
+        still needs it — PkgbuildGitInstaller, when a git package's makedepends
+        sends it through here. Without it the leftover warning fires on every
+        such build and blames a previous run that never happened.
+        """
         self._run("pacman", ["--noconfirm", "--needed", "-S", "base-devel", "git"],
                   check=True)
         id_check = self._run("id", [self.BUILD_USER], check=False)
@@ -116,7 +123,7 @@ class AurInstaller:
             self._run("useradd", ["-m", "-r", "-s", "/bin/bash", self.BUILD_USER],
                       check=True)
         sudoers_path = self._target.path(f"/etc/sudoers.d/{self.BUILD_USER}")
-        if os.path.exists(sudoers_path):
+        if os.path.exists(sudoers_path) and not fragment_is_ours:
             # `_cleanup` runs in a `finally`, which covers an exception but not
             # SIGKILL, a full disk or the power going out. What survives that is
             # a passwordless-sudo account nobody looks at again: the sudo domain

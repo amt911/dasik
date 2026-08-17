@@ -1,6 +1,6 @@
 {
   "metadata": {
-    "note": "A package_sources (pkgbuild-git) package whose makedepends lives in the AUR, not in any repository. `makepkg -s` syncs dependencies with pacman and therefore cannot get it: before dasik installed such a dependency itself the build died with `error: target not found: font-patcher` and took the whole apply with it. The PKGBUILD is the real one that hit this (amt911/ttf-atkinson-hyperlegible-nerd, `makedepends = font-patcher`). For the QEMU VM harness (scripts/vmtest/qemu.sh install-driven). NOT for real hardware. Needs network: it clones from GitHub and builds font-patcher from the AUR."
+    "note": "Two things at once. (1) A package_sources (pkgbuild-git) package whose makedepends lives in the AUR, not in any repository: `makepkg -s` syncs dependencies with pacman and therefore cannot get it, so before dasik installed such a dependency itself the build died with `error: target not found: font-patcher` and took the whole apply with it. The PKGBUILD is the real one that hit this (amt911/ttf-atkinson-hyperlegible-nerd, `makedepends = font-patcher`). (2) `iptables-nft`, which is no longer a package at all -- iptables in core carries Provides/Replaces for it. `pacman -Slq` lists NAMES, so dasik reported it as having no source and skipped it, while `pacman -S iptables-nft` installs the provider. Both must converge here. For the QEMU VM harness (scripts/vmtest/qemu.sh install-driven). NOT for real hardware. Needs network: it clones from GitHub and builds font-patcher from the AUR."
   },
   "disks": {
     "disks": [
@@ -39,7 +39,8 @@
     "python",
     "python-pydantic",
     "python-colorama",
-    "ttf-atkinson-hyperlegible-next-nerd-git"
+    "ttf-atkinson-hyperlegible-next-nerd-git",
+    "iptables-nft"
   ],
   "package_sources": {
     "ttf-atkinson-hyperlegible-next-nerd-git": {

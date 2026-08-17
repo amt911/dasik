@@ -646,6 +646,11 @@ def _git_pkg_plan(installed, managed, source_ref=None, declared=True):
                                                   manifest=manifest))
     action._installed_all = MagicMock(return_value=set(installed))
     action.actual = MagicMock(return_value=set(installed))
+    # Nothing here is satisfied by a provider. Stubbed rather than left to the
+    # real pacman: the probe would otherwise ask the DEVELOPER's machine, where
+    # config-saver happens to be installed, and the test would pass or fail
+    # depending on whose laptop ran it.
+    action._satisfied = MagicMock(return_value=set())
     return [(c.op.name, c.item, c.reason) for c in action.plan(managed=list(managed))]
 
 

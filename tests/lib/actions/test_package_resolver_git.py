@@ -20,9 +20,17 @@ _SRC = {
 }
 
 
-def _pacman_db(repo=b"", groups=b""):
+def _pacman_db(repo=b"", groups=b"", provides=()):
+    """``-Slq`` -> repo names, ``-Sgq`` -> groups, ``-Sp <name>`` -> does pacman
+    resolve this name (honouring ``Provides``)? Nothing provides anything here
+    unless a test says so: a double that answered 0 to every command would make
+    the resolver's provides probe succeed for typos too."""
     def fake(cmd, args=None, *a, **kw):
-        flag = (args or [None])[0]
+        args = list(args or [])
+        flag = args[0] if args else None
+        if flag == "-Sp":
+            return MagicMock(stdout=b"", stderr=b"",
+                             returncode=0 if args[-1] in provides else 1)
         out = repo if flag == "-Slq" else groups if flag == "-Sgq" else b""
         return MagicMock(stdout=out, stderr=b"", returncode=0)
     return fake

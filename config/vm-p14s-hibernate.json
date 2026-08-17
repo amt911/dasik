@@ -1,0 +1,100 @@
+{
+  "metadata": {
+    "note": "VM rehearsal of the ThinkPad P14s Gen 2 boot chain as it is declared in the personal config repo: a 2GiB ESP, an encrypted LUKS swap sized for hibernation, and an encrypted btrfs root carrying the full ten-subvolume layout shared with the desktop. Unlike config/vm-laptop-hibernate.json this declares NO rd.luks.name at all — the point is to prove KernelCmdlineAction derives one for BOTH encrypted partitions (the swap included, which is what makes resume possible) from `resume=` alone. Both volumes carry luks_options token-timeout=10s, the real machine's fallback-to-passphrase setting, to prove it does not break the passphrase path. unlock_fido2 is FALSE here and true on the real machine: systemd-cryptenroll runs with check=True, so enrolling a key that is not plugged in aborts the apply — FIDO2 can only be verified on real hardware. Public test passphrase 'hibpass' on both devices; autologins root over serial. Swap is 4GiB against the harness's 4096 MiB of RAM (the real machine's 32GiB does not fit in a VM image). NOT for real hardware.",
+    "sizing": "DASIK_VM_RAM=4096 DASIK_VM_DISK=16G"
+  },
+  "hostname": "dasik-p14s-hib",
+  "timezone": {"region": "Etc", "city": "UTC"},
+  "locales": {
+    "selected_locales": ["en_US.UTF-8 UTF-8"],
+    "desired_locale": "en_US.UTF-8",
+    "desired_tty_layout": "us"
+  },
+  "network": {"type": "systemd-networkd"},
+  "bootloader": "sd-boot",
+  "initramfs": "dracut",
+  "enable_microcode": false,
+  "enable_trim": true,
+  "packages": [
+    "base", "linux", "linux-firmware", "btrfs-progs",
+    "python", "python-pydantic", "python-colorama"
+  ],
+  "disks": {
+    "disks": [
+      {
+        "device": "/dev/vda",
+        "partition_table": "gpt",
+        "wipe_disk": true,
+        "partitions": [
+          {
+            "label": "esp",
+            "size": "2GiB",
+            "filesystem": "fat32",
+            "partition_type": "esp",
+            "mountpoint": "/boot",
+            "format": true
+          },
+          {
+            "label": "swap",
+            "size": "4GiB",
+            "filesystem": "swap",
+            "partition_type": "linux-swap",
+            "mountpoint": null,
+            "format": true,
+            "encrypt": true,
+            "luks_name": "cryptswap",
+            "luks_password": "hibpass",
+            "unlock_fido2": false,
+            "luks_options": ["token-timeout=10s"]
+          },
+          {
+            "label": "root",
+            "size": "rest",
+            "filesystem": "btrfs",
+            "partition_type": "linux",
+            "mountpoint": null,
+            "format": true,
+            "encrypt": true,
+            "luks_name": "cryptroot",
+            "luks_password": "hibpass",
+            "unlock_fido2": false,
+            "luks_options": ["token-timeout=10s"],
+            "mount_options": ["compress-force=zstd:3"],
+            "btrfs_subvolumes": [
+              {"name": "@", "mountpoint": "/"},
+              {"name": "@srv", "mountpoint": "/srv"},
+              {"name": "@snapshots", "mountpoint": "/.snapshots"},
+              {"name": "@home", "mountpoint": "/home"},
+              {"name": "@var_lib_containers", "mountpoint": "/var/lib/containers"},
+              {"name": "@var_lib_libvirt", "mountpoint": "/var/lib/libvirt"},
+              {"name": "@var_cache", "mountpoint": "/var/cache"},
+              {"name": "@var_log", "mountpoint": "/var/log"},
+              {"name": "@var_tmp", "mountpoint": "/var/tmp"},
+              {"name": "@var_spool", "mountpoint": "/var/spool"}
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "kernel_cmdline": [
+    "console=ttyS0,115200",
+    "resume=/dev/mapper/cryptswap"
+  ],
+  "zram": {
+    "zram0": {
+      "swap-priority": "100",
+      "zram-size": "min(ram / 2, 8192)"
+    }
+  },
+  "files": [
+    {
+      "path": "/etc/systemd/system/serial-getty@ttyS0.service.d/autologin.conf",
+      "content": "[Service]\nExecStart=\nExecStart=-/sbin/agetty --autologin root --noclear --keep-baud 115200,38400,9600 %I $TERM\n"
+    },
+    {
+      "path": "/etc/systemd/logind.conf.d/10-dasik.conf",
+      "content": "# Managed by dasik. Mirrors the real machine: closing the lid suspends and\n# then hibernates, which only works because the swap is LUKS with a persistent\n# key. HibernateDelaySec is deliberately unset — systemd's default sets the RTC\n# alarm from the battery discharge rate.\n[Login]\nHandleLidSwitch=suspend-then-hibernate\nHandleLidSwitchExternalPower=suspend\n"
+    }
+  ]
+}

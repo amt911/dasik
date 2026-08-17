@@ -122,6 +122,13 @@ def _v3(cfg, actual, ondisk=None):
     # live directory/crypttab discovery so they don't read the real /etc.
     a._discover_section = lambda directory: []
     a._discover_crypttab = lambda: None
+    # …and _discover_paths, which arrived later with the sshd/samba capture and
+    # was never added here. The context is root="/", so it walks the REAL
+    # /etc/ssh/sshd_config.d and /etc/samba: these tests then passed or failed
+    # according to what the machine running them happened to have installed.
+    # Green on a developer box with samba, red on a CI runner whose sshd drop-in
+    # says "…Authentication no" — and red on main for exactly that reason.
+    a._discover_paths = lambda: []
     return a
 
 

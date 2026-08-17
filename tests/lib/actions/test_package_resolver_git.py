@@ -10,6 +10,7 @@ from unittest.mock import patch, MagicMock
 
 from dasik.lib.actions.package_resolver import PackageResolver, ResolvedGitPackage
 from dasik.lib.target.target import Target
+from tests.support.pacman import pacman_double
 
 
 _SRC = {
@@ -21,19 +22,13 @@ _SRC = {
 
 
 def _pacman_db(repo=b"", groups=b"", provides=()):
-    """``-Slq`` -> repo names, ``-Sgq`` -> groups, ``-Sp <name>`` -> does pacman
-    resolve this name (honouring ``Provides``)? Nothing provides anything here
-    unless a test says so: a double that answered 0 to every command would make
-    the resolver's provides probe succeed for typos too."""
-    def fake(cmd, args=None, *a, **kw):
-        args = list(args or [])
-        flag = args[0] if args else None
-        if flag == "-Sp":
-            return MagicMock(stdout=b"", stderr=b"",
-                             returncode=0 if args[-1] in provides else 1)
-        out = repo if flag == "-Slq" else groups if flag == "-Sgq" else b""
-        return MagicMock(stdout=out, stderr=b"", returncode=0)
-    return fake
+    """The shared strict double (tests/support/pacman.py)."""
+    return pacman_double(
+        repo=repo.decode().split() if isinstance(repo, bytes) else list(repo),
+        groups={g: [] for g in (groups.decode().split()
+                                if isinstance(groups, bytes) else groups)},
+        provided=list(provides),
+    )
 
 
 def _aur_http(found):

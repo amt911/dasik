@@ -9,6 +9,8 @@ the plan is empty, and an undeclared-but-installed package is never removed.
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from tests.support.pacman import pacman_double
+
 from hypothesis import given
 from hypothesis import strategies as st
 
@@ -26,11 +28,10 @@ def _action_with_system(desired, installed, explicit):
     -Qq) and `explicit` (pacman -Qqe). Returns (action, patcher-context)."""
     action = PackagesAction(sorted(desired), context=SimpleNamespace(target=object()))
 
-    def fake_execute(cmd, args, *a, **kw):
-        # args is ["-Qq"] (all installed) or ["-Qqe"] (explicitly installed).
-        flag = args[0] if args else ""
-        items = explicit if flag == "-Qqe" else installed
-        return SimpleNamespace(stdout="\n".join(sorted(items)) + "\n")
+    # Nothing is satisfied through a provider here, and nothing is a group:
+    # the double says so rather than leaving those questions to a catch-all.
+    fake_execute = pacman_double(installed=sorted(installed),
+                                 explicit=sorted(explicit))
 
     return action, patch(
         "dasik.lib.actions.packages_action.Command.execute",

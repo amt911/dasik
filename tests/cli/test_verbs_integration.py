@@ -12,6 +12,7 @@ import json
 from unittest.mock import MagicMock, patch
 
 from dasik.__main__ import main
+from tests.support.pacman import pacman_double
 
 
 # PackagesAction now resolves each declared name's origin against the target's
@@ -24,32 +25,31 @@ _REPO_DB = b"git\nhtop\nbluez\nbluez-utils\n"
 def _fake_exec(table=None):
     """Command.execute / subprocess.run replacement.
 
-    `table` maps (cmd, args[0]) -> stdout bytes; default empty stdout, rc 0.
+    `table` maps (cmd, args[0]) -> stdout bytes and wins when it has an entry.
+    Everything pacman is otherwise routed to the shared strict double, so a
+    query nobody modelled raises instead of coming back as "" — which, for
+    `pacman -T`, would mean "everything is already installed" and silence every
+    plan in this file.
     """
     table = table or {}
+    strict = pacman_double()
 
     def run(cmd, args=None, *a, **k):
-        if isinstance(cmd, (list, tuple)):          # subprocess.run(["arch-chroot", ...])
+        if isinstance(cmd, (list, tuple)):          # subprocess.run(["arch-chroot", …])
             key = (cmd[0], cmd[1] if len(cmd) > 1 else "")
         else:                                       # Command.execute("pacman", ["-Qqe"])
             key = (cmd, (args or [""])[0] if args else "")
-        out = table.get(key, b"")
-        # `pacman -T` prints what is NOT satisfied, so an empty default reads as
-        # "everything is already installed" and every plan comes out silent.
-        # Nothing in these fixtures is reached through a provider.
-        if not out and key == ("pacman", "-T"):
-            out = "\n".join((args or [])[1:]).encode()
+        if key in table:
+            return MagicMock(stdout=table[key], stderr=b"", returncode=0)
+        if key[0] == "pacman":
+            return strict(cmd, args)
         # A real genfstab always emits fstab content; base install now aborts on
         # an empty one (a mountless /etc/fstab would be non-bootable), so the fake
         # must mimic that rather than the impossible empty default.
-        if not out and key[0] == "genfstab":
-            out = b"UUID=test-root / ext4 rw,relatime 0 1\n"
-        # Default the package-resolver's repo-DB read so declared packages resolve
-        # as repo (tests may override via `table`).
-        if not out and key == ("pacman", "-Slq"):
-            out = _REPO_DB
-        return MagicMock(stdout=out, stderr=b"", returncode=0)
-
+        if key[0] == "genfstab":
+            return MagicMock(stdout=b"UUID=t / ext4 rw 0 1\n", stderr=b"",
+                             returncode=0)
+        return MagicMock(stdout=b"", stderr=b"", returncode=0)
     return run
 
 
@@ -144,18 +144,16 @@ def test_apply_expands_bluetooth_toggle_into_packages(tmp_path):
     # clobber the packages-domain install we're asserting on.
     captured = {"installed": []}
 
+    strict = pacman_double(explicit=[], installed=[],
+                           repo=_REPO_DB.decode().split())
+
     def run(cmd, args=None, *a, **k):
-        if cmd == "pacman" and args and args[0] == "-Qqe":
-            return MagicMock(stdout=b"", stderr=b"", returncode=0)
-        if cmd == "pacman" and args and args[0] == "-T":     # unsatisfied deps
-            return MagicMock(stdout="\n".join(args[1:]).encode(),
-                             stderr=b"", returncode=127)
-        if cmd == "pacman" and args and args[0] == "-Slq":   # resolver repo DB
-            return MagicMock(stdout=_REPO_DB, stderr=b"", returncode=0)
         if cmd == "genfstab":                       # base install aborts on empty fstab
             return MagicMock(stdout=b"UUID=t / ext4 rw 0 1\n", stderr=b"", returncode=0)
         if cmd == "pacman" and args and "-S" in args:
             captured["installed"].extend(args)
+        if cmd == "pacman":
+            return strict(cmd, args)
         return MagicMock(stdout=b"", stderr=b"", returncode=0)
 
     with patch("dasik.lib.command_worker.command_worker.Command.execute", side_effect=run), \

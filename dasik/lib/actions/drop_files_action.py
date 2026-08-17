@@ -37,6 +37,32 @@ _SECTIONS = [
 ]
 _ENV_PATH = "/etc/environment"
 _CRYPTTAB_PATH = "/etc/crypttab"
+
+# Issue #300. A file written under here is read by systemd, which caches what it
+# has already parsed — so on a LIVE target the file lands, the next plan is
+# silent, and the daemon carries on with the old configuration. `systemctl
+# restart` does NOT reload unit files, so restarting the unit is not a
+# workaround; only a daemon-reload is.
+_SYSTEMD_ETC = "/etc/systemd/"
+
+# Where a daemon-reload is NOT the whole story: prefix -> (what reads it, what
+# the user has to run). dasik never runs these itself — restarting logind can end
+# the graphical session, and reloading the network stack can drop the connection
+# the apply is travelling over. Say it, do not do it.
+_SYSTEMD_FOLLOWUP = (
+    ("/etc/systemd/logind.conf.d/", "systemd-logind",
+     "systemctl restart systemd-logind"),
+    ("/etc/systemd/logind.conf", "systemd-logind",
+     "systemctl restart systemd-logind"),
+    ("/etc/systemd/system.conf.d/", "systemd itself (PID 1)",
+     "systemctl daemon-reexec"),
+    ("/etc/systemd/network/", "systemd-networkd", "networkctl reload"),
+    ("/etc/systemd/resolved.conf.d/", "systemd-resolved",
+     "systemctl restart systemd-resolved"),
+)
+
+# /etc/systemd/system/<unit>.d/<file>.conf — the unit whose drop-in changed.
+_UNIT_DROPIN_RE = re.compile(r"^/etc/systemd/(?:system|user)/([^/]+)\.d/")
 _FILES_DOMAIN = "files"
 
 # Two more places a machine keeps admin-written configuration that no
@@ -533,6 +559,45 @@ class DropFilesAction(AbstractAction):
             path = self._abs(canonical)
             if os.path.exists(path):
                 os.remove(path)
+
+        # A file systemd reads is not configuration until systemd re-reads it.
+        self._reload_systemd(writes + deletes)
+
+    # -- systemd sees a file only after a reload (issue #300) ----------- #
+
+    @staticmethod
+    def _systemd_followup(canonical: str) -> Optional[str]:
+        """What a daemon-reload will NOT do for *canonical*, or None."""
+        for prefix, reader, command in _SYSTEMD_FOLLOWUP:
+            if canonical.startswith(prefix):
+                return (f"{reader} re-reads this on restart, not on "
+                        f"daemon-reload — run `{command}` when convenient")
+        match = _UNIT_DROPIN_RE.match(canonical)
+        if match:
+            unit = match.group(1)
+            return (f"systemd has re-read it, but a running {unit} keeps its old "
+                    f"configuration until `systemctl restart {unit}`")
+        return None
+
+    def _reload_systemd(self, touched: List[str]) -> None:
+        """Reload systemd when a file it reads changed on a live target.
+
+        Skipped for an install target: there is no systemd running under /mnt to
+        reload, and its first boot reads every unit and drop-in there is.
+        """
+        target = self._target()
+        if target is None or target.is_chroot:
+            return
+        paths = sorted({p for p in touched if p.startswith(_SYSTEMD_ETC)})
+        if not paths:
+            return
+        Command.execute("systemctl", ["daemon-reload"], target=target)
+        for canonical in paths:
+            followup = self._systemd_followup(canonical)
+            if followup:
+                run_logger.get().warning(
+                    f"{canonical} changed and systemd was reloaded",
+                    detail=followup)
 
     def _write_file(self, canonical: str, content: str, modes: Dict[str, int]) -> None:
         """Write a managed file by its canonical path, replacing whatever is in

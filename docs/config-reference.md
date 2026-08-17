@@ -112,7 +112,7 @@ written into those directories instead of inlined
 | `pacman` | object | `/etc/pacman.conf` options + multilib |
 | `udev_rules`, `modprobe_conf`, `modules_load`, `sysctl_d`, `tmpfiles_d`, `sddm_conf_d`, `profile_d` | list | Local `/etc/*.d` snippet files |
 | `etc_environment` | list | `/etc/environment` lines |
-| `files` | list | Arbitrary `/etc/...` files (verbatim) |
+| `files` | list | Arbitrary `/etc/...` files (verbatim). Anything under `/etc/systemd/` triggers a `systemctl daemon-reload` on a live target — see below |
 | `etc_tree` | string | Directory mirroring `/etc`; every file under it becomes a `files` entry ([Config splitting](wiki/Config-splitting.md)) |
 | `etc_tree_modes` | object | Tree-relative path → octal mode, for the modes Git cannot carry (`0600` on a keyfile) |
 | `home_tree` | string | Directory mirroring users' homes (`<tree>/<user>/<path>`); every file becomes a `home_files` entry |
@@ -343,6 +343,32 @@ firewalld converges as a file (`/etc/firewalld/zones/public.xml`, owned whole);
 ufw converges through its own CLI with `ufw status` as the read side.
 
 ---
+
+## Files systemd reads
+
+A file written under `/etc/systemd/` — through `files` or `etc_tree` — is not
+configuration until systemd re-reads it. On a **live** target (`--target /`)
+dasik therefore runs `systemctl daemon-reload` after any apply that wrote or
+removed one. Install targets are skipped: there is no systemd running under
+`/mnt`, and its first boot reads every unit and drop-in there is.
+
+`systemctl restart` does **not** reload unit files, so restarting the unit
+yourself was never a workaround — which is why this was a real bug (issue #300)
+rather than a documentation gap.
+
+A reload is not always the whole story, and dasik says so rather than acting:
+
+| What changed | What a reload does not do |
+| --- | --- |
+| `…/<unit>.d/*.conf` | a **running** unit keeps its old configuration until `systemctl restart <unit>` |
+| `logind.conf.d/`, `resolved.conf.d/` | those daemons re-read on restart, not on reload |
+| `system.conf.d/` | needs `systemctl daemon-reexec` |
+| `network/` | needs `networkctl reload` |
+| `sleep.conf.d/` | nothing — `systemd-sleep` reads it each time it runs |
+
+dasik never restarts a daemon for you. Restarting `systemd-logind` can end the
+graphical session, and reloading the network stack can drop the connection the
+apply is travelling over. It reloads, then names what is left to do.
 
 ## `tailscale`  *(sync ✓)*
 

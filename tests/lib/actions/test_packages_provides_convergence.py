@@ -21,29 +21,13 @@ from dasik.lib.actions.action_context import ActionContext
 from dasik.lib.actions.packages_action import PackagesAction
 from dasik.lib.state.change import Op
 from dasik.lib.target.target import Target
+from tests.support.pacman import pacman_double
 
 
 def _pacman(installed=(), explicit=(), satisfied=()):
-    """Fake Command.execute for the queries plan()/actual() make.
-
-    ``-T`` prints what is NOT satisfied, which is how pacman answers it.
-    """
-    def fake(cmd, args=None, *a, **kw):
-        args = list(args or [])
-        flag = args[0] if args else None
-        if flag == "-Qq":
-            out = "\n".join(installed)
-        elif flag == "-Qqe":
-            out = "\n".join(explicit)
-        elif flag == "-T":
-            asked = args[1:]
-            out = "\n".join(n for n in asked if n not in satisfied)
-        elif flag == "-Sg":
-            out = ""
-        else:
-            out = ""
-        return MagicMock(stdout=out.encode(), stderr=b"", returncode=0)
-    return fake
+    """The shared strict double (tests/support/pacman.py)."""
+    return pacman_double(installed=list(installed), explicit=list(explicit),
+                         satisfied=list(satisfied))
 
 
 def _action(names):

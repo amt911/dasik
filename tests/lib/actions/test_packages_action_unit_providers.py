@@ -17,6 +17,7 @@ from unittest.mock import MagicMock, patch
 from dasik.lib.actions.action_context import ActionContext
 from dasik.lib.actions.packages_action import PackagesAction
 from dasik.lib.target.target import Target
+from tests.support.pacman import pacman_double
 
 
 def _ctx(root: str = "/") -> ActionContext:
@@ -28,19 +29,28 @@ def _probes(explicit=b"", installed=None, enabled=b"", fragments=b"", owners=b""
     """Fake `Command.execute` answering each probe import_state makes."""
     installed = explicit if installed is None else installed
 
+    strict = pacman_double(
+        explicit=explicit.decode().split(), installed=installed.decode().split(),
+        owners={}, required_by={},
+    )
+
     def fake(cmd, args=None, *a, **kw):
         args = list(args or [])
         head = args[0] if args else ""
         if cmd in fail or head in fail:
             raise OSError(f"no {cmd}")
         if cmd == "pacman":
-            out = {"-Qqe": explicit, "-Qq": installed, "-Qqm": b"",
-                   "-Qqo": owners, "-Qi": base_info}.get(head, b"")
-        elif cmd == "systemctl":
+            # -Qqo/-Qi answers are canned byte blobs in these fixtures; anything
+            # else goes to the strict double, which refuses what it cannot model.
+            if head == "-Qqo":
+                return MagicMock(stdout=owners, stderr=b"", returncode=0)
+            if head == "-Qi":
+                return MagicMock(stdout=base_info, stderr=b"", returncode=0)
+            return strict(cmd, args)
+        if cmd == "systemctl":
             out = {"list-unit-files": enabled, "show": fragments}.get(head, b"")
-        else:
-            out = b""
-        return MagicMock(stdout=out, stderr=b"", returncode=0)
+            return MagicMock(stdout=out, stderr=b"", returncode=0)
+        return MagicMock(stdout=b"", stderr=b"", returncode=0)
 
     return MagicMock(side_effect=fake)
 

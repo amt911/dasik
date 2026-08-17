@@ -17,31 +17,21 @@ from dasik.lib.actions.package_resolver import (
 )
 from dasik.lib.exceptions.exceptions import ConfigValidationError
 from dasik.lib.target.target import Target
+from tests.support.pacman import pacman_double
 
 
 def _pacman_db(repo=b"", groups=b"", provides=()):
-    """Fake Command.execute: -Slq -> repo names, -Sgq -> group names.
+    """The shared strict double, wearing this file's byte-string signature.
 
-    ``-Sp <name>`` is pacman resolving a name the way an install would, which
-    honours ``Provides``: it succeeds for *provides* and fails otherwise.
+    Delegating rather than hand-rolling is the point: when dasik learns a new
+    pacman query, this file fails loudly instead of answering it with "".
     """
-    from unittest.mock import MagicMock
-
-    calls = []
-
-    def fake(cmd, args=None, *a, **kw):
-        args = list(args or [])
-        calls.append([cmd, *args])
-        flag = args[0] if args else None
-        if flag == "-Sp":
-            wanted = args[-1]
-            return MagicMock(stdout=b"", stderr=b"",
-                             returncode=0 if wanted in provides else 1)
-        out = repo if flag == "-Slq" else groups if flag == "-Sgq" else b""
-        return MagicMock(stdout=out, stderr=b"", returncode=0)
-
-    fake.calls = calls  # type: ignore[attr-defined]
-    return fake
+    return pacman_double(
+        repo=repo.decode().split() if isinstance(repo, bytes) else list(repo),
+        groups={g: [] for g in (groups.decode().split()
+                                if isinstance(groups, bytes) else groups)},
+        provided=list(provides),
+    )
 
 
 def _aur_http(found):

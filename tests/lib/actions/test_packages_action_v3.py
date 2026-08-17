@@ -8,6 +8,7 @@ from dasik.lib.actions.package_resolver import PackageResolution
 from dasik.lib.exceptions.exceptions import CommandExecutionError
 from dasik.lib.state.change import Change, Op
 from dasik.lib.target.target import Target
+from tests.support.pacman import pacman_double
 
 
 def _ctx(root: str = "/") -> ActionContext:
@@ -33,19 +34,20 @@ def _resolution(repo=(), aur=(), groups=(), unknown=(), unavailable=()):
 
 
 def _fake_command_run(stdout: bytes = b"", returncode: int = 0):
-    # Dispatch by pacman flag: -Qqe/-Qq return the given list; -Qqm (foreign/AUR)
-    # returns nothing by default, so these tests keep their "no AUR" assumption
-    # (the aur- prefixing is covered by the dedicated foreign tests below).
+    """The shared strict double, keeping this file's one-list signature.
+
+    -Qqm (foreign/AUR) stays empty so these tests keep their "no AUR"
+    assumption; the aur- prefixing is covered by the dedicated foreign tests.
+    Anything the double does not model raises rather than answering "".
+    """
+    names = stdout.decode().split()
+    strict = pacman_double(installed=names, explicit=names)
+
     def fake(cmd, args=None, *a, **kw):
-        args = list(args or [])
-        flag = args[0] if args else None
-        if flag == "-T":
-            # pacman -T prints what is NOT satisfied. Nothing here is provided
-            # by another package, so every name asked about comes back.
-            return MagicMock(stdout="\n".join(args[1:]).encode(), stderr=b"",
-                             returncode=127 if args[1:] else 0)
-        out = b"" if flag == "-Qqm" else stdout
-        return MagicMock(stdout=out, stderr=b"", returncode=returncode)
+        result = strict(cmd, args)
+        if returncode:
+            result.returncode = returncode
+        return result
     return MagicMock(side_effect=fake)
 
 
@@ -437,18 +439,9 @@ def test_import_state_captures_owned_present_undeclared():
 
 
 def _reason_fake(explicit=b"", installed=b""):
-    """Command.execute fake: -Qqe -> explicit set, -Qq -> all installed."""
-    def run(cmd, args, *a, **k):
-        flag = args[0] if args else ""
-        if flag == "-T":
-            # what is NOT satisfied. Nothing here has a provider, so an empty
-            # answer (= "all satisfied") would silently promote a declared dep
-            # to explicit.
-            return MagicMock(stdout="\n".join(args[1:]).encode(), stderr=b"",
-                             returncode=127 if args[1:] else 0)
-        out = explicit if flag == "-Qqe" else installed if flag == "-Qq" else b""
-        return MagicMock(stdout=out, stderr=b"", returncode=0)
-    return run
+    """The shared strict double: -Qqe -> explicit set, -Qq -> all installed."""
+    return pacman_double(explicit=explicit.decode().split(),
+                         installed=installed.decode().split())
 
 
 def test_parses_reason_for_pacman_objects():
@@ -572,18 +565,10 @@ def test_import_state_reemits_legacy_aur_as_plain_name():
 # --- import_state: foreign (AUR) packages get the aur- prefix ------------- #
 
 def _pacman_dispatch(qqe=b"", qq=b"", qqm=b""):
-    """Fake Command.execute dispatching by the pacman query flag."""
-    def fake(cmd, args=None, *a, **kw):
-        args = list(args or [])
-        flag = args[0] if args else None
-        if flag == "-T":
-            # NOT satisfied: nothing here is reached through a provider, and an
-            # empty answer would read as "already satisfied".
-            return MagicMock(stdout="\n".join(args[1:]).encode(), stderr=b"",
-                             returncode=127 if args[1:] else 0)
-        out = {"-Qqe": qqe, "-Qq": qq, "-Qqm": qqm}.get(flag, b"")
-        return MagicMock(stdout=out, stderr=b"", returncode=0)
-    return fake
+    """The shared strict double with this file's byte-string signature."""
+    return pacman_double(explicit=qqe.decode().split(),
+                         installed=qq.decode().split(),
+                         foreign=qqm.decode().split())
 
 
 def test_import_state_captures_foreign_as_plain_real_names():

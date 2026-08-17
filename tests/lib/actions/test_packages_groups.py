@@ -24,6 +24,7 @@ import pytest
 from dasik.lib.actions.action_context import ActionContext
 from dasik.lib.actions.packages_action import PackagesAction
 from dasik.lib.target.target import Target
+from tests.support.pacman import pacman_double
 
 
 @pytest.fixture(autouse=True)
@@ -59,18 +60,21 @@ def _qi(entries):
 
 
 def _dispatch(required_by=(), sg_error=None):
-    """Route `Command.execute` by the pacman operation being asked for."""
+    """Route `Command.execute` by the pacman operation being asked for.
+
+    Built on the shared strict double, so a pacman query nobody modelled raises
+    instead of coming back as an empty (and therefore meaningful) answer. The
+    `-Sg` failure injection and this file's multi-block `-Qi` shape stay local.
+    """
+    strict = pacman_double(groups=_GROUPS)
+
     def run(cmd, args, **kwargs):
-        if args and args[0] == "-Sg":
-            if sg_error is not None:
-                raise sg_error
-            return MagicMock(stdout=_sg_output(args[1:]).encode(), returncode=0)
+        args = list(args or [])
+        if args and args[0] == "-Sg" and sg_error is not None:
+            raise sg_error
         if args and args[0] == "-Qi":
             return _qi(required_by)
-        if args and args[0] == "-T":
-            # what is NOT satisfied: nothing here has a provider
-            return MagicMock(stdout="\n".join(args[1:]).encode(), returncode=127)
-        return MagicMock(stdout=b"", returncode=0)
+        return strict(cmd, args)
     return run
 
 
@@ -242,12 +246,8 @@ def _actual(desired, explicit, installed=None):
     action._installed_all = MagicMock(
         return_value=set(installed if installed is not None else explicit))
 
-    def run(cmd, args, **kwargs):
-        if args and args[0] == "-Sg":
-            return MagicMock(stdout=_sg_output(args[1:]).encode(), returncode=0)
-        if args and args[0] == "-Qqe":
-            return MagicMock(stdout="\n".join(explicit).encode(), returncode=0)
-        return MagicMock(stdout=b"", returncode=0)
+    run = pacman_double(groups=_GROUPS, explicit=list(explicit),
+                        installed=list(installed if installed is not None else explicit))
 
     with patch("dasik.lib.actions.packages_action.Command.execute",
                side_effect=run):
@@ -286,12 +286,7 @@ def test_ownership_survives_a_sync():
                             ActionContext(target=Target(root="/")))
     action._installed_all = MagicMock(return_value=set(XORG))
 
-    def run(cmd, args, **kwargs):
-        if args and args[0] == "-Sg":
-            return MagicMock(stdout=_sg_output(args[1:]).encode(), returncode=0)
-        if args and args[0] == "-Qqe":
-            return MagicMock(stdout="\n".join(XORG).encode(), returncode=0)
-        return MagicMock(stdout=b"", returncode=0)
+    run = pacman_double(groups=_GROUPS, explicit=list(XORG), installed=list(XORG))
 
     with patch("dasik.lib.actions.packages_action.Command.execute",
                side_effect=run):

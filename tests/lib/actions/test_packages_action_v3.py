@@ -11,6 +11,16 @@ from dasik.lib.target.target import Target
 from tests.support.pacman import pacman_double
 
 
+@pytest.fixture(autouse=True)
+def _aur_closure_satisfiable():
+    """Stub the transitive AUR-closure gate: this file tests the v3 plumbing,
+    not the closure (own suite in test_packages_apply_closure_gate.py) — and
+    the real walk would try the RPC."""
+    with patch("dasik.lib.validation.aur_closure.validate_aur_closure",
+               return_value=[]):
+        yield
+
+
 def _ctx(root: str = "/") -> ActionContext:
     return ActionContext(target=Target(root=root))
 

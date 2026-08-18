@@ -27,6 +27,7 @@ from __future__ import annotations
 from typing import Any, Dict, List
 from .abstract_action import AbstractAction
 from .package_resolver import (
+    AurUnavailableError,
     PackageResolution,
     PackageResolver,
 )
@@ -888,6 +889,58 @@ class PackagesAction(AbstractAction):
             detail="They were not installed; dasik will retry them on the next apply.",
         )
 
+    @staticmethod
+    def _print_resolution_split(resolution: PackageResolution) -> None:
+        """Say where every INSTALL name resolved, before anything runs.
+
+        On 2026-08-18 four lib32 packages silently migrated from multilib to
+        the AUR and nobody could tell until yay ran. One line makes the split
+        visible in every apply log."""
+        counts = (f"{len(resolution.repo)} repo, {len(resolution.groups)} "
+                  f"groups, {len(resolution.git)} git, "
+                  f"{len(resolution.aur)} AUR")
+        aur = ", ".join(resolution.aur) if resolution.aur else "none"
+        print(f"[packages] resolved sources: {counts}; AUR packages: {aur}")
+
+    def _gate_aur_closure(self, aur_installs: "list[str]", target) -> "list[str]":
+        """Validate the transitive dependency closure of the AUR roots.
+
+        A broken chain rooted in a REQUIRED package aborts with every chain in
+        the message; chains rooted only in ``optional: true`` packages degrade
+        to a warning, the roots drop out of the batch and land in
+        ``failed_optional`` (excluded from ``managed_keys``, retried next
+        apply). An unreachable RPC always aborts: we do not know whether the
+        closure is satisfiable, and the helper would need the RPC anyway."""
+        if not aur_installs:
+            return aur_installs
+        from ..validation.aur_closure import validate_aur_closure
+        try:
+            broken = validate_aur_closure(aur_installs, self._resolver, target)
+        except AurUnavailableError as e:
+            raise CommandExecutionError(
+                "Refusing to install — AUR unavailable while validating the "
+                f"dependency closure (existence could not be checked, retry): {e}"
+            ) from e
+        if not broken:
+            return aur_installs
+        rendered = [b.render() for b in broken]
+        if any(b.chain[0] not in self.optional_packages for b in broken):
+            raise CommandExecutionError(
+                "Refusing to install — unsatisfiable AUR dependency chain(s):\n  "
+                + "\n  ".join(rendered)
+            )
+        bad_roots = {b.chain[0] for b in broken}
+        run_logger.get().warning(
+            "optional AUR packages skipped — unsatisfiable dependency chain: "
+            + "; ".join(rendered),
+            detail="They were not installed; dasik will retry them on the next "
+                   "apply.",
+        )
+        self.failed_optional.extend(
+            n for n in aur_installs
+            if n in bad_roots and n not in self.failed_optional)
+        return [n for n in aur_installs if n not in bad_roots]
+
     def apply(self, changes) -> None:
         """Execute a list of ``Change`` objects against the target.
 
@@ -927,6 +980,11 @@ class PackagesAction(AbstractAction):
             repo_installs = resolution.repo + resolution.groups
             aur_installs = resolution.aur
             git_installs = resolution.git
+            self._print_resolution_split(resolution)
+            # The 2026-08-18 gate: a declared AUR package whose transitive dep
+            # chain ends in a name nothing satisfies must abort HERE — with the
+            # chain in the error — not 25 minutes in, mid-yay-transaction.
+            aur_installs = self._gate_aur_closure(aur_installs, target)
 
         required_repo, optional_repo = self._split_optional(repo_installs)
         if required_repo:

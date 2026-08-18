@@ -32,7 +32,11 @@ def _fake_exec(table=None):
     plan in this file.
     """
     table = table or {}
-    strict = pacman_double()
+    # Wire the fake repo DB in for real: without it every declared name missed
+    # `pacman -Slq`, fell to the AUR lookup and silently queried the LIVE aurweb
+    # RPC on every suite run — caught on 2026-08-18 when conftest started
+    # refusing network access.
+    strict = pacman_double(repo=_REPO_DB.decode().split())
 
     def run(cmd, args=None, *a, **k):
         if isinstance(cmd, (list, tuple)):          # subprocess.run(["arch-chroot", …])

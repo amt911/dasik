@@ -37,6 +37,28 @@ def _arch_chroot_present(monkeypatch):
                         lambda name: f"/usr/bin/{name}")
 
 
+@pytest.fixture(autouse=True)
+def _no_network(monkeypatch):
+    """No unit test may touch the network — fail loudly instead of quietly.
+
+    Found the hard way on 2026-08-18: the new AUR-closure gate runs inside
+    ``PackagesAction.apply``, so every apply test whose fake resolution carried
+    an AUR name started querying the real aurweb RPC (and the suite "passed",
+    thirty seconds slower). ``PackageResolver`` binds its ``http_get`` at
+    construction, so patching the module default here catches every resolver a
+    test builds without injecting one. Tests that need the AUR inject their own
+    ``http_get`` (or stub the resolver/validator), which this never intercepts.
+    """
+    def _refuse(url):
+        raise AssertionError(
+            f"unit test tried to reach the network: {url!r}. Inject an "
+            f"http_get / stub the resolver instead."
+        )
+
+    monkeypatch.setattr(
+        "dasik.lib.actions.package_resolver._default_http_get", _refuse)
+
+
 @pytest.fixture
 def tmp_target(tmp_path):
     """A Target rooted at a temporary directory.

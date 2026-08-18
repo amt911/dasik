@@ -47,6 +47,7 @@ def setup_actions() -> None:
     from .home_files_action import HomeFilesAction
     from .config_saver_action import ConfigSaverAction
     from .containers_action import ContainersAction
+    from .libvirt_network_action import LibvirtNetworkAction
     from .sudo_action import SudoAction
     from .packages_action import PackagesAction
     from .systemd_action import SystemdAction
@@ -253,6 +254,15 @@ def setup_actions() -> None:
     register_action(
         action_class=ZramAction,
         config_key='__root__',  # reads root-level `zram` mapping
+        is_optional=True,
+    )
+    # Autostart of libvirt's `default` NAT network. After PackagesAction, which
+    # is what puts /etc/libvirt/qemu/networks/default.xml on the target: the
+    # action links that file and refuses to leave a dangling link, so running it
+    # before libvirt exists would only warn.
+    register_action(
+        action_class=LibvirtNetworkAction,
+        config_key='__root__',  # reads root-level `kvm`
         is_optional=True,
     )
     # Tailscale preferences, as the conffile the daemon reads. After

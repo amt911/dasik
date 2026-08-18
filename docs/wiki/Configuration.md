@@ -282,7 +282,7 @@ each one pulls in: **[Features](Features.md)**.
 | --- | --- | --- |
 | `bluetooth` | `{enable, package="bluez", in_initramfs=false}` | bluez + `bluetooth.service`; `in_initramfs` puts the BT stack in the initramfs so a paired keyboard works at the LUKS prompt (dracut) |
 | `cups` | `{install}` | cups, cups-pdf, system-config-printer, sane, sane-airscan + `cups.socket` |
-| `kvm` | `{install}` | the QEMU/libvirt stack, `libvirtd`/`virtlogd`, nested-virt modprobe conf, `libvirt` group for every user |
+| `kvm` | `{install, default_network}` | the QEMU/libvirt stack, `libvirtd`/`virtlogd`, nested-virt modprobe conf, `libvirt` group for every user; `default_network` autostarts libvirt’s `default` NAT network and is independent of `install` |
 | `firewall` | `{enable, allowed_services, remove_services, rich_rules}` | firewalld + the public zone rules |
 | `wireguard` | `[{name, source, backend="auto", enable=true}]` | the tunnel file placed at `0600` where its backend reads it, plus (wg-quick) `wireguard-tools` and `wg-quick@<name>.service`. See [VPN](VPN.md) |
 | `snapper` | `{enable, configs=[{name,subvolume}]}` | snapper + snap-pac + timeline/cleanup timers |

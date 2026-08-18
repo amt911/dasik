@@ -54,15 +54,40 @@ on.
 ### kvm
 
 ```json
-"kvm": { "install": true }
+"kvm": { "install": true, "default_network": true }
 ```
 
-| Contributes | |
+The two fields are **independent**. `install` is the package/unit toggle;
+`default_network` owns one symlink and nothing else, so a config that carries
+libvirt as literal packages — which is what `sync` captures — can declare the
+autostart without switching to the toggle.
+
+| `install: true` contributes | |
 | --- | --- |
-| packages | `qemu-full`, `qemu-block-gluster`, `qemu-block-iscsi`, `samba`, `qemu-guest-agent`, `qemu-user-static`, `edk2-ovmf`, `swtpm`, `virt-firmware`, `libvirt`, `virt-manager`, `dnsmasq`, `openbsd-netcat`, `dmidecode` |
+| packages | `qemu-full`, `samba`, `qemu-user-static`, `edk2-ovmf`, `swtpm`, `virt-firmware`, `libvirt`, `virt-manager`, `dnsmasq`, `openbsd-netcat`, `dmidecode` |
 | units | `libvirtd.service`, `virtlogd.service` |
 | modprobe | `dasik-nested-virt.conf` — `options kvm_intel nested=1`, `options kvm_amd nested=1` |
 | user groups | `libvirt` for every declared user |
+
+Nothing in that list duplicates a **hard** dependency of `qemu-full`:
+`qemu-block-iscsi` and `qemu-block-gluster` are both pulled by it, and a name
+that is merely redundant today is a name that aborts the transaction the day it
+is renamed — in phase 3, with the disk already partitioned. The **optional**
+dependencies are the opposite case, since pacman does not pull an optdep:
+`samba` (qemu's SMB sharing) and `qemu-user-static` (foreign-architecture
+emulation) are listed precisely because dropping them would uninstall them.
+`qemu-guest-agent` is absent for a different reason — it is what a GUEST runs so
+the host can talk to it, and this toggle installs a host.
+
+**`default_network: true`** links
+`/etc/libvirt/qemu/networks/autostart/default.xml` to the definition libvirt
+ships. Without it a fresh install has a `default` network that is defined,
+inactive, and stays that way across reboots, and the first guest fails with
+`Requested operation is not valid: network 'default' is not active`. The symlink
+is the whole mechanism — it is exactly what `virsh net-autostart default`
+writes, which is why the domain converges from a chroot where no libvirtd is
+running. Turning the flag off removes only the symlink; the network is never
+undefined.
 
 **`iptables-nft` is deliberately absent.** It conflicts with the `iptables` that
 base/systemd already pull in, and `pacman -S iptables-nft` cannot swap it

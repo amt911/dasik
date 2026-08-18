@@ -1061,6 +1061,14 @@ stays a plain entry.
 | Field | Type | Default | Notes |
 | --- | --- | --- | --- |
 | `install` | bool | `false` | libvirt/QEMU stack + user groups. |
+| `default_network` | bool | `false` | Autostart libvirt's shipped `default` NAT network. **Independent of `install`**, so a config that carries libvirt as literal packages (what `sync` captures) can declare it without switching to the toggle. |
+
+libvirt ships the network *definition* but not the symlink under
+`/etc/libvirt/qemu/networks/autostart/` that starts it, so without
+`default_network` a fresh install has a `default` network that is defined,
+inactive, and stays that way — and the first guest fails with `Requested
+operation is not valid: network 'default' is not active`. Turning the flag off
+again removes only the symlink; the network is never undefined.
 
 ### `cups`
 
@@ -1240,7 +1248,7 @@ One config exercising every section — validate a copy with `dasik check`
   },
   "bluetooth": { "enable": true, "package": "bluez", "in_initramfs": true },
   "hardware_acceleration": { "enable": true, "install_codecs": true },
-  "kvm": { "install": true },
+  "kvm": { "install": true, "default_network": true },
   "cups": { "install": true },
   "microsoft_fonts": { "install": false, "source_iso": null },
   "firewall": {

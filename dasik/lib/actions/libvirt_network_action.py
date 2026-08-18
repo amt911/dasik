@@ -49,8 +49,8 @@ class LibvirtNetworkAction(AbstractAction):
     def __init__(self, config: Any, context=None):
         super().__init__(config, context)
         cfg: Dict[str, Any] = config if isinstance(config, dict) else {}
-        kvm = cfg.get("kvm") or {}
-        self._declared = bool(kvm.get("default_network"))
+        self._kvm: Dict[str, Any] = cfg.get("kvm") or {}
+        self._declared = bool(self._kvm.get("default_network"))
 
     @classmethod
     def empty_config(cls):
@@ -101,8 +101,8 @@ class LibvirtNetworkAction(AbstractAction):
     def managed_keys(self) -> dict:
         return {self._DOMAIN: sorted(self._desired())}
 
-    def apply(self, changes) -> None:
-        for change in changes:
+    def apply(self, plan) -> None:
+        for change in plan:
             if change.op is Op.REMOVE:
                 self._unlink()
             else:
@@ -118,11 +118,17 @@ class LibvirtNetworkAction(AbstractAction):
 
         ``install`` is never spoken for. It selects the package/unit toggle, and
         a captured config that carries libvirt as literal packages would have
-        all thirteen of them subtracted out from under it.
+        all thirteen of them subtracted out from under it. It is carried
+        FORWARD, though: ``ConfigWriter.merge`` splices fragments over the
+        config by top-level key, so a fragment holding only the flag would
+        replace the whole `kvm` block and delete a declared toggle nothing else
+        captures.
         """
         if self.actual():
-            return {"kvm": {"default_network": True}}
-        return {"kvm": {"default_network": False}} if self._declared else {}
+            return {"kvm": {**self._kvm, "default_network": True}}
+        if self._declared:
+            return {"kvm": {**self._kvm, "default_network": False}}
+        return {}
 
     # --- the two writes ---------------------------------------------------- #
 
@@ -139,6 +145,16 @@ class LibvirtNetworkAction(AbstractAction):
                 f"`virsh net-define /usr/share/libvirt/networks/default.xml`.")
             return
         link = self._link_path()
+        if os.path.lexists(link):
+            # `actual()` asks islink, so reaching here means the path holds
+            # something that is NOT a symlink. os.symlink would abort the apply
+            # with FileExistsError, and whatever that file is, it is not dasik's
+            # to delete.
+            run_logger.get().warning(
+                f"{AUTOSTART_DIR}/{_DEFAULT}.xml exists and is not a symlink, "
+                f"so the `default` network was left as it is. Remove it by hand "
+                f"if libvirt should autostart the network.")
+            return
         os.makedirs(os.path.dirname(link), exist_ok=True)
         # Absolute, the way virsh writes it: the link has to resolve on the
         # BOOTED machine, not on whatever root is mounted while it is written.

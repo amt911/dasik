@@ -287,3 +287,40 @@ def test_the_kvm_toggle_keeps_what_qemu_full_only_suggests(package):
     them: dropping them from the list would uninstall them. samba backs
     qemu's SMB sharing, qemu-user-static the foreign-architecture emulation."""
     assert package in expand_kvm({"kvm": {"install": True}})["packages"]
+
+
+def test_sync_does_not_clobber_the_rest_of_the_kvm_block(tmp_path):
+    """`ConfigWriter.merge` splices fragments over the config by TOP-LEVEL key,
+    so a fragment of `{"kvm": {...}}` replaces the whole block rather than the
+    one field. Before this domain existed nothing emitted `kvm` at all and a
+    declared `install: true` passed through untouched; emitting only the flag
+    would have silently deleted the toggle on the next sync."""
+    _networks(tmp_path)
+    _link(tmp_path)
+    action = LibvirtNetworkAction({"kvm": {"install": True}}, _ctx(tmp_path))
+
+    captured = action.import_state()
+
+    assert captured == {"kvm": {"install": True, "default_network": True}}
+
+
+def test_sync_carries_the_block_forward_when_clearing_the_flag(tmp_path):
+    _networks(tmp_path)
+    action = LibvirtNetworkAction(
+        {"kvm": {"install": True, "default_network": True}}, _ctx(tmp_path))
+
+    assert action.import_state() == {
+        "kvm": {"install": True, "default_network": False}}
+
+
+def test_a_plain_file_where_the_symlink_goes_is_not_clobbered(tmp_path):
+    """`islink` reads a regular file at that path as "no autostart", so apply
+    would reach os.symlink and die with FileExistsError mid-run. Whatever that
+    file is, it is not dasik's to delete."""
+    _networks(tmp_path)
+    _autostart(tmp_path).write_text("not a symlink\n")
+    action = LibvirtNetworkAction({"kvm": {"default_network": True}}, _ctx(tmp_path))
+
+    action.apply(action.plan(managed=[]))          # must not raise
+
+    assert _autostart(tmp_path).read_text() == "not a symlink\n"

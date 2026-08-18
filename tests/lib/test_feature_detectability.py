@@ -987,3 +987,60 @@ def test_the_tailscale_dropin_is_planned_as_a_file():
 def test_the_tailscale_unit_is_planned_as_a_unit():
     merged = expand_config({"tailscale": {"accept_routes": True}})
     assert "tailscaled.service" in merged["systemd"]["enable_units"]
+
+
+# --- libvirt default network ------------------------------------------------ #
+#
+# Asserted here through the REAL registry rather than the class: the four
+# directions live in tests/lib/actions/test_libvirt_network_action.py, and what
+# this adds is that the domain is wired into `setup_actions()` at all. A feature
+# nothing registers plans nothing, and reads exactly like a converged one.
+
+def _libvirt_machine(tmp_path, autostart):
+    networks = tmp_path / "etc/libvirt/qemu/networks"
+    (networks / "autostart").mkdir(parents=True)
+    (networks / "default.xml").write_text("<network><name>default</name></network>\n")
+    if autostart:
+        (networks / "autostart/default.xml").symlink_to(
+            "/etc/libvirt/qemu/networks/default.xml")
+    return tmp_path
+
+
+def _registry_plan(tmp_path, config, manifest=None):
+    """What the Reconciler plans for the domain, driven from the REAL registry.
+
+    Only this action's meta is handed to the Reconciler. Building the whole plan
+    would drag in the actions that shell out to `arch-chroot`, which a scratch
+    root has no way to satisfy — and the point being proved here is the wiring:
+    that `setup_actions()` registers the class, under `__root__` so it is handed
+    the whole config rather than a `kvm` slice.
+    """
+    from dasik.lib.actions.action_registry import get_default_registry
+    from dasik.lib.actions.actions_handler_v2 import setup_actions
+    from dasik.lib.actions.libvirt_network_action import LibvirtNetworkAction
+    from dasik.lib.reconciler.reconciler import Reconciler
+
+    setup_actions()
+    metas = [m for m in get_default_registry().get_all_actions()
+             if m["class"] is LibvirtNetworkAction]
+    assert len(metas) == 1, "LibvirtNetworkAction is not registered"
+    assert metas[0]["config_key"] == "__root__"
+
+    reconciler = Reconciler(config=config, target=Target(root=str(tmp_path)),
+                            manifest=manifest, action_metas=metas)
+    plan, _results = reconciler.build_plan()
+    return [(c.op.name, c.item) for c in plan.changes
+            if c.domain == "libvirt_networks"]
+
+
+def test_the_default_network_is_visible_in_a_real_plan(tmp_path):
+    machine = _libvirt_machine(tmp_path, autostart=False)
+
+    assert _registry_plan(machine, {"kvm": {"default_network": True}}) == [
+        ("INSTALL", "default")]
+
+
+def test_a_machine_that_already_autostarts_it_plans_nothing(tmp_path):
+    machine = _libvirt_machine(tmp_path, autostart=True)
+
+    assert _registry_plan(machine, {"kvm": {"default_network": True}}) == []

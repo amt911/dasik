@@ -33,7 +33,7 @@ _ENTRY = ("root=/dev/mapper/cryptroot rw amd_pstate=active "
 
 
 def _machine(tmp_path, entry=_ENTRY, reflector=True, governor=True, sudoers=True,
-             plymouth=True):
+             plymouth=True, libvirt_autostart=True):
     """A fake target root carrying (some of) the block-A/B features."""
     (tmp_path / "boot/loader/entries").mkdir(parents=True)
     (tmp_path / "boot/loader/loader.conf").write_text("default arch\n")
@@ -51,6 +51,14 @@ def _machine(tmp_path, entry=_ENTRY, reflector=True, governor=True, sudoers=True
         (tmp_path / "etc/sudoers.d").mkdir(parents=True, exist_ok=True)
         (tmp_path / "etc/sudoers.d/10-dasik").write_text(
             "# Managed by dasik\n%wheel ALL=(ALL:ALL) ALL\n")
+    if libvirt_autostart:
+        networks = tmp_path / "etc/libvirt/qemu/networks"
+        (networks / "autostart").mkdir(parents=True, exist_ok=True)
+        (networks / "default.xml").write_text("<network><name>default</name></network>\n")
+        # Absolute, the way virsh writes it — so inside this scratch root it
+        # dangles, and only `islink` sees it.
+        (networks / "autostart/default.xml").symlink_to(
+            "/etc/libvirt/qemu/networks/default.xml")
     if plymouth:
         (tmp_path / "usr/bin").mkdir(parents=True, exist_ok=True)
         (tmp_path / "usr/bin/plymouthd").write_text("")
@@ -87,6 +95,7 @@ def _synced(tmp_path, seed=None):
                    "sort": "rate", "save": "/etc/pacman.d/mirrorlist"}),
     ("sudo", {"wheel": True, "nopasswd": False, "rules": []}),
     ("plymouth", {"theme": "bgrt"}),
+    ("kvm", {"default_network": True}),
 ])
 def test_sync_captures_the_feature(tmp_path, key, expected):
     captured = _synced(_machine(tmp_path))
@@ -112,7 +121,8 @@ def test_sync_leaves_the_derived_parameters_out_of_kernel_cmdline(tmp_path):
 
 def test_sync_does_not_invent_features_the_machine_lacks(tmp_path):
     bare = _machine(tmp_path, entry="root=LABEL=root rw quiet",
-                    reflector=False, governor=False, sudoers=False, plymouth=False)
+                    reflector=False, governor=False, sudoers=False, plymouth=False,
+                    libvirt_autostart=False)
 
     captured = _synced(bare)
 
@@ -121,13 +131,15 @@ def test_sync_does_not_invent_features_the_machine_lacks(tmp_path):
     assert "reflector" not in captured
     assert "sudo" not in captured
     assert "plymouth" not in captured
+    assert "kvm" not in captured
 
 
 def test_a_splash_nobody_owns_survives_as_a_plain_parameter(tmp_path):
     """No plymouth on the machine ⇒ `splash` is somebody else's parameter, and
     a capture that swallowed it would silently drop it on the next apply."""
     bare = _machine(tmp_path, entry="root=LABEL=root rw splash",
-                    reflector=False, governor=False, sudoers=False, plymouth=False)
+                    reflector=False, governor=False, sudoers=False, plymouth=False,
+                    libvirt_autostart=False)
 
     captured = _synced(bare)
 
@@ -139,7 +151,8 @@ def test_sync_clears_a_flag_the_machine_does_not_carry(tmp_path):
     """A seed that declares sysrq against a machine without it captures False —
     sync reports reality, it does not preserve the declaration."""
     bare = _machine(tmp_path, entry="root=LABEL=root rw quiet",
-                    reflector=False, governor=False, sudoers=False, plymouth=False)
+                    reflector=False, governor=False, sudoers=False, plymouth=False,
+                    libvirt_autostart=False)
 
     captured = _synced(bare, seed={"bootloader": "sd-boot", "sysrq": True})
 

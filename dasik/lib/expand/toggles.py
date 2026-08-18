@@ -35,12 +35,22 @@ def expand_trim(config: Dict[str, Any]) -> Dict[str, Any]:
 
 
 _KVM_PKGS = [
-    # No "qemu-block-gluster": RETIRED from the Arch repos (the glusterfs block
-    # driver went with it), so naming it aborts the transaction with "target not
-    # found" — in phase 3, disk already partitioned. `qemu-full` pulls whatever
-    # block drivers still exist, so nothing is lost by not naming this one.
-    "qemu-full", "qemu-block-iscsi", "samba",
-    "qemu-guest-agent", "qemu-user-static",
+    # Nothing here may duplicate a HARD dependency of qemu-full — pacman pulls
+    # those anyway, and a name that is merely redundant today is a name that
+    # aborts the transaction the day it is renamed or dropped, in phase 3, with
+    # the disk already partitioned. "qemu-block-gluster" and "qemu-block-iscsi"
+    # are both in `pacman -Qi qemu-full` → Depends On, so neither is listed.
+    # (An earlier comment claimed gluster had been RETIRED from the repos; it is
+    # back in extra as of 11.0.3-1. Redundant is the reason, not absent.)
+    #
+    # The OPTIONAL dependencies are the opposite case: pacman does NOT pull an
+    # optdep, so "samba" (qemu's SMB sharing) and "qemu-user-static" (foreign
+    # architecture emulation) are here precisely because dropping them would
+    # uninstall them.
+    #
+    # No "qemu-guest-agent" either: it is the agent a GUEST runs so the host can
+    # talk to it, and this list installs a HOST.
+    "qemu-full", "samba", "qemu-user-static",
     "edk2-ovmf", "swtpm", "virt-firmware",
     "libvirt", "virt-manager",
     # NOTE: no "iptables-nft" here. It CONFLICTS with the `iptables` that base/

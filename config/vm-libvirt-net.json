@@ -1,0 +1,86 @@
+{
+  "metadata": {
+    "note": "libvirt's `default` NAT network and whether it autostarts. libvirt ships the network DEFINITION but not the autostart symlink, so a freshly installed host has a network that is defined, inactive, and stays that way — the first guest then fails with `network 'default' is not active`. Declares the flag WITHOUT `kvm.install`, which is the shape a synced config has: libvirt arrives as a literal package, the toggle stays off. For the QEMU VM harness (scripts/vmtest/qemu.sh install-driven). Targets the guest's /dev/vda. NOT for real hardware. Autologins root on ttyS0 and ships python-pydantic/python-colorama via pacman, so the driver gets a shell and dasik runs from the 9p-mounted repo with no network."
+  },
+  "disks": {
+    "disks": [
+      {
+        "device": "/dev/vda",
+        "partition_table": "gpt",
+        "wipe_disk": false,
+        "partitions": [
+          {
+            "label": "ESP",
+            "size": "512MiB",
+            "filesystem": "fat32",
+            "partition_type": "esp",
+            "mountpoint": "/boot",
+            "format": true
+          },
+          {
+            "label": "ROOT",
+            "size": "rest",
+            "filesystem": "ext4",
+            "partition_type": "linux",
+            "mountpoint": "/",
+            "format": true
+          }
+        ]
+      }
+    ]
+  },
+  "enable_microcode": false,
+  "packages": [
+    "base",
+    "linux",
+    "linux-firmware",
+    "sudo",
+    "python",
+    "python-pydantic",
+    "python-colorama",
+    "libvirt",
+    "dnsmasq"
+  ],
+  "bootloader": "sd-boot",
+  "hostname": "dasik-libvirtnet",
+  "kernel_cmdline": [
+    "console=ttyS0,115200"
+  ],
+  "timezone": {
+    "region": "Etc",
+    "city": "UTC"
+  },
+  "locales": {
+    "selected_locales": [
+      "en_US.UTF-8 UTF-8"
+    ],
+    "desired_locale": "en_US.UTF-8",
+    "desired_tty_layout": "us"
+  },
+  "kvm": {
+    "default_network": true
+  },
+  "systemd": {
+    "enable_units": [
+      "libvirtd.service"
+    ]
+  },
+  "users": [
+    {
+      "username": "test",
+      "hashed_password": "$6$dasikvmtest$pfoSKqgh8yWKbmkwBpNuvQuJ4/kLeJmwCPCezBolW4pKbtJbtvMGQCM5f7W/hkbF/FmtCMZMYr/NLwDO4OJm7.",
+      "groups": [
+        "wheel"
+      ]
+    }
+  ],
+  "files": [
+    {
+      "path": "/etc/systemd/system/serial-getty@ttyS0.service.d/autologin.conf",
+      "content": "[Service]\nExecStart=\nExecStart=-/sbin/agetty --autologin root --noclear --keep-baud 115200,38400,9600 %I $TERM\n"
+    }
+  ],
+  "network": {
+    "type": "systemd-networkd"
+  }
+}

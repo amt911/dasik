@@ -6,6 +6,7 @@ is commented back out and the [multilib] block re-commented. Target-aware. One
 MODIFY when any flag drifts.
 """
 from __future__ import annotations
+import os
 import re
 from typing import Any, Dict, Optional
 from .composite_action import CompositeV3Action
@@ -75,24 +76,46 @@ class PacmanAction(CompositeV3Action):
 
     # --- composite state ---------------------------------------------- #
 
+    _SYNC_DB = "/var/lib/pacman/sync/multilib.db"
+
+    def _is_chroot_target(self) -> bool:
+        t = self._target()
+        return t is not None and bool(getattr(t, "is_chroot", False))
+
     def _desired_state(self) -> dict:
-        return {
+        state = {
             "Parallel": bool(self.parallel),
             "Color": bool(self.color),
             "VerbosePkgLists": bool(self.verbose),
             "multilib": bool(self.multilib),
         }
+        # An apply that dies between writing pacman.conf and its -Sy leaves
+        # [multilib] enabled with no sync DB; every later plan said converged
+        # while the resolver misclassified every multilib package as AUR
+        # (2026-08-18). The key exists only for chroot targets, and MUST appear
+        # in desired and actual symmetrically (CompositeV3Action diffs desired
+        # keys against actual): on --target / the DB is the admin's and apply's
+        # -Sy is chroot-gated, so including it would plan a change apply can
+        # never fix — the never-converging plan.
+        if self._is_chroot_target():
+            state["multilib_synced"] = bool(self.multilib)
+        return state
 
     def _actual_state(self) -> Optional[dict]:
         text = self._read()
         if text is None:
             return None
-        return {
+        state = {
             "Parallel": self._option_active(text, "ParallelDownloads"),
             "Color": self._option_active(text, "Color"),
             "VerbosePkgLists": self._option_active(text, "VerbosePkgLists"),
             "multilib": self._multilib_active(text),
         }
+        if self._is_chroot_target():
+            state["multilib_synced"] = (
+                self._multilib_active(text)
+                and os.path.exists(self._p(self._SYNC_DB)))
+        return state
 
     def apply(self, changes) -> None:
         # Write pacman.conf when it drifts (the composite base gates on changes)…

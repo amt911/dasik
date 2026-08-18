@@ -1,0 +1,44 @@
+{
+  "metadata": {
+    "note": "QEMU-only multilib regression: pacman.multilib enables [multilib], apply's -Sy must leave the sync DB in place (the multilib_synced composite key), and a multilib package installs from the repo — not misclassified as AUR. Driven by guest-multilib.sh after install-driven. NOT for real hardware."
+  },
+  "disks": {
+    "disks": [
+      {
+        "device": "/dev/vda",
+        "partition_table": "gpt",
+        "wipe_disk": false,
+        "partitions": [
+          {"label": "ESP", "size": "512MiB", "filesystem": "fat32", "partition_type": "esp", "mountpoint": "/boot", "format": true},
+          {"label": "ROOT", "size": "rest", "filesystem": "ext4", "partition_type": "linux", "mountpoint": "/", "format": true}
+        ]
+      }
+    ]
+  },
+  "bootloader": "sd-boot",
+  "enable_microcode": false,
+  "hostname": "dasik-multilib",
+  "kernel_cmdline": ["console=ttyS0,115200"],
+  "timezone": {"region": "Etc", "city": "UTC"},
+  "locales": {"selected_locales": ["en_US.UTF-8 UTF-8"], "desired_locale": "en_US.UTF-8", "desired_tty_layout": "us"},
+  "network": {"type": "systemd-networkd"},
+  "pacman": {
+    "options": {"Parallel": true, "Color": true, "VerbosePkgLists": false},
+    "multilib": true
+  },
+  "packages": [
+    "base",
+    "linux",
+    "linux-firmware",
+    "python",
+    "python-pydantic",
+    "python-colorama",
+    "lib32-acl"
+  ],
+  "files": [
+    {
+      "path": "/etc/systemd/system/serial-getty@ttyS0.service.d/autologin.conf",
+      "content": "[Service]\nExecStart=\nExecStart=-/sbin/agetty --autologin root --noclear --keep-baud 115200,38400,9600 %I $TERM\n"
+    }
+  ]
+}

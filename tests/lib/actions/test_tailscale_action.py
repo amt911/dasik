@@ -54,6 +54,60 @@ def test_rejected_names_are_never_emitted(not_a_key):
 
 # --- rendering ----------------------------------------------------------- #
 
+def test_render_auth_key_file_becomes_a_file_reference():
+    out = json.loads(_render({"auth_key_file": "/etc/tailscale/authkey"}))
+    assert out["AuthKey"] == "file:/etc/tailscale/authkey"
+
+
+def test_parse_captures_only_the_file_form_of_authkey():
+    """sync must capture the PATH, and must never copy a literal key — a
+    hand-provisioned secret in the conffile stays out of the Git config."""
+    assert _parse('{"AuthKey": "file:/etc/tailscale/authkey"}') == {
+        "auth_key_file": "/etc/tailscale/authkey"}
+    assert _parse('{"AuthKey": "tskey-auth-abc123-def"}') == {}
+
+
+def test_desired_omits_authkey_while_the_key_file_is_missing(tmp_path):
+    """Measured in the guest oracle: tailscaled refuses to START on a dangling
+    file: reference. A not-yet-provisioned key must not take the daemon down —
+    omit + warn, and converge without it."""
+    from unittest.mock import MagicMock, patch
+
+    a = TailscaleAction({"tailscale": {"accept_routes": True,
+                                       "auth_key_file": "/etc/tailscale/authkey"}},
+                        _ctx(str(tmp_path)))
+    with patch("dasik.lib.actions.tailscale_action.run_logger.get",
+               return_value=MagicMock()) as log:
+        desired = a._desired_value()
+    assert "AuthKey" not in desired
+    assert '"AcceptRoutes": true' in desired
+    assert any("auth_key_file" in str(c)
+               for c in log.return_value.warning.call_args_list)
+
+
+def test_desired_carries_authkey_once_the_key_file_exists(tmp_path):
+    keyfile = tmp_path / "etc" / "tailscale" / "authkey"
+    keyfile.parent.mkdir(parents=True)
+    keyfile.write_text("tskey-auth-dummy\n")
+    a = TailscaleAction({"tailscale": {"auth_key_file": "/etc/tailscale/authkey"}},
+                        _ctx(str(tmp_path)))
+    assert json.loads(a._desired_value())["AuthKey"] == "file:/etc/tailscale/authkey"
+
+
+def test_missing_key_file_converges_instead_of_planning_forever(tmp_path):
+    """plan → apply → plan must end silent even while the key file is absent:
+    the omitted AuthKey must not become a perpetual MODIFY."""
+    from unittest.mock import MagicMock, patch
+
+    a = TailscaleAction({"tailscale": {"accept_routes": True,
+                                       "auth_key_file": "/etc/tailscale/authkey"}},
+                        _ctx(str(tmp_path)))
+    with patch("dasik.lib.actions.tailscale_action.run_logger.get",
+               return_value=MagicMock()):
+        a.apply(a.plan(managed=[]))
+        assert a.plan(managed=[]) == []
+
+
 def test_render_always_carries_the_mandatory_version():
     # tailscaled: 'no "version" field defined' when absent, and "alpha0" is the
     # only accepted value.

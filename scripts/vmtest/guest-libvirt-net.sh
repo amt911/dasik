@@ -69,7 +69,7 @@ json.dump(cfg, open("/tmp/nokvm.json", "w"), indent=2)
 PY
 $D plan /tmp/nokvm.json --target / $L 2>&1 | tee /tmp/plan-drop.txt; echo "LIBVIRTNET-DROPPLAN-RC=$?"
 grep -q 'remove default' /tmp/plan-drop.txt || { echo "LIBVIRTNET DROP-NOT-PLANNED"; rc=1; }
-$D apply /tmp/nokvm.json --target / $L; echo "LIBVIRTNET-DROPAPPLY-RC=$?"
+$D apply /tmp/nokvm.json --target / --yes $L; echo "LIBVIRTNET-DROPAPPLY-RC=$?"
 [ -L "$LINK" ] && { echo "LIBVIRTNET LINK-SURVIVED-REMOVAL"; rc=1; }
 # REMOVE un-autostarts. It must never `net-undefine`.
 [ -f "$DEF" ] || { echo "LIBVIRTNET REMOVE-DESTROYED-THE-NETWORK"; rc=1; }
@@ -79,7 +79,7 @@ grep -q 'libvirt_networks' /tmp/plan-drop2.txt && { echo "LIBVIRTNET DROP-REPLAN
 echo "LIBVIRTNET-G: and declaring it again puts it back"
 $D plan "$C" --target / $L 2>&1 | tee /tmp/plan-back.txt
 grep -q 'install default' /tmp/plan-back.txt || { echo "LIBVIRTNET READD-NOT-PLANNED"; rc=1; }
-$D apply "$C" --target / $L; echo "LIBVIRTNET-READDAPPLY-RC=$?"
+$D apply "$C" --target / --yes $L; echo "LIBVIRTNET-READDAPPLY-RC=$?"
 [ -L "$LINK" ] || { echo "LIBVIRTNET READD-NO-SYMLINK"; rc=1; }
 $D plan "$C" --target / $L 2>&1 | tee /tmp/plan-back2.txt
 grep -q 'libvirt_networks' /tmp/plan-back2.txt && { echo "LIBVIRTNET READD-REPLANS"; rc=1; }

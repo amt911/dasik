@@ -32,6 +32,21 @@ def test_policy_accepts_error():
     assert PackagePolicyModel(unknown="error").unknown == "error"
 
 
+def test_policy_build_failure_defaults_to_abort():
+    assert PackagePolicyModel().build_failure == "abort"
+
+
+def test_policy_build_failure_accepts_warn_and_continue():
+    p = PackagePolicyModel(build_failure="warn-and-continue")
+    assert p.build_failure == "warn-and-continue"
+
+
+def test_policy_build_failure_rejects_garbage():
+    import pytest
+    with pytest.raises(Exception):
+        PackagePolicyModel(build_failure="yolo")
+
+
 def test_policy_rejects_unknown_value():
     with pytest.raises(ValidationError):
         PackagePolicyModel(unknown="ignore")

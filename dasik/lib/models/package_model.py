@@ -56,8 +56,18 @@ class PackagePolicyModel(BaseModel):
     is retried on the next apply. ``error`` restores the strict abort (useful for
     CI). A source that could not be *reached* (AUR unavailable) is always a
     blocking error regardless of this policy.
+
+    ``build_failure`` governs a package whose source EXISTS but whose install or
+    build fails (an upstream PKGBUILD that no longer compiles, a download that
+    403s). ``abort`` (default): the apply stops and records a partial
+    generation. ``warn-and-continue``: the failure is reported at once and in an
+    end-of-domain summary, the package stays OUT of the manifest (never claimed
+    as installed, so ``plan`` keeps showing it and the next apply retries it),
+    and the apply carries on with everything else — the semantics
+    ``optional: true`` gives one package, applied machine-wide.
     """
     unknown: Literal["warn-and-skip", "error"] = "warn-and-skip"
+    build_failure: Literal["abort", "warn-and-continue"] = "abort"
 
 
 class GitPackageSourceModel(BaseModel):

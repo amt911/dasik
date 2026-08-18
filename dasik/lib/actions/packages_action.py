@@ -77,10 +77,12 @@ class PackagesAction(AbstractAction):
             self.package_sources: dict[str, Any] = config.get("package_sources", {}) or {}
             policy = config.get("package_policy", {}) or {}
             self.unknown_policy: str = policy.get("unknown", "warn-and-skip")
+            self.build_failure_policy: str = policy.get("build_failure", "abort")
         else:
             raw = config if isinstance(config, list) else []
             self.package_sources = {}
             self.unknown_policy = "warn-and-skip"
+            self.build_failure_policy = "abort"
         self._original = raw
         self._resolver = PackageResolver()
         # Names dropped by warn-and-skip during apply() (confirmed to exist in no
@@ -103,7 +105,7 @@ class PackagesAction(AbstractAction):
         # fail without aborting the apply (see apply()). Never claimed as managed.
         self.optional_packages: set[str] = set()
         # Optional packages whose install actually failed in this apply.
-        self.failed_optional: List[str] = []
+        self.failed_packages: List[str] = []
         seen: set[str] = set()
 
         for entry in raw:
@@ -727,7 +729,7 @@ class PackagesAction(AbstractAction):
         Excludes names dropped by warn-and-skip (``_skipped_unknown``) so the
         manifest never claims dasik installed a package it never could. Before
         apply, ``_skipped_unknown`` is empty and this is the full desired set."""
-        skipped = set(self._skipped_unknown) | set(self.failed_optional)
+        skipped = set(self._skipped_unknown) | set(self.failed_packages)
         return {self._PACMAN_DOMAIN: [n for n in self.desired if n not in skipped]}
 
     def import_state(self, managed: "list[str] | None" = None) -> dict:
@@ -908,7 +910,7 @@ class PackagesAction(AbstractAction):
         A broken chain rooted in a REQUIRED package aborts with every chain in
         the message; chains rooted only in ``optional: true`` packages degrade
         to a warning, the roots drop out of the batch and land in
-        ``failed_optional`` (excluded from ``managed_keys``, retried next
+        ``failed_packages`` (excluded from ``managed_keys``, retried next
         apply). An unreachable RPC always aborts: we do not know whether the
         closure is satisfiable, and the helper would need the RPC anyway."""
         if not aur_installs:
@@ -924,21 +926,23 @@ class PackagesAction(AbstractAction):
         if not broken:
             return aur_installs
         rendered = [b.render() for b in broken]
-        if any(b.chain[0] not in self.optional_packages for b in broken):
+        required_broken = any(b.chain[0] not in self.optional_packages
+                              for b in broken)
+        if required_broken and not self._continue_on_failure:
             raise CommandExecutionError(
                 "Refusing to install — unsatisfiable AUR dependency chain(s):\n  "
                 + "\n  ".join(rendered)
             )
         bad_roots = {b.chain[0] for b in broken}
         run_logger.get().warning(
-            "optional AUR packages skipped — unsatisfiable dependency chain: "
+            "AUR packages skipped — unsatisfiable dependency chain: "
             + "; ".join(rendered),
             detail="They were not installed; dasik will retry them on the next "
                    "apply.",
         )
-        self.failed_optional.extend(
+        self.failed_packages.extend(
             n for n in aur_installs
-            if n in bad_roots and n not in self.failed_optional)
+            if n in bad_roots and n not in self.failed_packages)
         return [n for n in aur_installs if n not in bad_roots]
 
     def apply(self, changes) -> None:
@@ -969,7 +973,7 @@ class PackagesAction(AbstractAction):
         aur_installs: list[str] = []
         git_installs: list = []
         self._skipped_unknown = []
-        self.failed_optional = []
+        self.failed_packages = []
         if install_names:
             resolution = self._resolve_sources(install_names, target)
             # unavailable is ALWAYS blocking; unknown follows package_policy.
@@ -988,17 +992,34 @@ class PackagesAction(AbstractAction):
 
         required_repo, optional_repo = self._split_optional(repo_installs)
         if required_repo:
-            Command.execute(
-                "pacman",
-                ["--noconfirm", "--needed", "-S", *required_repo],
-                target=target,
-                check=True,
-                stream=True,
-            )
+            try:
+                Command.execute(
+                    "pacman",
+                    ["--noconfirm", "--needed", "-S", *required_repo],
+                    target=target,
+                    check=True,
+                    stream=True,
+                )
+            except (CommandExecutionError, ConfigValidationError):
+                if not self._continue_on_failure:
+                    raise
+                # Salvage: one transaction per package (--needed makes the
+                # already-installed ones free), recording exactly the failures.
+                for pkg in required_repo:
+                    try:
+                        Command.execute(
+                            "pacman",
+                            ["--noconfirm", "--needed", "-S", pkg],
+                            target=target,
+                            check=True,
+                            stream=True,
+                        )
+                    except (CommandExecutionError, ConfigValidationError) as exc:
+                        self._record_failure(pkg, exc)
         # Optional repo packages go one at a time, AFTER the required transaction:
         # a single broken name must not take the others (or the install) down.
         for pkg in optional_repo:
-            with self._optional_guard([pkg]):
+            with self._failure_guard([pkg]):
                 Command.execute(
                     "pacman",
                     ["--noconfirm", "--needed", "-S", pkg],
@@ -1013,7 +1034,13 @@ class PackagesAction(AbstractAction):
         rebuilds = [ResolvedGitPackage(name=n, source=self.package_sources[n])
                     for n in ref_modifies if n in self.package_sources]
         all_git = list(git_installs) + rebuilds
-        if all_git:
+        if all_git and self._continue_on_failure:
+            for pkg in all_git:
+                try:
+                    self._apply_git_install([pkg])
+                except (CommandExecutionError, ConfigValidationError) as exc:
+                    self._record_failure(pkg.name, exc)
+        elif all_git:
             self._apply_git_install(all_git)
 
         if aur_installs:
@@ -1028,14 +1055,20 @@ class PackagesAction(AbstractAction):
                 None,
             )
             required_aur, optional_aur = self._split_optional(aur_installs)
-            if required_aur:
+            if required_aur and self._continue_on_failure:
+                # The helper already salvages within its batch (it builds what
+                # it can and lists the failures); the guard turns its non-zero
+                # exit into recorded failures instead of an abort.
+                with self._failure_guard(required_aur):
+                    self._apply_aur_install(required_aur, helper=helper)
+            elif required_aur:
                 self._apply_aur_install(required_aur, helper=helper)
             # Optional AUR packages build in their own batch: on 2026-07-19 three
             # peripheral packages (sunshine, two Epson drivers) made yay exit 1 and
             # that exception stopped the reconciler before users, initramfs and
             # bootloader ever ran.
             if optional_aur:
-                with self._optional_guard(optional_aur):
+                with self._failure_guard(optional_aur):
                     self._apply_aur_install(optional_aur, helper=helper)
 
         self._enforce_reasons(target, planned_modifies=modifies,
@@ -1049,6 +1082,26 @@ class PackagesAction(AbstractAction):
                 check=True,
                 stream=True,
             )
+
+        if self.failed_packages:
+            # The reviewable summary the policy promises: one line, at the end
+            # of the domain, naming exactly what is NOT on the machine. These
+            # names stay out of the manifest, so the next plan shows them too.
+            print("[packages] not installed this apply (will be retried): "
+                  + ", ".join(self.failed_packages))
+
+    @property
+    def _continue_on_failure(self) -> bool:
+        return self.build_failure_policy == "warn-and-continue"
+
+    def _record_failure(self, name: str, exc: Exception) -> None:
+        if name not in self.failed_packages:
+            self.failed_packages.append(name)
+        run_logger.get().error(
+            f"package not installed: {name}",
+            detail=f"{exc}\nIt is NOT recorded as installed; the next apply "
+                   "retries it. Convergence continues.",
+        )
 
     _DB_LOCK = "/var/lib/pacman/db.lck"
 
@@ -1147,7 +1200,7 @@ class PackagesAction(AbstractAction):
         return required, optional
 
     @contextmanager
-    def _optional_guard(self, batch: "list[str]"):
+    def _failure_guard(self, batch: "list[str]"):
         """Run an optional install batch; on failure record the packages that are
         still missing and continue.
 
@@ -1159,8 +1212,8 @@ class PackagesAction(AbstractAction):
         except (CommandExecutionError, ConfigValidationError) as exc:
             installed = self._installed_all()
             missing = [p for p in batch if p not in installed]
-            self.failed_optional.extend(m for m in missing
-                                        if m not in self.failed_optional)
+            self.failed_packages.extend(m for m in missing
+                                        if m not in self.failed_packages)
             run_logger.get().error(
                 "optional packages not installed: " + ", ".join(missing),
                 detail=f"{exc}\nThey are NOT recorded as installed; the next "

@@ -84,7 +84,7 @@ def test_optional_aur_failure_does_not_abort_apply():
                       side_effect=CommandExecutionError("yay failed (exit 1)")):
         a.apply(changes)                        # must NOT raise
     assert run.call_args_list, "the repo transaction still ran"
-    assert a.failed_optional == ["sunshine"]
+    assert a.failed_packages == ["sunshine"]
 
 
 def test_failed_optional_package_is_not_recorded_as_managed():
@@ -131,7 +131,7 @@ def test_optional_and_required_aur_go_in_separate_batches():
          patch.object(PackagesAction, "_apply_aur_install", side_effect=fake_aur):
         a.apply(changes)
     assert batches == [["claude-desktop-bin"], ["sunshine"]]
-    assert a.failed_optional == ["sunshine"]
+    assert a.failed_packages == ["sunshine"]
 
 
 def test_optional_repo_failure_does_not_abort_apply():
@@ -149,7 +149,7 @@ def test_optional_repo_failure_does_not_abort_apply():
                       return_value=_resolution(repo=["base", "obscure-repo-pkg"])), \
          patch("dasik.lib.actions.packages_action.Command.execute", side_effect=fake_exec):
         a.apply(changes)
-    assert a.failed_optional == ["obscure-repo-pkg"]
+    assert a.failed_packages == ["obscure-repo-pkg"]
     # required packages went in their own transaction, which succeeded
     assert any("base" in c and "obscure-repo-pkg" not in c for c in calls)
 

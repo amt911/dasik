@@ -102,7 +102,7 @@ written into those directories instead of inlined
 | `hostname` | string | `/etc/hostname` |
 | `users` | list | User accounts + groups + shell |
 | `packages` | list | pacman + AUR + Git-source packages (real names) |
-| `package_policy` | object | What to do with an unknown package (`warn-and-skip` \| `error`) |
+| `package_policy` | object | Unknown packages (`unknown`: `warn-and-skip` \| `error`) and install/build failures (`build_failure`: `abort` \| `warn-and-continue`) |
 | `package_sources` | object | Git PKGBUILD source per package (outside repo/AUR) |
 | `drivers` | list | GPU driver selection |
 | `bootloader` | string | GRUB or systemd-boot |
@@ -678,9 +678,20 @@ the bootloader — on an already-partitioned disk.
 
 ### `package_policy`
 
-`{"unknown": "warn-and-skip" | "error"}` — how to treat a declared package that
-resolves to no known source. `warn-and-skip` (default) skips it with a warning and
-continues; `error` aborts the whole apply before installing anything.
+`{"unknown": "warn-and-skip" | "error", "build_failure": "abort" | "warn-and-continue"}`
+
+`unknown` — how to treat a declared package that resolves to no known source.
+`warn-and-skip` (default) skips it with a warning and continues; `error` aborts
+the whole apply before installing anything.
+
+`build_failure` — how to treat a package whose source exists but whose install
+or **build** fails (an upstream PKGBUILD that no longer compiles, a download
+that 403s). `abort` (default) stops the apply and records a partial generation.
+`warn-and-continue` reports the failure, prints an end-of-domain summary naming
+every package that is NOT on the machine, keeps them out of the manifest (so
+`plan` shows them again and the next apply retries), and carries on with
+everything else — the semantics `optional: true` gives one package, applied
+machine-wide. An unreachable AUR still always aborts.
 
 ### `package_sources`  *(sync ✓ — preserved)*
 

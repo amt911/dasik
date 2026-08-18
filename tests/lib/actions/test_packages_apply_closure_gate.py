@@ -133,7 +133,7 @@ def test_optional_broken_root_warns_and_is_excluded_not_fatal(_quiet_run_logger)
            aur_calls=aur_calls)
     # sunshine never reaches any AUR batch; the required batch still runs
     assert aur_calls == [(["yay"], "yay")]
-    assert a.failed_optional == ["sunshine"]
+    assert a.failed_packages == ["sunshine"]
     assert "sunshine" not in a.managed_keys()["packages"]
     warning = _quiet_run_logger.return_value.warning
     assert any("sunshine → gone-dep" in str(c) for c in warning.call_args_list)

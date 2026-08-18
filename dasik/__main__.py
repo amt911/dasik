@@ -266,6 +266,14 @@ def _build_parser() -> argparse.ArgumentParser:
              "system. Read-only; no --target.",
     )
     check_p.add_argument("config", help="Path to the JSON configuration file")
+    check_p.add_argument(
+        "--resolve-aur",
+        action="store_true",
+        help="Also resolve every declared package against THIS host's pacman "
+             "sync DBs and the AUR, and validate the transitive dependency "
+             "closure of the AUR ones (needs network; the repo view is this "
+             "host's, so refresh with `pacman -Sy` first).",
+    )
 
     wizard_p = sub.add_parser(
         "partition-wizard",
@@ -949,9 +957,15 @@ def _cmd_partition_wizard(output: Optional[str] = None,
     return 0
 
 
-def _cmd_check(config_path: Path) -> int:
+def _cmd_check(config_path: Path, resolve_aur: bool = False) -> int:
     """Validate a config: JSON syntax + the pydantic schema. Read-only, no target.
-    Exit 0 when valid, 1 with a readable error otherwise."""
+    Exit 0 when valid, 1 with a readable error otherwise.
+
+    With *resolve_aur*, additionally resolve every declared package against
+    THIS host's pacman sync DBs and the AUR RPC, and validate the transitive
+    dependency closure of the AUR ones — the pre-trip defense against the
+    2026-08-18 failure mode (a dep chain that dies 25 minutes into an
+    install)."""
     try:
         raw = config_path.read_text()
     except OSError as e:
@@ -985,10 +999,97 @@ def _cmd_check(config_path: Path) -> int:
         return 1
     # Same cross-field checks plan/apply run, on the expanded config: `check`
     # exists so a coherence problem is found here, not mid-install.
-    if _preflight_or_none(expand_config(data)) is None:
+    expanded = expand_config(data)
+    if _preflight_or_none(expanded) is None:
+        return 1
+    if resolve_aur and _resolve_aur_check(expanded) != 0:
         return 1
     print(f"{config_path}: OK — valid dasik config.")
     return 0
+
+
+# Where pacman keeps its sync DBs on the machine running `check`; module-level
+# so tests can point it at a fixture directory.
+_SYNC_DB_DIR = Path("/var/lib/pacman/sync")
+_STALE_DB_AGE_DAYS = 7
+
+
+def _warn_stale_sync_dbs() -> None:
+    """Say when the host's repo view is old enough to lie.
+
+    The exact 2026-08-18 trap: four lib32 packages had left multilib upstream,
+    but a 12-day-old sync DB still listed them, so the desktop would have
+    called them repo-satisfied while the target's fresh DB disagreed. Best
+    effort: an unreadable directory stays silent."""
+    try:
+        newest = max((p.stat().st_mtime for p in _SYNC_DB_DIR.glob("*.db")),
+                     default=None)
+    except OSError:
+        return
+    if newest is None:
+        return
+    import time
+    age_days = (time.time() - newest) / 86400
+    if age_days > _STALE_DB_AGE_DAYS:
+        from datetime import datetime
+        stamp = datetime.fromtimestamp(newest).strftime("%Y-%m-%d")
+        print(f"[warning] this host's pacman sync DBs were last refreshed "
+              f"{stamp} ({age_days:.0f} days ago): a package that recently "
+              f"left a repo would still look repo-satisfied. Refresh with "
+              f"`pacman -Sy` first.")
+
+
+def _resolve_aur_check(config: dict) -> int:
+    """Resolve declared packages + validate the AUR closure. 0 ok, 1 broken.
+
+    The repo view is THIS host's sync DBs (there is no target in `check`), so
+    it reflects the repos enabled here — good enough for the pre-trip check the
+    flag exists for, and the staleness warning covers the known lie."""
+    from dasik.lib.actions.package_resolver import AurUnavailableError
+    from dasik.lib.actions.packages_action import PackagesAction
+    from dasik.lib.exceptions.exceptions import CommandNotFoundException
+    from dasik.lib.target.target import Target
+    from dasik.lib.validation.aur_closure import validate_aur_closure
+
+    _warn_stale_sync_dbs()
+    action = PackagesAction(config)
+    target = Target(root="/")
+    try:
+        resolution = action._resolve_sources(action.desired, target)
+        if resolution.unavailable:
+            print("[error] aur_unavailable: existence could not be checked "
+                  "(retry): " + ", ".join(sorted(resolution.unavailable)),
+                  file=sys.stderr)
+            return 1
+        if resolution.unknown:
+            required = [n for n in resolution.unknown
+                        if n not in action.optional_packages]
+            if required and action.unknown_policy == "error":
+                print("[error] unknown_package: not found in any configured "
+                      "repo, group, package_sources or the AUR: "
+                      + ", ".join(sorted(resolution.unknown)), file=sys.stderr)
+                return 1
+            print("[warning] packages with no source (skipped at apply): "
+                  + ", ".join(sorted(resolution.unknown)))
+        if resolution.aur:
+            print(f"{len(resolution.aur)} package(s) resolve to the AUR: "
+                  + ", ".join(resolution.aur))
+        else:
+            print("0 packages resolve to the AUR.")
+            return 0
+        broken = validate_aur_closure(resolution.aur, action._resolver, target)
+    except AurUnavailableError as e:
+        print(f"[error] aur_unavailable: existence could not be checked "
+              f"(retry): {e}", file=sys.stderr)
+        return 1
+    except CommandNotFoundException as e:
+        print(f"[error] --resolve-aur needs pacman on this machine: {e}",
+              file=sys.stderr)
+        return 1
+    for b in broken:
+        print(f"[error] aur_dependency_unsatisfiable: {b.render()}",
+              file=sys.stderr)
+    return 1 if broken else 0
 
 
 def _cmd_hash_password(method: str = YESCRYPT) -> int:
@@ -1067,7 +1168,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             path = _validate_config_file(args.config)
             if path is None:
                 return 1
-            return _cmd_check(path)
+            return _cmd_check(path, resolve_aur=args.resolve_aur)
 
         if args.verb == "hash-password":
             return _cmd_hash_password(args.method)

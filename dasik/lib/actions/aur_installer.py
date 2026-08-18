@@ -246,16 +246,34 @@ class AurInstaller:
         except AurUnavailableError:
             self._abort_unavailable(wanted)
         for bare in wanted:
+            build_as = bare
             if bare not in found:
-                raise CommandExecutionError(
-                    f"AUR dependency {bare!r} required by {node!r} not found in "
-                    f"repos, AUR or installed system"
-                )
-            aur_deps.append(bare)
-            if bare not in declared:
-                discovered.add(bare)
-            if bare not in seen and bare not in pending:
-                pending.append(bare)
+                # Not an AUR package by name — maybe an AUR package's `provides`
+                # satisfies it (a soname, a virtual name). Exactly one provider
+                # is deterministic enough to build; several is a choice only the
+                # user can make; none keeps the historical error.
+                try:
+                    providers = self._resolver.aur_providers(bare)
+                except AurUnavailableError:
+                    self._abort_unavailable([bare])
+                if len(providers) > 1:
+                    raise CommandExecutionError(
+                        f"AUR dependency {bare!r} required by {node!r} is only "
+                        f"satisfied by a provider, and several exist: "
+                        f"{', '.join(sorted(providers))}. Declare the one you "
+                        f"want explicitly."
+                    )
+                if not providers:
+                    raise CommandExecutionError(
+                        f"AUR dependency {bare!r} required by {node!r} not found "
+                        f"in repos, AUR or installed system"
+                    )
+                build_as = providers[0]
+            aur_deps.append(build_as)
+            if build_as not in declared:
+                discovered.add(build_as)
+            if build_as not in seen and build_as not in pending:
+                pending.append(build_as)
 
     def _classify_dep(self, dep: str, repo: Set[str]) -> Tuple[str, str]:
         """Classify one dependency spec. Returns ``(kind, bare_name)`` where kind

@@ -32,6 +32,7 @@ Managing a target other than `/` also needs `arch-chroot`
 
 ```bash
 dasik check  config.json                 # validate: JSON + schema + coherence  (read-only)
+dasik check  config.json --resolve-aur   # …plus package sources and the AUR dep closure (network)
 dasik plan   config.json                 # the dry run: every change, touches nothing
 dasik apply  config.json --target /mnt   # converge  (DESTRUCTIVE on install)
 dasik sync   config.json --target /      # capture the running system into the config
@@ -46,6 +47,14 @@ dasik hash-password                      # a crypt hash for users[].hashed_passw
 `plan` and `apply` default to `--target /mnt` (the install target); `sync`,
 `generations` and `rollback` default to `/`. To manage the machine you are
 booted into, pass `--target /` explicitly.
+
+`check --resolve-aur` walks the transitive dependency closure of every package
+that resolves to the AUR and fails when a chain ends in a name nothing
+satisfies (the class of breakage that otherwise aborts `apply` mid-install —
+run it before carrying a config to another machine). Its repo view is the
+sync DBs of the host running the command, so refresh them (`pacman -Sy`)
+first; it warns when they look stale. `apply` always runs the same closure
+validation right before the AUR step, target-side.
 
 There is no bare `dasik <config>` form — it exits 2 and points at `plan`/`apply`.
 

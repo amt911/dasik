@@ -47,13 +47,17 @@ def _srcinfo(name, depends=()):
 
 
 class _StubResolver:
-    """Injected resolver: repo_names + aur_info, no network."""
+    """Injected resolver: repo_names + aur_info + aur_providers, no network."""
 
-    def __init__(self, repo=(), aur=(), unavailable=False):
+    def __init__(self, repo=(), aur=(), unavailable=False, providers=None,
+                 providers_unavailable=False):
         self._repo = set(repo)
         self._aur = set(aur)
         self._unavailable = unavailable
+        self._providers = dict(providers or {})
+        self._providers_unavailable = providers_unavailable
         self.aur_calls = []
+        self.provider_calls = []
 
     def repo_names(self, target):
         return set(self._repo)
@@ -63,6 +67,12 @@ class _StubResolver:
         if self._unavailable:
             raise AurUnavailableError("network down")
         return {n for n in names if n in self._aur}
+
+    def aur_providers(self, name):
+        self.provider_calls.append(name)
+        if self._providers_unavailable:
+            raise AurUnavailableError("network down")
+        return list(self._providers.get(name, []))
 
 
 class _Harness:
@@ -240,6 +250,48 @@ def test_unknown_dep_aborts_before_any_build():
     assert "ghost" in str(exc.value) and "asunder" in str(exc.value)
     assert _makepkgs(h) == []                # nothing built
     assert not any(c == "pacman" and a[:1] == ["-S"] for c, a in h.runs)
+
+
+def test_missing_dep_with_single_aur_provider_builds_that_provider():
+    """A dep only satisfied by an AUR package's `provides` (a soname, a virtual
+    name) must enqueue the PROVIDER as the build node instead of aborting."""
+    h = _Harness(srcinfo={"mpv-git": {"libplacebo.so"}, "libplacebo-git": set()})
+    r = _StubResolver(repo=[], aur=["libplacebo-git"],
+                      providers={"libplacebo.so": ["libplacebo-git"]})
+    _install(["mpv-git"], h, r)
+    builds = _makepkgs(h)
+    assert builds.index("libplacebo-git") < builds.index("mpv-git")
+    assert ("pacman", ["-D", "--asdeps", "libplacebo-git"]) in h.runs
+    assert r.provider_calls == ["libplacebo.so"]
+
+
+def test_missing_dep_with_several_aur_providers_aborts_naming_them():
+    h = _Harness(srcinfo={"mpv-git": {"libplacebo.so"}})
+    r = _StubResolver(repo=[], aur=[],
+                      providers={"libplacebo.so": ["libplacebo-git", "libplacebo-vulkan"]})
+    with pytest.raises(CommandExecutionError) as exc:
+        _install(["mpv-git"], h, r)
+    msg = str(exc.value)
+    assert "libplacebo.so" in msg and "mpv-git" in msg
+    assert "libplacebo-git" in msg and "libplacebo-vulkan" in msg
+    assert "declare" in msg.lower()
+    assert _makepkgs(h) == []
+
+
+def test_missing_dep_with_no_provider_keeps_the_not_found_error():
+    h = _Harness(srcinfo={"asunder": {"ghost"}})
+    r = _StubResolver(repo=[], aur=[], providers={})
+    with pytest.raises(CommandExecutionError, match="not found in"):
+        _install(["asunder"], h, r)
+    assert r.provider_calls == ["ghost"]
+
+
+def test_provider_search_unavailable_aborts_retryable():
+    h = _Harness(srcinfo={"mpv-git": {"libplacebo.so"}})
+    r = _StubResolver(repo=[], aur=[], providers_unavailable=True)
+    with pytest.raises(CommandExecutionError, match="[Rr]etry"):
+        _install(["mpv-git"], h, r)
+    assert _makepkgs(h) == []
 
 
 def test_dependency_cycle_raises():

@@ -23,6 +23,16 @@ from dasik.lib.target.target import Target
 
 
 @pytest.fixture(autouse=True)
+def _aur_closure_satisfiable():
+    """Stub the transitive AUR-closure gate: these tests exercise the optional
+    batching/failure mechanics, not the closure (which has its own suite in
+    test_packages_apply_closure_gate.py) — and the real walk would try the RPC."""
+    with patch("dasik.lib.validation.aur_closure.validate_aur_closure",
+               return_value=[]):
+        yield
+
+
+@pytest.fixture(autouse=True)
 def _quiet_run_logger():
     """Stub the process-wide RunLogger.
 

@@ -36,6 +36,13 @@ from ..exceptions.exceptions import ConfigValidationError
 _VALID_PKG_NAME = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9@._+-]*")
 
 _AUR_RPC_INFO_URL = "https://aur.archlinux.org/rpc/v5/info"
+_AUR_RPC_SEARCH_URL = "https://aur.archlinux.org/rpc/v5/search"
+# aurweb refuses search arguments shorter than this; a client-side limit, not
+# an outage, so short names answer "no providers" without a request.
+_MIN_SEARCH_ARG_CHARS = 2
+# The dependency fields the closure walk cares about — the same trio
+# srcinfo.parse_depends reads from a .SRCINFO.
+_AUR_DEP_FIELDS = ("Depends", "MakeDepends", "CheckDepends")
 # aurweb documents a ~4443-byte request-URI cap; stay well under it per batch.
 _MAX_QUERY_CHARS = 3500
 _HTTP_TIMEOUT = 15
@@ -97,6 +104,11 @@ def _lines(result) -> set:
 class PackageResolver:
     def __init__(self, http_get: Optional[Callable[[str], bytes]] = None):
         self._http_get = http_get or _default_http_get
+        # Per-instance memos so a closure walk never re-queries a name.
+        # _depends_cache: name -> merged dep list, or None = confirmed absent.
+        self._depends_cache: Dict[str, Optional[List[str]]] = {}
+        self._providers_cache: Dict[str, List[str]] = {}
+        self._repo_provides_cache: Dict[str, bool] = {}
 
     # -- pacman sync DBs (read from the target) ---------------------------
 
@@ -141,21 +153,79 @@ class PackageResolver:
         return batches
 
     def _aur_info_batch(self, names: List[str]) -> set:
+        return {r["Name"] for r in self._aur_fetch_batch(names)}
+
+    def _aur_fetch_batch(self, names: List[str]) -> List[Dict[str, Any]]:
+        """One rpc/v5/info request; the result dicts for *names* that exist.
+
+        Only entries whose ``Name`` was actually requested are trusted (aurweb
+        echoing an unsolicited name is ignored)."""
         query = urllib.parse.urlencode([("arg[]", n) for n in names])
         url = f"{_AUR_RPC_INFO_URL}?{query}"
+        data = self._fetch_json(url)
+        requested = set(names)
+        results = data.get("results", []) if isinstance(data, dict) else []
+        return [
+            r for r in results
+            if isinstance(r, dict) and r.get("Name") in requested
+        ]
+
+    def _fetch_json(self, url: str) -> Any:
         try:
-            body = self._http_get(url)
-            data = json.loads(body)
+            return json.loads(self._http_get(url))
         except AurUnavailableError:
             raise
         except Exception as e:  # noqa: BLE001 - any fetch/parse failure = unavailable
             raise AurUnavailableError(f"AUR RPC query failed: {e}") from e
-        requested = set(names)
-        results = data.get("results", []) if isinstance(data, dict) else []
+
+    def aur_depends(self, names: Sequence[str]) -> Dict[str, List[str]]:
+        """Existence + dependencies for *names* in one batched RPC round.
+
+        Returns ``{name: [dep spec, …]}`` for the names that exist in the AUR;
+        a name absent from the result is confirmed not to exist (an unreachable
+        RPC raises ``AurUnavailableError`` instead). Dep specs come from the
+        last published .SRCINFO's ``Depends``/``MakeDepends``/``CheckDepends``,
+        version constraints and all. Both outcomes are memoized per instance,
+        so a closure walk pays one request per name at most."""
+        requested = list(dict.fromkeys(names))
+        for n in requested:
+            _validate(n)
+        missing = [n for n in requested if n not in self._depends_cache]
+        for batch in self._batches(missing):
+            fetched = self._aur_fetch_batch(batch)
+            for r in fetched:
+                deps: List[str] = []
+                for fld in _AUR_DEP_FIELDS:
+                    value = r.get(fld, [])
+                    deps.extend(d for d in value if isinstance(d, str))
+                self._depends_cache[r["Name"]] = deps
+            for name in batch:
+                self._depends_cache.setdefault(name, None)
         return {
-            r["Name"] for r in results
-            if isinstance(r, dict) and r.get("Name") in requested
+            n: list(cached) for n in requested
+            if (cached := self._depends_cache.get(n)) is not None
         }
+
+    def aur_providers(self, name: str) -> List[str]:
+        """AUR packages whose ``provides`` satisfies *name* (sonames included).
+
+        One rpc/v5 ``search?by=provides`` request, memoized per instance. Names
+        shorter than aurweb's minimum search argument answer ``[]`` without a
+        request — a client-side limit, not an outage."""
+        _validate(name)
+        if len(name) < _MIN_SEARCH_ARG_CHARS:
+            return []
+        if name in self._providers_cache:
+            return list(self._providers_cache[name])
+        url = f"{_AUR_RPC_SEARCH_URL}/{urllib.parse.quote(name)}?by=provides"
+        data = self._fetch_json(url)
+        results = data.get("results", []) if isinstance(data, dict) else []
+        providers = [
+            r["Name"] for r in results
+            if isinstance(r, dict) and isinstance(r.get("Name"), str)
+        ]
+        self._providers_cache[name] = providers
+        return list(providers)
 
     # -- resolution --------------------------------------------------------
 
@@ -209,6 +279,12 @@ class PackageResolver:
             else:
                 res.unknown.append(name)
         return res
+
+    def repo_provides(self, name: str, target) -> bool:
+        """Public, memoized face of ``_is_provided`` for the closure walk."""
+        if name not in self._repo_provides_cache:
+            self._repo_provides_cache[name] = self._is_provided(name, target)
+        return self._repo_provides_cache[name]
 
     def _is_provided(self, name: str, target) -> bool:
         """Whether pacman can satisfy *name* the way an install would.

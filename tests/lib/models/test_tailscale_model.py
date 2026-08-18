@@ -33,6 +33,30 @@ def test_accepted_through_the_root_model():
     assert cfg.tailscale is not None and cfg.tailscale.accept_routes is True
 
 
+def test_auth_key_file_accepts_an_absolute_path():
+    """The PATH may live in Git; the key itself never does (issue #318).
+
+    tailscaled's conffile mode has no interactive login — `tailscale up` and
+    `tailscale login` both answer "can't reconfigure tailscaled when using a
+    config file". The supported path is an authKey entry, and its `file:` form
+    keeps the secret in a local root-owned file."""
+    m = TailscaleModel(auth_key_file="/etc/tailscale/authkey")
+    assert m.auth_key_file == "/etc/tailscale/authkey"
+    assert TailscaleModel().auth_key_file is None
+
+
+def test_auth_key_file_rejects_a_relative_path():
+    with pytest.raises(ValidationError):
+        TailscaleModel(auth_key_file="tailscale/authkey")
+
+
+def test_auth_key_file_rejects_an_inline_key():
+    """Somebody pasting the key itself instead of a path must be stopped —
+    that is exactly the secret-in-Git the field exists to avoid."""
+    with pytest.raises(ValidationError):
+        TailscaleModel(auth_key_file="tskey-auth-abc123-def")
+
+
 def test_no_auth_key_field():
     """A tailnet credential must not be declarable in a config `dasik save`
     commits to Git."""

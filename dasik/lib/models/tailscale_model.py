@@ -70,6 +70,12 @@ class TailscaleModel(BaseModel):
         None, description="Allow the control plane to collect device posture")
     server_url: Optional[str] = Field(
         None, description="Control plane URL; only for a self-hosted coordinator")
+    auth_key_file: Optional[str] = Field(
+        None, description="Absolute path (on the target) of a file holding a "
+                          "tailnet auth key; rendered as the conffile's "
+                          "AuthKey file: reference. The PATH may live in Git; "
+                          "the key itself never does — conffile mode has no "
+                          "interactive login (issue #318)")
     # Not a conffile key: this is the daemon's listening port, which lives in
     # /etc/default/tailscaled next to the --config flag. dasik has to write it
     # because the vendor unit interpolates ${PORT} and an empty one is not a
@@ -97,6 +103,22 @@ class TailscaleModel(BaseModel):
             except ValueError as exc:
                 raise ValueError(f"advertise_routes entry {route!r} is not a CIDR "
                                  f"network: {exc}") from exc
+        return v
+
+    @field_validator("auth_key_file")
+    @classmethod
+    def _absolute_path_not_a_key(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        if v.startswith("tskey-"):
+            # Somebody pasted the key itself: exactly the secret-in-Git this
+            # field exists to avoid.
+            raise ValueError(
+                "auth_key_file takes the PATH of a file holding the key, "
+                "never the key itself — a synced config is committed to Git")
+        if not v.startswith("/"):
+            raise ValueError(
+                f"auth_key_file must be an absolute path on the target, got {v!r}")
         return v
 
     @field_validator("hostname")

@@ -385,8 +385,21 @@ vendor-sanctioned route and an upgrade writes a `.pacnew` rather than clobbering
 it. dasik writes `PORT` there as well, because the unit interpolates `${PORT}`
 and an empty one is not a working command line — hence the `port` field.
 
+**Logging in**: conffile mode has no interactive login — `tailscale up` and
+`tailscale login` both answer `can't reconfigure tailscaled when using a config
+file`. Declare `auth_key_file` with the absolute path (on the target) of a
+root-owned 0600 file holding a tailnet auth key; it renders as the conffile's
+`AuthKey` `file:` reference, so only the PATH ever reaches the Git config.
+While the file does not exist yet, dasik omits the entry with a warning — a
+dangling `file:` reference stops tailscaled from starting (measured in the
+guest oracle) — and the next apply after you create the file wires it in. Once
+the node is logged in you may delete the key file and revoke the key: the node
+identity lives in tailscaled's state, not in the auth key. `sync` captures the
+path, and never a literal key someone put in the conffile by hand.
+
 ```json
 "tailscale": {
+  "auth_key_file": "/etc/tailscale/authkey",
   "accept_routes": true,
   "accept_dns": true,
   "ssh": false,

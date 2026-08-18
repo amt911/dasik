@@ -45,6 +45,7 @@ import os
 from typing import Any, Dict, Optional
 
 from .scalar_action import ScalarV3Action
+from ..logging import run_logger
 
 _CONF = "/etc/tailscale/tailscaled.conf"
 
@@ -70,6 +71,9 @@ _CONFFILE_KEYS: Dict[str, str] = {
     "netfilter_mode": "NetfilterMode",
     "posture_checking": "PostureChecking",
     "server_url": "ServerURL",
+    # Rendered as a `file:` reference and parsed back only in that form — a
+    # literal key someone hand-provisioned is never copied into a Git config.
+    "auth_key_file": "AuthKey",
 }
 
 _FIELD_FOR_KEY = {v: k for k, v in _CONFFILE_KEYS.items()}
@@ -106,6 +110,9 @@ def _render(block: Dict[str, Any]) -> Optional[str]:
             continue
         if isinstance(value, (list, tuple)) and not value:
             continue
+        if field == "auth_key_file":
+            body[key] = f"file:{value}"
+            continue
         body[key] = list(value) if isinstance(value, (list, tuple)) else value
     if not body:
         return None
@@ -122,7 +129,19 @@ def _parse(text: str) -> Dict[str, Any]:
         return {}
     if not isinstance(raw, dict):
         return {}
-    return {_FIELD_FOR_KEY[k]: v for k, v in raw.items() if k in _FIELD_FOR_KEY}
+    out: Dict[str, Any] = {}
+    for k, v in raw.items():
+        if k not in _FIELD_FOR_KEY:
+            continue
+        if _FIELD_FOR_KEY[k] == "auth_key_file":
+            # Capture the PATH form only. A literal key someone provisioned by
+            # hand is a secret; copying it into a config `dasik save` commits
+            # to Git is the exact leak the field exists to avoid.
+            if isinstance(v, str) and v.startswith("file:"):
+                out["auth_key_file"] = v[len("file:"):]
+            continue
+        out[_FIELD_FOR_KEY[k]] = v
+    return out
 
 
 class TailscaleAction(ScalarV3Action):
@@ -134,6 +153,7 @@ class TailscaleAction(ScalarV3Action):
         super().__init__(config, context)
         cfg: Dict[str, Any] = config if isinstance(config, dict) else {}
         self._block: Dict[str, Any] = cfg.get("tailscale") or {}
+        self._warned_missing_key = False
 
     @property
     def name(self) -> str:
@@ -151,7 +171,35 @@ class TailscaleAction(ScalarV3Action):
         return t.path(_CONF) if t is not None else "/mnt" + _CONF
 
     def _desired_value(self) -> Optional[str]:
-        return _render(self._block)
+        return _render(self._effective_block())
+
+    def _effective_block(self) -> Dict[str, Any]:
+        """The declared block, minus an AuthKey whose file is not there yet.
+
+        Measured in the guest oracle (guest-authkey-spike.sh): tailscaled
+        refuses to START on a dangling ``file:`` reference. A key file the user
+        has not provisioned yet must not take the daemon down, so the entry is
+        omitted with a loud warning and the domain converges without it; once
+        the file appears, the next plan shows the MODIFY that adds the AuthKey.
+        """
+        path = self._block.get("auth_key_file")
+        if not path:
+            return self._block
+        t = self._target()
+        real = t.path(path) if t is not None else path
+        if os.path.exists(real):
+            return self._block
+        if not self._warned_missing_key:
+            self._warned_missing_key = True
+            run_logger.get().warning(
+                f"tailscale.auth_key_file declares {path!r}, which does not "
+                "exist on the target — writing the conffile WITHOUT AuthKey "
+                "(a dangling file: reference stops tailscaled from starting)",
+                detail="Create the file (a tailnet auth key, mode 0600) and "
+                       "re-run apply; the node logs in on the next daemon "
+                       "start. Until then it stays logged out.",
+            )
+        return {k: v for k, v in self._block.items() if k != "auth_key_file"}
 
     def _actual_value(self) -> Optional[str]:
         try:

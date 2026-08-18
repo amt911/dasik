@@ -526,18 +526,46 @@ def expand_apparmor(config: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
-def expand_pam(config: Dict[str, Any]) -> Dict[str, Any]:
-    """The password-quality library, when the policy is declared.
+_POLKIT_HELPER_DROPIN = (
+    "/etc/systemd/system/polkit-agent-helper@.service.d/10-dasik-faillock.conf")
 
-    faillock and limits need no package at all: pam_faillock is already in
-    Arch's stack and pam_limits ships with pam itself. Only pwquality adds a
+
+def expand_pam(config: Dict[str, Any]) -> Dict[str, Any]:
+    """The password-quality library, and faillock's polkit-sandbox drop-in.
+
+    limits needs no package at all (pam_limits ships with pam) and pam_faillock
+    is already in Arch's stack — but declaring ``faillock`` still contributes a
+    file: polkit's agent helper runs under ``ProtectSystem=strict`` with no
+    ``ReadWritePaths``, so pam_faillock cannot open its tally directory from a
+    polkit dialog and every KDE authentication prompt dies with "System error"
+    no matter the password (found live on the P14s, 2026-08-18; sudo and login
+    are unaffected because they are not sandboxed). The drop-in whitelists
+    exactly the tally directory faillock.conf points at. Only pwquality adds a
     dependency, and without it `pam_pwquality.so` in /etc/pam.d/passwd would
     break the `passwd` command outright.
     """
-    pwquality = (config.get("pam") or {}).get("pwquality")
-    if pwquality is None or not pwquality.get("enable", True):
-        return {}
-    return {"packages": ["libpwquality"]}
+    pam = config.get("pam") or {}
+    out: Dict[str, Any] = {}
+    pwquality = pam.get("pwquality")
+    if pwquality is not None and pwquality.get("enable", True):
+        out["packages"] = ["libpwquality"]
+    faillock = pam.get("faillock")
+    if faillock is not None:
+        tally_dir = ("/var/lib/faillock" if faillock.get("persistent", True)
+                     else "/run/faillock")
+        out["files"] = [{
+            "path": _POLKIT_HELPER_DROPIN,
+            "content": (
+                "# Managed by dasik: polkit's agent helper runs under\n"
+                "# ProtectSystem=strict, which makes pam_faillock's tally\n"
+                "# directory read-only — every KDE authentication dialog then\n"
+                "# fails with \"System error\" no matter the password. Let the\n"
+                "# helper write exactly the directory faillock.conf points at.\n"
+                "[Service]\n"
+                f"ReadWritePaths={tally_dir}\n"
+            ),
+        }]
+    return out
 
 
 _CONFIG_SAVER_DIR = "/etc/config-saver/configs"

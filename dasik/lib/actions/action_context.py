@@ -20,7 +20,14 @@ class ActionContext:
       ``ctx.manifest["managed"][domain]``). Read by v3 actions inside
       ``plan()`` so they can compute REMOVE = M \\ D.
 
-    Both default to ``None`` so legacy actions and existing call-sites that do
+    - ``assume_yes``: the CLI's ``--yes``. An action that would otherwise ask
+      the human something during ``apply`` must not: ``--yes`` is the promise
+      that nobody is there to answer. Found in a VM, where the guest installer
+      runs on a serial console — stdin IS a terminal, so a terminal check alone
+      was not enough and `dasik apply --yes` sat for ever at "plug in FIDO2 key
+      1 of 2".
+
+    All three default so legacy actions and existing call-sites that do
     ``ActionContext()`` keep working unchanged.
     """
 
@@ -28,12 +35,14 @@ class ActionContext:
         self,
         target: Optional["Target"] = None,
         manifest: Optional[Dict[str, Any]] = None,
+        assume_yes: bool = False,
     ):
         """Initialize empty context."""
         self._data: Dict[str, Any] = {}
         self.partition_map: Dict[str, str] = {}
         self.target = target
         self.manifest = manifest
+        self.assume_yes = assume_yes
     
     def set(self, key: str, value: Any) -> None:
         """Store a value in the context.

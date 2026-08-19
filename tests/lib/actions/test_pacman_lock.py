@@ -33,6 +33,11 @@ def _action(tmp_path, locked, running):
         (tmp_path / "var/lib/pacman/db.lck").write_text("")
     action._pacman_is_running = lambda: running
     action._installed_all = MagicMock(return_value=set())
+    # Same reason, for the reason probe: `plan` asks `_explicit_raw()`
+    # (`pacman -Qqe`, raw) whether a declared package is explicit, and an
+    # unstubbed one asks the machine running the tests — which has no
+    # pacman at all on CI.
+    action._explicit_raw = MagicMock(return_value=set())
     action.actual = MagicMock(return_value=set())
     return action
 

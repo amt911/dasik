@@ -1,7 +1,7 @@
 """Models for disk partitioning configuration."""
 import re
 from enum import Enum
-from typing import Optional, List
+from typing import Any, Literal, Mapping, Optional, List, Union
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 # device-mapper name that is ALSO interpolated into the kernel cmdline
@@ -16,6 +16,51 @@ _LABEL_RE = re.compile(r"[A-Za-z0-9_.-]{1,36}")
 # module the initramfs must load to read it, so the set is closed rather than
 # free-form.
 _KEYDEV_FILESYSTEMS = {"vfat", "exfat", "ext4", "btrfs", "xfs"}
+# LUKS2 header holds 32 keyslots. Every token needs one, and a volume whose
+# every slot is a token is a volume nobody can type their way into, so the
+# last one is not offered.
+_MAX_FIDO2_KEYS = 31
+
+
+def fido2_count(part: Mapping[str, Any]) -> int:
+    """How many FIDO2 keys a partition mapping declares.
+
+    One place, because four callers have to agree: the plan, the enrolment,
+    the kernel cmdline and the initramfs. ``True`` is one key (what the flag
+    always meant), ``False``/absent is none, an int is itself.
+
+    ``isinstance(True, int)`` is True in Python, so the bool check comes
+    first or every ``True`` would count as 1 by accident rather than by
+    intent — and every ``False`` would raise.
+    """
+    value = part.get("unlock_fido2", False)
+    if isinstance(value, bool):
+        return 1 if value else 0
+    if value is None:
+        return 0
+    try:
+        count = int(value)
+    except (TypeError, ValueError):
+        return 0
+    return max(0, count)
+
+
+class LuksTokenPolicyModel(BaseModel):
+    """What an apply does when a hardware-token enrolment fails.
+
+    ``abort`` (default, and what dasik always did): the apply stops and records
+    a partial generation. A silent failure would leave the machine carrying
+    ``fido2-device=auto`` on its kernel command line with no token in the
+    header, which is the worst of both worlds — it looks converged and asks for
+    a key that was never enrolled.
+
+    ``warn-and-continue``: the failure is reported in red, the keyslot stays
+    OUT of the manifest (so ``plan`` keeps showing it and the next apply retries
+    it), and the rest of the apply carries on. It exists for the run nobody is
+    watching; a human at a terminal is asked instead, and can skip a key there
+    without changing this at all.
+    """
+    enroll_failure: Literal["abort", "warn-and-continue"] = "abort"
 
 
 class PartitionTableType(str, Enum):
@@ -121,9 +166,13 @@ class Partition(BaseModel):
         default=False,
         description="Enroll a TPM2 keyslot for automatic (passwordless) unlock."
     )
-    unlock_fido2: bool = Field(
+    unlock_fido2: Union[bool, int] = Field(
         default=False,
-        description="Enroll a FIDO2 token keyslot (needs the physical key at enroll+boot)."
+        description="FIDO2 token keyslots to enroll (needs the physical key at "
+                    "enroll+boot). `true` is one key, an integer is that many — "
+                    "one per physical key you own, each enrolled with only that "
+                    "key plugged in. The LUKS header can be counted, not named: "
+                    "dasik knows HOW MANY tokens are enrolled, never which."
     )
     luks_options: List[str] = Field(
         default_factory=list,
@@ -149,6 +198,21 @@ class Partition(BaseModel):
                     "image); 'none' leaves it plain. Orthogonal to `encrypt`, "
                     "which is LUKS with one persistent key."
     )
+
+    @field_validator('unlock_fido2')
+    @classmethod
+    def validate_unlock_fido2(cls, v):
+        """A count of physical keys: never negative, never past the header."""
+        if isinstance(v, bool):
+            return v
+        if v < 0:
+            raise ValueError(
+                f"unlock_fido2 must be a count of FIDO2 keys (0 or more), got {v}")
+        if v > _MAX_FIDO2_KEYS:
+            raise ValueError(
+                f"unlock_fido2={v} exceeds the {_MAX_FIDO2_KEYS} FIDO2 keyslots a "
+                f"LUKS2 header can hold beside a passphrase")
+        return v
 
     @field_validator('label')
     @classmethod

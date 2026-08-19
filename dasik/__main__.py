@@ -477,6 +477,7 @@ def _cmd_apply(config_path: Path, target_root: str, assume_yes: bool) -> int:
         action_metas=registry.get_all_actions(),
         state_store=state_store,
         generation_store=gen_store,
+        assume_yes=assume_yes,
     )
     plan, results = reconciler.build_plan()
     print(plan.render())
@@ -798,6 +799,7 @@ def _cmd_rollback(target_root: str, number: Optional[int], assume_yes: bool) -> 
         action_metas=registry.get_all_actions(),
         state_store=state_store,
         generation_store=gen_store,
+        assume_yes=assume_yes,
     )
     plan, results = reconciler.build_plan()
     print(plan.render())

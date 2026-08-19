@@ -202,6 +202,13 @@ def test_apply_without_a_passphrase_fails_loudly_instead_of_hanging():
 
 
 def test_apply_wipes_the_slot_on_a_removal():
+    """By NUMBER, not by kind.
+
+    `--wipe-slot=tpm2` wipes every keyslot of that kind, which was the same
+    thing back when a kind could only have one. FIDO2 can have several now, so
+    dropping one key must not take the others with it — and `_DUMP_TPM2` binds
+    its token to keyslot 1.
+    """
     action = _action(_config(), dump=_DUMP_TPM2)
     changes = action.plan(managed=["cryptroot:tpm2"])
 
@@ -209,7 +216,7 @@ def test_apply_wipes_the_slot_on_a_removal():
         run.return_value = MagicMock(stdout=b"", returncode=0)
         action.apply(changes)
 
-    assert run.call_args[0][1] == ["--wipe-slot=tpm2", "/dev/vda2"]
+    assert run.call_args[0][1] == ["--wipe-slot=1", "/dev/vda2"]
 
 
 def test_apply_does_nothing_when_the_plan_is_empty():

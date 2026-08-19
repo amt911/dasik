@@ -14,6 +14,7 @@ from .partition_utils import keydev_spec, mounts_root
 from typing import Any, Dict, List, Optional
 from .abstract_action import AbstractAction
 from ..command_worker.command_worker import Command
+from ..models.disk_model import fido2_count
 from ..state.change import Op
 
 _CPUINFO = "/proc/cpuinfo"
@@ -134,7 +135,9 @@ class KernelCmdlineAction(AbstractAction):
                     opts = []
                     if part.get("unlock_tpm2"):
                         opts.append("tpm2-device=auto")
-                    if part.get("unlock_fido2"):
+                    if fido2_count(part):
+                        # One option covers every enrolled key: systemd tries the
+                        # tokens in the header until one answers.
                         opts.append("fido2-device=auto")
                     # Extra verbatim rd.luks.options (e.g. "token-timeout=10s").
                     opts.extend(part.get("luks_options", []) or [])

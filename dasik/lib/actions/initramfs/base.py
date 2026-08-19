@@ -32,6 +32,9 @@ def detect_root_fs(cfg: Dict[str, Any]) -> Optional[str]:
     return None
 
 
+from ...models.disk_model import fido2_count
+
+
 def _any_partition_flag(cfg: Dict[str, Any], flag: str) -> bool:
     disks = cfg.get("disks", {})
     if isinstance(disks, dict):
@@ -43,7 +46,19 @@ def _any_partition_flag(cfg: Dict[str, Any], flag: str) -> bool:
 
 
 def detect_fido2(cfg: Dict[str, Any]) -> bool:
-    return _any_partition_flag(cfg, "unlock_fido2")
+    """Does any partition ask for a FIDO2 token?
+
+    Through `fido2_count`, so "how many keys" is decided in ONE place: the flag
+    is a bool OR a count, and `unlock_fido2: 0` has to mean the same as `false`
+    to every consumer, the initramfs included.
+    """
+    disks = cfg.get("disks", {})
+    if isinstance(disks, dict):
+        for disk in disks.get("disks", []):
+            for part in disk.get("partitions", []):
+                if fido2_count(part):
+                    return True
+    return False
 
 
 def detect_tpm2(cfg: Dict[str, Any]) -> bool:

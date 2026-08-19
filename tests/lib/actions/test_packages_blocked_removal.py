@@ -47,6 +47,9 @@ def _plan(managed, desired, qi, installed=None):
                             ActionContext(target=Target(root="/")))
     installed = set(installed if installed is not None else set(managed) | set(desired))
     action._installed_all = MagicMock(return_value=installed)
+    # The reason branch asks `_explicit_raw` (`pacman -Qqe`, raw); `actual()`
+    # widens that with groups/providers for ownership. Same machine, both doors.
+    action._explicit_raw = MagicMock(return_value=set(installed))
     action.actual = MagicMock(return_value=installed)
     with patch("dasik.lib.actions.packages_action.Command.execute", return_value=qi):
         return [(c.op.name, c.item) for c in action.plan(managed=list(managed))]
@@ -98,6 +101,7 @@ def test_a_probe_that_cannot_answer_leaves_the_plan_alone():
     """No pacman to ask: plan it and let the tool refuse, exactly as before."""
     action = PackagesAction({"packages": []}, ActionContext(target=Target(root="/")))
     action._installed_all = MagicMock(return_value={"htop"})
+    action._explicit_raw = MagicMock(return_value={"htop"})
     action.actual = MagicMock(return_value={"htop"})
     with patch("dasik.lib.actions.packages_action.Command.execute",
                side_effect=OSError("no pacman")):

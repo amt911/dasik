@@ -25,6 +25,9 @@ def _action(manifest=None, installed=("config-saver",)):
         context=ActionContext(target=Target(root="/"), manifest=manifest),
     )
     a._installed_all = MagicMock(return_value=set(installed))  # type: ignore
+    # The reason branch asks `_explicit_raw` (`pacman -Qqe`, raw); `actual()`
+    # widens that with groups/providers for ownership. Same machine, both doors.
+    a._explicit_raw = MagicMock(return_value=set(installed))   # type: ignore
     a.actual = MagicMock(return_value=set(installed))          # type: ignore
     # Nothing is reached through a provider here. Stubbed like the two above,
     # so the probe never asks the machine running the suite.

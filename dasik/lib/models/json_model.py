@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from .locale_model import LocaleModel
 from .timezone_model import TimezoneModel
 from .network_model import NetworkModel
-from .disk_model import DisksConfiguration
+from .disk_model import DisksConfiguration, LuksTokenPolicyModel
 from .user_model import UserModel
 from .file_model import FileEntry, EtcFile, HomeFile, _validate_mode
 from .package_model import PackageSpec, PackagePolicyModel, GitPackageSourceModel
@@ -61,6 +61,10 @@ class JsonModel(BaseModel):
                     "Source (repo/group/AUR/package_sources) is auto-resolved — no aur- prefix.")
     # Unknown-package policy + explicit Git PKGBUILD sources (PLAN v3).
     package_policy: PackagePolicyModel = Field(default_factory=PackagePolicyModel)
+    luks_token_policy: LuksTokenPolicyModel = Field(
+        default_factory=LuksTokenPolicyModel,
+        description="What an apply does when a TPM2/FIDO2 enrolment fails: "
+                    "abort (default) or warn-and-continue.")
     package_sources: Dict[str, GitPackageSourceModel] = Field(
         default_factory=dict,
         description="Map of package name -> Git PKGBUILD source for packages not in "

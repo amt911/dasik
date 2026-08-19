@@ -105,15 +105,37 @@ class WireguardAction(AbstractAction):
             return ""
 
     def plan(self, managed: Any) -> list:
-        """Only the converted tunnels; everything else the toggle writes."""
+        """Only the converted tunnels; everything else the toggle writes.
+
+        The keyfile's CONTENT comes from the target's nmcli, which on a fresh
+        install is not there yet — `plan` runs before PackagesAction. Skipping
+        the tunnel then (the old behaviour) meant a one-pass install finished
+        rc=0 with no VPN on the machine and nothing said about it; the tunnel
+        appeared only if somebody happened to run `apply` twice.
+
+        So the plan is built from what IS knowable before the transaction —
+        whether the keyfile exists at all — and the content comparison is kept
+        for when nmcli can answer. `apply` runs long after the packages, so it
+        can build what this announces; if it still cannot, it says so loudly
+        instead of leaving a declared VPN quietly missing.
+        """
         from ..state.change import Change, Op
 
         changes: list = []
         for name, conf, autoconnect in self._converted():
+            current = self._current_keyfile(name)
             desired = self._desired_keyfile(name, conf, autoconnect)
             if not desired:
+                # No nmcli to ask. A keyfile that is already there is not
+                # evidence of drift — there is nothing to compare it against —
+                # but one that is missing is a change this apply owes.
+                if not current:
+                    changes.append(Change(
+                        self._DOMAIN, Op.MODIFY, name,
+                        reason="nmcli keyfile is missing (nmcli is not on the "
+                               "target yet; it is built during this apply)"))
                 continue
-            if self._current_keyfile(name) != desired:
+            if current != desired:
                 changes.append(Change(self._DOMAIN, Op.MODIFY, name,
                                       reason="nmcli keyfile"))
         return changes

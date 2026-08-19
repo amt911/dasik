@@ -374,14 +374,17 @@ class LuksTokenAction(AbstractAction):
 
     # --- asking the human -------------------------------------------------- #
 
-    @staticmethod
-    def _interactive() -> bool:
-        """Is there a terminal to ask on?
+    def _interactive(self) -> bool:
+        """Is there a human to ask?
 
-        A scripted install (the VM harness, a cron run, `dasik apply < /dev/null`)
-        must never block on a question nobody can answer, so it is never asked
-        one — the policy decides there instead.
+        Two conditions, and the second was learnt in a VM: a terminal has to
+        exist, AND the run must not be ``--yes``. The guest installer runs on a
+        serial console, so stdin passes `isatty` — and `dasik apply --yes` sat
+        for ever at "plug in FIDO2 key 1 of 2" with nobody there. `--yes` is
+        precisely the promise that nobody is; the policy decides instead.
         """
+        if getattr(self.context, "assume_yes", False):
+            return False
         try:
             return bool(sys.stdin) and sys.stdin.isatty()
         except (AttributeError, ValueError):     # closed/replaced stdin

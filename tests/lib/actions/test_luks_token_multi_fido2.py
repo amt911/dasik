@@ -253,3 +253,49 @@ def test_tpm2_is_still_a_single_boolean_slot():
     action._luks_device = lambda name: "/dev/vda2"
     action._dump = lambda dev: _dump()
     assert _items(action.plan(managed=[])) == ["cryptroot:tpm2"]
+
+
+# --- `--yes` means "do not ask me" --------------------------------------- #
+#
+# Found in a VM: the guest installer runs on a serial console, so stdin IS a
+# terminal, and `dasik apply --yes` sat forever at "plug in FIDO2 key 1 of 2".
+# An unattended install that declares two keys must not deadlock on a question
+# nobody is there to answer — which is exactly what --yes already promises for
+# the destructive-changes prompt.
+
+def _action_yes(keys=2, policy=None):
+    action = _action(keys=keys, policy=policy)
+    action.context = MagicMock(target=None, assume_yes=True)
+    return action
+
+
+def test_yes_skips_the_swap_prompt_even_on_a_terminal():
+    action = _action_yes()
+    with _stdin_isatty(True), patch("builtins.input") as ask, \
+            patch("dasik.lib.actions.luks_token_action.Command.execute") as execute:
+        execute.return_value = MagicMock(returncode=0)
+        action.apply(action.plan(managed=[]))
+
+    ask.assert_not_called()
+    assert execute.call_count == 2
+
+
+def test_yes_hands_a_failure_to_the_policy_not_to_a_question():
+    action = _action_yes(policy="warn-and-continue")
+    changes = action.plan(managed=[])
+    with _stdin_isatty(True), patch("builtins.input") as ask, \
+            patch("dasik.lib.actions.luks_token_action.Command.execute",
+                  side_effect=CommandExecutionError("no FIDO2 device found")):
+        action.apply(changes)      # must NOT raise, must NOT ask
+
+    ask.assert_not_called()
+
+
+def test_yes_with_the_default_policy_still_aborts_loudly():
+    action = _action_yes()
+    changes = action.plan(managed=[])
+    with _stdin_isatty(True), patch("builtins.input"), \
+            patch("dasik.lib.actions.luks_token_action.Command.execute",
+                  side_effect=CommandExecutionError("no FIDO2 device found")):
+        with pytest.raises(CommandExecutionError):
+            action.apply(changes)

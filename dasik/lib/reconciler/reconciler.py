@@ -60,6 +60,7 @@ class Reconciler:
         state_store: Optional[Any] = None,
         generation_store: Optional[Any] = None,
         owned_config: Optional[dict[str, Any]] = None,
+        assume_yes: bool = False,
     ):
         self._config = config
         self._target = target
@@ -75,10 +76,16 @@ class Reconciler:
         # turning the block off no longer removed it (issue #197). None keeps
         # the old behaviour for every other caller.
         self._owned_config = owned_config
+        # Reaches the actions through ActionContext, because `--yes` is not only
+        # about the destructive-changes prompt below: an action that asks the
+        # human something mid-apply (LuksTokenAction asks you to swap FIDO2
+        # keys) has to know that nobody is there to answer.
+        self._assume_yes = assume_yes
 
     def build_plan(self) -> tuple[Plan, list[ActionPlanResult]]:
         managed_all = (self._manifest or {}).get("managed", {})
-        ctx = ActionContext(target=self._target, manifest=self._manifest)
+        ctx = ActionContext(target=self._target, manifest=self._manifest,
+                            assume_yes=self._assume_yes)
 
         plan = Plan()
         results: list[ActionPlanResult] = []
@@ -285,7 +292,8 @@ class Reconciler:
         only when there are no v3 actions to sync.
         """
         managed_all = (self._manifest or {}).get("managed", {})
-        ctx = ActionContext(target=self._target, manifest=self._manifest)
+        ctx = ActionContext(target=self._target, manifest=self._manifest,
+                            assume_yes=self._assume_yes)
 
         fragments: dict[str, Any] = {}
         new_managed: dict[str, Any] = {}

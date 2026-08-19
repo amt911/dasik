@@ -191,7 +191,8 @@ systemd-cryptenroll needs exactly one), then press Enter. [s = skip the remainin
 Answer `s` and the key is not enrolled and **not recorded as enrolled**: the
 apply finishes, and the next `plan` still asks for it. Declaring three keys and
 finding only two in the drawer costs you a keystroke, not the install. With no
-terminal to ask on (a scripted install, the VM harness) nobody is asked and
+terminal to ask on — a scripted install, the VM harness, **or `--yes`, which is
+the flag that promises no question will be asked** — nobody is asked and
 [`luks_token_policy.enroll_failure`](Config-reference) decides.
 
 Dropping from three keys to two wipes **one** keyslot, named by number — never

@@ -39,6 +39,8 @@
 # Knobs (see lib.sh): DASIK_VM_RAM (MiB, default 2048, cap 8192, also refused if
 #   it would exceed host MemAvailable), DASIK_VM_CPUS (2), DASIK_VM_DISK (8G),
 #   DASIK_VM_ISO (path to Arch ISO), DASIK_VM_TPM (1=swtpm), DASIK_VM_WORKDIR,
+#   DASIK_VM_NVME (1 = attach the primary disk as an emulated NVMe controller,
+#   so the guest sees /dev/nvme0n1 instead of /dev/vda),
 #   DASIK_VM_KEYDEV (raw image attached as a SECOND disk = the "pendrive" a LUKS
 #   keyfile unlock reads its key from; build it with make-keydev.sh).
 set -euo pipefail
@@ -93,6 +95,22 @@ _keydev_args() {
     echo "-drive file=$DASIK_VM_KEYDEV,if=virtio,format=raw"
 }
 
+# Primary disk args. Default: virtio, so the guest names it /dev/vda. With
+# DASIK_VM_NVME=1 the SAME image is attached to an emulated NVMe controller
+# instead and the guest names it /dev/nvme0n1 — which is what every real machine
+# here declares, and the only way to drive one of those configs VERBATIM. It is
+# not cosmetic: an NVMe namespace numbers its partitions `nvme0n1p1`, and that
+# `p` suffix is a code path /dev/vda never exercises.
+_primary_disk_args() {
+    local disk="$1" fmt="${2:-}"
+    local fmtarg=""; [ -n "$fmt" ] && fmtarg=",format=$fmt"
+    if [ "${DASIK_VM_NVME:-0}" = "1" ]; then
+        echo "-drive file=$disk,if=none,id=nvm0$fmtarg -device nvme,drive=nvm0,serial=dasikvm0"
+    else
+        echo "-drive file=$disk,if=virtio$fmtarg"
+    fi
+}
+
 # Software TPM 2.0 (swtpm) for TPM2 LUKS auto-unlock tests. Sets the globals
 # TPM_QARGS (qemu device args) and SWTPM_PID; NOT a $(...) helper because it must
 # start the daemon in the caller's shell. Enable with DASIK_VM_TPM=1. The TPM
@@ -143,7 +161,7 @@ cmd_run_iso() {
     local args
     args="$(_base_args) $(_accel_args)"
     args="$args -cdrom $DASIK_VM_ISO -boot d"
-    args="$args -drive file=$disk,if=virtio,format=qcow2"
+    args="$args $(_primary_disk_args "$disk" qcow2)"
     args="$args -virtfs local,path=$REPO_ROOT,mount_tag=dasik,security_model=none,readonly=on"
     args="$args -netdev user,id=n0 -device virtio-net,netdev=n0"
 
@@ -174,7 +192,7 @@ cmd_boot() {
     local args
     _start_tpm "$(dirname "$image")"
     args="$(_base_args) $(_accel_args) $ovmf $TPM_QARGS"
-    args="$args -drive file=$image,if=virtio -boot c $(_keydev_args)"
+    args="$args $(_primary_disk_args "$image") -boot c $(_keydev_args)"
 
     log "QEMU command:"; echo "  qemu-system-x86_64 $args"
     if [ "$dry" -eq 1 ]; then log "(dry-run) not launching QEMU."; return 0; fi
@@ -254,7 +272,7 @@ cmd_install() {
     local qargs="-enable-kvm -cpu host -m $DASIK_VM_RAM -smp $DASIK_VM_CPUS -nographic -display none"
     qargs="$qargs $ovmf -kernel $kernel -initrd $initrd -append \"$append\""
     # ISO on virtio (OVMF does not enumerate the IDE -cdrom); qcow2 as vda.
-    qargs="$qargs -drive file=$disk,if=virtio,format=qcow2 $(_keydev_args)"
+    qargs="$qargs $(_primary_disk_args "$disk" qcow2) $(_keydev_args)"
     qargs="$qargs -drive file=$DASIK_VM_ISO,if=virtio,media=cdrom,format=raw"
     qargs="$qargs -virtfs local,path=$REPO_ROOT,mount_tag=dasik,security_model=none,readonly=on"
     _start_tpm "$work"
@@ -354,7 +372,7 @@ cmd_install_driven() {
     local append="archisobasedir=arch archisolabel=$label cow_spacesize=2G copytoram=n console=ttyS0,115200 dasik_config=$config${DASIK_VM_VERBOSE:+ dasik_verbose=1}"
     local qargs="-enable-kvm -cpu host -m $DASIK_VM_RAM -smp $DASIK_VM_CPUS -display none -monitor none"
     qargs="$qargs $ovmf -kernel $kernel -initrd $initrd -append \"$append\""
-    qargs="$qargs -drive file=$disk,if=virtio,format=qcow2 $(_keydev_args)"
+    qargs="$qargs $(_primary_disk_args "$disk" qcow2) $(_keydev_args)"
     qargs="$qargs -drive file=$DASIK_VM_ISO,if=virtio,media=cdrom,format=raw"
     qargs="$qargs -virtfs local,path=$REPO_ROOT,mount_tag=dasik,security_model=none,readonly=on"
     _start_tpm "$work"
@@ -419,7 +437,7 @@ cmd_day2() {
     if [ -z "$ovmf" ]; then die "day2 needs OVMF to boot the UEFI image."; fi
 
     local qargs="-enable-kvm -cpu host -m $DASIK_VM_RAM -smp $DASIK_VM_CPUS -display none -monitor none"
-    qargs="$qargs $ovmf -drive file=$image,if=virtio,format=qcow2 -boot c"
+    qargs="$qargs $ovmf $(_primary_disk_args "$image" qcow2) -boot c"
     qargs="$qargs -virtfs local,path=$REPO_ROOT,mount_tag=dasik,security_model=none,readonly=on"
     qargs="$qargs -netdev user,id=n0 -device virtio-net,netdev=n0"
     qargs="$qargs -serial unix:$sock,server,nowait -no-reboot"
@@ -470,7 +488,7 @@ cmd_lifecycle() {
     if [ -z "$ovmf" ]; then die "lifecycle needs OVMF to boot the UEFI image."; fi
 
     local qargs="-enable-kvm -cpu host -m $DASIK_VM_RAM -smp $DASIK_VM_CPUS -display none -monitor none"
-    qargs="$qargs $ovmf -drive file=$image,if=virtio,format=qcow2 -boot c"
+    qargs="$qargs $ovmf $(_primary_disk_args "$image" qcow2) -boot c"
     qargs="$qargs -virtfs local,path=$REPO_ROOT,mount_tag=dasik,security_model=none,readonly=on"
     qargs="$qargs -netdev user,id=n0 -device virtio-net,netdev=n0"
     qargs="$qargs -serial unix:$sock,server,nowait -no-reboot"
@@ -527,7 +545,7 @@ cmd_sync_luks() {
     if [ -z "$ovmf" ]; then die "sync-luks needs OVMF to boot the UEFI image."; fi
 
     local qargs="-enable-kvm -cpu host -m $DASIK_VM_RAM -smp $DASIK_VM_CPUS -display none -monitor none"
-    qargs="$qargs $ovmf -drive file=$image,if=virtio,format=qcow2 -boot c"
+    qargs="$qargs $ovmf $(_primary_disk_args "$image" qcow2) -boot c"
     qargs="$qargs -virtfs local,path=$REPO_ROOT,mount_tag=dasik,security_model=none,readonly=on"
     qargs="$qargs -netdev user,id=n0 -device virtio-net,netdev=n0"
     qargs="$qargs -serial unix:$sock,server,nowait -no-reboot"
@@ -586,7 +604,7 @@ cmd_boot_unlock() {
     if [ -z "$ovmf" ]; then die "boot-unlock needs OVMF to boot the UEFI image."; fi
 
     local qargs="-enable-kvm -cpu host -m $DASIK_VM_RAM -smp $DASIK_VM_CPUS -display none -monitor none"
-    qargs="$qargs $ovmf -drive file=$image,if=virtio,format=qcow2 -boot c $(_keydev_args)"
+    qargs="$qargs $ovmf $(_primary_disk_args "$image" qcow2) -boot c $(_keydev_args)"
     qargs="$qargs -serial unix:$sock,server,nowait -no-reboot"
 
     log "QEMU boot-unlock command:"; echo "  qemu-system-x86_64 $qargs"
@@ -648,7 +666,7 @@ cmd_drive() {
     _start_tpm "$work"
 
     local qargs="-enable-kvm -cpu host -m $DASIK_VM_RAM -smp $DASIK_VM_CPUS -display none -monitor none"
-    qargs="$qargs $ovmf -drive file=$image,if=virtio,format=qcow2 -boot c $(_keydev_args)"
+    qargs="$qargs $ovmf $(_primary_disk_args "$image" qcow2) -boot c $(_keydev_args)"
     qargs="$qargs $TPM_QARGS"
     qargs="$qargs -virtfs local,path=$REPO_ROOT,mount_tag=dasik,security_model=none,readonly=on"
     qargs="$qargs -netdev user,id=n0 -device virtio-net,netdev=n0"

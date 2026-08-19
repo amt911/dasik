@@ -707,6 +707,11 @@ instead, per key: `[r] retry  [s] skip this key and the rest  [a] abort`, so
 declaring three keys and owning two is a `s` away from an install that finishes
 — and the third keeps showing up in `dasik plan` until it is enrolled.
 
+`--yes` counts as "nobody is watching" even on a terminal, and this policy
+decides there too: it is the flag that promises no question will be asked, and
+an unattended install that deadlocks on *plug in key 2 of 3* is worse than one
+that reports the keyslot it could not enrol.
+
 ### `package_policy`
 
 `{"unknown": "warn-and-skip" | "error", "build_failure": "abort" | "warn-and-continue"}`

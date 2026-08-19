@@ -1,5 +1,8 @@
 # VPN (WireGuard)
 
+> Looking for **Tailscale**? It is its own domain — a conffile, not a tunnel
+> file: [Tailscale](Tailscale.md).
+
 A tunnel is declared as **the file its backend already reads**, kept next to the
 config, and named from the JSON:
 

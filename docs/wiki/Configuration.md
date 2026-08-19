@@ -293,6 +293,7 @@ each one pulls in: **[Features](Features.md)**.
 | `sudo` | `{wheel=true, nopasswd=false, rules}` | `/etc/sudoers.d/10-dasik` |
 | `pacman` | `{options:{Parallel,Color,VerbosePkgLists}, multilib}` | `/etc/pacman.conf` |
 | `plymouth` | `{theme}` | plymouth + `splash` + the initramfs hook |
+| `tailscale` | `{accept_routes, accept_dns, ssh, exit_node, advertise_routes, hostname, operator, auth_key_file, port, …}` | tailscale + `tailscaled.service` + `/etc/default/tailscaled`, and the conffile as its own domain. See [Tailscale](Tailscale.md) |
 
 Scalar toggles:
 
@@ -323,6 +324,28 @@ Declaring both `power_profiles_daemon` and a fixed `governor` gets a
 | `latest` | int ≥ 1 or null | `20` |
 | `sort` | `rate`\|`age`\|`score`\|`delay`\|`country` | `"rate"` |
 | `save` | absolute path | `/etc/pacman.d/mirrorlist` |
+
+### `tailscale` in detail
+
+Each field maps to one key of the conffile's undocumented `alpha0` schema; the
+full table, with the conffile key beside each field, is on
+**[Tailscale](Tailscale.md#the-fields)**.
+
+| Key | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `accept_routes`, `accept_dns`, `ssh`, `web_client`, `shields_up`, `advertise_exit_node`, `posture_checking` | bool | `null` | `null` ≠ `false`: unset leaves the preference to tailscale, `false` takes it away from the CLI |
+| `exit_node` | string | `null` | IP, base name, or `auto:any` |
+| `exit_node_allow_lan_access` | bool | `null` | |
+| `advertise_routes` | list of CIDR | `[]` | the prefix length is required — tailscaled refuses the file without it, and refusing the file means a daemon that does not start |
+| `hostname` | string | `null` | a DNS label |
+| `operator` | string | `null` | a Unix user |
+| `netfilter_mode` | `on`\|`nodivert`\|`off` | `null` | |
+| `server_url` | URL | `null` | a self-hosted coordinator |
+| `auth_key_file` | absolute path | `null` | the PATH of a `0600` file holding a tailnet auth key. A key pasted here (`tskey-…`) is refused: a synced config is committed to Git |
+| `port` | 1–65535 | `41641` | not a conffile key — it goes to `/etc/default/tailscaled`, which the unit interpolates |
+
+Unknown keys are refused rather than dropped, and while the block is declared
+`tailscale set` answers `config file is locked`.
 
 ### `sudo` in detail
 

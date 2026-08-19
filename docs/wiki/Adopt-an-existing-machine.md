@@ -641,6 +641,71 @@ config-saver --decompress -i home.tar.gz.age --identity ~/.config/age/key.txt
 Then put the age key back where it belongs (`~/.config/age/key.txt`, mode
 `0600`) so the timer can encrypt again.
 
+### Last: the secrets the config only points at
+
+A capture brings back **paths, not the secrets behind them**. `tailscale` is the
+one that shows up on the first boot: the block declares `auth_key_file`, dasik
+writes the conffile, and the node comes up logged out with
+
+```
+warning: tailscale.auth_key_file declares '/etc/tailscale/authkey', which does
+not exist on the target — writing the conffile WITHOUT AuthKey (a dangling
+file: reference stops tailscaled from starting)
+```
+
+That warning is the design, not a fault. The field takes the **path** of the key
+so only the path ever reaches the repository, and a `file:` reference pointing at
+nothing stops `tailscaled` from starting at all — measured in a guest — so dasik
+leaves the entry out and converges the rest rather than take the daemon down.
+
+Provision the file, then apply again:
+
+```bash
+# 1. https://login.tailscale.com/admin/settings/keys -> Generate auth key
+#    Ephemeral OFF   — an ephemeral node disappears when it goes offline
+#    Pre-approved ON — only if the tailnet requires device approval
+#    Tags            — only if your ACL demands them
+
+# 2. the file, on the machine, readable by root alone
+sudo install -d -m 0755 /etc/tailscale
+printf '%s' 'tskey-auth-…' | sudo tee /etc/tailscale/authkey >/dev/null
+sudo chmod 0600 /etc/tailscale/authkey
+
+# 3. now the plan has something to say
+sudo dasik plan  --target / ~/config/archlinux-p14s/main.json   # + AuthKey
+sudo dasik apply --target / ~/config/archlinux-p14s/main.json
+sudo systemctl restart tailscaled     # dasik enables units, it never restarts them
+tailscale status
+```
+
+`printf`, not `echo`: the file holds the key and nothing else.
+
+**`tailscale up` is not the way in here.** With a conffile in use, both
+`tailscale up` and `tailscale login` answer `can't reconfigure tailscaled when
+using a config file` — the conffile owns the login, which is what makes the
+domain visible to `plan` and capturable by `sync`.
+
+**There is no earlier moment to do it in.** `/mnt` does not exist until `apply`
+has partitioned it, so the install's own apply always warns — same shape as the
+`$HOME` restore in trap 2. Either write the file to `/mnt/etc/tailscale/authkey`
+while still in the ISO and run `apply` a second time, or do it after the reboot
+as above.
+
+Once the node is up the key has done its job — the identity lives in tailscaled's
+state, not in the key, so you may revoke it. Leave the **file** where it is
+though: delete it and every `plan` warns again, and the next `apply` takes
+`AuthKey` back out of the conffile.
+
+Never place that file *through dasik* — a `files` entry carries its `content` in
+the config, which is the thing `dasik save` commits and pushes. The point of
+`auth_key_file` being a path is that the key comes from somewhere else.
+
+This is the shape of every secret in this setup — `secrets/hashed-password`, the
+age key at `~/.config/age/key.txt`, this one. The repository carries a pointer;
+you put the secret back by hand, once. And generate a **fresh** key for a
+reinstall: a reinstalled machine is logging in for the first time, and auth keys
+expire (90 days by default).
+
 ## 10. From now on
 
 ```bash
@@ -702,5 +767,10 @@ published one refreshed (`gh release upload … --clobber`).
    answer to "what can I export?" — there is no `dotfiles` unless you made one.
 9. **Nothing prunes the archives.** A daily timer keeps every run forever;
    114 copies of one document filled 7.2 GB on a machine already at 96%.
-10. **Never commit a run log or an archive.** The `.gitignore` in step 3 covers
+10. **A synced config points at secrets it does not carry.** `tailscale`'s
+   `auth_key_file` is a path; on a fresh machine the file is not there and dasik
+   writes the conffile *without* `AuthKey` — on purpose, since a dangling
+   `file:` reference stops `tailscaled` from starting. Create the file, apply,
+   restart the daemon (step 9).
+11. **Never commit a run log or an archive.** The `.gitignore` in step 3 covers
    the logs; archives are release assets and never enter Git.

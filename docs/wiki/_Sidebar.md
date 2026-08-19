@@ -24,6 +24,7 @@
 - [PAM hardening](PAM)
 - [Firewall](Firewall)
 - [VPN (WireGuard)](VPN)
+- [Tailscale](Tailscale)
 
 **How it works**
 - [Workflows and state](Workflows)

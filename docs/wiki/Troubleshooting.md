@@ -172,6 +172,26 @@ A partial failure retries with the declared helper if there is one. A package
 you expect to break sometimes should be marked `{"name": …, "optional": true}`
 so it cannot abort the whole apply.
 
+### `warning: tailscale.auth_key_file declares …, which does not exist`
+
+Working as intended. The field holds the **path** of the auth key so the key
+itself never enters the config, and a `file:` reference pointing at nothing stops
+`tailscaled` from starting at all — so dasik writes the conffile *without*
+`AuthKey` and converges the rest. The node stays logged out until you create the
+file (`0600`, root) and apply again:
+[provisioning it](Tailscale.md#provisioning-it).
+
+On a fresh install the first apply always warns: `/mnt` does not exist until the
+disk is partitioned, so there was nowhere to put the key beforehand.
+
+### `tailscale up` answers `can't reconfigure tailscaled when using a config file`
+
+Also intended. A declared [`tailscale`](Tailscale.md) block owns the
+preferences, which is what makes them visible to `plan` and capturable by
+`sync`; the daemon locks the CLI out of them for as long as the conffile is in
+use. Change the config, not the CLI — or drop the block, and dasik takes both
+files away.
+
 ---
 
 ## Booting

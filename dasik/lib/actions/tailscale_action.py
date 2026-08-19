@@ -35,9 +35,14 @@ not titlecase to ``AcceptDNS``, and a near miss is not a near miss here.
 
 Idempotent: both sides are rendered to canonical JSON (sorted keys) before
 comparing, so re-applying an unchanged config is a no-op whatever the on-disk
-key order. The daemon is pointed at the file by a systemd drop-in that
-:func:`dasik.lib.expand.toggles.expand_tailscale` contributes as an ordinary
-``files`` entry, so ``/etc/default/tailscaled`` — pacman's — is never touched.
+key order. The daemon is pointed at this file by ``/etc/default/tailscaled``,
+which :func:`dasik.lib.expand.toggles.expand_tailscale` contributes as an
+ordinary ``files`` entry. NOT by a drop-in: a ``tailscaled.service.d`` fragment
+setting ``FLAGS`` does not reach the daemon — measured in a guest, the
+EnvironmentFile wins with or without a ``daemon-reload``. pacman lists
+``/etc/default/tailscaled`` under ``Backup Files``, so owning it is the
+vendor-sanctioned route and an upgrade writes a ``.pacnew`` beside it rather
+than clobbering it.
 """
 from __future__ import annotations
 import json

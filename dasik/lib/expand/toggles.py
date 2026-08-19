@@ -339,9 +339,12 @@ def expand_tailscale(config: Dict[str, Any]) -> Dict[str, Any]:
     """A declared `tailscale` block needs the daemon, its unit, and the flag that
     points it at the conffile TailscaleAction writes.
 
-    Logging in is NOT part of this: the node key is the machine's identity in
-    the tailnet, so `tailscale up` stays manual and no auth key goes near a
-    config that lives in Git.
+    Logging in is not part of the expansion either: the key reaches the daemon
+    through the conffile's `AuthKey`, which TailscaleAction renders from
+    `auth_key_file` — the PATH of the file holding it, never the key itself, so
+    a config that lives in Git carries only the path. The node key that results
+    is the machine's identity in the tailnet and is not portable between
+    machines in any case.
     """
     block = config.get("tailscale") or {}
     if not block:

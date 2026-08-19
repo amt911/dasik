@@ -10,7 +10,11 @@ one takes it away from ``tailscale set`` for as long as the block exists.
 
 There is no ``auth_key`` field. The conffile accepts one, but it is a tailnet
 credential and this config is meant to live in Git — ``dasik save`` commits it.
-Logging in stays a manual ``tailscale up``: the node key in
+``auth_key_file`` takes the PATH of a file holding the key instead, which renders
+as the conffile's ``AuthKey`` ``file:`` reference, so only the path is ever
+committed. There is no interactive fallback to fall back TO: with a conffile in
+use, ``tailscale up`` answers ``can't reconfigure tailscaled when using a config
+file``. Logging in is all the key buys — the node key in
 ``/var/lib/tailscale/tailscaled.state`` is that machine's identity in the
 tailnet, so it is not portable between machines even in principle.
 """

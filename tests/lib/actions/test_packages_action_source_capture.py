@@ -24,6 +24,12 @@ def _action(config, manifest=None, installed=("config-saver", "git"), explicit=N
         context=ActionContext(target=Target(root="/"), manifest=manifest),
     )
     a._installed_all = MagicMock(return_value=set(installed))          # type: ignore
+    # Same reason, for the reason probe: `plan` asks `_explicit_raw()`
+    # (`pacman -Qqe`, raw) whether a declared package is explicit, and an
+    # unstubbed one asks the machine running the tests — which has no
+    # pacman at all on CI.
+    a._explicit_raw = MagicMock(  # type: ignore
+        return_value=set(installed if explicit is None else explicit))
     a.actual = MagicMock(return_value=set(installed if explicit is None else explicit))  # type: ignore
     a._unit_provider_packages = MagicMock(return_value=set())          # type: ignore
     return a

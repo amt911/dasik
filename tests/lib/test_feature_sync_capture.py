@@ -668,6 +668,11 @@ def _packages_capture(seed, manifest, installed=("config-saver",)):
     action = PackagesAction(seed, ActionContext(target=Target(root="/"),
                                                 manifest=manifest))
     action._installed_all = MagicMock(return_value=set(installed))
+    # Same reason, for the reason probe: `plan` asks `_explicit_raw()`
+    # (`pacman -Qqe`, raw) whether a declared package is explicit, and an
+    # unstubbed one asks the machine running the tests — which has no
+    # pacman at all on CI.
+    action._explicit_raw = MagicMock(return_value=set(installed))
     action.actual = MagicMock(return_value=set(installed))
     action._unit_provider_packages = MagicMock(return_value=set())
     return action.import_state(list(installed))
@@ -703,6 +708,7 @@ def test_the_captured_git_source_validates_and_re_plans_to_nothing():
     replan = PackagesAction(config, ActionContext(target=Target(root="/"),
                                                   manifest=_GIT_MANIFEST))
     replan._installed_all = MagicMock(return_value={"config-saver"})
+    replan._explicit_raw = MagicMock(return_value={"config-saver"})
     replan.actual = MagicMock(return_value={"config-saver"})
     assert replan.plan(managed=["config-saver"]) == []
 

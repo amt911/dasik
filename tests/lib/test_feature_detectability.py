@@ -645,6 +645,11 @@ def _git_pkg_plan(installed, managed, source_ref=None, declared=True):
     action = PackagesAction(config, ActionContext(target=Target(root="/"),
                                                   manifest=manifest))
     action._installed_all = MagicMock(return_value=set(installed))
+    # Same reason, for the reason probe: `plan` asks `_explicit_raw()`
+    # (`pacman -Qqe`, raw) whether a declared package is explicit, and an
+    # unstubbed one asks the machine running the tests — which has no
+    # pacman at all on CI.
+    action._explicit_raw = MagicMock(return_value=set(installed))
     action.actual = MagicMock(return_value=set(installed))
     # Nothing here is satisfied by a provider. Stubbed rather than left to the
     # real pacman: the probe would otherwise ask the DEVELOPER's machine, where

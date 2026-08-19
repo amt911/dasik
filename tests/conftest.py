@@ -68,3 +68,33 @@ def tmp_target(tmp_path):
     isolated on-disk root for filesystem tests.
     """
     return Target(root=str(tmp_path))
+
+
+@pytest.fixture(autouse=True)
+def _no_real_pacman(monkeypatch):
+    """No unit test may reach the HOST's pacman — fail loudly instead.
+
+    Found the hard way on 2026-08-19. `plan` started asking `pacman -Qqe`
+    through `PackagesAction._explicit_raw` (the install-reason probe), and every
+    test that stubbed `actual()` but not that one began querying the developer's
+    machine. On Arch the suite stayed green — with the host's package list
+    leaking into the assertions — and on CI, where there is no pacman at all, it
+    died with `FileNotFoundError: 'pacman'`.
+
+    A test that legitimately drives pacman mocks `Command.execute`, which never
+    reaches `which`; only a real invocation gets here.
+    """
+    from dasik.lib.command_worker import command_worker
+
+    real_which = command_worker.which
+
+    def _refuse(name):
+        if name in ("pacman", "yay", "paru"):
+            raise AssertionError(
+                f"unit test tried to run the host's {name!r}. Mock "
+                f"Command.execute, or stub the probe that calls it "
+                f"(_installed_all / actual / _explicit_raw)."
+            )
+        return real_which(name)
+
+    monkeypatch.setattr(command_worker, "which", _refuse)

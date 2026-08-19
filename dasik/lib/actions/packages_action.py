@@ -615,7 +615,10 @@ class PackagesAction(AbstractAction):
         # `explicit_raw`, not `explicit`: the latter is widened with providers
         # and groups for OWNERSHIP, and a provider-satisfied name is not the
         # same fact as an explicitly-installed one. See `_explicit_raw`.
-        explicit_raw = self._explicit_raw()
+        # Probed only when some package actually declares a reason — a config
+        # without one must not pay for a `pacman -Qqe`, and on a machine that
+        # has no pacman at all (CI) the query would raise.
+        explicit_raw = self._explicit_raw() if self._reason else set()
         for name in sorted(self._reason):
             if name in installed:
                 current = "explicit" if name in explicit_raw else "dep"

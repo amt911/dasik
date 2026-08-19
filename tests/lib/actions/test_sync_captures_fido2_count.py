@@ -86,3 +86,50 @@ def test_the_capture_replans_to_nothing():
 
     managed = [f"cryptroot:fido2{'' if i == 1 else f'#{i}'}" for i in (1, 2, 3)]
     assert token_action.plan(managed=managed) == []
+
+
+# --- reality overrides the declaration ------------------------------------- #
+#
+# Caught in a VM: a guest with ZERO tokens in its header, whose config declared
+# `unlock_fido2: 2`, captured as `unlock_fido2: 2`. `import_state` only ever
+# SET the flag when tokens were found and never cleared it when they were not,
+# so the capture described the config instead of the machine — the one thing
+# sync must never do. With a boolean it was just as wrong and just as invisible.
+#
+# The probe FAILING is a different answer from the probe saying "none": an
+# unreadable header must leave the declaration alone, or a cryptsetup that is
+# not there would silently disarm a config.
+
+def _captured_declaring(dump, declared_fido2, declared_tpm2=False, readable=True):
+    action = _action(dump)
+    part = action.disks[0].partitions[0]
+    part.unlock_fido2 = declared_fido2
+    part.unlock_tpm2 = declared_tpm2
+    if not readable:
+        action._read_luks_tokens = lambda name: None
+    with patch("dasik.lib.actions.disk_partition_action.Command.execute") as run:
+        run.return_value = MagicMock(stdout=dump.encode(), returncode=0)
+        frag = action.import_state()
+    return frag["disks"]["disks"][0]["partitions"][0]
+
+
+def test_a_declared_key_the_machine_does_not_have_is_cleared():
+    part = _captured_declaring(_dump(n_fido2=0), declared_fido2=2)
+    assert part["unlock_fido2"] in (False, 0)
+
+
+def test_a_declared_count_higher_than_reality_comes_back_as_reality():
+    part = _captured_declaring(_dump(n_fido2=1), declared_fido2=3)
+    assert part["unlock_fido2"] is True
+
+
+def test_a_declared_tpm2_the_machine_does_not_have_is_cleared():
+    part = _captured_declaring(_dump(n_fido2=0), declared_fido2=False,
+                               declared_tpm2=True)
+    assert part["unlock_tpm2"] is False
+
+
+def test_an_unreadable_header_leaves_the_declaration_alone():
+    """No cryptsetup, no open mapping: an answer we cannot get is not a 'no'."""
+    part = _captured_declaring(_dump(n_fido2=0), declared_fido2=2, readable=False)
+    assert part["unlock_fido2"] == 2

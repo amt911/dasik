@@ -55,6 +55,7 @@ Two smaller entry points, if that is genuinely what you want:
 | Know exactly what `sync` can and cannot capture | **[Sync](Sync.md)** |
 | Understand a preflight error before it aborts an install | **[Validation](Validation.md)** |
 | Copy a working config and adapt it | **[Recipes](Recipes.md)** |
+| Declare a tailnet node: preferences, exit nodes, the auth key | **[Tailscale](Tailscale.md)** |
 | Fix a boot that hangs, an apply that failed | **[Troubleshooting](Troubleshooting.md)** |
 | Hack on dasik itself | **[Development](Development.md)** |
 

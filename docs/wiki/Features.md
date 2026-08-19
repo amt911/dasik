@@ -147,6 +147,30 @@ The body is a private key, which is why it lives in a file with a mode rather
 than inline in JSON, and why `0600` is not optional: `wg-quick` warns about a
 world-readable conf and NetworkManager ignores one in silence.
 
+### tailscale
+
+Preferences written to the file `tailscaled --config` reads. Full page:
+[Tailscale](Tailscale.md).
+
+```json
+"tailscale": {"accept_routes": true, "hostname": "archbox",
+              "auth_key_file": "/etc/tailscale/authkey"}
+```
+
+| Contributes | |
+| --- | --- |
+| packages | `tailscale` |
+| units | `tailscaled.service` |
+| files | `/etc/default/tailscaled` — `PORT` and `FLAGS="--config=…"`, the EnvironmentFile the vendor unit reads |
+
+The preferences themselves are **not** a `files` entry: they are the `tailscale`
+domain, `/etc/tailscale/tailscaled.conf`. A drop-in setting `FLAGS` does not
+reach the daemon (measured); the EnvironmentFile wins, and pacman lists it as a
+backup file so an upgrade writes a `.pacnew` rather than clobbering it.
+
+Declaring the block takes the keys away from `tailscale set` — that is the point,
+and it is what makes the domain visible to `plan`.
+
 ### snapper
 
 ```json

@@ -138,6 +138,7 @@ the `MODIFY` that adds `AuthKey`.
 # 2. the file, readable by root alone
 sudo install -d -m 0755 /etc/tailscale
 printf '%s' 'tskey-auth-…' | sudo tee /etc/tailscale/authkey >/dev/null
+sudo chown root:root /etc/tailscale/authkey
 sudo chmod 0600 /etc/tailscale/authkey
 
 # 3. now the plan has something to say
@@ -148,6 +149,12 @@ tailscale status
 ```
 
 `printf`, not `echo`: the file holds the key and nothing else.
+
+> ⚠️ **Never put the key there through dasik.** A `files` entry carries its
+> `content` **in the config** — which is the file `dasik save` commits and
+> pushes. The whole reason `auth_key_file` is a path is that the key is
+> provisioned out of band: by hand, from a password manager, by whatever puts
+> secrets on that machine. dasik places the *reference*, never the credential.
 
 **During an install**, the same file goes to `/mnt/etc/tailscale/authkey` — but
 `/mnt` does not exist until `apply` has partitioned it, so the install's own
@@ -160,6 +167,11 @@ machine](Adopt-an-existing-machine.md#last-the-secrets-the-config-only-points-at
 `/var/lib/tailscale/tailscaled.state`, not in the auth key, so you may revoke it.
 Leave the *file* in place though — delete it and every `plan` warns again, and
 the next `apply` takes `AuthKey` back out of the conffile.
+
+For the same reason an **expired key does not knock the node off the tailnet**.
+Auth keys expire (90 days by default); that only ever affects a machine logging
+in for the first time — which is exactly the machine a reinstall gives you, so
+generate a fresh key when you rebuild rather than reusing the one in the file.
 
 ## What `sync` captures
 

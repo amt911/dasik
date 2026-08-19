@@ -696,9 +696,15 @@ state, not in the key, so you may revoke it. Leave the **file** where it is
 though: delete it and every `plan` warns again, and the next `apply` takes
 `AuthKey` back out of the conffile.
 
+Never place that file *through dasik* — a `files` entry carries its `content` in
+the config, which is the thing `dasik save` commits and pushes. The point of
+`auth_key_file` being a path is that the key comes from somewhere else.
+
 This is the shape of every secret in this setup — `secrets/hashed-password`, the
 age key at `~/.config/age/key.txt`, this one. The repository carries a pointer;
-you put the secret back by hand, once.
+you put the secret back by hand, once. And generate a **fresh** key for a
+reinstall: a reinstalled machine is logging in for the first time, and auth keys
+expire (90 days by default).
 
 ## 10. From now on
 

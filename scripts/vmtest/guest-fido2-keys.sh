@@ -78,7 +78,11 @@ grep -qa 'luks_token' /tmp/plan3.txt && \
     { echo "FIDO2KEYS-F FAILED: a keyslot nobody has is planned"; rc=1; }
 
 echo "FIDO2KEYS-G: sync invents no key on a machine that has none"
-$D sync main.json --target / --output /tmp/captured.json $L > /tmp/sync.txt 2>&1
+# `sync` rewrites the config file IN PLACE — there is no --output — so it is
+# handed a copy and the copy is what gets inspected.
+cp main.json /tmp/captured.json
+$D sync /tmp/captured.json --target / $L > /tmp/sync.txt 2>&1
+tail -5 /tmp/sync.txt
 grep -a 'unlock_fido2' /tmp/captured.json
 python - <<'PY'
 import json, pathlib, sys

@@ -288,6 +288,30 @@ class PackagesAction(AbstractAction):
 
     _PACMAN_DOMAIN = "packages"
 
+    def _explicit_raw(self) -> set[str]:
+        """``pacman -Qqe`` and nothing else: the packages pacman calls EXPLICIT.
+
+        Deliberately NOT :meth:`actual`, which widens the set with groups and
+        with declared names a *provider* satisfies. That widening is what makes
+        ownership work, and it is poison for the install-REASON question:
+        ``pacman -T avahi`` says "satisfied" for an installed avahi whether it is
+        explicit or a dependency, so every ``reason: dep`` package came back
+        looking explicit and the reason MODIFY was re-planned on every single
+        apply — plan, apply, plan, forever, running ``pacman -D --asdeps`` each
+        time (found on a VM driving a real 243-package config).
+
+        "Is this package explicit?" has exactly one source of truth, and this is
+        it.
+        """
+        target = getattr(self.context, "target", None) if self.context else None
+        if target is None:
+            return set()
+        result = Command.execute("pacman", ["-Qqe"], target=target)
+        stdout = getattr(result, "stdout", b"") or b""
+        if isinstance(stdout, bytes):
+            stdout = stdout.decode("utf-8", errors="replace")
+        return {line.strip() for line in stdout.splitlines() if line.strip()}
+
     def actual(self) -> set[str]:
         """Explicitly-installed packages (``pacman -Qqe``), plus every declared
         pacman **group** whose members are all installed.
@@ -305,11 +329,7 @@ class PackagesAction(AbstractAction):
         target = getattr(self.context, "target", None) if self.context else None
         if target is None:
             return set()
-        result = Command.execute("pacman", ["-Qqe"], target=target)
-        stdout = getattr(result, "stdout", b"") or b""
-        if isinstance(stdout, bytes):
-            stdout = stdout.decode("utf-8", errors="replace")
-        explicit = {line.strip() for line in stdout.splitlines() if line.strip()}
+        explicit = self._explicit_raw()
         groups = self._group_members(self.desired)
         if groups:
             installed = self._installed_all()
@@ -592,9 +612,13 @@ class PackagesAction(AbstractAction):
             changes.append(Change(self._PACMAN_DOMAIN, Op.INSTALL, name))
         # reason MODIFY: names carrying a declared reason (never the legacy AUR
         # ones), installed, whose reason drifted.
+        # `explicit_raw`, not `explicit`: the latter is widened with providers
+        # and groups for OWNERSHIP, and a provider-satisfied name is not the
+        # same fact as an explicitly-installed one. See `_explicit_raw`.
+        explicit_raw = self._explicit_raw()
         for name in sorted(self._reason):
             if name in installed:
-                current = "explicit" if name in explicit else "dep"
+                current = "explicit" if name in explicit_raw else "dep"
                 if current != self._reason.get(name, "explicit"):
                     changes.append(Change(self._PACMAN_DOMAIN, Op.MODIFY, name,
                                           reason="install reason"))
@@ -1168,7 +1192,7 @@ class PackagesAction(AbstractAction):
         """
         try:
             installed = self._installed_all()
-            explicit = self.actual()
+            explicit = self._explicit_raw()
         except Exception:      # noqa: BLE001 - no pacman to ask (a half-built
             # target, a unit test): fall back to what this apply already knows.
             # A probe that cannot answer must not abort an otherwise good apply.

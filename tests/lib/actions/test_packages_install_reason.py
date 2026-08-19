@@ -24,6 +24,12 @@ from dasik.lib.target.target import Target
 def _action(config, installed, explicit):
     a = PackagesAction(config, ActionContext(target=Target(root="/")))
     a._installed_all = MagicMock(return_value=set(installed))     # type: ignore
+    # `_explicit_raw` is `pacman -Qqe` and nothing else, and it is what the
+    # reason logic asks now — `actual()` widens that set with groups and
+    # provider-satisfied names for OWNERSHIP, which made every `reason: dep`
+    # package look explicit for ever (see test_packages_reason_converges.py).
+    # Both are stubbed so a test that reaches for either gets the same machine.
+    a._explicit_raw = MagicMock(return_value=set(explicit))       # type: ignore
     a.actual = MagicMock(return_value=set(explicit))              # type: ignore
     return a
 

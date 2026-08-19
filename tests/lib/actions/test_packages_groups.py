@@ -82,6 +82,9 @@ def _action(desired, installed):
     action = PackagesAction({"packages": list(desired)},
                             ActionContext(target=Target(root="/")))
     action._installed_all = MagicMock(return_value=set(installed))
+    # The reason branch asks `_explicit_raw` (`pacman -Qqe`, raw); `actual()`
+    # widens that with groups/providers for ownership. Same machine, both doors.
+    action._explicit_raw = MagicMock(return_value=set(installed))
     action.actual = MagicMock(return_value=set(installed))
     return action
 

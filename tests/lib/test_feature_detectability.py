@@ -1044,3 +1044,43 @@ def test_a_machine_that_already_autostarts_it_plans_nothing(tmp_path):
     machine = _libvirt_machine(tmp_path, autostart=True)
 
     assert _registry_plan(machine, {"kvm": {"default_network": True}}) == []
+
+
+# --- several FIDO2 keys ---------------------------------------------------- #
+#
+# The count has to reach the two places a key changes the machine beyond its own
+# keyslot: the kernel command line (which asks for a token at boot) and the
+# initramfs (which needs the fido2 module to talk to it). Neither cares HOW MANY
+# — one `fido2-device=auto` covers every enrolled key — so what is asserted here
+# is that a count is not mistaken for "no key at all", which is what a stricter
+# `is True` check would have done.
+
+def _fido2_config(keys):
+    return {"disks": {"disks": [{"device": "/dev/vda", "partitions": [
+        {"label": "root", "size": "rest", "filesystem": "ext4", "mountpoint": "/",
+         "encrypt": True, "luks_name": "cryptroot", "luks_uuid": "u-i-d",
+         "unlock_fido2": keys}]}]}}
+
+
+def test_two_keys_still_put_the_token_option_on_the_cmdline(tmp_path):
+    plan = _cmdline_plan(tmp_path, _fido2_config(2), "root=LABEL=root rw")
+    assert ("INSTALL", "rd.luks.options=u-i-d=fido2-device=auto") in plan
+
+
+def test_one_key_puts_the_same_option_there(tmp_path):
+    plan = _cmdline_plan(tmp_path, _fido2_config(True), "root=LABEL=root rw")
+    assert ("INSTALL", "rd.luks.options=u-i-d=fido2-device=auto") in plan
+
+
+def test_zero_keys_asks_for_no_token(tmp_path):
+    plan = _cmdline_plan(tmp_path, _fido2_config(0), "root=LABEL=root rw")
+    assert not [item for _op, item in plan if "fido2" in item]
+
+
+def test_the_initramfs_carries_the_fido2_module_for_a_count():
+    from dasik.lib.actions.initramfs.base import detect_fido2
+
+    assert detect_fido2(_fido2_config(3)) is True
+    assert detect_fido2(_fido2_config(True)) is True
+    assert detect_fido2(_fido2_config(0)) is False
+    assert detect_fido2(_fido2_config(False)) is False

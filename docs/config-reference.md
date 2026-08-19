@@ -103,6 +103,7 @@ written into those directories instead of inlined
 | `users` | list | User accounts + groups + shell |
 | `packages` | list | pacman + AUR + Git-source packages (real names) |
 | `package_policy` | object | Unknown packages (`unknown`: `warn-and-skip` \| `error`) and install/build failures (`build_failure`: `abort` \| `warn-and-continue`) |
+| `luks_token_policy` | object | What an apply does when a TPM2/FIDO2 enrolment fails with no terminal to ask on (`enroll_failure`: `abort` \| `warn-and-continue`) |
 | `package_sources` | object | Git PKGBUILD source per package (outside repo/AUR) |
 | `drivers` | list | GPU driver selection |
 | `bootloader` | string | GRUB or systemd-boot |
@@ -481,7 +482,7 @@ for making a captured layout portable.
 | `unlock_keydev` | string | `null` | Device holding `unlock_keyfile` (e.g. a USB pendrive): a bare FS UUID, or an explicit `UUID=`/`PARTUUID=`/`LABEL=`/`/dev/…`. |
 | `unlock_keydev_fs` | string | `null` | Filesystem of `unlock_keydev` (`vfat`, `exfat`, `ext4`, `btrfs`, `xfs`) — the module the initramfs needs to read it. |
 | `unlock_tpm2` | bool | `false` | Enroll a TPM2 keyslot (passwordless). Its own domain (`luks_token`): planned when the header lacks it, silent when it has it, and the keyslot is WIPED when the flag is dropped — unless that would leave the volume with no passphrase. Enrolling needs `luks_password` to authorise the new keyslot. |
-| `unlock_fido2` | bool | `false` | Enroll a FIDO2 token (needs the physical key at enroll **and** boot). Same `luks_token` domain and same rules as `unlock_tpm2`. |
+| `unlock_fido2` | bool \| int | `false` | FIDO2 keyslots to enroll — `true` is one key, an integer is that many, one per physical key you own (max 31). Needs the key at enroll **and** boot. Same `luks_token` domain and same rules as `unlock_tpm2`, with two additions: keys are enrolled **one at a time** (`systemd-cryptenroll --fido2-device=auto` needs exactly one plugged in), so dasik asks you to swap them and lets you answer `s` to skip the ones you do not have; and a removal wipes keyslots **by number**, so going from 3 keys to 2 takes one, not all three. The header can be counted, never named — dasik knows how many tokens are enrolled, not which key each one is. |
 | `luks_options` | list[str] | `[]` | Extra verbatim `rd.luks.options` tokens (e.g. `token-timeout=10s`). |
 | `mount_options` | list[str] | `[]` | Extra mount options for the partition. |
 | `btrfs_subvolumes` | list | `[]` | Only for `btrfs` (below). |
@@ -688,6 +689,23 @@ Why it exists: on 2026-07-19 three peripheral AUR packages out of 311 failed
 `yay` installed everything else and exited 1, and that single exit code stopped
 the reconciler before users, systemd units, firewall, snapper, the initramfs and
 the bootloader — on an already-partitioned disk.
+
+### `luks_token_policy`
+
+| Field | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `enroll_failure` | `abort` \| `warn-and-continue` | `abort` | What happens when `systemd-cryptenroll` fails (no key plugged in, never touched, needs a PIN, no TPM). |
+
+`abort` stops the apply and records a partial generation — the default, because
+a silent failure leaves the machine asking for a token at boot that nobody
+enrolled. `warn-and-continue` reports the failure in red, keeps the keyslot OUT
+of the manifest (so `plan` keeps showing it and the next apply retries it), and
+carries on with the rest.
+
+**This is the answer for a run nobody is watching.** At a terminal you are asked
+instead, per key: `[r] retry  [s] skip this key and the rest  [a] abort`, so
+declaring three keys and owning two is a `s` away from an install that finishes
+— and the third keeps showing up in `dasik plan` until it is enrolled.
 
 ### `package_policy`
 

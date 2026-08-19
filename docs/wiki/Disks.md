@@ -111,7 +111,7 @@ used to leave the first apply non-bootable.
 | `unlock_keydev` | string | `null` | the device holding it: a bare filesystem UUID, or `UUID=`/`PARTUUID=`/`PARTLABEL=`/`LABEL=`/`/dev/…` |
 | `unlock_keydev_fs` | `vfat`\|`exfat`\|`ext4`\|`btrfs`\|`xfs` | `null` | the filesystem of that device — it names the kernel module the initramfs must carry |
 | `unlock_tpm2` | bool | `false` | enroll a TPM2 keyslot (passwordless) |
-| `unlock_fido2` | bool | `false` | enroll a FIDO2 token keyslot (key present at enroll **and** boot) |
+| `unlock_fido2` | bool \| int | `false` | FIDO2 keyslots to enroll: `true` is one key, an integer is that many — one per physical key (key present at enroll **and** boot) |
 
 The passphrase keeps working in every case; these are extra keyslots.
 
@@ -169,6 +169,33 @@ and dropping the flag left the keyslot behind for good.
 - [luks_token] remove cryptroot:tpm2   (no longer declared — the keyslot is wiped
                                         (a passphrase keyslot remains))
 ```
+
+**Several keys are a count.** `unlock_fido2: 2` means two keyslots, one per
+physical key. The LUKS header can be *counted* and not *named* — systemd stores
+a credential per key, never a label — so that is the whole vocabulary: dasik
+knows how many tokens are enrolled, never which key each one is.
+
+```
++ [luks_token] install cryptroot:fido2    (not enrolled in the LUKS header)
++ [luks_token] install cryptroot:fido2#2  (not enrolled in the LUKS header)
+```
+
+`systemd-cryptenroll --fido2-device=auto` refuses to guess between two plugged-in
+keys, so they are enrolled **one at a time** and dasik asks you to swap:
+
+```
+FIDO2 key 2 of 2 for cryptroot: plug it in (and unplug the others —
+systemd-cryptenroll needs exactly one), then press Enter. [s = skip the remaining keys]
+```
+
+Answer `s` and the key is not enrolled and **not recorded as enrolled**: the
+apply finishes, and the next `plan` still asks for it. Declaring three keys and
+finding only two in the drawer costs you a keystroke, not the install. With no
+terminal to ask on (a scripted install, the VM harness) nobody is asked and
+[`luks_token_policy.enroll_failure`](Config-reference) decides.
+
+Dropping from three keys to two wipes **one** keyslot, named by number — never
+`--wipe-slot=fido2`, which would take all three.
 
 **Enrolling needs the passphrase.** `systemd-cryptenroll` authorises the new
 keyslot with an existing one, so `luks_password` must be in the config for that
@@ -244,7 +271,7 @@ even for a config that never declared `disks`:
 | every disk with ≥ 1 partition | `lsblk`; disks with none are omitted |
 | filesystem, size, mountpoint | `lsblk` + `findmnt` |
 | encryption → `encrypt`, `luks_name`, `luks_uuid` | `cryptsetup` |
-| `unlock_fido2` / `unlock_tpm2` | `luksDump` token types |
+| `unlock_fido2` / `unlock_tpm2` | `luksDump` token types — fido2 as a COUNT (`true` for one key, `3` for three) |
 | `luks_options` | `/proc/cmdline` |
 | btrfs subvolumes and their options | live mounts, common options hoisted |
 | labels | the real fs/partition label, else a **role label** derived from what it is: `/`→`root`, `/boot`→`boot`, `/home`→`home`, an unmounted ESP→`esp`, swap→`swap`, else `part` (deduplicated) |

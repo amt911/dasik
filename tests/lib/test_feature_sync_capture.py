@@ -955,3 +955,13 @@ def test_the_package_the_block_derives_is_not_written_back(tmp_path):
     original = {"tailscale": {"accept_routes": True}}
     stripped = subtract_contributions(expand_config(original), original)
     assert "tailscale" not in stripped.get("packages", [])
+
+
+# --- several FIDO2 keys ---------------------------------------------------- #
+#
+# The full matrix (one key captures as `true`, three as `3`, none invents
+# nothing, and the capture re-plans to silence) lives beside the action, in
+# tests/lib/actions/test_sync_captures_fido2_count.py, because it needs a
+# luksDump fixture per count. What belongs HERE is the rule it enforces: the
+# capture states how many keyslots the header really carries, and a machine
+# with three keys must never come back describing one.

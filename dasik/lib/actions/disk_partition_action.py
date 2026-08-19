@@ -462,24 +462,39 @@ class DiskPartitionAction(AbstractAction):
         if fstype in _KEYDEV_FILESYSTEMS:
             part["unlock_keydev_fs"] = fstype
 
-    def _read_luks_tokens(self, luks_name: str) -> set:
-        """Which hardware-token unlock methods are enrolled in the LUKS header:
-        {"fido2", "tpm2"} from the `cryptsetup luksDump` Tokens section. Lets sync
-        recover unlock_fido2/unlock_tpm2 from a live system. Best-effort."""
+    def _read_luks_tokens(self, luks_name: str) -> dict:
+        """How many hardware tokens of each kind the LUKS header carries.
+
+        ``{"fido2": 2, "tpm2": 1}`` from the `cryptsetup luksDump` Tokens
+        section. A COUNT, not a flag: a machine with three FIDO2 keys captured
+        as `true` would come back describing one, and the other two keyslots
+        would be unowned — see tests/lib/actions/test_sync_captures_fido2_count.py.
+        Best-effort: an unreadable header reports nothing rather than guessing.
+        """
         dev = self._luks_backing_device(luks_name)
         if not dev:
-            return set()
+            return {}
         try:
             dump = self._decode(
                 Command.execute("cryptsetup", ["luksDump", dev], target=self._target()).stdout)
         except Exception:
-            return set()
-        tokens = set()
-        if "systemd-fido2" in dump:
-            tokens.add("fido2")
-        if "systemd-tpm2" in dump:
-            tokens.add("tpm2")
+            return {}
+        tokens = {}
+        for kind, token in (("fido2", "systemd-fido2"), ("tpm2", "systemd-tpm2")):
+            count = sum(1 for line in dump.splitlines()
+                        if line.strip().endswith(token))
+            if count:
+                tokens[kind] = count
         return tokens
+
+    @staticmethod
+    def _fido2_capture(count: int):
+        """`true` for a single key, the number for several.
+
+        One key is what the boolean always meant, so a machine with one comes
+        back looking exactly as it did before counts existed.
+        """
+        return True if count == 1 else count
 
     def import_state(self, managed=None) -> dict:
         """Reflect the declared disk layout back into the config non-destructively.
@@ -509,9 +524,9 @@ class DiskPartitionAction(AbstractAction):
                     if uuid:
                         p["luks_uuid"] = uuid
                     tokens = self._read_luks_tokens(p["luks_name"])
-                    if "fido2" in tokens:
-                        p["unlock_fido2"] = True
-                    if "tpm2" in tokens:
+                    if tokens.get("fido2"):
+                        p["unlock_fido2"] = self._fido2_capture(tokens["fido2"])
+                    if tokens.get("tpm2"):
                         p["unlock_tpm2"] = True
                     if uuid:
                         extra = self._read_luks_options(uuid)
@@ -802,9 +817,9 @@ class DiskPartitionAction(AbstractAction):
             if luks_uuid:
                 part["luks_uuid"] = luks_uuid
             tokens = self._read_luks_tokens(luks_name)
-            if "fido2" in tokens:
-                part["unlock_fido2"] = True
-            if "tpm2" in tokens:
+            if tokens.get("fido2"):
+                part["unlock_fido2"] = self._fido2_capture(tokens["fido2"])
+            if tokens.get("tpm2"):
                 part["unlock_tpm2"] = True
             if luks_uuid:
                 extra = self._read_luks_options(luks_uuid)

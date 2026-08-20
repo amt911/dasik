@@ -540,6 +540,50 @@ unit whose name changed, an `apply` that stops half way.
 
 Boot the Arch ISO in **UEFI** mode, get networking up (`iwctl`), then:
 
+### If your ISP throttles you: a VPN inside the live ISO
+
+Everything the install downloads — the bootstrap, pacstrap's packages, every
+AUR build inside the chroot — leaves through the live environment's network.
+So if your line is being throttled, fix it **here, before the bootstrap**, and
+the entire install inherits the tunnel; nothing later needs to know.
+
+The ISO does not ship `wireguard-tools` (checked against 2026.08.01 — `openvpn`
+it does ship), but the kernel module is in-tree and the tool is a
+hundred-kilobyte download that survives any throttle:
+
+```bash
+pacman -Sy wireguard-tools
+```
+
+Copy in a wg-quick profile — the same kind this repository keeps under
+`<machine>/wg/` — from a USB stick, or `scp` it from another machine. Then:
+
+```bash
+wg-quick up /root/vpn.conf     # the filename becomes the interface name: 15 chars max
+curl https://ipinfo.io         # confirm the exit IP before trusting it
+```
+
+Two details, both verified on the ISO rather than assumed:
+
+- **The `DNS =` line works.** The ISO ships `systemd-resolvconf`, which is the
+  `resolvconf` binary wg-quick reaches for. No editing the profile.
+- **Re-rank the mirrors once the tunnel is up.** Your mirrorlist was chosen for
+  the country you are *in*, and the tunnel's exit is somewhere else — the
+  throttle is gone but the "nearby" mirrors are now the far ones. The ISO
+  ships reflector:
+
+  ```bash
+  reflector --protocol https --latest 5 --sort rate --save /etc/pacman.d/mirrorlist
+  ```
+
+None of this reaches the installed machine: the live environment is a tmpfs,
+`pacstrap` installs only what the config declares, and the target's own tunnels
+are the `wireguard` block's business ([VPN](VPN.md)). This tunnel dies with the
+ISO — which is exactly right, since its private key is sitting in a throwaway
+root shell.
+
+With the network sorted:
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/amt911/dasik-aur/main/iso-bootstrap.sh -o bootstrap.sh
 bash bootstrap.sh --config-repo amt911/dasik-personal-config

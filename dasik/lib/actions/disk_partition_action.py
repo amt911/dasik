@@ -19,6 +19,7 @@ from dasik.lib.exceptions.exceptions import CommandExecutionError
 from dasik.lib.logging import run_logger
 from dasik.lib.state.change import Change, Op
 from dasik.lib.actions.partition_utils import keydev_path
+from dasik.lib.actions.luks_dump import read_dump
 from dasik.lib.actions.swap_encryption import KEY_SOURCE, LABEL_FS_SIZE, swap_names
 
 # lsblk FSTYPE -> dasik filesystem. Anything absent (ntfs, None, crypto_LUKS
@@ -477,10 +478,12 @@ class DiskPartitionAction(AbstractAction):
         dev = self._luks_backing_device(luks_name)
         if not dev:
             return None
-        try:
-            dump = self._decode(
-                Command.execute("cryptsetup", ["luksDump", dev], target=self._target()).stdout)
-        except Exception:
+        # read_dump, not a bare luksDump: systemd's token plugins render their
+        # half of the section to stderr, so a plain stdout read counts ONE
+        # fido2 token on a header that carries two — and this capture would
+        # then rewrite a working `unlock_fido2: 2` down to `true`.
+        dump = read_dump(Command.execute, dev, target=self._target())
+        if dump is None:
             return None
         tokens = {}
         for kind, token in (("fido2", "systemd-fido2"), ("tpm2", "systemd-tpm2")):

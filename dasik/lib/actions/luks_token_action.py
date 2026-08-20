@@ -49,6 +49,7 @@ from .abstract_action import AbstractAction
 from ..command_worker.command_worker import Command
 from ..exceptions.exceptions import CommandExecutionError
 from ..models.disk_model import fido2_count
+from .luks_dump import read_dump
 from ..state.change import Change, Op
 
 # kind -> (config flag, the systemd-cryptenroll enrol flag, its token name in
@@ -137,15 +138,14 @@ class LuksTokenAction(AbstractAction):
         return None
 
     def _dump(self, device: str) -> str:
-        """``cryptsetup luksDump`` for *device*, or '' when it cannot be read."""
-        try:
-            result = Command.execute("cryptsetup", ["luksDump", device])
-        except Exception:            # noqa: BLE001 - no cryptsetup / not LUKS
-            return ""
-        stdout = getattr(result, "stdout", b"") or b""
-        if isinstance(stdout, bytes):
-            stdout = stdout.decode("utf-8", errors="replace")
-        return stdout
+        """``cryptsetup luksDump`` for *device*, or '' when it cannot be read.
+
+        Through :func:`read_dump`, which asks cryptsetup NOT to hand the Tokens
+        section to systemd's token plugins — they render it to stderr, leaving
+        stdout with one token line and no keyslot numbers however many keys the
+        header really holds.
+        """
+        return read_dump(Command.execute, device) or ""
 
     @staticmethod
     def _enrolled(dump: str) -> set:

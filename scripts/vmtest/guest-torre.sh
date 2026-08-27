@@ -4,7 +4,7 @@
 #
 #   qemu.sh drive <image> guest-torre.sh TORRE-DONE
 #
-# config/vm-torre-reinstall.json rehearses torre-amd-reinstall.json from the
+# config/vm-torre-reinstall.json rehearses torre-amd.json from the
 # personal config repo: the desktop moved onto the ThinkPad's disk layout.
 #
 # The point of this run is HIBERNATION, which this machine has never had. Its

@@ -182,6 +182,13 @@ class InitramfsBackend:
             return self.target.path(canonical)
         return "/mnt" + canonical
 
+    # The directory of generator drop-ins this backend reads, canonical (not
+    # target-prefixed), or None for a backend that has none. Everything in it
+    # feeds the image, not only the file dasik writes, so InitramfsAction has to
+    # know where to look for the ones the CONFIG declares — on-disk state alone
+    # is a run behind, because the whole plan is built before any action applies.
+    CONF_DIR: "str | None" = None
+
     def desired_value(self) -> str:
         raise NotImplementedError
 

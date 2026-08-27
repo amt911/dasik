@@ -1,0 +1,86 @@
+{
+  "metadata": {
+    "note": "The same machine as vm-confd-base.json plus ONE foreign drop-in in /etc/dracut.conf.d. Nothing else differs — dasik's own dasik.conf is byte-identical between the two — so applying this config over a machine installed from the base one isolates exactly the question: does a file dracut reads, but dasik did not write, rebuild the initramfs? Before the fix it did not: apply wrote the file, the next plan reported converged, and the image kept its old content until an unrelated kernel upgrade ran dracut. Applying the BASE config again afterwards removes the drop-in, which is the half a file list cannot see: every file left behind is older than the image, so only the directory's own mtime betrays the deletion. NOT for real hardware.",
+    "sizing": "DASIK_VM_RAM=4096 DASIK_VM_DISK=16G"
+  },
+  "hostname": "dasik-confd",
+  "timezone": {
+    "region": "Etc",
+    "city": "UTC"
+  },
+  "locales": {
+    "selected_locales": [
+      "en_US.UTF-8 UTF-8"
+    ],
+    "desired_locale": "en_US.UTF-8",
+    "desired_tty_layout": "us"
+  },
+  "network": {
+    "type": "systemd-networkd"
+  },
+  "bootloader": "sd-boot",
+  "initramfs": "dracut",
+  "enable_microcode": false,
+  "packages": [
+    "base",
+    "linux",
+    "linux-firmware",
+    "btrfs-progs",
+    "python",
+    "python-pydantic",
+    "python-colorama"
+  ],
+  "disks": {
+    "disks": [
+      {
+        "device": "/dev/vda",
+        "partition_table": "gpt",
+        "wipe_disk": true,
+        "partitions": [
+          {
+            "label": "esp",
+            "size": "1GiB",
+            "filesystem": "fat32",
+            "partition_type": "esp",
+            "mountpoint": "/boot",
+            "format": true
+          },
+          {
+            "label": "root",
+            "size": "rest",
+            "filesystem": "btrfs",
+            "partition_type": "linux",
+            "mountpoint": null,
+            "format": true,
+            "encrypt": true,
+            "luks_name": "cryptroot",
+            "luks_password": "confdpass",
+            "btrfs_subvolumes": [
+              {
+                "name": "@",
+                "mountpoint": "/"
+              },
+              {
+                "name": "@home",
+                "mountpoint": "/home"
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "kernel_cmdline": [
+    "console=ttyS0,115200"
+  ],
+  "files": [
+    {
+      "path": "/etc/systemd/system/serial-getty@ttyS0.service.d/autologin.conf",
+      "content": "[Service]\nExecStart=\nExecStart=-/sbin/agetty --autologin root --noclear --keep-baud 115200,38400,9600 %I $TERM\n"
+    },
+    {
+      "path": "/etc/dracut.conf.d/50-vmtest-fingerprint.conf",
+      "content": "# A drop-in dasik did not write, changing what dracut produces while\n# dasik.conf stays byte-identical — which is the whole point of the check.\n#\n# ADDITIVE on purpose. Omitting virtio_blk would prove the same thing and\n# leave the image unable to see its own root device, so any later layer\n# booting this qcow2 would fail for a reason that has nothing to do with\n# what is being tested. xfs.ko ships with the `linux` package, is not\n# otherwise in a btrfs guest's initramfs, and lsinitrd finds it by name.\nadd_drivers+=\" xfs \"\n"
+    }
+  ]
+}

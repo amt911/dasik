@@ -26,6 +26,8 @@ _FS_MODULES = {
 
 class MkinitcpioBackend(InitramfsBackend):
 
+    CONF_DIR = "/etc/mkinitcpio.conf.d"
+
     def _raw_entries(self, directive: str) -> Optional[List[str]]:
         """The words inside `DIRECTIVE=(…)` in the on-disk conf, or None."""
         try:

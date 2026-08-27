@@ -71,6 +71,16 @@ def _dracut_target(tmp_path):
     return Target(root=str(tmp_path))
 
 
+def _backdate_conf_d(tmp_path, when=1):
+    """/etc/dracut.conf.d is an input in its own right — a deleted drop-in is
+    invisible otherwise — so these tests have to age it along with the files
+    they fake a timeline for. It must run AFTER dasik.conf is written: creating
+    a file in a directory bumps that directory's mtime back to now, and the
+    image (stamped in 1970 here) would always look stale, so the theme — the
+    thing actually under test — would never get to decide anything."""
+    os.utime(tmp_path / "etc/dracut.conf.d", (when, when))
+
+
 def test_a_theme_newer_than_the_image_forces_a_rebuild(tmp_path):
     """Arch wiki: every theme change needs the initramfs regenerated. Without
     counting plymouthd.conf as an input the plan stays silent and the splash
@@ -84,6 +94,7 @@ def test_a_theme_newer_than_the_image_forces_a_rebuild(tmp_path):
     theme_conf.write_text("[Daemon]\nTheme=bgrt\n")
 
     os.utime(conf, (1, 1))                                  # config: old
+    _backdate_conf_d(tmp_path)
     os.utime(tmp_path / "boot/initramfs-linux.img", (2, 2))  # image: built after it
     os.utime(theme_conf, (3, 3))                            # theme: changed since
 
@@ -100,6 +111,7 @@ def test_an_image_newer_than_the_theme_is_converged(tmp_path):
     theme_conf.write_text("[Daemon]\nTheme=bgrt\n")
 
     os.utime(conf, (1, 1))
+    _backdate_conf_d(tmp_path)
     os.utime(theme_conf, (2, 2))
     os.utime(tmp_path / "boot/initramfs-linux.img", (3, 3))
 

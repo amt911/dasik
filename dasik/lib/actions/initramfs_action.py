@@ -73,7 +73,73 @@ class InitramfsAction(ScalarV3Action):
         if detected and detected != declared:
             return [Change(self._DOMAIN, Op.MODIFY, declared,
                            reason=f"generator switch ({detected} -> {declared})")]
+        dropin = self._dropin_drift()
+        if dropin:
+            path, why = dropin
+            return [Change(self._DOMAIN, Op.MODIFY, declared,
+                           reason=f"generator drop-in {why}: {path}")]
         return []
+
+    def _dropin_drift(self) -> Optional[tuple]:
+        """A generator drop-in that is ABOUT to change, from the config's side.
+
+        The backend already treats every file in its conf.d as an input to the
+        image, by mtime. That catches a drop-in edited between two runs — but not
+        one edited in THIS run, because the reconciler builds the whole plan
+        before any action applies: when a run adds a drop-in, this plan() runs
+        while DropFilesAction has not written it yet, so the directory still
+        looks converged, `apply` reports success, and the image is untouched.
+        The change surfaces on the NEXT plan, which is precisely the
+        plan -> apply -> plan invariant this repo refuses to break. Measured in a
+        VM (scripts/vmtest/guest-dracut-conf-d.sh), not reasoned about.
+
+        So the answer has to come from the DECLARED state:
+
+        * declared and missing, or declared with different content — DropFiles is
+          about to write it, and the image must be rebuilt after that;
+        * owned by dasik and no longer declared — DropFiles is about to delete
+          it. Nothing on disk can say so (every file left behind is older than
+          the image), so ownership comes from the manifest.
+
+        A file dasik neither declares nor owns — envycontrol's, or one somebody
+        wrote by hand — is deliberately NOT drift: it is not about to change, and
+        planning a rebuild for it would plan the same change on every run for
+        ever.
+        """
+        conf_dir = getattr(self._backend, "CONF_DIR", None)
+        target = getattr(self.context, "target", None) if self.context else None
+        if not conf_dir or target is None:
+            return None
+        prefix = conf_dir.rstrip("/") + "/"
+
+        declared = {}
+        for entry in (self.config.get("files") or []) if isinstance(self.config, dict) else []:
+            if isinstance(entry, dict):
+                path, content = entry.get("path"), entry.get("content", "")
+            else:
+                path, content = getattr(entry, "path", None), getattr(entry, "content", "")
+            if isinstance(path, str) and path.startswith(prefix) and path.endswith(".conf"):
+                declared[path] = content or ""
+
+        for path, content in sorted(declared.items()):
+            try:
+                with open(target.path(path), "r", encoding="utf-8") as f:
+                    on_disk = f.read()
+            except OSError:
+                return (path, "declared but not on disk yet")
+            if on_disk != content:
+                return (path, "declared with different content")
+
+        manifest = getattr(self.context, "manifest", None) if self.context else None
+        owned = ((manifest or {}).get("managed", {}) or {}).get("files", []) or []
+        for item in owned:
+            path = item if isinstance(item, str) else (item or {}).get("path")
+            if not isinstance(path, str) or not path.startswith(prefix) \
+                    or not path.endswith(".conf") or path in declared:
+                continue
+            if os.path.exists(target.path(path)):
+                return (path, "owned but no longer declared")
+        return None
 
     def _declared_generator(self) -> str:
         cfg = self.config if isinstance(self.config, dict) else {}

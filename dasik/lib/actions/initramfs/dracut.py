@@ -1,5 +1,6 @@
 """dracut backend: derive /etc/dracut.conf.d/dasik.conf + /etc/crypttab + run dracut."""
 from __future__ import annotations
+import glob
 import os
 from typing import List, Optional
 from .base import InitramfsBackend
@@ -9,7 +10,8 @@ from ..luks_uuid import luks_uuid
 from ..partition_utils import keydev_spec, mounts_root
 from ..swap_encryption import crypttab_line, random_swap_partitions, swap_names
 
-_CONF = "/etc/dracut.conf.d/dasik.conf"
+_CONF_D = "/etc/dracut.conf.d"
+_CONF = f"{_CONF_D}/dasik.conf"
 _CRYPTTAB = "/etc/crypttab"
 _FSTAB = "/etc/fstab"
 # Fallback to the passphrase prompt when the key device is absent (mirrors
@@ -23,6 +25,8 @@ _PLYMOUTHD_CONF = "/etc/plymouth/plymouthd.conf"
 
 
 class DracutBackend(InitramfsBackend):
+
+    CONF_DIR = _CONF_D
 
     def _add_modules(self) -> List[str]:
         """dracut modules included via add_dracutmodules (non-forced).
@@ -239,7 +243,7 @@ class DracutBackend(InitramfsBackend):
         # converged: the conf/crypttab are written BEFORE dracut runs, so a crash
         # (or an image later clobbered by mkinitcpio) left the next plan empty
         # while /boot held a stale — or no — initramfs for the declared kernel.
-        inputs = [self._path(_CONF)]
+        inputs = self._conf_inputs()
         if self.has_plymouth:
             # A theme change rewrites plymouthd.conf and nothing else: dasik.conf
             # is identical, so without counting the theme file as an input the
@@ -249,6 +253,34 @@ class DracutBackend(InitramfsBackend):
         if not self._images_current(*inputs):
             return None
         return conf
+
+    def _conf_inputs(self) -> "list[str]":
+        """Every file that feeds the image from /etc/dracut.conf.d, plus the
+        directory itself.
+
+        dracut reads the WHOLE directory, so dasik.conf is only one of its
+        inputs. A drop-in somebody adds through `etc_tree` — an omit_drivers, an
+        add_drivers for a storage controller, a keyboard module for the LUKS
+        prompt — changes what dracut would produce while leaving dasik.conf
+        byte-identical. Counting only our own file made `apply` write that
+        drop-in, `plan` report converged, and the image keep its old content
+        until an unrelated kernel upgrade happened to run dracut. You could not
+        tell "applied" from "ignored", which is the same failure the plymouth
+        theme input above exists to prevent.
+
+        The DIRECTORY is an input too, and it is the only thing that can catch a
+        REMOVAL: delete a drop-in and every file left behind is still older than
+        the image, so the file list alone reports converged while the image is
+        still built from the file that is gone. Creating, deleting or renaming
+        bumps the directory's mtime; nothing else writes there in steady state,
+        so this costs no spurious rebuilds.
+
+        Only `*.conf` counts — that is what dracut reads, and a .pacnew or an
+        editor backup left in that directory must not force a rebuild on every
+        plan.
+        """
+        conf_d = self._path(_CONF_D)
+        return [conf_d, *sorted(glob.glob(os.path.join(conf_d, "*.conf")))]
 
     def _images_current(self, *input_paths: str) -> bool:
         """True when every target kernel has an initramfs image at least as new

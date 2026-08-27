@@ -1,0 +1,198 @@
+{
+  "metadata": {
+    "note": "VM rehearsal of the MSI GE63 Raider 8SG as msi-ge63.json declares it in the personal config repo: the same 2GiB ESP, LUKS swap sized for hibernation and encrypted btrfs root with the ten-subvolume layout as config/vm-p14s-hibernate.json, PLUS everything that makes this machine Intel-with-an-Optimus-NVIDIA rather than an AMD ThinkPad — intel_pstate on the cmdline, the intel-ucode initrd (and only that one), thermald, the snd_hda_intel quirk, a pam.d/sudo with no fingerprint line, and the hybrid intel+nvidia driver set. What a VM CANNOT prove is stated in scripts/vmtest/guest-ge63.sh: this host is a Ryzen, so intel_pstate cannot bind, and there is no GPU behind the nvidia packages. Public test passphrase 'hibpass' on both volumes; unlock_fido2 is false here and 2 on the real machine (systemd-cryptenroll runs with check=True, so enrolling a key that is not plugged in aborts the apply). Autologins root over serial. NOT for real hardware.",
+    "sizing": "DASIK_VM_RAM=4096 DASIK_VM_DISK=24G DASIK_VM_INSTALL_TIMEOUT=3600"
+  },
+  "hostname": "dasik-ge63",
+  "timezone": {
+    "region": "Etc",
+    "city": "UTC"
+  },
+  "locales": {
+    "selected_locales": [
+      "en_US.UTF-8 UTF-8"
+    ],
+    "desired_locale": "en_US.UTF-8",
+    "desired_tty_layout": "us"
+  },
+  "network": {
+    "type": "systemd-networkd"
+  },
+  "pacman": {
+    "options": {
+      "Parallel": true,
+      "Color": true
+    },
+    "multilib": true
+  },
+  "bootloader": "sd-boot",
+  "initramfs": "dracut",
+  "enable_microcode": true,
+  "enable_trim": true,
+  "sysrq": true,
+  "packages": [
+    "base",
+    "linux",
+    "linux-firmware",
+    "btrfs-progs",
+    "python",
+    "python-pydantic",
+    "python-colorama",
+    "intel-ucode",
+    "thermald",
+    "pam-u2f"
+  ],
+  "drivers": [
+    "intel",
+    "nvidia"
+  ],
+  "hardware_acceleration": {
+    "enable": true,
+    "install_codecs": true
+  },
+  "cpu": {
+    "scaling_driver": "intel_pstate",
+    "mode": "active",
+    "power_profiles_daemon": true
+  },
+  "systemd": {
+    "enable_units": [
+      "thermald.service"
+    ]
+  },
+  "snapper": {
+    "enable": true,
+    "configs": [
+      {
+        "name": "root",
+        "subvolume": "/"
+      }
+    ]
+  },
+  "disks": {
+    "disks": [
+      {
+        "device": "/dev/vda",
+        "partition_table": "gpt",
+        "wipe_disk": true,
+        "partitions": [
+          {
+            "label": "esp",
+            "size": "2GiB",
+            "filesystem": "fat32",
+            "partition_type": "esp",
+            "mountpoint": "/boot",
+            "format": true
+          },
+          {
+            "label": "swap",
+            "size": "4GiB",
+            "filesystem": "swap",
+            "partition_type": "linux-swap",
+            "mountpoint": null,
+            "format": true,
+            "encrypt": true,
+            "luks_name": "cryptswap",
+            "luks_password": "hibpass",
+            "unlock_fido2": false,
+            "luks_options": [
+              "token-timeout=10s"
+            ]
+          },
+          {
+            "label": "root",
+            "size": "rest",
+            "filesystem": "btrfs",
+            "partition_type": "linux",
+            "mountpoint": null,
+            "format": true,
+            "encrypt": true,
+            "luks_name": "cryptroot",
+            "luks_password": "hibpass",
+            "unlock_fido2": false,
+            "luks_options": [
+              "token-timeout=10s"
+            ],
+            "mount_options": [
+              "compress-force=zstd:3"
+            ],
+            "btrfs_subvolumes": [
+              {
+                "name": "@",
+                "mountpoint": "/"
+              },
+              {
+                "name": "@srv",
+                "mountpoint": "/srv"
+              },
+              {
+                "name": "@snapshots",
+                "mountpoint": "/.snapshots"
+              },
+              {
+                "name": "@home",
+                "mountpoint": "/home"
+              },
+              {
+                "name": "@var_lib_containers",
+                "mountpoint": "/var/lib/containers"
+              },
+              {
+                "name": "@var_lib_libvirt",
+                "mountpoint": "/var/lib/libvirt"
+              },
+              {
+                "name": "@var_cache",
+                "mountpoint": "/var/cache"
+              },
+              {
+                "name": "@var_log",
+                "mountpoint": "/var/log"
+              },
+              {
+                "name": "@var_tmp",
+                "mountpoint": "/var/tmp"
+              },
+              {
+                "name": "@var_spool",
+                "mountpoint": "/var/spool"
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "kernel_cmdline": [
+    "console=ttyS0,115200",
+    "resume=/dev/mapper/cryptswap"
+  ],
+  "zram": {
+    "zram0": {
+      "swap-priority": "100",
+      "zram-size": "min(ram / 2, 8192)"
+    }
+  },
+  "files": [
+    {
+      "path": "/etc/systemd/system/serial-getty@ttyS0.service.d/autologin.conf",
+      "content": "[Service]\nExecStart=\nExecStart=-/sbin/agetty --autologin root --noclear --keep-baud 115200,38400,9600 %I $TERM\n"
+    },
+    {
+      "path": "/etc/systemd/logind.conf.d/10-dasik.conf",
+      "content": "# Managed by dasik. Mirrors the real machine: closing the lid suspends and\n# then hibernates, which only works because the swap is LUKS with a persistent\n# key.\n[Login]\nHandleLidSwitch=suspend-then-hibernate\nHandleLidSwitchExternalPower=suspend\n"
+    },
+    {
+      "path": "/etc/modprobe.d/msi-audio.conf",
+      "content": "# Managed by dasik. The GE63 Raider 8SG shares its codec with the GE75 Raider\n# 8SX: without this quirk the speakers lose their LFEs and headphones are muted\n# on plug-in. https://wiki.archlinux.org/title/MSI_GE75_Raider_8SX#Driver_options\noptions snd_hda_intel model=lenovo-y530\n"
+    },
+    {
+      "path": "/etc/pam.d/sudo",
+      "content": "#%PAM-1.0\n# Managed by dasik. Vendor file (sudo package) + YubiKey. NO pam_fprintd line:\n# this machine has no fingerprint reader, which also takes CVE-2024-37408 off\n# the table. pam_u2f reads ~/.config/Yubico/u2f_keys; absent, it just fails and\n# the stack falls through to the password.\nauth       sufficient  pam_u2f.so cue\nauth       include     system-auth\naccount    include     system-auth\nsession    include     system-auth\nsession    optional    pam_systemd.so class=none\n"
+    },
+    {
+      "path": "/etc/dracut.conf.d/10-no-nvidia-early-kms.conf",
+      "content": "# Managed by dasik. Keep the NVIDIA modules OUT of the initramfs: hostonly\n# dracut pulls in the drivers for the hardware it sees, and early KMS has no\n# access to NVreg_TemporaryFilePath (/var/tmp), which breaks hibernation.\n# omit_drivers wins over add_drivers/force_drivers.\nomit_drivers+=\" nvidia nvidia_modeset nvidia_uvm nvidia_drm \"\n"
+    }
+  ]
+}

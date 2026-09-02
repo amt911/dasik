@@ -147,3 +147,35 @@ def test_the_captured_block_validates_and_replans_to_nothing(tmp_path):
     # ...and applying it would change nothing.
     assert _act(tmp_path, {**_cfg(("andres", "otro")), **captured}).plan(
         managed=[]) == []
+
+
+def test_a_canonical_skill_no_agent_reads_is_reported_not_invented(tmp_path):
+    """The copy is there, but this machine has no agent that reads it.
+
+    Naming one would describe a machine that does not exist; the entry is
+    skipped and said out loud instead.
+    """
+    _passwd(tmp_path)
+    canonical = _home(tmp_path) / ".agents/skills/impeccable"
+    canonical.mkdir(parents=True)
+    (canonical / "SKILL.md").write_text("---\nname: impeccable\n---\n")
+    (_home(tmp_path) / ".agents/.skill-lock.json").write_text(
+        '{"version": 3, "skills": {"impeccable": {"source": "pbakaus/impeccable"}}}')
+    assert _act(tmp_path, _cfg()).import_state() == {"ai_skills": {}}
+
+
+def test_the_declared_agent_is_enough_even_before_it_is_installed(tmp_path):
+    """A config that declares codex captures codex, even on a machine where the
+    codex home does not exist yet — the declaration is the reason it is there."""
+    _passwd(tmp_path)
+    canonical = _home(tmp_path) / ".agents/skills/impeccable"
+    canonical.mkdir(parents=True)
+    (canonical / "SKILL.md").write_text("---\nname: impeccable\n---\n")
+    (_home(tmp_path) / ".agents/.skill-lock.json").write_text(
+        '{"version": 3, "skills": {"impeccable": {"source": "pbakaus/impeccable"}}}')
+    cfg = {**_cfg(), "ai_skills": {"entries": [
+        {"name": "impeccable", "method": "skills",
+         "source": "pbakaus/impeccable", "agents": ["codex"]}]}}
+    assert _block(_act(tmp_path, cfg))["entries"] == [{
+        "name": "impeccable", "method": "skills",
+        "source": "pbakaus/impeccable", "agents": ["codex"]}]

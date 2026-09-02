@@ -1,0 +1,90 @@
+{
+  "metadata": {
+    "note": "The machine BEFORE the upgrade: dasik pinned to the pre-0.14.0 dasik-aur commit and no ai_skills/uv_tools blocks \u2014 the shape an already-installed machine has today. Pair with config/vm-ai-skills-pkg.json (the after) and scripts/vmtest/guest-ai-skills-upgrade.sh, which rehearses the day-2 upgrade: the first apply replaces dasik itself and (correctly) ignores blocks the RUNNING dasik does not know, the second converges them. NOT for real hardware."
+  },
+  "disks": {
+    "disks": [
+      {
+        "device": "/dev/vda",
+        "partition_table": "gpt",
+        "wipe_disk": false,
+        "partitions": [
+          {
+            "label": "ESP",
+            "size": "512MiB",
+            "filesystem": "fat32",
+            "partition_type": "esp",
+            "mountpoint": "/boot",
+            "format": true
+          },
+          {
+            "label": "ROOT",
+            "size": "rest",
+            "filesystem": "ext4",
+            "partition_type": "linux",
+            "mountpoint": "/",
+            "format": true
+          }
+        ]
+      }
+    ]
+  },
+  "enable_microcode": false,
+  "packages": [
+    "base",
+    "linux",
+    "linux-firmware",
+    "sudo",
+    "git",
+    "nodejs",
+    "npm",
+    "uv",
+    "python",
+    "python-pydantic",
+    "python-colorama",
+    "base-devel",
+    "dasik"
+  ],
+  "bootloader": "sd-boot",
+  "hostname": "dasik-ai-skills-pkg",
+  "kernel_cmdline": [
+    "console=ttyS0,115200"
+  ],
+  "timezone": {
+    "region": "Etc",
+    "city": "UTC"
+  },
+  "locales": {
+    "selected_locales": [
+      "en_US.UTF-8 UTF-8"
+    ],
+    "desired_locale": "en_US.UTF-8",
+    "desired_tty_layout": "us"
+  },
+  "network": {
+    "type": "systemd-networkd"
+  },
+  "users": [
+    {
+      "username": "test",
+      "hashed_password": "$6$dasikvmtest$pfoSKqgh8yWKbmkwBpNuvQuJ4/kLeJmwCPCezBolW4pKbtJbtvMGQCM5f7W/hkbF/FmtCMZMYr/NLwDO4OJm7.",
+      "groups": [
+        "wheel"
+      ]
+    }
+  ],
+  "files": [
+    {
+      "path": "/etc/systemd/system/serial-getty@ttyS0.service.d/autologin.conf",
+      "content": "[Service]\nExecStart=\nExecStart=-/sbin/agetty --autologin root --noclear --keep-baud 115200,38400,9600 %I $TERM\n"
+    }
+  ],
+  "package_sources": {
+    "dasik": {
+      "type": "pkgbuild-git",
+      "url": "https://github.com/amt911/dasik-aur.git",
+      "ref": "08215a917a3a477ed1dadfd521a25ea8a853220b",
+      "subdir": "."
+    }
+  }
+}

@@ -1089,3 +1089,145 @@ def test_the_initramfs_carries_the_fido2_module_for_a_count():
     assert detect_fido2(_fido2_config(True)) is True
     assert detect_fido2(_fido2_config(0)) is False
     assert detect_fido2(_fido2_config(False)) is False
+
+
+# --- ai_skills ------------------------------------------------------------- #
+#
+# The domain has no file under /etc and no package of its own: if `plan` did not
+# name each (user, agent, artefact) triple, "already installed" and "dasik does
+# not look at this block" would be the same silence.
+
+def _ai_root(tmp_path, user="andres"):
+    (tmp_path / "etc").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "etc/passwd").write_text(
+        "root:x:0:0::/root:/bin/bash\n"
+        f"{user}:x:1000:1000::/home/{user}:/bin/bash\n")
+    return tmp_path
+
+
+def _ai_install_skill(root, name="impeccable", user="andres", agent=".codex"):
+    canonical = root / "home" / user / ".agents/skills" / name
+    canonical.mkdir(parents=True)
+    (canonical / "SKILL.md").write_text(f"---\nname: {name}\n---\n")
+    agent_dir = root / "home" / user / agent / "skills"
+    agent_dir.mkdir(parents=True, exist_ok=True)
+    (agent_dir / name).symlink_to(canonical)
+
+
+_AI_CFG = {"users": [{"username": "andres"}], "ai_skills": {"entries": [
+    {"name": "impeccable", "method": "skills", "source": "pbakaus/impeccable",
+     "agents": ["codex"]}]}}
+
+
+def _ai_plan(root, config, managed=()):
+    from dasik.lib.actions.ai_skills_action import AiSkillsAction
+    action = AiSkillsAction(config, _ctx(root))
+    return [(c.op.name, c.item) for c in action.plan(managed=list(managed))]
+
+
+def test_an_ai_skill_the_machine_lacks_is_planned(tmp_path):
+    assert _ai_plan(_ai_root(tmp_path), _AI_CFG) == [
+        ("CREATE", "andres:codex:skill:impeccable")]
+
+
+def test_an_ai_skill_already_installed_plans_nothing(tmp_path):
+    root = _ai_root(tmp_path)
+    _ai_install_skill(root)
+    assert _ai_plan(root, _AI_CFG) == []
+
+
+def test_an_ai_skill_owned_but_no_longer_declared_is_removed(tmp_path):
+    root = _ai_root(tmp_path)
+    _ai_install_skill(root)
+    assert _ai_plan(root, {"users": [{"username": "andres"}]},
+                    managed=["andres:codex:skill:impeccable"]) == [
+        ("DELETE", "andres:codex:skill:impeccable")]
+
+
+def test_an_ai_skill_somebody_else_installed_is_left_alone(tmp_path):
+    root = _ai_root(tmp_path)
+    _ai_install_skill(root, "graphify")
+    assert _ai_plan(root, {"users": [{"username": "andres"}]}) == []
+
+
+def _ai_install_tool_skill(root, name="graphify", user="andres",
+                           agent=".codex/skills"):
+    target = root / "home" / user / agent / name
+    target.mkdir(parents=True)
+    (target / "SKILL.md").write_text(f"---\nname: {name}\n---\n")
+
+
+_AI_TOOL_CFG = {"users": [{"username": "andres"}], "ai_skills": {"entries": [
+    {"name": "graphify", "method": "tool", "command": "graphify",
+     "agents": ["codex"]}]}}
+
+
+def test_a_tool_installed_skill_the_machine_lacks_is_planned(tmp_path):
+    assert _ai_plan(_ai_root(tmp_path), _AI_TOOL_CFG) == [
+        ("CREATE", "andres:codex:skill:graphify")]
+
+
+def test_a_tool_installed_skill_already_there_plans_nothing(tmp_path):
+    root = _ai_root(tmp_path)
+    _ai_install_tool_skill(root)
+    assert _ai_plan(root, _AI_TOOL_CFG) == []
+
+
+def test_a_tool_installed_skill_owned_but_undeclared_is_removed(tmp_path):
+    root = _ai_root(tmp_path)
+    _ai_install_tool_skill(root)
+    assert _ai_plan(root, {"users": [{"username": "andres"}]},
+                    managed=["andres:codex:skill:graphify"]) == [
+        ("DELETE", "andres:codex:skill:graphify")]
+
+
+# --- uv_tools -------------------------------------------------------------- #
+#
+# The domain that makes "zero manual steps" true for graphify. Nothing else owns
+# it: a uv tool is not a package, not a file under /etc and not a unit.
+
+def _uv_root(tmp_path, user="andres"):
+    (tmp_path / "etc").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "etc/passwd").write_text(
+        "root:x:0:0::/root:/bin/bash\n"
+        f"{user}:x:1000:1000::/home/{user}:/bin/bash\n")
+    return tmp_path
+
+
+def _uv_install(root, tool="graphifyy", user="andres"):
+    (root / "home" / user / ".local/share/uv/tools" / tool).mkdir(parents=True)
+
+
+_UV_CFG = {"users": [{"username": "andres"}],
+           "uv_tools": {"tools": ["graphifyy"]}}
+
+
+def _uv_plan(root, config, managed=()):
+    from dasik.lib.actions.uv_tools_action import UvToolsAction
+    action = UvToolsAction(config, _ctx(root))
+    return [(c.op.name, c.item) for c in action.plan(managed=list(managed))]
+
+
+def test_a_uv_tool_the_machine_lacks_is_planned(tmp_path):
+    assert _uv_plan(_uv_root(tmp_path), _UV_CFG) == [
+        ("INSTALL", "andres:graphifyy")]
+
+
+def test_a_uv_tool_already_installed_plans_nothing(tmp_path):
+    root = _uv_root(tmp_path)
+    _uv_install(root)
+    assert _uv_plan(root, _UV_CFG) == []
+
+
+def test_a_uv_tool_owned_but_no_longer_declared_is_removed(tmp_path):
+    root = _uv_root(tmp_path)
+    _uv_install(root)
+    assert _uv_plan(root, {"users": [{"username": "andres"}]},
+                    managed=["andres:graphifyy"]) == [
+        ("REMOVE", "andres:graphifyy")]
+
+
+def test_a_uv_tool_the_user_installed_themselves_is_left_alone(tmp_path):
+    root = _uv_root(tmp_path)
+    _uv_install(root, "semgrep")
+    assert _uv_plan(root, {"users": [{"username": "andres"}]}) == []

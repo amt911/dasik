@@ -971,3 +971,127 @@ def test_the_package_the_block_derives_is_not_written_back(tmp_path):
 # luksDump fixture per count. What belongs HERE is the rule it enforces: the
 # capture states how many keyslots the header really carries, and a machine
 # with three keys must never come back describing one.
+
+
+# --- ai_skills ------------------------------------------------------------- #
+#
+# The domain nobody else owns on the way back: an AI skill installed by its own
+# CLI leaves no package, no unit and no file under /etc, so without an
+# import_state a synced machine would lose every one of them silently.
+
+def _ai_machine(tmp_path, plugins=True, skill=True, user="andres"):
+    (tmp_path / "etc").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "etc/passwd").write_text(
+        "root:x:0:0::/root:/bin/bash\n"
+        f"{user}:x:1000:1000::/home/{user}:/bin/bash\n")
+    home = tmp_path / "home" / user
+    if plugins:
+        (home / ".claude/plugins").mkdir(parents=True)
+        (home / ".claude/plugins/installed_plugins.json").write_text(json.dumps({
+            "version": 2, "plugins": {"caveman@caveman": [{"scope": "user"}]}}))
+        (home / ".claude/plugins/known_marketplaces.json").write_text(json.dumps({
+            "caveman": {"source": {"source": "github",
+                                   "repo": "JuliusBrussee/caveman"}}}))
+    if skill:
+        canonical = home / ".agents/skills/impeccable"
+        canonical.mkdir(parents=True)
+        (canonical / "SKILL.md").write_text("---\nname: impeccable\n---\n")
+        (home / ".codex/skills").mkdir(parents=True)
+        (home / ".codex/skills/impeccable").symlink_to(canonical)
+        (home / ".agents/.skill-lock.json").write_text(json.dumps({
+            "version": 3,
+            "skills": {"impeccable": {"source": "pbakaus/impeccable"}}}))
+    return tmp_path
+
+
+def _ai_captured(root, seed=None):
+    from dasik.lib.actions.ai_skills_action import AiSkillsAction
+    return AiSkillsAction(seed if seed is not None else {},
+                          ActionContext(target=Target(root=str(root)))).import_state()
+
+
+def test_ai_skills_are_captured_as_their_own_block(tmp_path):
+    captured = _ai_captured(_ai_machine(tmp_path))["ai_skills"]
+    assert captured["users"] == ["andres"]
+    assert sorted(e["name"] for e in captured["entries"]) == ["caveman",
+                                                              "impeccable"]
+
+
+def test_a_machine_without_any_agent_invents_no_ai_skills_block(tmp_path):
+    (tmp_path / "etc").mkdir()
+    (tmp_path / "etc/passwd").write_text("root:x:0:0::/root:/bin/bash\n")
+    assert _ai_captured(tmp_path) == {"ai_skills": {}}
+
+
+def test_a_declared_ai_skill_the_machine_lacks_is_cleared_not_kept(tmp_path):
+    """sync reports the machine: a declaration nothing backs must not survive."""
+    root = _ai_machine(tmp_path, plugins=False, skill=False)
+    seed = {"users": [{"username": "andres"}],
+            "ai_skills": {"entries": [
+                {"name": "caveman", "method": "skills",
+                 "source": "JuliusBrussee/caveman", "agents": ["codex"]}]}}
+    assert _ai_captured(root, seed) == {"ai_skills": {}}
+
+
+def test_the_captured_ai_skills_block_validates(tmp_path):
+    captured = _ai_captured(_ai_machine(tmp_path))
+    JsonModel.model_validate({"hostname": "box", **captured})
+
+
+def test_sync_then_plan_is_silent_for_ai_skills(tmp_path):
+    from dasik.lib.actions.ai_skills_action import AiSkillsAction
+    root = _ai_machine(tmp_path)
+    captured = _ai_captured(root)
+    action = AiSkillsAction({"users": [{"username": "andres"}], **captured},
+                            ActionContext(target=Target(root=str(root))))
+    assert action.plan(managed=[]) == []
+
+
+# --- uv_tools -------------------------------------------------------------- #
+
+def _uv_machine(tmp_path, tools=("graphifyy",), user="andres"):
+    (tmp_path / "etc").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "etc/passwd").write_text(
+        "root:x:0:0::/root:/bin/bash\n"
+        f"{user}:x:1000:1000::/home/{user}:/bin/bash\n")
+    for tool in tools:
+        (tmp_path / "home" / user / ".local/share/uv/tools" / tool).mkdir(
+            parents=True)
+    return tmp_path
+
+
+def _uv_captured(root, seed=None):
+    from dasik.lib.actions.uv_tools_action import UvToolsAction
+    return UvToolsAction(seed if seed is not None else {},
+                         ActionContext(target=Target(root=str(root)))).import_state()
+
+
+def test_uv_tools_are_captured_as_their_own_block(tmp_path):
+    captured = _uv_captured(_uv_machine(tmp_path, ("graphifyy", "semgrep")))
+    assert captured == {"uv_tools": {"users": ["andres"],
+                                     "tools": ["graphifyy", "semgrep"]}}
+
+
+def test_a_machine_with_no_uv_tools_invents_no_block(tmp_path):
+    assert _uv_captured(_uv_machine(tmp_path, ())) == {"uv_tools": {}}
+
+
+def test_a_declared_uv_tool_the_machine_lacks_is_cleared_not_kept(tmp_path):
+    root = _uv_machine(tmp_path, ())
+    seed = {"users": [{"username": "andres"}],
+            "uv_tools": {"tools": ["graphifyy"]}}
+    assert _uv_captured(root, seed) == {"uv_tools": {}}
+
+
+def test_the_captured_uv_tools_block_validates(tmp_path):
+    JsonModel.model_validate({"hostname": "box",
+                              **_uv_captured(_uv_machine(tmp_path))})
+
+
+def test_sync_then_plan_is_silent_for_uv_tools(tmp_path):
+    from dasik.lib.actions.uv_tools_action import UvToolsAction
+    root = _uv_machine(tmp_path, ("graphifyy", "semgrep"))
+    captured = _uv_captured(root)
+    action = UvToolsAction({"users": [{"username": "andres"}], **captured},
+                           ActionContext(target=Target(root=str(root))))
+    assert action.plan(managed=[]) == []

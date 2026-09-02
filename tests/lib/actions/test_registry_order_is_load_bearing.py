@@ -79,3 +79,30 @@ def test_registering_a_new_action_does_not_break_the_pins():
 
     assert len(at) == len(set(at)), "two actions registered under one name"
     assert at["PacmanHooksAction"] < at["BaseInstallAction"]
+
+
+def test_ai_skills_runs_after_the_user_and_the_binaries_exist():
+    """The installers run AS the user, inside the target, from $HOME.
+
+    Users has to have created the account (and its home), and Packages has to
+    have installed `claude`/`codex`/`nodejs` — every command this domain runs is
+    one of those binaries.
+    """
+    at = _positions()
+
+    assert at["UsersAction"] < at["AiSkillsAction"]
+    assert at["PackagesAction"] < at["AiSkillsAction"]
+    assert at["AiSkillsAction"] < at["BootloaderAction"]
+
+
+def test_uv_tools_run_before_the_skills_that_need_them():
+    """graphify ships its skill FROM the program: `graphify install --platform`.
+
+    So the uv tool has to be installed before AiSkillsAction runs, or the skill
+    fails on a fresh install and only converges on the next apply.
+    """
+    at = _positions()
+
+    assert at["UsersAction"] < at["UvToolsAction"]
+    assert at["PackagesAction"] < at["UvToolsAction"]     # uv itself is a package
+    assert at["UvToolsAction"] < at["AiSkillsAction"]

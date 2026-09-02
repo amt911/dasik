@@ -899,6 +899,155 @@ manifest owns, which is exactly what dasik can honestly claim to have put there.
 
 ---
 
+## `uv_tools` — Python programs installed per user by uv  *(sync ✓)*
+
+For the programs whose own upstream ships them that way rather than as a
+distribution package.
+
+```json
+"uv_tools": {
+  "users": ["andres"],
+  "failure_policy": "warn-and-continue",
+  "tools": ["graphifyy", "semgrep[all]", "git-filter-repo"]
+}
+```
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `users` | list[string] | Whose `$HOME` receives them. Empty = every declared user except root. `uv tool` installs under `~/.local/share/uv`, so these are per-user by construction. |
+| `failure_policy` | `warn-and-continue` \| `abort` | What `apply` does when `uv tool install` fails. The default warns, keeps going, and leaves the tool unowned so the next `plan` asks again. |
+| `tools` | list[string] | Distribution names as `uv tool install` takes them — **the PyPI name, not the command**: graphify comes from `graphifyy`. Extras and a version pin are allowed (`semgrep[all]`, `graphifyy==0.9.53`) and reach uv verbatim. |
+
+Declare `uv` in `packages` (it is in `extra`); `check` warns when it is missing,
+because every install would fail on a machine without it.
+
+**Why a domain of its own rather than an AUR package.** graphify's own
+documentation recommends `uv tool install graphifyy` and never mentions Arch;
+its AUR build pulls 26 tree-sitter grammars that are in no official repository —
+27 builds inside an unattended install, for a tool that updates weekly. This is
+the shape its author ships.
+
+Presence is read from **uv's own directory** (`~/.local/share/uv/tools/<dist>`),
+never from a command on `PATH`: a stock Arch `/etc/profile` puts only
+`/usr/local/bin` on a login shell's path, so "is `graphify` there?" answers no on
+a machine that has it. uv names that directory after the distribution, so a
+declaration with extras or a pin is reduced to that name before comparing — and
+a captured config carries the plain names, which still re-plans to nothing.
+
+This domain runs **before `ai_skills`**, which may need one of these programs:
+graphify's skill is written by the program itself.
+
+---
+
+## `ai_skills` — AI agent skills and plugins  *(sync ✓)*
+
+Declares which skills each user's AI coding agents carry, and installs them with
+**each agent's own official installer** — so updating stays `claude plugin
+update` / `npx skills update` and dasik never fights it.
+
+```json
+"ai_skills": {
+  "users": ["andres"],
+  "failure_policy": "warn-and-continue",
+  "entries": [
+    {"name": "superpowers", "method": "claude-plugin",
+     "marketplace": {"name": "claude-plugins-official",
+                     "source": "anthropics/claude-plugins-official"}},
+    {"name": "superpowers", "method": "codex-plugin",
+     "marketplace": {"name": "openai-curated"}},
+    {"name": "caveman", "method": "claude-plugin",
+     "marketplace": {"name": "caveman", "source": "JuliusBrussee/caveman"}},
+    {"name": "impeccable", "method": "skills",
+     "source": "pbakaus/impeccable", "agents": ["claude-code", "codex"]}
+  ]
+}
+```
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `users` | list[string] | Whose `$HOME` receives them. Empty = every declared user except root. These artefacts live in a home directory, so "system-wide" means "every human on the machine". |
+| `failure_policy` | `warn-and-continue` \| `abort` | What `apply` does when an installer fails (no network, no `npx`, marketplace down). Default warns, keeps going, and leaves the item unowned so the next `plan` asks again. |
+| `entries[].name` | string | The artefact as its installer knows it. |
+| `entries[].method` | `claude-plugin` \| `codex-plugin` \| `skills` \| `tool` | Which official installer to drive. |
+| `entries[].marketplace` | `{name, source?}` | Plugin methods only. `source` (owner/repo, git URL) is what `... plugin marketplace add` registers. **`name` is the name the marketplace's own manifest declares**, which is often not the repository name — `obra/superpowers` registers as `superpowers-dev`; the CLI prints it when adding. Omit `source` only for a marketplace the agent already has: Codex's `openai-curated` is one, but it exists only once codex has populated its own cache, so on a freshly installed codex declare a git source instead. |
+| `entries[].plugin` | string | Plugin name inside the marketplace, when it differs from `name`. |
+| `entries[].source` | string | `skills` only: what `npx skills add` installs from. |
+| `entries[].agents` | list[string] | `skills` and `tool`: agent ids — `claude-code`, `codex`, `opencode`, `cursor`. |
+| `entries[].command` | string | `tool` only: the program that ships the skill. dasik runs `<command> install --platform <agent>`. A bare program name — it is executed. |
+| `entries[].users` | list[string] | Narrows this entry to some of the block's users. Only needed when people on one machine carry different sets. |
+
+**There is no `version` field, on purpose.** The block declares *presence*, like
+`packages` declares package names: the official CLI owns the version, and
+pinning one here would make every `claude plugin update` look like drift the
+next `plan` reverts.
+
+What `plan` shows is one item per (user, agent, artefact), plus the marketplace
+registration as an item of its own:
+
+```
++ [ai_skills] create andres:claude-code:marketplace:caveman
++ [ai_skills] create andres:claude-code:plugin:caveman@caveman
++ [ai_skills] create andres:codex:skill:impeccable
+```
+
+Marketplace sources are compared as repositories, not as strings:
+`obra/superpowers`, `https://github.com/obra/superpowers` and
+`…/superpowers.git` are the same source, because each CLI records it in its own
+spelling and comparing the text made the marketplace drift on every plan.
+
+Ordering is load-bearing in both directions: a marketplace is registered before
+the plugin that needs it and removed after it. A marketplace already registered
+from a **different** source is a MODIFY (re-registered), because `marketplace
+add` on an existing name would keep pointing at the other repository.
+
+`apply` runs every command as the user, inside the target
+(`su - <user> -c 'claude plugin install "$1" -y --scope user' -- sh <plugin>@<mkt>`),
+so it needs the agent's binary — and `nodejs`/`npm` for `npx skills` — installed
+on the target. `check` warns when they are not among the declared packages.
+
+The `tool` method is for a skill that belongs to a program. graphify is the
+example: its own documentation makes installing a two-step job — the package
+(`uv tool install graphifyy`, or the AUR `graphify`), and then `graphify
+install [--platform P]`, which writes the skill file **matching the installed
+version**. dasik owns the second step; declaring that skill from a git branch
+instead would pin it to a tool version nobody checked:
+
+```json
+{"name": "graphify", "method": "tool", "command": "graphify",
+ "agents": ["claude-code", "codex"]}
+```
+
+Declare the package too (`packages: ["graphify"]`) — `check` warns when the
+program the entry names is not among them, because `apply` cannot install a
+skill whose program is missing. Removing a `tool` skill deletes the directory
+the program wrote rather than calling the tool's own uninstall: graphify's
+ignores `--platform` outside a project scope and removes the skill from *every*
+platform, so dropping one agent would take the others with it. A skill the
+`skills` CLI recorded is always removed with `npx skills remove` instead.
+`sync` captures a `tool` entry only when the config declares it and the machine
+confirms it: no lock records a skill its own program installed, so nothing else
+could say where it came from.
+
+Where a skill lands is the `skills` CLI's business, and it is not uniform:
+**codex, cursor and opencode read `~/.agents/skills` directly** (the CLI calls
+them universal agents), so installing for them writes that one directory and
+nothing else; **claude-code** gets `~/.claude/skills/<name>` of its own, a link
+to the same copy. Other installers — codex's own skill-installer, `graphify
+install --platform codex` — write `~/.codex/skills/<name>`, which codex reads
+too, so dasik counts a skill as present for an agent when it is in **either**
+place. Looking at only one of the two is how an earlier version of this domain
+planned the same install forever while every `apply` reported success.
+
+`sync` reads the agents' own state (`installed_plugins.json`,
+`~/.codex/config.toml`, the canonical and per-agent skill directories and
+`~/.agents/.skill-lock.json`) and reports the block back. A skill with no
+recorded source is named and omitted: capturing it would produce a config no
+other machine could reproduce. Skills the agent ships with (Codex's
+`~/.codex/skills/.system`) are never captured, and a skill somebody installed by
+hand is left alone unless the manifest owns it.
+
+---
+
 ## `zram`  *(sync ✓)*
 
 Mirrors `/etc/systemd/zram-generator.conf` as `{device: {option: value}}`:

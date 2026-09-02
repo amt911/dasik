@@ -115,6 +115,7 @@ head -30 $H/.claude/plugins/installed_plugins.json
 head -30 $H/.codex/config.toml
 su - $U -c 'codex plugin list' 2>&1 | head -10
 $D plan /tmp/with-plugins.json --target / $L > /tmp/plan6.txt 2>&1
+grep '\[ai_skills\]' /tmp/plan6.txt      # names itself when it is not silent
 absent /tmp/plan6.txt '\[ai_skills\]'; echo "AISKILLS-PLUGIN-REPLAN-QUIET-RC=$?"
 # The last generation that CAN converge: step I deliberately declares a skill
 # that does not exist, so rolling back to anything after this point would
@@ -158,6 +159,7 @@ $D rollback "$GEN_GOOD" --target / --yes $L; echo "AISKILLS-ROLLBACK-RC=$?"
 # own config against the machine it just restored must propose nothing.
 cp "$(readlink -f /var/lib/dasik/generations/current)/config.json" /tmp/restored.json
 $D plan /tmp/restored.json --target / $L > /tmp/plan9.txt 2>&1
+grep '\[ai_skills\]' /tmp/plan9.txt
 absent /tmp/plan9.txt '\[ai_skills\]'; echo "AISKILLS-ROLLBACK-QUIET-RC=$?"
 
 echo "AISKILLS-DONE"

@@ -238,6 +238,41 @@ class AiSkillsAction(AbstractAction):
     # -- v3 contract -------------------------------------------------------- #
 
     @staticmethod
+    def _same_source(declared: Optional[str], recorded: Optional[str]) -> bool:
+        """Whether two marketplace sources name the same repository.
+
+        Each CLI records the source in its own spelling — Claude keeps
+        ``owner/repo``, codex keeps the URL it cloned, with the ``.git`` the
+        config never wrote — so a plain string comparison made an eternal
+        MODIFY: apply re-registered the marketplace and the next plan asked
+        again, forever. Only the shapes that genuinely mean the same repository
+        are folded together; a different host or a different owner still counts
+        as different.
+        """
+        if declared is None or recorded is None:
+            return declared == recorded
+        return AiSkillsAction._canonical_source(declared) == \
+            AiSkillsAction._canonical_source(recorded)
+
+    @staticmethod
+    def _canonical_source(source: str) -> str:
+        value = source.strip().rstrip("/")
+        for scheme in ("https://", "http://", "ssh://"):
+            if value.startswith(scheme):
+                value = value[len(scheme):]
+                break
+        else:
+            if value.startswith("git@"):
+                value = value[len("git@"):].replace(":", "/", 1)
+        if value.endswith(".git"):
+            value = value[: -len(".git")]
+        # A bare `owner/repo` is GitHub shorthand — every one of these CLIs
+        # expands it there — so it has to compare equal to the URL it expands to.
+        if value.count("/") == 1 and "." not in value.split("/")[0]:
+            value = f"github.com/{value}"
+        return value.lower()
+
+    @staticmethod
     def _kind(item: str) -> str:
         parts = item.split(":")
         return parts[2] if len(parts) > 2 else ""
@@ -272,7 +307,7 @@ class AiSkillsAction(AbstractAction):
             # A marketplace registered from somewhere else is not the one the
             # config asked for: the plugin would come from another repository
             # under the same name.
-            if market_sources.get(item) != spec["source"]:
+            if not self._same_source(spec["source"], market_sources.get(item)):
                 modifies.append(Change(_DOMAIN, Op.MODIFY, item,
                                        reason="source drift"))
         return creates + modifies + deletes

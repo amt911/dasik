@@ -264,3 +264,58 @@ def test_an_entry_user_the_block_does_not_list_is_ignored(tmp_path):
                 "source": "pbakaus/impeccable", "agents": ["codex"],
                 "users": ["otro"]}]}}
     assert _act(tmp_path, cfg).plan(managed=[]) == []
+
+
+# --- marketplace sources are compared as identities, not as strings -------- #
+#
+# Every CLI records the source in its own spelling: Claude keeps `owner/repo`,
+# codex keeps the URL it cloned, WITH the `.git` the config did not write. A
+# plain string comparison made that an eternal MODIFY: apply re-registered the
+# marketplace, the next plan asked again, forever. Measured in a guest.
+
+def _codex_marketplace(root, source, user="andres"):
+    codex = _home(root, user) / ".codex"
+    codex.mkdir(parents=True, exist_ok=True)
+    (codex / "config.toml").write_text(
+        f'[marketplaces.superpowers-dev]\nsource_type = "git"\n'
+        f'source = "{source}"\n'
+        '[plugins."superpowers@superpowers-dev"]\nenabled = true\n')
+
+
+def _codex_cfg(source):
+    return {"users": [{"username": "andres"}], "ai_skills": {"entries": [
+        {"name": "superpowers", "method": "codex-plugin",
+         "marketplace": {"name": "superpowers-dev", "source": source}}]}}
+
+
+def test_a_dot_git_suffix_is_not_a_different_marketplace(tmp_path):
+    _passwd(tmp_path)
+    _codex_marketplace(tmp_path, "https://github.com/obra/superpowers.git")
+    cfg = _codex_cfg("https://github.com/obra/superpowers")
+    assert _act(tmp_path, cfg).plan(managed=[]) == []
+
+
+def test_a_github_shorthand_matches_the_url_it_expands_to(tmp_path):
+    _passwd(tmp_path)
+    _codex_marketplace(tmp_path, "https://github.com/obra/superpowers.git")
+    assert _act(tmp_path, _codex_cfg("obra/superpowers")).plan(managed=[]) == []
+
+
+def test_an_ssh_remote_matches_the_same_repository(tmp_path):
+    _passwd(tmp_path)
+    _codex_marketplace(tmp_path, "git@github.com:obra/superpowers.git")
+    assert _act(tmp_path, _codex_cfg("obra/superpowers")).plan(managed=[]) == []
+
+
+def test_a_genuinely_different_repository_is_still_a_modify(tmp_path):
+    _passwd(tmp_path)
+    _codex_marketplace(tmp_path, "https://github.com/someone/else.git")
+    changes = _act(tmp_path, _codex_cfg("obra/superpowers")).plan(managed=[])
+    assert [(c.op.name, c.reason) for c in changes] == [("MODIFY", "source drift")]
+
+
+def test_a_different_host_is_a_different_repository(tmp_path):
+    _passwd(tmp_path)
+    _codex_marketplace(tmp_path, "https://gitlab.com/obra/superpowers.git")
+    changes = _act(tmp_path, _codex_cfg("obra/superpowers")).plan(managed=[])
+    assert [c.op.name for c in changes] == ["MODIFY"]

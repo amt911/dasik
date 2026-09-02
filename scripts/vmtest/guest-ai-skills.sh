@@ -55,7 +55,9 @@ $D plan "$C" --target / $L > /tmp/plan2.txt 2>&1; echo "AISKILLS-REPLAN-RC=$?"
 absent /tmp/plan2.txt '\[ai_skills\]'; echo "AISKILLS-REPLAN-QUIET-RC=$?"
 
 echo "AISKILLS-E: sync captures the block, check accepts it, plan is silent"
-$D sync "$C" --target / --output /tmp/captured.json $L; echo "AISKILLS-SYNC-RC=$?"
+# `sync` rewrites the config it is given, and the 9p repo is read-only.
+cp "$C" /tmp/captured.json
+$D sync /tmp/captured.json --target / $L; echo "AISKILLS-SYNC-RC=$?"
 python - <<'PY'
 import json, sys
 block = json.load(open("/tmp/captured.json")).get("ai_skills")
@@ -69,8 +71,8 @@ absent /tmp/plan3.txt '\[ai_skills\]'; echo "AISKILLS-PLANSYNC-QUIET-RC=$?"
 
 echo "AISKILLS-F: the manifest records the domain"
 $D generations --target / $L | tail -20; echo "AISKILLS-GEN-RC=$?"
-grep -o 'ai_skills' /var/lib/dasik/manifest.json | head -1
-present /var/lib/dasik/manifest.json 'ai_skills'; echo "AISKILLS-MANIFEST-RC=$?"
+grep -o 'ai_skills' /var/lib/dasik/state.json | head -1
+present /var/lib/dasik/state.json 'ai_skills'; echo "AISKILLS-MANIFEST-RC=$?"
 
 echo "AISKILLS-G: a skill nobody declared is left alone"
 su - $U -c 'mkdir -p ~/.claude/skills/handmade && printf -- "---\nname: handmade\n---\n" > ~/.claude/skills/handmade/SKILL.md'
@@ -79,9 +81,15 @@ absent /tmp/plan4.txt 'handmade'; echo "AISKILLS-FOREIGN-RC=$?"
 test -d $H/.claude/skills/handmade; echo "AISKILLS-FOREIGN-ALIVE-RC=$?"
 
 echo "AISKILLS-H: the plugin methods, with the real CLIs"
-npm install -g @anthropic-ai/claude-code @openai/codex > /tmp/npm.log 2>&1
+# npm 11 refuses install scripts by default, and without the postinstall the
+# `claude` on PATH is a stub that errors "native binary not installed" — which
+# would test dasik's failure path instead of its plugin path.
+npm install -g --allow-scripts=@anthropic-ai/claude-code,@openai/codex \
+    @anthropic-ai/claude-code @openai/codex > /tmp/npm.log 2>&1
 echo "AISKILLS-NPM-RC=$?"; tail -3 /tmp/npm.log
-command -v claude codex; echo "AISKILLS-CLI-RC=$?"
+command -v claude codex
+su - $U -c 'claude --version' > /tmp/claude-version.txt 2>&1; echo "AISKILLS-CLI-RC=$?"
+cat /tmp/claude-version.txt
 python - <<'PY'
 import json
 cfg = json.load(open("config/vm-ai-skills.json"))
@@ -107,9 +115,11 @@ echo "AISKILLS-I: an installer that fails must not abort the apply"
 python - <<'PY'
 import json
 cfg = json.load(open("config/vm-ai-skills.json"))
-cfg["ai_skills"]["entries"] = [
+# KEEP the working entry: dropping it here would remove impeccable and leave
+# step J with nothing to remove.
+cfg["ai_skills"]["entries"].append(
     {"name": "nope", "method": "skills",
-     "source": "dasik-test/definitely-not-a-repo", "agents": ["codex"]}]
+     "source": "dasik-test/definitely-not-a-repo", "agents": ["codex"]})
 json.dump(cfg, open("/tmp/broken.json", "w"), indent=2)
 PY
 $D apply /tmp/broken.json --target / --yes $L; echo "AISKILLS-WARN-APPLY-RC=$?"
@@ -133,7 +143,10 @@ test -d $H/.claude/skills/handmade; echo "AISKILLS-FOREIGN-STILL-RC=$?"
 echo "AISKILLS-K: rollback restores the generation and re-plans to nothing"
 $D generations --target / $L | tail -10
 $D rollback --target / --yes $L; echo "AISKILLS-ROLLBACK-RC=$?"
-$D plan /var/lib/dasik/current.json --target / $L > /tmp/plan9.txt 2>&1
+# The generation dasik rolled back to IS the desired state now; planning its
+# own config against the machine it just restored must propose nothing.
+cp "$(readlink -f /var/lib/dasik/generations/current)/config.json" /tmp/restored.json
+$D plan /tmp/restored.json --target / $L > /tmp/plan9.txt 2>&1
 absent /tmp/plan9.txt '\[ai_skills\]'; echo "AISKILLS-ROLLBACK-QUIET-RC=$?"
 
 echo "AISKILLS-DONE"

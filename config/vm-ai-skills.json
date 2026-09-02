@@ -1,6 +1,6 @@
 {
   "metadata": {
-    "note": "AI agent skills installed through their OFFICIAL installers. For the QEMU VM harness (scripts/vmtest/qemu.sh install-driven, then drive with guest-ai-skills.sh). NOT for real hardware. Needs NETWORK in the guest: `npx skills add` downloads from GitHub. Autologins root on ttyS0 and ships python-pydantic/python-colorama via pacman so dasik runs from the 9p-mounted repo; nodejs/npm are what `npx` needs. The plugin methods (claude-plugin / codex-plugin) are exercised by the guest script, which installs those CLIs with npm first \u2014 they are not Arch packages. The `tool` method is exercised the same way: the guest installs graphifyy into a venv, and its own `graphify install --platform` ships the skill."
+    "note": "AI agent skills installed through their OFFICIAL installers, with ZERO manual steps: `uv_tools` installs graphifyy (whose own `graphify install --platform` then ships the skill) and `ai_skills` does the rest. For the QEMU VM harness (scripts/vmtest/qemu.sh install-driven, then drive with guest-ai-skills.sh). NOT for real hardware. Needs NETWORK in the guest: every installer downloads. Autologins root on ttyS0 and ships python-pydantic/python-colorama via pacman so dasik runs from the 9p-mounted repo. The plugin methods are exercised by the guest script, which installs the claude/codex CLIs with npm first \u2014 they are AUR packages and a rust build inside a test VM is not worth the minutes."
   },
   "disks": {
     "disks": [
@@ -38,8 +38,8 @@
     "git",
     "nodejs",
     "npm",
+    "uv",
     "python",
-    "python-pip",
     "python-pydantic",
     "python-colorama"
   ],
@@ -72,6 +72,15 @@
           "claude-code",
           "codex"
         ]
+      },
+      {
+        "name": "graphify",
+        "method": "tool",
+        "command": "graphify",
+        "agents": [
+          "claude-code",
+          "codex"
+        ]
       }
     ]
   },
@@ -89,5 +98,10 @@
       "path": "/etc/systemd/system/serial-getty@ttyS0.service.d/autologin.conf",
       "content": "[Service]\nExecStart=\nExecStart=-/sbin/agetty --autologin root --noclear --keep-baud 115200,38400,9600 %I $TERM\n"
     }
-  ]
+  ],
+  "uv_tools": {
+    "tools": [
+      "graphifyy"
+    ]
+  }
 }

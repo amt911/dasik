@@ -34,7 +34,13 @@ echo "AISKILLS-A: the guest has what the installers need"
 command -v node npx; echo "AISKILLS-NODE-RC=$?"
 timeout 60 curl -sSf -o /dev/null https://registry.npmjs.org/; echo "AISKILLS-NET-RC=$?"
 
-echo "AISKILLS-B: what the install already put there"
+echo "AISKILLS-B: what the install already put there — ZERO manual steps"
+# uv_tools installed the program during the install, and ai_skills then ran its
+# `graphify install --platform`. Nobody typed anything.
+test -d $H/.local/share/uv/tools/graphifyy; echo "AISKILLS-UVTOOL-RC=$?"
+test -f $H/.claude/skills/graphify/SKILL.md; echo "AISKILLS-GRAPHIFY-CLAUDE-RC=$?"
+test -f $H/.codex/skills/graphify/SKILL.md; echo "AISKILLS-GRAPHIFY-CODEX-RC=$?"
+su - $U -c 'uv tool list' 2>&1 | head -5
 # codex/cursor/opencode read ~/.agents/skills themselves (the `skills` CLI calls
 # them universal agents and writes no directory of their own); claude-code gets
 # a link. Asserting a ~/.codex/skills/<n> here would assert a bug.
@@ -118,36 +124,36 @@ $D plan /tmp/with-plugins.json --target / $L > /tmp/plan6.txt 2>&1
 grep '\[ai_skills\]' /tmp/plan6.txt      # names itself when it is not silent
 absent /tmp/plan6.txt '\[ai_skills\]'; echo "AISKILLS-PLUGIN-REPLAN-QUIET-RC=$?"
 
-echo "AISKILLS-H2: the tool method — a skill its own program ships"
-# graphify is a package whose `graphify install --platform <p>` writes the skill
-# matching the installed version. pip here for the same reason npm was used
-# above: the AUR package pulls ~40 tree-sitter grammars.
-# A venv, not --break-system-packages: it is what the user's own machine does
-# (uv tool install graphifyy), and it does not depend on how Arch feels about
-# pip writing into /usr today.
-python -m venv /opt/graphify > /tmp/pip.log 2>&1 \
-  && /opt/graphify/bin/pip install graphifyy >> /tmp/pip.log 2>&1 \
-  && ln -sf /opt/graphify/bin/graphify /usr/local/bin/graphify
-echo "AISKILLS-PIP-RC=$?"; tail -2 /tmp/pip.log
-command -v graphify; echo "AISKILLS-GRAPHIFY-RC=$?"
-graphify 2>&1 | head -3
-python - <<'PY'
-import json
-cfg = json.load(open("/tmp/with-plugins.json"))
-cfg["ai_skills"]["entries"].append(
-    {"name": "graphify", "method": "tool", "command": "graphify",
-     "agents": ["claude-code", "codex"]})
-json.dump(cfg, open("/tmp/with-tool.json", "w"), indent=2)
-PY
+echo "AISKILLS-H2: the tool method converged during the install"
+command -v graphify || ls -l $H/.local/bin/graphify; echo "AISKILLS-GRAPHIFY-RC=$?"
+su - $U -c 'PATH="$HOME/.local/bin:$PATH"; graphify' 2>&1 | head -2
+cp /tmp/with-plugins.json /tmp/with-tool.json
 $D plan /tmp/with-tool.json --target / $L > /tmp/plan10.txt 2>&1
-grep '\[ai_skills\]' /tmp/plan10.txt
-present /tmp/plan10.txt 'skill:graphify'; echo "AISKILLS-TOOL-PLAN-RC=$?"
+grep '\[ai_skills\]\|\[uv_tools\]' /tmp/plan10.txt
+absent /tmp/plan10.txt 'skill:graphify'; echo "AISKILLS-TOOL-PLAN-RC=$?"
 $D apply /tmp/with-tool.json --target / --yes $L; echo "AISKILLS-TOOL-APPLY-RC=$?"
 test -f $H/.claude/skills/graphify/SKILL.md; echo "AISKILLS-TOOL-CLAUDE-RC=$?"
 test -f $H/.codex/skills/graphify/SKILL.md; echo "AISKILLS-TOOL-CODEX-RC=$?"
 $D plan /tmp/with-tool.json --target / $L > /tmp/plan11.txt 2>&1
-grep '\[ai_skills\]' /tmp/plan11.txt
+grep '\[ai_skills\]\|\[uv_tools\]' /tmp/plan11.txt
 absent /tmp/plan11.txt '\[ai_skills\]'; echo "AISKILLS-TOOL-REPLAN-QUIET-RC=$?"
+
+echo "AISKILLS-H2b: uv_tools plans, removes and re-installs like any domain"
+python - <<'PY'
+import json
+cfg = json.load(open("/tmp/with-tool.json"))
+cfg["uv_tools"] = {"tools": []}
+json.dump(cfg, open("/tmp/no-uvtool.json", "w"), indent=2)
+PY
+$D plan /tmp/no-uvtool.json --target / $L > /tmp/plan13.txt 2>&1
+grep '\[uv_tools\]' /tmp/plan13.txt
+present /tmp/plan13.txt 'remove test:graphifyy'; echo "AISKILLS-UV-REMOVE-PLAN-RC=$?"
+$D apply /tmp/no-uvtool.json --target / --yes $L; echo "AISKILLS-UV-REMOVE-APPLY-RC=$?"
+test ! -d $H/.local/share/uv/tools/graphifyy; echo "AISKILLS-UV-REMOVED-RC=$?"
+$D apply /tmp/with-tool.json --target / --yes $L; echo "AISKILLS-UV-REINSTALL-RC=$?"
+test -d $H/.local/share/uv/tools/graphifyy; echo "AISKILLS-UV-BACK-RC=$?"
+$D plan /tmp/with-tool.json --target / $L > /tmp/plan14.txt 2>&1
+absent /tmp/plan14.txt '\[uv_tools\]'; echo "AISKILLS-UV-REPLAN-QUIET-RC=$?"
 
 echo "AISKILLS-H3: sync captures the tool entry, and its own plan is silent"
 cp /tmp/with-tool.json /tmp/captured-tool.json
@@ -158,11 +164,15 @@ block = json.load(open("/tmp/captured-tool.json"))["ai_skills"]
 print(json.dumps(block, indent=2))
 tool = [e for e in block["entries"] if e["method"] == "tool"]
 print("AISKILLS-TOOL-CAPTURED-RC=%d" % (0 if tool and tool[0]["command"] == "graphify" else 1))
+uv = json.load(open("/tmp/captured-tool.json")).get("uv_tools") or {}
+print(json.dumps(uv))
+print("AISKILLS-UV-CAPTURED-RC=%d" % (0 if "graphifyy" in (uv.get("tools") or []) else 1))
 PY
 $D check /tmp/captured-tool.json $L; echo "AISKILLS-TOOL-CHECKSYNC-RC=$?"
 $D plan /tmp/captured-tool.json --target / $L > /tmp/plan12.txt 2>&1
 grep '\[ai_skills\]' /tmp/plan12.txt
 absent /tmp/plan12.txt '\[ai_skills\]'; echo "AISKILLS-TOOL-PLANSYNC-QUIET-RC=$?"
+absent /tmp/plan12.txt '\[uv_tools\]'; echo "AISKILLS-UV-PLANSYNC-QUIET-RC=$?"
 GEN_GOOD=$(basename "$(readlink -f /var/lib/dasik/generations/current)")
 echo "AISKILLS-GEN-GOOD=$GEN_GOOD"
 

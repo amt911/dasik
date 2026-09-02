@@ -20,9 +20,19 @@
 set -x
 cd /root/repo || { echo "AISKILLS-DONE rc=91"; poweroff -f; }
 
-D="python -m dasik"
+# Drive the PACKAGED dasik when the machine has one — that is what the author's
+# machines install (package_sources -> dasik-aur), and a domain that works from
+# the source tree but not from the package would be a domain nobody can use.
+# A machine that HAS the package was installed from the config that declares it,
+# so the two travel together: driving the other one would plan the difference
+# between them and call it a failure.
+if command -v dasik > /dev/null 2>&1; then
+    D="dasik"; C=config/vm-ai-skills-pkg.json
+else
+    D="python -m dasik"; C=config/vm-ai-skills.json
+fi
+export C                      # the python blocks below derive from it
 L="--no-log"                 # the 9p repo is read-only; the log defaults to $PWD
-C=config/vm-ai-skills.json
 U=test
 H=/home/$U
 
@@ -36,6 +46,8 @@ present() { grep -q "$2" "$1"; }      # rc 0 when it is
 FAILS=0
 rc() { local v=$?; [ "$v" -eq 0 ] || FAILS=$((FAILS + 1)); echo "$1-RC=$v"; }
 echo "AISKILLS: BEGIN (target / = the live booted host)"
+echo "AISKILLS-DRIVER: $D  CONFIG: $C"
+command -v dasik && dasik --version
 
 echo "AISKILLS-A: the guest has what the installers need"
 command -v node npx; rc AISKILLS-NODE
@@ -106,7 +118,8 @@ su - $U -c 'claude --version' > /tmp/claude-version.txt 2>&1; rc AISKILLS-CLI
 cat /tmp/claude-version.txt
 python - <<'PY'
 import json
-cfg = json.load(open("config/vm-ai-skills.json"))
+import os
+cfg = json.load(open(os.environ["C"]))
 cfg["ai_skills"]["entries"] += [
     {"name": "caveman", "method": "claude-plugin",
      "marketplace": {"name": "caveman", "source": "JuliusBrussee/caveman"}},
@@ -189,9 +202,10 @@ echo "AISKILLS-GEN-GOOD=$GEN_GOOD"
 echo "AISKILLS-I: an installer that fails must not abort the apply"
 python - <<'PY'
 import json
-cfg = json.load(open("config/vm-ai-skills.json"))
-# KEEP the working entry: dropping it here would remove impeccable and leave
-# step J with nothing to remove.
+# Build on the config the machine has converged to — KEEPING the working
+# entries. Starting from the base config here would drop the plugins and
+# graphify, and step J would then have nothing left to remove.
+cfg = json.load(open("/tmp/with-tool.json"))
 cfg["ai_skills"]["entries"].append(
     {"name": "nope", "method": "skills",
      "source": "dasik-test/definitely-not-a-repo", "agents": ["codex"]})

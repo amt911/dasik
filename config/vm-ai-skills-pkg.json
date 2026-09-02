@@ -1,0 +1,117 @@
+{
+  "metadata": {
+    "note": "The SHIPPED shape: dasik itself comes from the published AUR package (package_sources pinned to the dasik-aur commit, exactly as the author's machines do), not from the 9p-mounted repo, and the guest then drives every verb with /usr/bin/dasik. Everything else matches vm-ai-skills.json: uv_tools installs graphifyy, whose own `graphify install --platform` ships the skill, and ai_skills does the rest \u2014 zero manual steps. NOT for real hardware. Needs NETWORK in the guest."
+  },
+  "disks": {
+    "disks": [
+      {
+        "device": "/dev/vda",
+        "partition_table": "gpt",
+        "wipe_disk": false,
+        "partitions": [
+          {
+            "label": "ESP",
+            "size": "512MiB",
+            "filesystem": "fat32",
+            "partition_type": "esp",
+            "mountpoint": "/boot",
+            "format": true
+          },
+          {
+            "label": "ROOT",
+            "size": "rest",
+            "filesystem": "ext4",
+            "partition_type": "linux",
+            "mountpoint": "/",
+            "format": true
+          }
+        ]
+      }
+    ]
+  },
+  "enable_microcode": false,
+  "packages": [
+    "base",
+    "linux",
+    "linux-firmware",
+    "sudo",
+    "git",
+    "nodejs",
+    "npm",
+    "uv",
+    "python",
+    "python-pydantic",
+    "python-colorama",
+    "base-devel",
+    "dasik"
+  ],
+  "bootloader": "sd-boot",
+  "hostname": "dasik-ai-skills-pkg",
+  "kernel_cmdline": [
+    "console=ttyS0,115200"
+  ],
+  "timezone": {
+    "region": "Etc",
+    "city": "UTC"
+  },
+  "locales": {
+    "selected_locales": [
+      "en_US.UTF-8 UTF-8"
+    ],
+    "desired_locale": "en_US.UTF-8",
+    "desired_tty_layout": "us"
+  },
+  "network": {
+    "type": "systemd-networkd"
+  },
+  "ai_skills": {
+    "entries": [
+      {
+        "name": "impeccable",
+        "method": "skills",
+        "source": "pbakaus/impeccable",
+        "agents": [
+          "claude-code",
+          "codex"
+        ]
+      },
+      {
+        "name": "graphify",
+        "method": "tool",
+        "command": "graphify",
+        "agents": [
+          "claude-code",
+          "codex"
+        ]
+      }
+    ]
+  },
+  "users": [
+    {
+      "username": "test",
+      "hashed_password": "$6$dasikvmtest$pfoSKqgh8yWKbmkwBpNuvQuJ4/kLeJmwCPCezBolW4pKbtJbtvMGQCM5f7W/hkbF/FmtCMZMYr/NLwDO4OJm7.",
+      "groups": [
+        "wheel"
+      ]
+    }
+  ],
+  "files": [
+    {
+      "path": "/etc/systemd/system/serial-getty@ttyS0.service.d/autologin.conf",
+      "content": "[Service]\nExecStart=\nExecStart=-/sbin/agetty --autologin root --noclear --keep-baud 115200,38400,9600 %I $TERM\n"
+    }
+  ],
+  "uv_tools": {
+    "tools": [
+      "graphifyy"
+    ]
+  },
+  "package_sources": {
+    "dasik": {
+      "type": "pkgbuild-git",
+      "url": "https://github.com/amt911/dasik-aur.git",
+      "ref": "6fa41fc827a0abe713439eb94b98b5c928c3aebb",
+      "subdir": "."
+    }
+  }
+}

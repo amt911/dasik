@@ -9,7 +9,8 @@ would make a plan silent about something that was never there.
 import json
 
 from dasik.lib.actions.ai_skills_state import (
-    AGENT_SKILL_DIRS, claude_state, codex_state, skills_state)
+    AGENT_SKILL_DIRS, UNIVERSAL_AGENTS, carries_skill, claude_state,
+    codex_state, installed_agents, skills_state)
 
 
 def _claude_home(tmp_path):
@@ -104,67 +105,95 @@ def test_codex_state_survives_a_broken_toml(tmp_path):
 
 
 # --- skills ---------------------------------------------------------------- #
+#
+# Where a skill lands depends on the agent, and getting this wrong is what made
+# the first version of the domain never converge: `npx skills add -a codex`
+# reports success and writes ONLY ~/.agents/skills/<n> — codex reads the
+# canonical directory itself. Measured in a guest, and matching the CLI's own
+# rule (src/installer.ts getAgentBaseDir -> isUniversalAgent).
 
-def test_skills_state_reports_the_agents_that_link_a_skill(tmp_path):
-    canonical = _write_skill(tmp_path / ".agents/skills", "impeccable")
+def test_the_canonical_directory_is_what_universal_agents_read(tmp_path):
+    _write_skill(tmp_path / ".agents/skills", "impeccable")
+    canonical, per_agent, _sources = skills_state(str(tmp_path))
+    assert canonical == {"impeccable"}
+    assert per_agent == {}
+    assert carries_skill("codex", "impeccable", canonical, per_agent)
+    assert carries_skill("opencode", "impeccable", canonical, per_agent)
+    assert not carries_skill("claude-code", "impeccable", canonical, per_agent)
+
+
+def test_claude_code_keeps_a_directory_of_its_own(tmp_path):
+    canonical_dir = _write_skill(tmp_path / ".agents/skills", "impeccable")
     (tmp_path / ".claude/skills").mkdir(parents=True)
-    (tmp_path / ".claude/skills/impeccable").symlink_to(canonical)
-    (tmp_path / ".agents/.skill-lock.json").write_text(json.dumps({
-        "version": 3,
-        "skills": {"impeccable": {"source": "pbakaus/impeccable",
-                                  "sourceType": "github"}}}))
-
-    agents, sources = skills_state(str(tmp_path))
-
-    assert agents == {"impeccable": {"claude-code"}}
-    assert sources == {"impeccable": "pbakaus/impeccable"}
+    (tmp_path / ".claude/skills/impeccable").symlink_to(canonical_dir)
+    canonical, per_agent, _sources = skills_state(str(tmp_path))
+    assert per_agent == {"claude-code": {"impeccable"}}
+    assert carries_skill("claude-code", "impeccable", canonical, per_agent)
 
 
-def test_skills_state_counts_a_real_directory_not_only_a_symlink(tmp_path):
-    # The `skills` CLI's copy method makes independent directories per agent.
-    _write_skill(tmp_path / ".codex/skills", "caveman")
-    agents, _sources = skills_state(str(tmp_path))
-    assert agents == {"caveman": {"codex"}}
+def test_a_copied_directory_counts_like_a_symlink(tmp_path):
+    # The CLI's copy method makes an independent directory per agent.
+    _write_skill(tmp_path / ".claude/skills", "caveman")
+    canonical, per_agent, _sources = skills_state(str(tmp_path))
+    assert canonical == set()
+    assert carries_skill("claude-code", "caveman", canonical, per_agent)
 
 
-def test_skills_state_unions_the_agents_of_one_skill(tmp_path):
-    canonical = _write_skill(tmp_path / ".agents/skills", "caveman")
-    for rel in (".claude/skills", ".codex/skills"):
-        (tmp_path / rel).mkdir(parents=True)
-        (tmp_path / rel / "caveman").symlink_to(canonical)
-    agents, _sources = skills_state(str(tmp_path))
-    assert agents == {"caveman": {"claude-code", "codex"}}
+def test_an_unknown_agent_is_treated_as_universal(tmp_path):
+    _write_skill(tmp_path / ".agents/skills", "impeccable")
+    canonical, per_agent, _sources = skills_state(str(tmp_path))
+    assert carries_skill("clyde", "impeccable", canonical, per_agent)
 
 
 def test_skills_state_ignores_codex_system_skills(tmp_path):
     _write_skill(tmp_path / ".codex/skills/.system", "skill-installer")
-    assert skills_state(str(tmp_path)) == ({}, {})
+    assert skills_state(str(tmp_path)) == (set(), {}, {})
 
 
 def test_skills_state_ignores_a_directory_without_a_skill_file(tmp_path):
-    (tmp_path / ".codex/skills/notaskill").mkdir(parents=True)
-    assert skills_state(str(tmp_path)) == ({}, {})
+    (tmp_path / ".agents/skills/notaskill").mkdir(parents=True)
+    assert skills_state(str(tmp_path)) == (set(), {}, {})
 
 
-def test_skills_state_reports_a_skill_with_no_source_in_the_lock(tmp_path):
-    # Present, but nothing says where it came from: the caller decides what to
-    # do with that (plan leaves it alone, sync omits it with a warning).
+def test_the_source_comes_from_the_lock(tmp_path):
+    _write_skill(tmp_path / ".agents/skills", "impeccable")
+    (tmp_path / ".agents/.skill-lock.json").write_text(json.dumps({
+        "version": 3,
+        "skills": {"impeccable": {"source": "pbakaus/impeccable",
+                                  "sourceType": "github"},
+                   "gone": {"source": "someone/removed"}}}))
+    _canonical, _per_agent, sources = skills_state(str(tmp_path))
+    # `gone` is only a lock record of an install that is no longer there.
+    assert sources == {"impeccable": "pbakaus/impeccable"}
+
+
+def test_a_skill_with_no_lock_entry_has_no_source(tmp_path):
     _write_skill(tmp_path / ".claude/skills", "graphify")
-    agents, sources = skills_state(str(tmp_path))
-    assert agents == {"graphify": {"claude-code"}}
+    canonical, per_agent, sources = skills_state(str(tmp_path))
+    assert per_agent == {"claude-code": {"graphify"}}
     assert sources == {}
 
 
 def test_skills_state_on_an_empty_home_is_empty(tmp_path):
-    assert skills_state(str(tmp_path)) == ({}, {})
+    assert skills_state(str(tmp_path)) == (set(), {}, {})
 
 
-def test_the_agent_directories_match_the_skills_cli(tmp_path):
-    # Pinned against vercel-labs/skills src/agents.ts (globalSkillsDir).
-    assert AGENT_SKILL_DIRS["claude-code"] == ".claude/skills"
-    assert AGENT_SKILL_DIRS["codex"] == ".codex/skills"
-    assert AGENT_SKILL_DIRS["cursor"] == ".cursor/skills"
-    assert AGENT_SKILL_DIRS["opencode"] == ".config/opencode/skills"
+def test_installed_agents_detects_them_by_their_home_directory(tmp_path):
+    (tmp_path / ".codex").mkdir()
+    (tmp_path / ".config/opencode").mkdir(parents=True)
+    assert installed_agents(str(tmp_path)) == {"codex", "opencode"}
+
+
+def test_installed_agents_on_a_bare_home_is_empty(tmp_path):
+    assert installed_agents(str(tmp_path)) == set()
+
+
+def test_the_agent_layout_matches_the_skills_cli(tmp_path):
+    # Pinned against vercel-labs/skills: agents whose `skillsDir` is
+    # '.agents/skills' are universal (codex, cursor, opencode); claude-code is
+    # the one with a directory of its own.
+    assert AGENT_SKILL_DIRS == {"claude-code": ".claude/skills"}
+    assert UNIVERSAL_AGENTS == {"codex", "cursor", "opencode"}
 
 
 # --- the 3.10 TOML fallback ------------------------------------------------ #

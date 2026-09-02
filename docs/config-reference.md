@@ -959,8 +959,16 @@ add` on an existing name would keep pointing at the other repository.
 so it needs the agent's binary — and `nodejs`/`npm` for `npx skills` — installed
 on the target. `check` warns when they are not among the declared packages.
 
+Where a skill lands is the `skills` CLI's business, and it is not uniform:
+**codex, cursor and opencode read `~/.agents/skills` directly** (the CLI calls
+them universal agents), so installing for them writes that one directory and
+nothing else; **claude-code** gets `~/.claude/skills/<name>` of its own, a link
+to the same copy. dasik reads presence the same way — looking for
+`~/.codex/skills/<name>` is how an earlier version of this domain planned the
+same install forever while every `apply` reported success.
+
 `sync` reads the agents' own state (`installed_plugins.json`,
-`~/.codex/config.toml`, the per-agent skill directories and
+`~/.codex/config.toml`, the canonical and per-agent skill directories and
 `~/.agents/.skill-lock.json`) and reports the block back. A skill with no
 recorded source is named and omitted: capturing it would produce a config no
 other machine could reproduce. Skills the agent ships with (Codex's

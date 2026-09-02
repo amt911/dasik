@@ -937,7 +937,9 @@ def _check_ai_skills(config: Dict[str, Any], packages: Set[str]) -> List[Issue]:
     and under the default warn-and-continue policy that is a wall of red at the
     end of an otherwise good install — worth saying before the first mutation.
     """
-    from ..actions.ai_skills_state import AGENT_SKILL_DIRS
+    from ..actions.ai_skills_state import AGENT_SKILL_DIRS, UNIVERSAL_AGENTS
+
+    known_agents = set(AGENT_SKILL_DIRS) | set(UNIVERSAL_AGENTS)
 
     block = config.get("ai_skills") or {}
     entries = block.get("entries") or [] if isinstance(block, dict) else []
@@ -949,17 +951,17 @@ def _check_ai_skills(config: Dict[str, Any], packages: Set[str]) -> List[Issue]:
         if providers and not (packages & set(providers)):
             missing[method] = " or ".join(providers)
         for agent in entry.get("agents") or []:
-            if agent not in AGENT_SKILL_DIRS:
+            if agent not in known_agents:
                 issues.append(Issue(
                     "warning", "ai_skills_unknown_agent",
                     f"ai_skills entry {entry.get('name')!r} targets agent "
                     f"{agent!r}, which is not one dasik knows how to read back "
-                    f"({', '.join(sorted(AGENT_SKILL_DIRS))}). The install may "
+                    f"({', '.join(sorted(known_agents))}). The install may "
                     "work, but plan and sync will never see it."))
-    for method, providers in sorted(missing.items()):
+    for method, expected in sorted(missing.items()):
         issues.append(Issue(
             "warning", "ai_skills_without_installer",
             f"ai_skills uses method {method!r}, whose installer is not in "
-            f"`packages` (expected {providers}). Every install of that method "
+            f"`packages` (expected {expected}). Every install of that method "
             "will fail on a machine that does not already have it."))
     return issues

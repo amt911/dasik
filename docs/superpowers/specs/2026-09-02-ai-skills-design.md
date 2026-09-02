@@ -110,7 +110,15 @@ posee el manifiesto se deja en paz).
 | --- | --- |
 | `claude-plugin` | `~/.claude/plugins/installed_plugins.json` (claves `plugin@marketplace`) y `~/.claude/plugins/known_marketplaces.json` (nombre → `source.repo`) |
 | `codex-plugin` | `~/.codex/config.toml`: secciones `[plugins."<p>@<mkt>"]` con `enabled = true`; marketplaces configurados en el mismo fichero |
-| `skills` | `~/.agents/skills/<n>/SKILL.md` existe **y** el agente lo tiene enlazado (`~/.claude/skills/<n>`, `~/.codex/skills/<n>`, …); la procedencia sale de `~/.agents/.skill-lock.json` |
+| `skills` | depende del agente (medido en la VM, ver nota abajo): para **codex/cursor/opencode** basta `~/.agents/skills/<n>/SKILL.md`; **claude-code** además tiene `~/.claude/skills/<n>`. La procedencia sale de `~/.agents/.skill-lock.json` |
+
+> **Corrección tras la primera VM (2026-09-02).** El diseño suponía un
+> directorio por agente para todos. Falso: el CLI `skills` llama *universal* a
+> todo agente cuyo `skillsDir` es `.agents/skills` — codex, cursor y opencode lo
+> son — y para ellos instala **sólo** la copia canónica, sin enlace propio.
+> Leer `~/.codex/skills/<n>` hacía que `apply` dijera éxito, no convergiera
+> nunca y el siguiente `plan` volviera a pedir lo mismo. La suite estaba verde;
+> lo vio el invitado.
 
 Todas las rutas se resuelven bajo el target (`Target.path`) y el home real sale
 de `/etc/passwd` del target, con el mismo fallback `/home/<user>` que usa

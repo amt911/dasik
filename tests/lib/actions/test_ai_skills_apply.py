@@ -203,3 +203,20 @@ def test_apply_without_a_target_runs_nothing(tmp_path):
     with patch("dasik.lib.actions.ai_skills_action.Command.execute") as execute:
         action.apply([])
     execute.assert_not_called()
+
+
+def test_removing_a_codex_plugin_passes_the_full_selector(tmp_path):
+    # `codex plugin remove` takes PLUGIN@MARKETPLACE; the bare name is
+    # ambiguous when two marketplaces carry the same plugin.
+    _passwd(tmp_path)
+    codex = tmp_path / "home/andres/.codex"
+    codex.mkdir(parents=True)
+    (codex / "config.toml").write_text(
+        '[plugins."superpowers@openai-curated"]\nenabled = true\n')
+    action = _act(tmp_path, {"users": [{"username": "andres"}]})
+    with patch("dasik.lib.actions.ai_skills_action.Command.execute") as execute:
+        execute.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        action.apply(action.plan(
+            managed=["andres:codex:plugin:superpowers@openai-curated"]))
+    assert _scripts(execute) == ['codex plugin remove "$1"']
+    assert _argvs(execute)[0][6:] == ["superpowers@openai-curated"]

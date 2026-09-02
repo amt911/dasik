@@ -24,19 +24,38 @@ import os
 import re
 from typing import Dict, Set, Tuple
 
-# Agent id -> home-relative global skills directory. Pinned against the `skills`
-# CLI's own registry (vercel-labs/skills, src/agents.ts `globalSkillsDir`), which
-# is what decides where `npx skills add -g -a <agent>` puts a skill.
-AGENT_SKILL_DIRS: Dict[str, str] = {
-    "claude-code": ".claude/skills",
-    "codex": ".codex/skills",
-    "cursor": ".cursor/skills",
-    "opencode": ".config/opencode/skills",
-}
-
-# The canonical copy every agent links to (src/constants.ts UNIVERSAL_SKILLS_DIR).
+# Where a skill actually lands, per agent. Pinned against the `skills` CLI's own
+# registry and install logic (vercel-labs/skills, src/agents.ts and
+# src/installer.ts `getAgentBaseDir`), and confirmed in a guest:
+#
+#   an agent whose `skillsDir` is `.agents/skills` is UNIVERSAL — it reads the
+#   canonical directory directly and gets NO directory of its own,
+#
+# which is true of codex, cursor and opencode. Only claude-code among the agents
+# dasik knows has a directory of its own. Reading `~/.codex/skills` for codex is
+# how the first version of this domain never converged: `npx skills add -a codex`
+# reported success, wrote only `~/.agents/skills/<n>`, and the next plan asked
+# for the same skill again, forever.
 CANONICAL_SKILL_DIR = ".agents/skills"
 LOCK_REL = ".agents/.skill-lock.json"
+
+UNIVERSAL_AGENTS = frozenset({"codex", "cursor", "opencode"})
+
+# Agent id -> home-relative skills directory of its own (non-universal only).
+AGENT_SKILL_DIRS: Dict[str, str] = {
+    "claude-code": ".claude/skills",
+}
+
+# How to tell that an agent exists on this machine at all, the same way the
+# `skills` CLI does (its `detectInstalled`): the agent's own home directory.
+# Used only by `sync`, to avoid reporting that codex carries a skill on a
+# machine where codex is not installed.
+AGENT_HOME_MARKERS: Dict[str, str] = {
+    "claude-code": ".claude",
+    "codex": ".codex",
+    "cursor": ".cursor",
+    "opencode": ".config/opencode",
+}
 
 # Codex ships these preinstalled under ~/.codex/skills/.system. Nobody installed
 # them, and nothing can reinstall them, so they are not part of any domain.
@@ -183,18 +202,23 @@ def _skill_dirs(path: str):
             yield name, full
 
 
-def skills_state(home: str) -> Tuple[Dict[str, Set[str]], Dict[str, str]]:
-    """(``{skill: {agent ids that carry it}}``, ``{skill: source}``).
+def skills_state(home: str) -> Tuple[Set[str], Dict[str, Set[str]], Dict[str, str]]:
+    """(canonical skills, ``{non-universal agent: skills}``, ``{skill: source}``).
 
-    A skill counts for an agent whether the entry is a symlink to the canonical
-    copy (the CLI's default) or an independent directory (its copy method), so
-    both installation methods read back the same.
+    The canonical set is what every universal agent reads; the per-agent map is
+    for the agents that keep a directory of their own (a symlink to the
+    canonical copy, or an independent directory when the CLI's copy method was
+    used — both read back the same).
     """
-    agents: Dict[str, Set[str]] = {}
-    for agent, relative in AGENT_SKILL_DIRS.items():
-        for name, _full in _skill_dirs(os.path.join(home, relative)):
-            agents.setdefault(name, set()).add(agent)
+    canonical = {name for name, _full in _skill_dirs(os.path.join(home, CANONICAL_SKILL_DIR))}
 
+    per_agent: Dict[str, Set[str]] = {}
+    for agent, relative in AGENT_SKILL_DIRS.items():
+        names = {name for name, _full in _skill_dirs(os.path.join(home, relative))}
+        if names:
+            per_agent[agent] = names
+
+    known = canonical | {n for names in per_agent.values() for n in names}
     sources: Dict[str, str] = {}
     lock = _read_json(os.path.join(home, LOCK_REL))
     if isinstance(lock, dict):
@@ -202,8 +226,27 @@ def skills_state(home: str) -> Tuple[Dict[str, Set[str]], Dict[str, str]]:
             if not isinstance(entry, dict):
                 continue
             source = entry.get("source") or entry.get("sourceUrl")
-            # Only for a skill some agent actually carries: a lock entry alone
-            # is a record of an install that may since have been removed.
-            if isinstance(source, str) and source and name in agents:
+            # Only for a skill that is actually there: a lock entry alone is the
+            # record of an install that may since have been removed.
+            if isinstance(source, str) and source and name in known:
                 sources[name] = source
-    return agents, sources
+    return canonical, per_agent, sources
+
+
+def installed_agents(home: str) -> Set[str]:
+    """The agents this machine actually has, by the CLI's own detection rule."""
+    return {agent for agent, marker in AGENT_HOME_MARKERS.items()
+            if os.path.isdir(os.path.join(home, marker))}
+
+
+def carries_skill(agent: str, name: str, canonical: Set[str],
+                  per_agent: Dict[str, Set[str]]) -> bool:
+    """Whether *agent* would find skill *name* on a machine in this state.
+
+    A universal agent reads the canonical directory, so the canonical copy IS
+    the installation. An agent dasik does not know is assumed universal, which
+    is the CLI's default shape; `check` warns about it separately.
+    """
+    if agent in AGENT_SKILL_DIRS:
+        return name in per_agent.get(agent, set())
+    return name in canonical

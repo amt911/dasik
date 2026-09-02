@@ -52,13 +52,24 @@ def _install_claude_plugin(root, plugin="superpowers@caveman", user="andres",
 
 def _install_skill(root, name="impeccable", agents=("codex",), user="andres",
                    source="pbakaus/impeccable"):
+    """Install a skill the way `npx skills add -g` really does.
+
+    The canonical copy is the installation for every universal agent (codex,
+    cursor, opencode read `~/.agents/skills` themselves); only claude-code gets
+    a link of its own. Measured in a guest — see test_ai_skills_state.
+    """
     home = _home(root, user)
     canonical = home / ".agents/skills" / name
     canonical.mkdir(parents=True, exist_ok=True)
     (canonical / "SKILL.md").write_text(f"---\nname: {name}\n---\n")
-    dirs = {"claude-code": ".claude/skills", "codex": ".codex/skills"}
     for agent in agents:
-        agent_dir = home / dirs[agent]
+        # The agent's own home is what marks it as present on the machine.
+        marker = {"claude-code": ".claude", "codex": ".codex",
+                  "cursor": ".cursor", "opencode": ".config/opencode"}[agent]
+        (home / marker).mkdir(parents=True, exist_ok=True)
+        if agent != "claude-code":
+            continue
+        agent_dir = home / ".claude/skills"
         agent_dir.mkdir(parents=True, exist_ok=True)
         link = agent_dir / name
         if not link.exists():
@@ -188,7 +199,7 @@ def test_the_home_the_machine_declares_wins_over_the_fallback(tmp_path):
     (tmp_path / "etc").mkdir()
     (tmp_path / "etc/passwd").write_text(
         "andres:x:1000:1000::/srv/andres:/bin/bash\n")
-    elsewhere = tmp_path / "srv/andres/.codex/skills/impeccable"
+    elsewhere = tmp_path / "srv/andres/.agents/skills/impeccable"
     elsewhere.mkdir(parents=True)
     (elsewhere / "SKILL.md").write_text("---\nname: impeccable\n---\n")
     assert "andres:codex:skill:impeccable" not in [

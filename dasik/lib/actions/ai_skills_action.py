@@ -23,7 +23,8 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional, Tuple
 
 from .abstract_action import AbstractAction
-from .ai_skills_state import claude_state, codex_state, skills_state
+from .ai_skills_state import (carries_skill, claude_state, codex_state,
+                              installed_agents, skills_state)
 from ..command_worker.command_worker import Command
 from ..exceptions.exceptions import CommandExecutionError
 from ..state.change import Change, Op
@@ -213,11 +214,21 @@ class AiSkillsAction(AbstractAction):
                     items.add(item)
                     markets[item] = source
 
-            agents_by_skill, _sources = skills_state(home)
-            for skill, agents in agents_by_skill.items():
-                for agent in agents:
-                    items.add(self._item(user, agent, "skill", skill))
+            canonical, per_agent, _sources = skills_state(home)
+            # Only the agents this user's entries name: a universal agent reads
+            # the canonical directory, so every one of them "has" every skill
+            # there, and enumerating all of them would flood the domain with
+            # items nobody declared.
+            for agent in self._agents_of(user):
+                for skill in canonical | set(per_agent.get(agent, set())):
+                    if carries_skill(agent, skill, canonical, per_agent):
+                        items.add(self._item(user, agent, "skill", skill))
         return items, markets
+
+    def _agents_of(self, user: str) -> set:
+        """Agents some entry names for *user* (skills methods only)."""
+        return {spec["agent"] for item, spec in self._desired().items()
+                if spec["kind"] == "skill" and spec["user"] == user}
 
     def actual(self) -> set:
         if self._target() is None:
@@ -303,7 +314,10 @@ class AiSkillsAction(AbstractAction):
                 return [('claude plugin install "$1" -y --scope user',
                          (plugin_id,))]
             if change.op is Op.DELETE:
-                return [('codex plugin remove "$1"', (spec["plugin"],))]
+                # The full selector, not the bare name: `codex plugin remove`
+                # takes PLUGIN@MARKETPLACE and is ambiguous without it when two
+                # marketplaces carry the same plugin.
+                return [('codex plugin remove "$1"', (plugin_id,))]
             return [('codex plugin add "$1"', (plugin_id,))]
         # A plain skill, through the cross-agent `skills` CLI. Named options
         # only: its remove takes variadic agents AND positional skills, so
@@ -410,13 +424,24 @@ class AiSkillsAction(AbstractAction):
                                                    sources.get(market))
                     found.setdefault(plugin_key, set()).add(user)
 
-            agents_by_skill, skill_sources = skills_state(home)
-            for skill, agents in sorted(agents_by_skill.items()):
+            canonical, per_agent, skill_sources = skills_state(home)
+            present = installed_agents(home)
+            declared = self._agents_of(user)
+            for skill in sorted(canonical | {n for names in per_agent.values()
+                                             for n in names}):
                 source = skill_sources.get(skill)
                 if not source:
                     # Nothing records where it came from, so no other machine
                     # could reproduce it. Reported, never invented.
                     skipped.append(f"{user}: {skill}")
+                    continue
+                agents = {a for a in (present | declared)
+                          if carries_skill(a, skill, canonical, per_agent)}
+                if not agents:
+                    # The canonical copy is there but no agent on this machine
+                    # reads it, and nothing declares one either: naming an agent
+                    # would be inventing a machine that does not exist.
+                    skipped.append(f"{user}: {skill} (no agent reads it)")
                     continue
                 skill_key: Tuple[Any, ...] = ("skills", skill,
                                               tuple(sorted(agents)), source)
@@ -428,7 +453,7 @@ class AiSkillsAction(AbstractAction):
         if not found:
             return {_DOMAIN: {}}
 
-        present = sorted({u for owners in found.values() for u in owners})
+        all_owners = sorted({u for owners in found.values() for u in owners})
         entries: List[Dict[str, Any]] = []
         for key in sorted(found, key=lambda k: (str(k[1]), str(k[0]))):
             owners = sorted(found[key])
@@ -442,11 +467,11 @@ class AiSkillsAction(AbstractAction):
                     marketplace["source"] = key[3]
                 entry = {"name": key[1], "method": key[0],
                          "marketplace": marketplace}
-            if owners != present:
+            if owners != all_owners:
                 entry["users"] = owners
             entries.append(entry)
 
-        block: Dict[str, Any] = {"users": present, "entries": entries}
+        block: Dict[str, Any] = {"users": all_owners, "entries": entries}
         declared_policy = _field(self._block, "failure_policy")
         if declared_policy and declared_policy != "warn-and-continue":
             # Not something a machine can report: policy is carried over from

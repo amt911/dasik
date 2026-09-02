@@ -28,63 +28,71 @@ H=/home/$U
 
 absent() { ! grep -q "$2" "$1"; }     # rc 0 when the pattern is NOT in the file
 present() { grep -q "$2" "$1"; }      # rc 0 when it is
+
+# Every check goes through rc(), which prints the line AND counts the failures,
+# so the harness's own verdict (AISKILLS-DONE rc=N) means something. Reading 55
+# lines by hand to decide whether a run passed is how a red run gets called
+# green.
+FAILS=0
+rc() { local v=$?; [ "$v" -eq 0 ] || FAILS=$((FAILS + 1)); echo "$1-RC=$v"; }
 echo "AISKILLS: BEGIN (target / = the live booted host)"
 
 echo "AISKILLS-A: the guest has what the installers need"
-command -v node npx; echo "AISKILLS-NODE-RC=$?"
-timeout 60 curl -sSf -o /dev/null https://registry.npmjs.org/; echo "AISKILLS-NET-RC=$?"
+command -v node npx; rc AISKILLS-NODE
+timeout 60 curl -sSf -o /dev/null https://registry.npmjs.org/; rc AISKILLS-NET
 
 echo "AISKILLS-B: what the install already put there — ZERO manual steps"
 # uv_tools installed the program during the install, and ai_skills then ran its
 # `graphify install --platform`. Nobody typed anything.
-test -d $H/.local/share/uv/tools/graphifyy; echo "AISKILLS-UVTOOL-RC=$?"
-test -f $H/.claude/skills/graphify/SKILL.md; echo "AISKILLS-GRAPHIFY-CLAUDE-RC=$?"
-test -f $H/.codex/skills/graphify/SKILL.md; echo "AISKILLS-GRAPHIFY-CODEX-RC=$?"
+test -d $H/.local/share/uv/tools/graphifyy; rc AISKILLS-UVTOOL
+test -f $H/.claude/skills/graphify/SKILL.md; rc AISKILLS-GRAPHIFY-CLAUDE
+test -f $H/.codex/skills/graphify/SKILL.md; rc AISKILLS-GRAPHIFY-CODEX
 su - $U -c 'uv tool list' 2>&1 | head -5
 # codex/cursor/opencode read ~/.agents/skills themselves (the `skills` CLI calls
 # them universal agents and writes no directory of their own); claude-code gets
 # a link. Asserting a ~/.codex/skills/<n> here would assert a bug.
-test -f $H/.agents/skills/impeccable/SKILL.md; echo "AISKILLS-CANONICAL-RC=$?"
-test -e $H/.claude/skills/impeccable; echo "AISKILLS-CLAUDE-LINK-RC=$?"
-test ! -e $H/.codex/skills/impeccable; echo "AISKILLS-NO-CODEX-DIR-RC=$?"
+test -f $H/.agents/skills/impeccable/SKILL.md; rc AISKILLS-CANONICAL
+test -e $H/.claude/skills/impeccable; rc AISKILLS-CLAUDE-LINK
+test ! -e $H/.codex/skills/impeccable; rc AISKILLS-NO-CODEX-DIR
 head -20 $H/.agents/.skill-lock.json
 
 echo "AISKILLS-C: check / plan (expect: no ai_skills change)"
-$D check "$C" $L; echo "AISKILLS-CHECK-RC=$?"
-$D plan "$C" --target / $L > /tmp/plan1.txt 2>&1; echo "AISKILLS-PLAN-RC=$?"
+$D check "$C" $L; rc AISKILLS-CHECK
+$D plan "$C" --target / $L > /tmp/plan1.txt 2>&1; rc AISKILLS-PLAN
 cat /tmp/plan1.txt
-absent /tmp/plan1.txt '\[ai_skills\]'; echo "AISKILLS-PLAN-QUIET-RC=$?"
+absent /tmp/plan1.txt '\[ai_skills\]'; rc AISKILLS-PLAN-QUIET
 
 echo "AISKILLS-D: apply, then plan again — both silent"
-$D apply "$C" --target / --yes $L; echo "AISKILLS-APPLY-RC=$?"
-$D plan "$C" --target / $L > /tmp/plan2.txt 2>&1; echo "AISKILLS-REPLAN-RC=$?"
-absent /tmp/plan2.txt '\[ai_skills\]'; echo "AISKILLS-REPLAN-QUIET-RC=$?"
+$D apply "$C" --target / --yes $L; rc AISKILLS-APPLY
+$D plan "$C" --target / $L > /tmp/plan2.txt 2>&1; rc AISKILLS-REPLAN
+absent /tmp/plan2.txt '\[ai_skills\]'; rc AISKILLS-REPLAN-QUIET
 
 echo "AISKILLS-E: sync captures the block, check accepts it, plan is silent"
 # `sync` rewrites the config it is given, and the 9p repo is read-only.
 cp "$C" /tmp/captured.json
-$D sync /tmp/captured.json --target / $L; echo "AISKILLS-SYNC-RC=$?"
+$D sync /tmp/captured.json --target / $L; rc AISKILLS-SYNC
 python - <<'PY'
 import json, sys
 block = json.load(open("/tmp/captured.json")).get("ai_skills")
 print(json.dumps(block, indent=2))
 names = sorted(e["name"] for e in (block or {}).get("entries", []))
-print("AISKILLS-SYNC-BLOCK-RC=%d" % (0 if "impeccable" in names else 1))
+sys.exit(0 if "impeccable" in names else 1)
 PY
-$D check /tmp/captured.json $L; echo "AISKILLS-CHECKSYNC-RC=$?"
-$D plan /tmp/captured.json --target / $L > /tmp/plan3.txt 2>&1; echo "AISKILLS-PLANSYNC-RC=$?"
-absent /tmp/plan3.txt '\[ai_skills\]'; echo "AISKILLS-PLANSYNC-QUIET-RC=$?"
+rc AISKILLS-SYNC-BLOCK
+$D check /tmp/captured.json $L; rc AISKILLS-CHECKSYNC
+$D plan /tmp/captured.json --target / $L > /tmp/plan3.txt 2>&1; rc AISKILLS-PLANSYNC
+absent /tmp/plan3.txt '\[ai_skills\]'; rc AISKILLS-PLANSYNC-QUIET
 
 echo "AISKILLS-F: the manifest records the domain"
-$D generations --target / $L | tail -20; echo "AISKILLS-GEN-RC=$?"
+$D generations --target / $L | tail -20; rc AISKILLS-GEN
 grep -o 'ai_skills' /var/lib/dasik/state.json | head -1
-present /var/lib/dasik/state.json 'ai_skills'; echo "AISKILLS-MANIFEST-RC=$?"
+present /var/lib/dasik/state.json 'ai_skills'; rc AISKILLS-MANIFEST
 
 echo "AISKILLS-G: a skill nobody declared is left alone"
 su - $U -c 'mkdir -p ~/.claude/skills/handmade && printf -- "---\nname: handmade\n---\n" > ~/.claude/skills/handmade/SKILL.md'
 $D plan "$C" --target / $L > /tmp/plan4.txt 2>&1
-absent /tmp/plan4.txt 'handmade'; echo "AISKILLS-FOREIGN-RC=$?"
-test -d $H/.claude/skills/handmade; echo "AISKILLS-FOREIGN-ALIVE-RC=$?"
+absent /tmp/plan4.txt 'handmade'; rc AISKILLS-FOREIGN
+test -d $H/.claude/skills/handmade; rc AISKILLS-FOREIGN-ALIVE
 
 echo "AISKILLS-H: the plugin methods, with the real CLIs"
 # npm 11 refuses install scripts by default, and without the postinstall the
@@ -92,9 +100,9 @@ echo "AISKILLS-H: the plugin methods, with the real CLIs"
 # would test dasik's failure path instead of its plugin path.
 npm install -g --allow-scripts=@anthropic-ai/claude-code,@openai/codex \
     @anthropic-ai/claude-code @openai/codex > /tmp/npm.log 2>&1
-echo "AISKILLS-NPM-RC=$?"; tail -3 /tmp/npm.log
+rc AISKILLS-NPM; tail -3 /tmp/npm.log
 command -v claude codex
-su - $U -c 'claude --version' > /tmp/claude-version.txt 2>&1; echo "AISKILLS-CLI-RC=$?"
+su - $U -c 'claude --version' > /tmp/claude-version.txt 2>&1; rc AISKILLS-CLI
 cat /tmp/claude-version.txt
 python - <<'PY'
 import json
@@ -114,29 +122,29 @@ json.dump(cfg, open("/tmp/with-plugins.json", "w"), indent=2)
 PY
 $D plan /tmp/with-plugins.json --target / $L > /tmp/plan5.txt 2>&1
 grep '\[ai_skills\]' /tmp/plan5.txt
-present /tmp/plan5.txt 'plugin:caveman@caveman'; echo "AISKILLS-PLUGIN-PLAN-RC=$?"
-$D apply /tmp/with-plugins.json --target / --yes $L; echo "AISKILLS-PLUGIN-APPLY-RC=$?"
+present /tmp/plan5.txt 'plugin:caveman@caveman'; rc AISKILLS-PLUGIN-PLAN
+$D apply /tmp/with-plugins.json --target / --yes $L; rc AISKILLS-PLUGIN-APPLY
 su - $U -c 'claude plugin list' 2>&1 | head -20
 head -30 $H/.claude/plugins/installed_plugins.json
 head -30 $H/.codex/config.toml
 su - $U -c 'codex plugin list' 2>&1 | head -10
 $D plan /tmp/with-plugins.json --target / $L > /tmp/plan6.txt 2>&1
 grep '\[ai_skills\]' /tmp/plan6.txt      # names itself when it is not silent
-absent /tmp/plan6.txt '\[ai_skills\]'; echo "AISKILLS-PLUGIN-REPLAN-QUIET-RC=$?"
+absent /tmp/plan6.txt '\[ai_skills\]'; rc AISKILLS-PLUGIN-REPLAN-QUIET
 
 echo "AISKILLS-H2: the tool method converged during the install"
-command -v graphify || ls -l $H/.local/bin/graphify; echo "AISKILLS-GRAPHIFY-RC=$?"
+command -v graphify || ls -l $H/.local/bin/graphify; rc AISKILLS-GRAPHIFY
 su - $U -c 'PATH="$HOME/.local/bin:$PATH"; graphify' 2>&1 | head -2
 cp /tmp/with-plugins.json /tmp/with-tool.json
 $D plan /tmp/with-tool.json --target / $L > /tmp/plan10.txt 2>&1
 grep '\[ai_skills\]\|\[uv_tools\]' /tmp/plan10.txt
-absent /tmp/plan10.txt 'skill:graphify'; echo "AISKILLS-TOOL-PLAN-RC=$?"
-$D apply /tmp/with-tool.json --target / --yes $L; echo "AISKILLS-TOOL-APPLY-RC=$?"
-test -f $H/.claude/skills/graphify/SKILL.md; echo "AISKILLS-TOOL-CLAUDE-RC=$?"
-test -f $H/.codex/skills/graphify/SKILL.md; echo "AISKILLS-TOOL-CODEX-RC=$?"
+absent /tmp/plan10.txt 'skill:graphify'; rc AISKILLS-TOOL-PLAN
+$D apply /tmp/with-tool.json --target / --yes $L; rc AISKILLS-TOOL-APPLY
+test -f $H/.claude/skills/graphify/SKILL.md; rc AISKILLS-TOOL-CLAUDE
+test -f $H/.codex/skills/graphify/SKILL.md; rc AISKILLS-TOOL-CODEX
 $D plan /tmp/with-tool.json --target / $L > /tmp/plan11.txt 2>&1
 grep '\[ai_skills\]\|\[uv_tools\]' /tmp/plan11.txt
-absent /tmp/plan11.txt '\[ai_skills\]'; echo "AISKILLS-TOOL-REPLAN-QUIET-RC=$?"
+absent /tmp/plan11.txt '\[ai_skills\]'; rc AISKILLS-TOOL-REPLAN-QUIET
 
 echo "AISKILLS-H2b: uv_tools plans, removes and re-installs like any domain"
 python - <<'PY'
@@ -147,32 +155,34 @@ json.dump(cfg, open("/tmp/no-uvtool.json", "w"), indent=2)
 PY
 $D plan /tmp/no-uvtool.json --target / $L > /tmp/plan13.txt 2>&1
 grep '\[uv_tools\]' /tmp/plan13.txt
-present /tmp/plan13.txt 'remove test:graphifyy'; echo "AISKILLS-UV-REMOVE-PLAN-RC=$?"
-$D apply /tmp/no-uvtool.json --target / --yes $L; echo "AISKILLS-UV-REMOVE-APPLY-RC=$?"
-test ! -d $H/.local/share/uv/tools/graphifyy; echo "AISKILLS-UV-REMOVED-RC=$?"
-$D apply /tmp/with-tool.json --target / --yes $L; echo "AISKILLS-UV-REINSTALL-RC=$?"
-test -d $H/.local/share/uv/tools/graphifyy; echo "AISKILLS-UV-BACK-RC=$?"
+present /tmp/plan13.txt 'remove test:graphifyy'; rc AISKILLS-UV-REMOVE-PLAN
+$D apply /tmp/no-uvtool.json --target / --yes $L; rc AISKILLS-UV-REMOVE-APPLY
+test ! -d $H/.local/share/uv/tools/graphifyy; rc AISKILLS-UV-REMOVED
+$D apply /tmp/with-tool.json --target / --yes $L; rc AISKILLS-UV-REINSTALL
+test -d $H/.local/share/uv/tools/graphifyy; rc AISKILLS-UV-BACK
 $D plan /tmp/with-tool.json --target / $L > /tmp/plan14.txt 2>&1
-absent /tmp/plan14.txt '\[uv_tools\]'; echo "AISKILLS-UV-REPLAN-QUIET-RC=$?"
+absent /tmp/plan14.txt '\[uv_tools\]'; rc AISKILLS-UV-REPLAN-QUIET
 
 echo "AISKILLS-H3: sync captures the tool entry, and its own plan is silent"
 cp /tmp/with-tool.json /tmp/captured-tool.json
-$D sync /tmp/captured-tool.json --target / $L; echo "AISKILLS-TOOL-SYNC-RC=$?"
+$D sync /tmp/captured-tool.json --target / $L; rc AISKILLS-TOOL-SYNC
 python - <<'PY'
 import json
 block = json.load(open("/tmp/captured-tool.json"))["ai_skills"]
 print(json.dumps(block, indent=2))
 tool = [e for e in block["entries"] if e["method"] == "tool"]
-print("AISKILLS-TOOL-CAPTURED-RC=%d" % (0 if tool and tool[0]["command"] == "graphify" else 1))
 uv = json.load(open("/tmp/captured-tool.json")).get("uv_tools") or {}
 print(json.dumps(uv))
-print("AISKILLS-UV-CAPTURED-RC=%d" % (0 if "graphifyy" in (uv.get("tools") or []) else 1))
+ok = bool(tool) and tool[0]["command"] == "graphify" \
+    and "graphifyy" in (uv.get("tools") or [])
+import sys; sys.exit(0 if ok else 1)
 PY
-$D check /tmp/captured-tool.json $L; echo "AISKILLS-TOOL-CHECKSYNC-RC=$?"
+rc AISKILLS-CAPTURED
+$D check /tmp/captured-tool.json $L; rc AISKILLS-TOOL-CHECKSYNC
 $D plan /tmp/captured-tool.json --target / $L > /tmp/plan12.txt 2>&1
 grep '\[ai_skills\]' /tmp/plan12.txt
-absent /tmp/plan12.txt '\[ai_skills\]'; echo "AISKILLS-TOOL-PLANSYNC-QUIET-RC=$?"
-absent /tmp/plan12.txt '\[uv_tools\]'; echo "AISKILLS-UV-PLANSYNC-QUIET-RC=$?"
+absent /tmp/plan12.txt '\[ai_skills\]'; rc AISKILLS-TOOL-PLANSYNC-QUIET
+absent /tmp/plan12.txt '\[uv_tools\]'; rc AISKILLS-UV-PLANSYNC-QUIET
 GEN_GOOD=$(basename "$(readlink -f /var/lib/dasik/generations/current)")
 echo "AISKILLS-GEN-GOOD=$GEN_GOOD"
 
@@ -187,9 +197,9 @@ cfg["ai_skills"]["entries"].append(
      "source": "dasik-test/definitely-not-a-repo", "agents": ["codex"]})
 json.dump(cfg, open("/tmp/broken.json", "w"), indent=2)
 PY
-$D apply /tmp/broken.json --target / --yes $L; echo "AISKILLS-WARN-APPLY-RC=$?"
+$D apply /tmp/broken.json --target / --yes $L; rc AISKILLS-WARN-APPLY
 $D plan /tmp/broken.json --target / $L > /tmp/plan7.txt 2>&1
-present /tmp/plan7.txt 'skill:nope'; echo "AISKILLS-WARN-REPLAN-RC=$?"
+present /tmp/plan7.txt 'skill:nope'; rc AISKILLS-WARN-REPLAN
 
 echo "AISKILLS-J: dropping the block removes what dasik owned"
 python - <<'PY'
@@ -200,22 +210,22 @@ json.dump(cfg, open("/tmp/no-block.json", "w"), indent=2)
 PY
 $D plan /tmp/no-block.json --target / $L > /tmp/plan8.txt 2>&1
 grep '\[ai_skills\]' /tmp/plan8.txt
-present /tmp/plan8.txt 'delete .*skill:impeccable'; echo "AISKILLS-REMOVE-PLAN-RC=$?"
-$D apply /tmp/no-block.json --target / --yes $L; echo "AISKILLS-REMOVE-APPLY-RC=$?"
-test ! -e $H/.agents/skills/impeccable; echo "AISKILLS-REMOVED-RC=$?"
-test ! -e $H/.codex/skills/graphify; echo "AISKILLS-TOOL-REMOVED-RC=$?"
-test -d $H/.claude/skills/handmade; echo "AISKILLS-FOREIGN-STILL-RC=$?"
+present /tmp/plan8.txt 'delete .*skill:impeccable'; rc AISKILLS-REMOVE-PLAN
+$D apply /tmp/no-block.json --target / --yes $L; rc AISKILLS-REMOVE-APPLY
+test ! -e $H/.agents/skills/impeccable; rc AISKILLS-REMOVED
+test ! -e $H/.codex/skills/graphify; rc AISKILLS-TOOL-REMOVED
+test -d $H/.claude/skills/handmade; rc AISKILLS-FOREIGN-STILL
 
 echo "AISKILLS-K: rollback restores the generation and re-plans to nothing"
 $D generations --target / $L | tail -10
-$D rollback "$GEN_GOOD" --target / --yes $L; echo "AISKILLS-ROLLBACK-RC=$?"
+$D rollback "$GEN_GOOD" --target / --yes $L; rc AISKILLS-ROLLBACK
 # The generation dasik rolled back to IS the desired state now; planning its
 # own config against the machine it just restored must propose nothing.
 cp "$(readlink -f /var/lib/dasik/generations/current)/config.json" /tmp/restored.json
 $D plan /tmp/restored.json --target / $L > /tmp/plan9.txt 2>&1
 grep '\[ai_skills\]' /tmp/plan9.txt
-absent /tmp/plan9.txt '\[ai_skills\]'; echo "AISKILLS-ROLLBACK-QUIET-RC=$?"
+absent /tmp/plan9.txt '\[ai_skills\]'; rc AISKILLS-ROLLBACK-QUIET
 
-echo "AISKILLS-DONE"
+echo "AISKILLS-DONE rc=$FAILS"
 sync
 poweroff -f

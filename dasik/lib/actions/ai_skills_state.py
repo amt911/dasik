@@ -65,7 +65,11 @@ _SKILL_FILE = "SKILL.md"
 
 _TOML_SECTION_RE = re.compile(r'^\s*\[([^\]]+)\]\s*$')
 _TOML_PLUGIN_RE = re.compile(r'^plugins\."(?P<id>[^"]+)"$')
-_TOML_MARKET_RE = re.compile(r'^plugin_marketplaces\.(?P<name>[A-Za-z0-9._-]+)$')
+# What `codex plugin marketplace add` really writes, measured in a guest:
+# [marketplaces.<name>] with source_type/source. `plugin_marketplaces` is
+# accepted too, for a codex that ever used that spelling.
+_TOML_MARKET_RE = re.compile(
+    r'^(?:plugin_)?marketplaces\.(?P<name>[A-Za-z0-9._-]+)$')
 _TOML_KV_RE = re.compile(r'^\s*(?P<key>[A-Za-z0-9_]+)\s*=\s*(?P<value>.+?)\s*$')
 
 
@@ -128,11 +132,11 @@ def _parse_codex_toml(text: str) -> Tuple[Set[str], Dict[str, str]]:
             key for key, value in (data.get("plugins") or {}).items()
             if isinstance(value, dict) and value.get("enabled", True)
         }
-        markets = {
-            name: value["source"]
-            for name, value in (data.get("plugin_marketplaces") or {}).items()
-            if isinstance(value, dict) and isinstance(value.get("source"), str)
-        }
+        markets = {}
+        for section in ("marketplaces", "plugin_marketplaces"):
+            for name, value in (data.get(section) or {}).items():
+                if isinstance(value, dict) and isinstance(value.get("source"), str):
+                    markets[name] = value["source"]
         return plugins, markets
 
     return _parse_codex_toml_lines(text)

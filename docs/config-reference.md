@@ -929,7 +929,7 @@ update` / `npx skills update` and dasik never fights it.
 | `failure_policy` | `warn-and-continue` \| `abort` | What `apply` does when an installer fails (no network, no `npx`, marketplace down). Default warns, keeps going, and leaves the item unowned so the next `plan` asks again. |
 | `entries[].name` | string | The artefact as its installer knows it. |
 | `entries[].method` | `claude-plugin` \| `codex-plugin` \| `skills` | Which official installer to drive. |
-| `entries[].marketplace` | `{name, source?}` | Plugin methods only. `source` (owner/repo, git URL) is what `... plugin marketplace add` registers; omit it for a marketplace the agent ships with, like Codex's `openai-curated`. |
+| `entries[].marketplace` | `{name, source?}` | Plugin methods only. `source` (owner/repo, git URL) is what `... plugin marketplace add` registers. **`name` is the name the marketplace's own manifest declares**, which is often not the repository name — `obra/superpowers` registers as `superpowers-dev`; the CLI prints it when adding. Omit `source` only for a marketplace the agent already has: Codex's `openai-curated` is one, but it exists only once codex has populated its own cache, so on a freshly installed codex declare a git source instead. |
 | `entries[].plugin` | string | Plugin name inside the marketplace, when it differs from `name`. |
 | `entries[].source` | string | `skills` only: what `npx skills add` installs from. |
 | `entries[].agents` | list[string] | `skills` only: agent ids of the `skills` CLI — `claude-code`, `codex`, `opencode`, `cursor`. |

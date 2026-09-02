@@ -224,3 +224,23 @@ def test_the_fallback_parser_gives_up_on_a_malformed_section():
 def test_the_fallback_parser_ignores_keys_outside_a_section():
     from dasik.lib.actions.ai_skills_state import _parse_codex_toml_lines
     assert _parse_codex_toml_lines('model = "gpt-5.6-sol"\n') == (set(), {})
+
+
+def test_codex_marketplaces_are_read_from_the_section_codex_writes(tmp_path):
+    # Measured in a guest: `codex plugin marketplace add <url>` writes
+    # [marketplaces.<name>] with source_type/source. Reading the wrong section
+    # name would make dasik re-add a marketplace that is already there, forever.
+    (tmp_path / ".codex").mkdir()
+    (tmp_path / ".codex/config.toml").write_text(
+        '[marketplaces.superpowers-dev]\n'
+        'source_type = "git"\n'
+        'source = "https://github.com/obra/superpowers.git"\n')
+    _plugins, markets = codex_state(str(tmp_path))
+    assert markets == {"superpowers-dev": "https://github.com/obra/superpowers.git"}
+
+
+def test_the_fallback_parser_reads_the_same_section(tmp_path):
+    from dasik.lib.actions.ai_skills_state import _parse_codex_toml_lines
+    _plugins, markets = _parse_codex_toml_lines(
+        '[marketplaces.caveman]\nsource = "JuliusBrussee/caveman"\n')
+    assert markets == {"caveman": "JuliusBrussee/caveman"}

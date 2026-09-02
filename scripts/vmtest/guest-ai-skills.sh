@@ -96,8 +96,13 @@ cfg = json.load(open("config/vm-ai-skills.json"))
 cfg["ai_skills"]["entries"] += [
     {"name": "caveman", "method": "claude-plugin",
      "marketplace": {"name": "caveman", "source": "JuliusBrussee/caveman"}},
+    # Not `openai-curated`: that marketplace only exists once codex has
+    # populated its own cache, which a freshly installed one has not. A git
+    # marketplace is deterministic — and the NAME is the one the marketplace
+    # manifest declares (superpowers-dev), not the repository's.
     {"name": "superpowers", "method": "codex-plugin",
-     "marketplace": {"name": "openai-curated"}},
+     "marketplace": {"name": "superpowers-dev",
+                     "source": "https://github.com/obra/superpowers"}},
 ]
 json.dump(cfg, open("/tmp/with-plugins.json", "w"), indent=2)
 PY
@@ -108,8 +113,14 @@ $D apply /tmp/with-plugins.json --target / --yes $L; echo "AISKILLS-PLUGIN-APPLY
 su - $U -c 'claude plugin list' 2>&1 | head -20
 head -30 $H/.claude/plugins/installed_plugins.json
 head -30 $H/.codex/config.toml
+su - $U -c 'codex plugin list' 2>&1 | head -10
 $D plan /tmp/with-plugins.json --target / $L > /tmp/plan6.txt 2>&1
 absent /tmp/plan6.txt '\[ai_skills\]'; echo "AISKILLS-PLUGIN-REPLAN-QUIET-RC=$?"
+# The last generation that CAN converge: step I deliberately declares a skill
+# that does not exist, so rolling back to anything after this point would
+# (correctly) keep asking for it forever.
+GEN_GOOD=$(basename "$(readlink -f /var/lib/dasik/generations/current)")
+echo "AISKILLS-GEN-GOOD=$GEN_GOOD"
 
 echo "AISKILLS-I: an installer that fails must not abort the apply"
 python - <<'PY'
@@ -142,7 +153,7 @@ test -d $H/.claude/skills/handmade; echo "AISKILLS-FOREIGN-STILL-RC=$?"
 
 echo "AISKILLS-K: rollback restores the generation and re-plans to nothing"
 $D generations --target / $L | tail -10
-$D rollback --target / --yes $L; echo "AISKILLS-ROLLBACK-RC=$?"
+$D rollback "$GEN_GOOD" --target / --yes $L; echo "AISKILLS-ROLLBACK-RC=$?"
 # The generation dasik rolled back to IS the desired state now; planning its
 # own config against the machine it just restored must propose nothing.
 cp "$(readlink -f /var/lib/dasik/generations/current)/config.json" /tmp/restored.json

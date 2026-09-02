@@ -41,7 +41,9 @@ _KIND_ORDER = {"marketplace": 0, "plugin": 1, "skill": 2}
 
 # `graphify install --platform claude` — the program's platform names are its
 # own, so dasik's agent ids are translated. An agent with no translation is
-# passed through: a tool that knows the id already needs no map entry.
+# passed through: `codex`, `opencode` and `cursor` are already the names
+# graphify uses (graphify/install.py, _PLATFORM_CONFIG plus gemini and cursor),
+# and only Claude Code differs.
 _TOOL_PLATFORMS = {"claude-code": "claude"}
 
 _ROOT = "root"
@@ -395,6 +397,11 @@ class AiSkillsAction(AbstractAction):
         deleting the canonical copy behind its back would leave its lock
         describing a skill that is gone.
         """
+        # NOT the tool's own uninstall verb, even where there is one: read
+        # graphify's `uninstall` and it ignores --platform outside a project
+        # scope and removes the skill from EVERY platform it finds. Dropping
+        # codex from the config would then take claude-code with it. Removing
+        # the one directory dasik owns removes exactly what it owns.
         user, agent, name = spec["user"], spec["agent"], spec["name"]
         home = self._abs(self._home_of(user, self._passwd()))
         canonical, _per_agent, sources = skills_state(home)

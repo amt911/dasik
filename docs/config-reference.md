@@ -965,11 +965,12 @@ add` on an existing name would keep pointing at the other repository.
 so it needs the agent's binary — and `nodejs`/`npm` for `npx skills` — installed
 on the target. `check` warns when they are not among the declared packages.
 
-The `tool` method is for a skill that belongs to a program: `graphify` is a
-package (AUR `graphify`, pip `graphifyy`) whose own `graphify install --platform
-claude` writes the skill file **matching the installed version**. Declaring that
-one from a git branch instead would pin a skill to a tool version nobody
-checked, so dasik drives the program:
+The `tool` method is for a skill that belongs to a program. graphify is the
+example: its own documentation makes installing a two-step job — the package
+(`uv tool install graphifyy`, or the AUR `graphify`), and then `graphify
+install [--platform P]`, which writes the skill file **matching the installed
+version**. dasik owns the second step; declaring that skill from a git branch
+instead would pin it to a tool version nobody checked:
 
 ```json
 {"name": "graphify", "method": "tool", "command": "graphify",
@@ -977,9 +978,12 @@ checked, so dasik drives the program:
 ```
 
 Declare the package too (`packages: ["graphify"]`) — `check` warns when the
-program the entry names is not among them. Removing a `tool` skill deletes the
-directory the program wrote, since these tools have no uninstall verb; a skill
-the `skills` CLI recorded is always removed with `npx skills remove` instead.
+program the entry names is not among them, because `apply` cannot install a
+skill whose program is missing. Removing a `tool` skill deletes the directory
+the program wrote rather than calling the tool's own uninstall: graphify's
+ignores `--platform` outside a project scope and removes the skill from *every*
+platform, so dropping one agent would take the others with it. A skill the
+`skills` CLI recorded is always removed with `npx skills remove` instead.
 `sync` captures a `tool` entry only when the config declares it and the machine
 confirms it: no lock records a skill its own program installed, so nothing else
 could say where it came from.

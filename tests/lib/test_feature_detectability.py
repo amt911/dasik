@@ -1179,3 +1179,55 @@ def test_a_tool_installed_skill_owned_but_undeclared_is_removed(tmp_path):
     assert _ai_plan(root, {"users": [{"username": "andres"}]},
                     managed=["andres:codex:skill:graphify"]) == [
         ("DELETE", "andres:codex:skill:graphify")]
+
+
+# --- uv_tools -------------------------------------------------------------- #
+#
+# The domain that makes "zero manual steps" true for graphify. Nothing else owns
+# it: a uv tool is not a package, not a file under /etc and not a unit.
+
+def _uv_root(tmp_path, user="andres"):
+    (tmp_path / "etc").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "etc/passwd").write_text(
+        "root:x:0:0::/root:/bin/bash\n"
+        f"{user}:x:1000:1000::/home/{user}:/bin/bash\n")
+    return tmp_path
+
+
+def _uv_install(root, tool="graphifyy", user="andres"):
+    (root / "home" / user / ".local/share/uv/tools" / tool).mkdir(parents=True)
+
+
+_UV_CFG = {"users": [{"username": "andres"}],
+           "uv_tools": {"tools": ["graphifyy"]}}
+
+
+def _uv_plan(root, config, managed=()):
+    from dasik.lib.actions.uv_tools_action import UvToolsAction
+    action = UvToolsAction(config, _ctx(root))
+    return [(c.op.name, c.item) for c in action.plan(managed=list(managed))]
+
+
+def test_a_uv_tool_the_machine_lacks_is_planned(tmp_path):
+    assert _uv_plan(_uv_root(tmp_path), _UV_CFG) == [
+        ("INSTALL", "andres:graphifyy")]
+
+
+def test_a_uv_tool_already_installed_plans_nothing(tmp_path):
+    root = _uv_root(tmp_path)
+    _uv_install(root)
+    assert _uv_plan(root, _UV_CFG) == []
+
+
+def test_a_uv_tool_owned_but_no_longer_declared_is_removed(tmp_path):
+    root = _uv_root(tmp_path)
+    _uv_install(root)
+    assert _uv_plan(root, {"users": [{"username": "andres"}]},
+                    managed=["andres:graphifyy"]) == [
+        ("REMOVE", "andres:graphifyy")]
+
+
+def test_a_uv_tool_the_user_installed_themselves_is_left_alone(tmp_path):
+    root = _uv_root(tmp_path)
+    _uv_install(root, "semgrep")
+    assert _uv_plan(root, {"users": [{"username": "andres"}]}) == []

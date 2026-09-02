@@ -1045,3 +1045,53 @@ def test_sync_then_plan_is_silent_for_ai_skills(tmp_path):
     action = AiSkillsAction({"users": [{"username": "andres"}], **captured},
                             ActionContext(target=Target(root=str(root))))
     assert action.plan(managed=[]) == []
+
+
+# --- uv_tools -------------------------------------------------------------- #
+
+def _uv_machine(tmp_path, tools=("graphifyy",), user="andres"):
+    (tmp_path / "etc").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "etc/passwd").write_text(
+        "root:x:0:0::/root:/bin/bash\n"
+        f"{user}:x:1000:1000::/home/{user}:/bin/bash\n")
+    for tool in tools:
+        (tmp_path / "home" / user / ".local/share/uv/tools" / tool).mkdir(
+            parents=True)
+    return tmp_path
+
+
+def _uv_captured(root, seed=None):
+    from dasik.lib.actions.uv_tools_action import UvToolsAction
+    return UvToolsAction(seed if seed is not None else {},
+                         ActionContext(target=Target(root=str(root)))).import_state()
+
+
+def test_uv_tools_are_captured_as_their_own_block(tmp_path):
+    captured = _uv_captured(_uv_machine(tmp_path, ("graphifyy", "semgrep")))
+    assert captured == {"uv_tools": {"users": ["andres"],
+                                     "tools": ["graphifyy", "semgrep"]}}
+
+
+def test_a_machine_with_no_uv_tools_invents_no_block(tmp_path):
+    assert _uv_captured(_uv_machine(tmp_path, ())) == {"uv_tools": {}}
+
+
+def test_a_declared_uv_tool_the_machine_lacks_is_cleared_not_kept(tmp_path):
+    root = _uv_machine(tmp_path, ())
+    seed = {"users": [{"username": "andres"}],
+            "uv_tools": {"tools": ["graphifyy"]}}
+    assert _uv_captured(root, seed) == {"uv_tools": {}}
+
+
+def test_the_captured_uv_tools_block_validates(tmp_path):
+    JsonModel.model_validate({"hostname": "box",
+                              **_uv_captured(_uv_machine(tmp_path))})
+
+
+def test_sync_then_plan_is_silent_for_uv_tools(tmp_path):
+    from dasik.lib.actions.uv_tools_action import UvToolsAction
+    root = _uv_machine(tmp_path, ("graphifyy", "semgrep"))
+    captured = _uv_captured(root)
+    action = UvToolsAction({"users": [{"username": "andres"}], **captured},
+                           ActionContext(target=Target(root=str(root))))
+    assert action.plan(managed=[]) == []

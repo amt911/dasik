@@ -899,6 +899,46 @@ manifest owns, which is exactly what dasik can honestly claim to have put there.
 
 ---
 
+## `uv_tools` — Python programs installed per user by uv  *(sync ✓)*
+
+For the programs whose own upstream ships them that way rather than as a
+distribution package.
+
+```json
+"uv_tools": {
+  "users": ["andres"],
+  "failure_policy": "warn-and-continue",
+  "tools": ["graphifyy", "semgrep[all]", "git-filter-repo"]
+}
+```
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `users` | list[string] | Whose `$HOME` receives them. Empty = every declared user except root. `uv tool` installs under `~/.local/share/uv`, so these are per-user by construction. |
+| `failure_policy` | `warn-and-continue` \| `abort` | What `apply` does when `uv tool install` fails. The default warns, keeps going, and leaves the tool unowned so the next `plan` asks again. |
+| `tools` | list[string] | Distribution names as `uv tool install` takes them — **the PyPI name, not the command**: graphify comes from `graphifyy`. Extras and a version pin are allowed (`semgrep[all]`, `graphifyy==0.9.53`) and reach uv verbatim. |
+
+Declare `uv` in `packages` (it is in `extra`); `check` warns when it is missing,
+because every install would fail on a machine without it.
+
+**Why a domain of its own rather than an AUR package.** graphify's own
+documentation recommends `uv tool install graphifyy` and never mentions Arch;
+its AUR build pulls 26 tree-sitter grammars that are in no official repository —
+27 builds inside an unattended install, for a tool that updates weekly. This is
+the shape its author ships.
+
+Presence is read from **uv's own directory** (`~/.local/share/uv/tools/<dist>`),
+never from a command on `PATH`: a stock Arch `/etc/profile` puts only
+`/usr/local/bin` on a login shell's path, so "is `graphify` there?" answers no on
+a machine that has it. uv names that directory after the distribution, so a
+declaration with extras or a pin is reduced to that name before comparing — and
+a captured config carries the plain names, which still re-plans to nothing.
+
+This domain runs **before `ai_skills`**, which may need one of these programs:
+graphify's skill is written by the program itself.
+
+---
+
 ## `ai_skills` — AI agent skills and plugins  *(sync ✓)*
 
 Declares which skills each user's AI coding agents carry, and installs them with

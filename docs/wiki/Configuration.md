@@ -228,6 +228,60 @@ Long bodies belong in real files — see [Config splitting](Config-splitting.md)
 declared, the dracut backend owns that file exclusively and `files` yields it,
 so the two never fight over alternating applies.
 
+### `ai_skills` — AI agent skills and plugins
+
+```json
+"ai_skills": { "entries": [
+  { "name": "superpowers", "method": "claude-plugin",
+    "marketplace": { "name": "claude-plugins-official",
+                     "source": "anthropics/claude-plugins-official" } },
+  { "name": "impeccable", "method": "skills",
+    "source": "pbakaus/impeccable", "agents": ["claude-code", "codex"] },
+  { "name": "graphify", "method": "tool", "command": "graphify",
+    "agents": ["claude-code", "codex"] }
+] }
+```
+
+Each entry names the artefact **and the official installer for that pair**,
+because there is no single one: `claude-plugin` and `codex-plugin` drive each
+agent's plugin CLI, `skills` drives the cross-agent `npx skills`, and `tool` is
+for a skill a program ships itself (`graphify install --platform claude`).
+
+| Key | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `users` | list of strings | every declared user except root | these live in `$HOME` |
+| `failure_policy` | `warn-and-continue` \| `abort` | `warn-and-continue` | a skill that will not download must not abort an install |
+| `entries[].method` | one of the four | — | which installer to drive |
+| `entries[].marketplace` | `{name, source?}` | — | plugin methods; `name` is the one the marketplace's manifest declares (`obra/superpowers` registers as `superpowers-dev`) |
+| `entries[].source` | string | — | `skills`: what `npx skills add` installs from |
+| `entries[].command` | string | — | `tool`: the program, run as `<command> install --platform <agent>` |
+| `entries[].agents` | list of strings | — | `skills`/`tool`: `claude-code`, `codex`, `opencode`, `cursor` |
+
+**No `version` field, deliberately.** The block declares presence, like
+`packages` declares names: the official CLI owns the version, so `claude plugin
+update` and `npx skills update` stay yours instead of reading back as drift.
+
+`plan` names one item per (user, agent, artefact); `sync` reads the agents' own
+state files and reports the block back, omitting — out loud — any skill whose
+origin nothing records, since no other machine could reproduce it.
+
+### `uv_tools` — Python programs uv installs per user
+
+```json
+"uv_tools": { "tools": ["graphifyy", "semgrep[all]"] }
+```
+
+For the programs whose upstream ships them that way. graphify is the reason it
+exists: its skill is written by the program, its documentation says `uv tool
+install graphifyy`, and the AUR build pulls 26 tree-sitter grammars that are in
+no official repository. Declare `uv` in `packages`; `check` warns if you do not.
+
+Names are **distributions, not commands** — graphify comes from `graphifyy` —
+and extras or a pin (`graphifyy==0.9.53`) reach uv verbatim. Presence is read
+from `~/.local/share/uv/tools/<dist>`, never from `PATH`: a stock Arch
+`/etc/profile` puts only `/usr/local/bin` on a login shell's path. Runs before
+`ai_skills`, which may need one of these programs.
+
 ### systemd units
 
 | Field | Type | Default |

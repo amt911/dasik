@@ -86,3 +86,35 @@ def test_a_tool_entry_whose_program_is_not_declared_warns():
 def test_a_tool_entry_whose_program_is_a_declared_package_is_quiet():
     assert "ai_skills_without_installer" not in _codes(
         _cfg([_TOOL], ["base", "graphify"]))
+
+
+# --- uv_tools -------------------------------------------------------------- #
+
+def test_uv_tools_without_uv_declared_warns():
+    issues = preflight({"hostname": "x", "uv_tools": {"tools": ["graphifyy"]},
+                        "packages": ["base"]}, efi_boot=True, environment=False)
+    assert any(i.code == "uv_tools_without_uv" and i.level == "warning"
+               for i in issues)
+
+
+def test_uv_tools_with_uv_declared_is_quiet():
+    issues = preflight({"hostname": "x", "uv_tools": {"tools": ["graphifyy"]},
+                        "packages": ["base", "uv"]},
+                       efi_boot=True, environment=False)
+    assert not any(i.code == "uv_tools_without_uv" for i in issues)
+
+
+def test_no_uv_tools_no_finding():
+    issues = preflight({"hostname": "x", "packages": ["base"]},
+                       efi_boot=True, environment=False)
+    assert not any(i.code == "uv_tools_without_uv" for i in issues)
+
+
+def test_a_tool_entry_provided_by_a_uv_tool_is_quiet():
+    # graphify's program comes from `uv tool install graphifyy`, not pacman —
+    # warning that `graphify` is not a package would be wrong there.
+    issues = preflight({"hostname": "x", "packages": ["base", "uv"],
+                        "uv_tools": {"tools": ["graphifyy"]},
+                        "ai_skills": {"entries": [_TOOL]}},
+                       efi_boot=True, environment=False)
+    assert not any(i.code == "ai_skills_without_installer" for i in issues)

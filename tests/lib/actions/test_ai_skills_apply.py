@@ -230,7 +230,8 @@ from tests.lib.actions.test_ai_skills_plan import TOOL_CFG, _install_tool_skill
 def test_a_tool_skill_is_installed_by_its_own_program(tmp_path):
     _passwd(tmp_path)
     _action, execute = _apply(tmp_path, TOOL_CFG)
-    assert _scripts(execute) == ['"$1" install --platform "$2"'] * 2
+    assert _scripts(execute) == [
+        'PATH="$HOME/.local/bin:$PATH"; "$1" install --platform "$2"'] * 2
     # The platform names are the program's, not dasik's agent ids.
     assert [argv[6:] for argv in _argvs(execute)] == [
         ["graphify", "claude"], ["graphify", "codex"]]
@@ -255,3 +256,14 @@ def test_a_tool_removal_never_leaves_the_users_home(tmp_path):
                                  {"andres": "/home/andres"}) == \
         "/home/andres/.codex/skills/graphify"
     assert action._skill_dir_for("andres", "clyde", "x", {}) is None
+
+
+def test_a_tool_command_is_looked_for_where_uv_and_pipx_put_it(tmp_path):
+    """`~/.local/bin` is NOT on the PATH of a login shell on a stock Arch box —
+    /etc/profile adds only /usr/local/bin. uv and pipx both install their
+    commands there, so a tool dasik itself installed through `uv_tools` would be
+    'command not found' the moment ai_skills tried to run it."""
+    _passwd(tmp_path)
+    _action, execute = _apply(tmp_path, TOOL_CFG)
+    for argv in _argvs(execute):
+        assert argv[3].startswith('PATH="$HOME/.local/bin:$PATH"; ')

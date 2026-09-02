@@ -378,9 +378,15 @@ class AiSkillsAction(AbstractAction):
         if spec.get("method") == "tool":
             # The program ships the skill and writes the copy that matches its
             # own version; `--platform` is how it names the agent.
+            #
+            # The PATH prefix is not decoration: a stock Arch /etc/profile puts
+            # only /usr/local/bin on a login shell's path, while `uv tool
+            # install` and `pipx install` put their commands in ~/.local/bin. A
+            # tool dasik had just installed through `uv_tools` would otherwise be
+            # "command not found" here.
             platform = _TOOL_PLATFORMS.get(agent, agent)
-            return [('"$1" install --platform "$2"',
-                     (spec["command"], platform))]
+            return [('PATH="$HOME/.local/bin:$PATH"; "$1" install '
+                     '--platform "$2"', (spec["command"], platform))]
         # A plain skill, through the cross-agent `skills` CLI. Named options
         # only: its remove takes variadic agents AND positional skills, so
         # `--agent a name` would be ambiguous.

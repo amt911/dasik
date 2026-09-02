@@ -20,6 +20,7 @@ contributed by toggles count as declared.
 from __future__ import annotations
 
 import os
+import re
 from difflib import get_close_matches
 from typing import get_args
 from dataclasses import dataclass
@@ -915,6 +916,7 @@ def preflight(config: Dict[str, Any],
     issues += _check_config_saver(config)
     issues += _check_wireguard(config)
     issues += _check_ai_skills(config, packages)
+    issues += _check_uv_tools(config, packages)
     if environment:
         issues += _check_efi(config, efi_boot)
     return issues
@@ -948,10 +950,16 @@ def _check_ai_skills(config: Dict[str, Any], packages: Set[str]) -> List[Issue]:
     for entry in entries:
         method = entry.get("method")
         if method == "tool":
-            # The program IS the installer, and it is named in the entry.
+            # The program IS the installer, and it is named in the entry. It may
+            # come from pacman or from `uv tool` — graphify's own documentation
+            # recommends the latter, and its distribution is `graphifyy` while
+            # the command is `graphify`, so the names are compared loosely. This
+            # is a warning: being too eager here would nag on every plan.
             command = entry.get("command")
-            if command and command not in packages:
-                missing[f"tool ({command})"] = command
+            if command and command not in packages \
+                    and not _uv_tool_provides(config, command):
+                missing[f"tool ({command})"] = f"{command} in `packages` or its "\
+                                               f"distribution in `uv_tools`"
         providers = _AI_SKILL_PROVIDERS.get(method, ())
         if providers and not (packages & set(providers)):
             missing[method] = " or ".join(providers)
@@ -970,3 +978,44 @@ def _check_ai_skills(config: Dict[str, Any], packages: Set[str]) -> List[Issue]:
             f"`packages` (expected {expected}). Every install of that method "
             "will fail on a machine that does not already have it."))
     return issues
+
+
+def _uv_tool_declarations(config: Dict[str, Any]) -> List[str]:
+    block = config.get("uv_tools") or {}
+    tools = block.get("tools") or [] if isinstance(block, dict) else []
+    return [t for t in tools if isinstance(t, str)]
+
+
+def _uv_tool_provides(config: Dict[str, Any], command: str) -> bool:
+    """Whether a declared uv tool plausibly provides *command*.
+
+    A distribution does not have to be named after its command — graphify comes
+    from `graphifyy` — and nothing in a config can say for certain which
+    executables a PyPI package installs. So the names are compared by prefix,
+    which is exactly enough to stop this warning from firing on a correct
+    config, and it is only ever a warning.
+    """
+    for declaration in _uv_tool_declarations(config):
+        distribution = re.split(r"[\[=<>!~]", declaration, maxsplit=1)[0]
+        if distribution == command or distribution.startswith(command) \
+                or command.startswith(distribution):
+            return True
+    return False
+
+
+def _check_uv_tools(config: Dict[str, Any], packages: Set[str]) -> List[Issue]:
+    """`uv tool install` needs uv on the target.
+
+    A warning rather than an error: uv may be installed by a route dasik does
+    not manage. But an apply that runs `uv tool install` on a machine without uv
+    fails once per tool per user, and says so only in red at the end.
+    """
+    if not _uv_tool_declarations(config):
+        return []
+    if "uv" in packages:
+        return []
+    return [Issue(
+        "warning", "uv_tools_without_uv",
+        "uv_tools declares tools but `uv` is not in `packages`. Every "
+        "`uv tool install` will fail on a machine that does not already have "
+        "it (uv is in the `extra` repository).")]

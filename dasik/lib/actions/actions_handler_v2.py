@@ -47,6 +47,7 @@ def setup_actions() -> None:
     from .home_files_action import HomeFilesAction
     from .config_saver_action import ConfigSaverAction
     from .ai_skills_action import AiSkillsAction
+    from .uv_tools_action import UvToolsAction
     from .containers_action import ContainersAction
     from .libvirt_network_action import LibvirtNetworkAction
     from .sudo_action import SudoAction
@@ -242,6 +243,15 @@ def setup_actions() -> None:
     register_action(
         action_class=ConfigSaverAction,
         config_key='__root__',   # reads root-level `config_saver`
+        is_optional=True,
+    )
+    # Python programs their own upstream ships through `uv tool install`,
+    # per user. BEFORE AiSkillsAction: graphify ships its skill from the
+    # program itself, so a fresh install that ran them the other way round
+    # would fail the skill and only converge on the next apply.
+    register_action(
+        action_class=UvToolsAction,
+        config_key='__root__',   # reads root-level `uv_tools` + `users`
         is_optional=True,
     )
     # AI agent skills/plugins. After Users (they live in $HOME, and the

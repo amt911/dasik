@@ -220,3 +220,38 @@ def test_removing_a_codex_plugin_passes_the_full_selector(tmp_path):
             managed=["andres:codex:plugin:superpowers@openai-curated"]))
     assert _scripts(execute) == ['codex plugin remove "$1"']
     assert _argvs(execute)[0][6:] == ["superpowers@openai-curated"]
+
+
+# --- the `tool` method ----------------------------------------------------- #
+
+from tests.lib.actions.test_ai_skills_plan import TOOL_CFG, _install_tool_skill
+
+
+def test_a_tool_skill_is_installed_by_its_own_program(tmp_path):
+    _passwd(tmp_path)
+    _action, execute = _apply(tmp_path, TOOL_CFG)
+    assert _scripts(execute) == ['"$1" install --platform "$2"'] * 2
+    # The platform names are the program's, not dasik's agent ids.
+    assert [argv[6:] for argv in _argvs(execute)] == [
+        ["graphify", "claude"], ["graphify", "codex"]]
+
+
+def test_removing_a_tool_skill_deletes_the_directory_it_owns(tmp_path):
+    _passwd(tmp_path)
+    _install_tool_skill(tmp_path, agents=("codex",))
+    action = _act(tmp_path, {"users": [{"username": "andres"}]})
+    with patch("dasik.lib.actions.ai_skills_action.Command.execute") as execute:
+        execute.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        action.apply(action.plan(managed=["andres:codex:skill:graphify"]))
+    # No uninstall verb exists, and the directory is one dasik's apply created.
+    assert _scripts(execute) == ['rm -rf -- "$1"']
+    assert _argvs(execute)[0][6:] == ["/home/andres/.codex/skills/graphify"]
+
+
+def test_a_tool_removal_never_leaves_the_users_home(tmp_path):
+    from dasik.lib.actions.ai_skills_action import AiSkillsAction
+    action = _act(tmp_path, TOOL_CFG)
+    assert action._skill_dir_for("andres", "codex", "graphify",
+                                 {"andres": "/home/andres"}) == \
+        "/home/andres/.codex/skills/graphify"
+    assert action._skill_dir_for("andres", "clyde", "x", {}) is None

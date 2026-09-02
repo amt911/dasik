@@ -1148,3 +1148,34 @@ def test_an_ai_skill_somebody_else_installed_is_left_alone(tmp_path):
     root = _ai_root(tmp_path)
     _ai_install_skill(root, "graphify")
     assert _ai_plan(root, {"users": [{"username": "andres"}]}) == []
+
+
+def _ai_install_tool_skill(root, name="graphify", user="andres",
+                           agent=".codex/skills"):
+    target = root / "home" / user / agent / name
+    target.mkdir(parents=True)
+    (target / "SKILL.md").write_text(f"---\nname: {name}\n---\n")
+
+
+_AI_TOOL_CFG = {"users": [{"username": "andres"}], "ai_skills": {"entries": [
+    {"name": "graphify", "method": "tool", "command": "graphify",
+     "agents": ["codex"]}]}}
+
+
+def test_a_tool_installed_skill_the_machine_lacks_is_planned(tmp_path):
+    assert _ai_plan(_ai_root(tmp_path), _AI_TOOL_CFG) == [
+        ("CREATE", "andres:codex:skill:graphify")]
+
+
+def test_a_tool_installed_skill_already_there_plans_nothing(tmp_path):
+    root = _ai_root(tmp_path)
+    _ai_install_tool_skill(root)
+    assert _ai_plan(root, _AI_TOOL_CFG) == []
+
+
+def test_a_tool_installed_skill_owned_but_undeclared_is_removed(tmp_path):
+    root = _ai_root(tmp_path)
+    _ai_install_tool_skill(root)
+    assert _ai_plan(root, {"users": [{"username": "andres"}]},
+                    managed=["andres:codex:skill:graphify"]) == [
+        ("DELETE", "andres:codex:skill:graphify")]

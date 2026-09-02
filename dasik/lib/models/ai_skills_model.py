@@ -13,14 +13,20 @@ reason the official CLI is driven at all is so ``claude plugin update`` /
 one of those updates into drift the next ``plan`` reverts. This mirrors
 ``packages``, which names packages and lets pacman own the versions.
 """
+import re
 from typing import List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-# The three installers dasik knows how to drive. `skills` is the cross-agent one
+# The four installers dasik knows how to drive. `skills` is the cross-agent one
 # (npm `skills`, vercel-labs/skills): its agent ids are strings it defines, so a
-# new agent needs no code here.
-Method = Literal["claude-plugin", "codex-plugin", "skills"]
+# new agent needs no code here. `tool` is for a skill shipped BY a program —
+# `graphify install --platform claude` writes the skill file that matches the
+# installed graphify, which a copy pinned to a git branch would not.
+Method = Literal["claude-plugin", "codex-plugin", "skills", "tool"]
+
+# A `tool` command is executed, so it is a bare program name and nothing else.
+_COMMAND_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]*$")
 
 # Which agent a plugin method installs for. `skills` carries its own list.
 METHOD_AGENT = {"claude-plugin": "claude-code", "codex-plugin": "codex"}
@@ -62,8 +68,12 @@ class AiSkillEntry(BaseModel):
                           "`skills` CLI installs from.")
     agents: List[str] = Field(
         default_factory=list,
-        description="`skills` only: agent ids of the `skills` CLI "
+        description="`skills` and `tool` only: agent ids "
                     "(claude-code, codex, opencode, cursor, ...).")
+    command: Optional[str] = Field(
+        None, description="`tool` only: the program that installs the skill. "
+                          "dasik runs `<command> install --platform <agent>`. "
+                          "A bare program name — it is executed.")
     users: List[str] = Field(
         default_factory=list,
         description="Only these users get this entry. Empty = the block's "
@@ -79,6 +89,15 @@ class AiSkillEntry(BaseModel):
             raise ValueError("duplicate agent in `agents`")
         return value
 
+    @field_validator("command")
+    @classmethod
+    def _bare_program_name(cls, value: Optional[str]) -> Optional[str]:
+        if value is not None and not _COMMAND_RE.match(value):
+            raise ValueError(
+                f"`command` must be a bare program name, got {value!r}. dasik "
+                "runs it; a path or an argument here would be executed too.")
+        return value
+
     @field_validator("users")
     @classmethod
     def _no_duplicate_entry_users(cls, value: List[str]) -> List[str]:
@@ -88,7 +107,20 @@ class AiSkillEntry(BaseModel):
 
     @model_validator(mode="after")
     def _coherent(self) -> "AiSkillEntry":
-        if self.method == "skills":
+        if self.method != "tool" and self.command is not None:
+            raise ValueError(f"`command` belongs to method 'tool', not "
+                             f"'{self.method}'")
+        if self.method == "tool":
+            if not self.command:
+                raise ValueError("method 'tool' requires `command` — the "
+                                 "program that installs the skill")
+            if not self.agents:
+                raise ValueError("method 'tool' requires at least one agent "
+                                 "in `agents`")
+            if self.marketplace is not None or self.source is not None:
+                raise ValueError("method 'tool' takes no `marketplace` or "
+                                 "`source`: the program is the source")
+        elif self.method == "skills":
             if not self.source:
                 raise ValueError("method 'skills' requires `source` "
                                  "(owner/repo, git URL or path)")
@@ -115,7 +147,9 @@ class AiSkillEntry(BaseModel):
     @property
     def agent_ids(self) -> List[str]:
         """Agents this entry installs for, whichever method it uses."""
-        return self.agents if self.method == "skills" else [METHOD_AGENT[self.method]]
+        if self.method in METHOD_AGENT:
+            return [METHOD_AGENT[self.method]]
+        return self.agents
 
 
 class AiSkillsModel(BaseModel):

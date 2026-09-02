@@ -947,6 +947,11 @@ def _check_ai_skills(config: Dict[str, Any], packages: Set[str]) -> List[Issue]:
     missing: Dict[str, str] = {}
     for entry in entries:
         method = entry.get("method")
+        if method == "tool":
+            # The program IS the installer, and it is named in the entry.
+            command = entry.get("command")
+            if command and command not in packages:
+                missing[f"tool ({command})"] = command
         providers = _AI_SKILL_PROVIDERS.get(method, ())
         if providers and not (packages & set(providers)):
             missing[method] = " or ".join(providers)

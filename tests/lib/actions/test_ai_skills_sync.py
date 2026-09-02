@@ -179,3 +179,49 @@ def test_the_declared_agent_is_enough_even_before_it_is_installed(tmp_path):
     assert _block(_act(tmp_path, cfg))["entries"] == [{
         "name": "impeccable", "method": "skills",
         "source": "pbakaus/impeccable", "agents": ["codex"]}]
+
+
+# --- the `tool` method ----------------------------------------------------- #
+#
+# A tool-installed skill is in no lock — the program wrote it, not the `skills`
+# CLI — so reality alone cannot say where it came from. What CAN be said
+# honestly: the config declares this program installs it, and the machine
+# confirms the skill is there.
+
+from tests.lib.actions.test_ai_skills_plan import TOOL_CFG, _install_tool_skill
+
+
+def test_a_declared_tool_skill_the_machine_has_is_captured(tmp_path):
+    _passwd(tmp_path)
+    _install_tool_skill(tmp_path, agents=("claude-code", "codex"))
+    assert _block(_act(tmp_path, TOOL_CFG))["entries"] == [{
+        "name": "graphify", "method": "tool", "command": "graphify",
+        "agents": ["claude-code", "codex"]}]
+
+
+def test_a_declared_tool_skill_the_machine_lacks_is_not_invented(tmp_path):
+    _passwd(tmp_path)
+    assert _act(tmp_path, TOOL_CFG).import_state() == {"ai_skills": {}}
+
+
+def test_a_tool_skill_is_captured_only_for_the_agents_that_have_it(tmp_path):
+    _passwd(tmp_path)
+    _install_tool_skill(tmp_path, agents=("codex",))
+    assert _block(_act(tmp_path, TOOL_CFG))["entries"] == [{
+        "name": "graphify", "method": "tool", "command": "graphify",
+        "agents": ["codex"]}]
+
+
+def test_an_undeclared_tool_skill_is_still_not_invented(tmp_path):
+    # Nothing says which program installed it, so nothing can reinstall it.
+    _passwd(tmp_path)
+    _install_tool_skill(tmp_path, agents=("codex",))
+    assert _act(tmp_path, _cfg()).import_state() == {"ai_skills": {}}
+
+
+def test_the_captured_tool_block_replans_to_nothing(tmp_path):
+    _passwd(tmp_path)
+    _install_tool_skill(tmp_path, agents=("claude-code", "codex"))
+    captured = _act(tmp_path, TOOL_CFG).import_state()
+    JsonModel(**{"hostname": "x", **captured})
+    assert _act(tmp_path, {**_cfg(), **captured}).plan(managed=[]) == []

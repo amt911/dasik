@@ -150,3 +150,56 @@ def test_duplicate_users_in_an_entry_are_rejected():
         _model(entries=[{"name": "caveman", "method": "skills",
                          "source": "JuliusBrussee/caveman",
                          "agents": ["codex"], "users": ["a", "a"]}])
+
+
+# --- the `tool` method ----------------------------------------------------- #
+# Some skills are shipped BY a program: `graphify` is an AUR/pip package whose
+# `graphify install --platform <p>` writes the skill file that matches the
+# installed version. Declaring it from a git branch instead would pin a skill to
+# a tool version nobody checked.
+
+def test_a_tool_entry_needs_a_command_and_agents():
+    model = _model(entries=[{"name": "graphify", "method": "tool",
+                             "command": "graphify",
+                             "agents": ["claude-code", "codex"]}])
+    assert model.entries[0].command == "graphify"
+
+
+def test_a_tool_entry_without_a_command_is_rejected():
+    with pytest.raises(ValidationError):
+        _model(entries=[{"name": "graphify", "method": "tool",
+                         "agents": ["codex"]}])
+
+
+def test_a_tool_entry_without_agents_is_rejected():
+    with pytest.raises(ValidationError):
+        _model(entries=[{"name": "graphify", "method": "tool",
+                         "command": "graphify"}])
+
+
+def test_a_tool_command_must_be_a_bare_program_name():
+    # It is executed; anything with a space, a slash or a shell metacharacter is
+    # refused rather than quoted and hoped for.
+    for bad in ("graphify install", "/usr/bin/graphify", "graphify;rm -rf /",
+                "graph$ify", "graphify&&x"):
+        with pytest.raises(ValidationError):
+            _model(entries=[{"name": "graphify", "method": "tool",
+                             "command": bad, "agents": ["codex"]}])
+
+
+def test_a_tool_entry_rejects_a_marketplace_and_a_source():
+    with pytest.raises(ValidationError):
+        _model(entries=[{"name": "graphify", "method": "tool",
+                         "command": "graphify", "agents": ["codex"],
+                         "marketplace": {"name": "x"}}])
+    with pytest.raises(ValidationError):
+        _model(entries=[{"name": "graphify", "method": "tool",
+                         "command": "graphify", "agents": ["codex"],
+                         "source": "owner/repo"}])
+
+
+def test_the_other_methods_reject_a_command():
+    with pytest.raises(ValidationError):
+        _model(entries=[{"name": "impeccable", "method": "skills",
+                         "source": "pbakaus/impeccable", "agents": ["codex"],
+                         "command": "impeccable"}])

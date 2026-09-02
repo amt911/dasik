@@ -190,10 +190,16 @@ def test_installed_agents_on_a_bare_home_is_empty(tmp_path):
 
 def test_the_agent_layout_matches_the_skills_cli(tmp_path):
     # Pinned against vercel-labs/skills: agents whose `skillsDir` is
-    # '.agents/skills' are universal (codex, cursor, opencode); claude-code is
-    # the one with a directory of its own.
-    assert AGENT_SKILL_DIRS == {"claude-code": ".claude/skills"}
+    # '.agents/skills' are universal (codex, cursor, opencode), so `npx skills
+    # add` serves them with the canonical copy alone. They keep a directory of
+    # their own all the same — other installers write there.
     assert UNIVERSAL_AGENTS == {"codex", "cursor", "opencode"}
+    assert "claude-code" not in UNIVERSAL_AGENTS
+
+
+def test_a_universal_agent_without_the_skill_anywhere_does_not_carry_it(tmp_path):
+    canonical, per_agent, _sources = skills_state(str(tmp_path))
+    assert not carries_skill("codex", "impeccable", canonical, per_agent)
 
 
 # --- the 3.10 TOML fallback ------------------------------------------------ #
@@ -244,3 +250,33 @@ def test_the_fallback_parser_reads_the_same_section(tmp_path):
     _plugins, markets = _parse_codex_toml_lines(
         '[marketplaces.caveman]\nsource = "JuliusBrussee/caveman"\n')
     assert markets == {"caveman": "JuliusBrussee/caveman"}
+
+
+# --- an agent's own directory still counts --------------------------------- #
+#
+# `skills` writes only the canonical copy for a universal agent, but it is not
+# the only installer: codex's own skill-installer and `graphify install
+# --platform codex` write ~/.codex/skills/<n>, and codex reads that too. A
+# presence test that looked at the canonical directory ALONE would miss them and
+# plan the same install forever — the mirror image of the first bug.
+
+def test_a_universal_agent_also_reads_its_own_directory(tmp_path):
+    _write_skill(tmp_path / ".codex/skills", "graphify")
+    canonical, per_agent, _sources = skills_state(str(tmp_path))
+    assert canonical == set()
+    assert carries_skill("codex", "graphify", canonical, per_agent)
+    assert not carries_skill("claude-code", "graphify", canonical, per_agent)
+
+
+def test_the_canonical_copy_still_serves_a_universal_agent(tmp_path):
+    _write_skill(tmp_path / ".agents/skills", "impeccable")
+    canonical, per_agent, _sources = skills_state(str(tmp_path))
+    assert carries_skill("codex", "impeccable", canonical, per_agent)
+
+
+def test_every_agent_has_a_directory_of_its_own_to_check(tmp_path):
+    for agent, relative in (("claude-code", ".claude/skills"),
+                            ("codex", ".codex/skills"),
+                            ("cursor", ".cursor/skills"),
+                            ("opencode", ".config/opencode/skills")):
+        assert AGENT_SKILL_DIRS[agent] == relative

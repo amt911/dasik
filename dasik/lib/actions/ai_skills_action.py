@@ -23,8 +23,8 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional, Tuple
 
 from .abstract_action import AbstractAction
-from .ai_skills_state import (carries_skill, claude_state, codex_state,
-                              installed_agents, skills_state)
+from .ai_skills_state import (AGENT_SKILL_DIRS, carries_skill, claude_state,
+                              codex_state, installed_agents, skills_state)
 from ..command_worker.command_worker import Command
 from ..exceptions.exceptions import CommandExecutionError
 from ..state.change import Change, Op
@@ -38,6 +38,11 @@ _METHOD_AGENT = {"claude-plugin": "claude-code", "codex-plugin": "codex"}
 # plugin has to be gone before its marketplace can be removed — so creates run
 # in this order and removals in the reverse one.
 _KIND_ORDER = {"marketplace": 0, "plugin": 1, "skill": 2}
+
+# `graphify install --platform claude` — the program's platform names are its
+# own, so dasik's agent ids are translated. An agent with no translation is
+# passed through: a tool that knows the id already needs no map entry.
+_TOOL_PLATFORMS = {"claude-code": "claude"}
 
 _ROOT = "root"
 
@@ -186,6 +191,7 @@ class AiSkillsAction(AbstractAction):
                             "kind": "skill", "user": user, "agent": agent,
                             "method": method, "name": name,
                             "source": _field(entry, "source"),
+                            "command": _field(entry, "command"),
                         }
         return desired
 
@@ -224,6 +230,17 @@ class AiSkillsAction(AbstractAction):
                     if carries_skill(agent, skill, canonical, per_agent):
                         items.add(self._item(user, agent, "skill", skill))
         return items, markets
+
+    def _declared_tools(self, user: str) -> Dict[str, Tuple[str, List[str]]]:
+        """``{skill: (command, agents)}`` for the `tool` entries *user* gets."""
+        tools: Dict[str, Tuple[str, List[str]]] = {}
+        for item, spec in self._desired().items():
+            if spec["kind"] == "skill" and spec["user"] == user \
+                    and spec.get("method") == "tool":
+                command, agents = tools.setdefault(
+                    spec["name"], (spec["command"], []))
+                agents.append(spec["agent"])
+        return tools
 
     def _agents_of(self, user: str) -> set:
         """Agents some entry names for *user* (skills methods only)."""
@@ -354,14 +371,52 @@ class AiSkillsAction(AbstractAction):
                 # marketplaces carry the same plugin.
                 return [('codex plugin remove "$1"', (plugin_id,))]
             return [('codex plugin add "$1"', (plugin_id,))]
+        if change.op is Op.DELETE:
+            return self._removal_for_skill(spec)
+        if spec.get("method") == "tool":
+            # The program ships the skill and writes the copy that matches its
+            # own version; `--platform` is how it names the agent.
+            platform = _TOOL_PLATFORMS.get(agent, agent)
+            return [('"$1" install --platform "$2"',
+                     (spec["command"], platform))]
         # A plain skill, through the cross-agent `skills` CLI. Named options
         # only: its remove takes variadic agents AND positional skills, so
         # `--agent a name` would be ambiguous.
-        if change.op is Op.DELETE:
-            return [('npx -y skills remove --skill "$1" --agent "$2" '
-                     '--global --yes', (spec["name"], agent))]
         return [('npx -y skills add "$1" --skill "$2" -g -a "$3" -y',
                  (spec["source"], spec["name"], agent))]
+
+    def _removal_for_skill(self, spec: Dict[str, Any]
+                           ) -> List[Tuple[str, Tuple[str, ...]]]:
+        """How to remove a skill — decided by where it actually IS.
+
+        An item the config no longer declares cannot say which installer put it
+        there, and the two undo each other's work badly: `npx skills remove`
+        does nothing to a directory the `skills` CLI never recorded, and
+        deleting the canonical copy behind its back would leave its lock
+        describing a skill that is gone.
+        """
+        user, agent, name = spec["user"], spec["agent"], spec["name"]
+        home = self._abs(self._home_of(user, self._passwd()))
+        canonical, _per_agent, sources = skills_state(home)
+        if name in canonical and name in sources:
+            return [('npx -y skills remove --skill "$1" --agent "$2" '
+                     '--global --yes', (name, agent))]
+        directory = self._skill_dir_for(user, agent, name, self._passwd())
+        if directory is None:
+            return []
+        return [('rm -rf -- "$1"', (directory,))]
+
+    def _skill_dir_for(self, user: str, agent: str, name: str,
+                       homes: Dict[str, str]) -> Optional[str]:
+        """The agent's own skill directory for *name*, under the user's home.
+
+        ``None`` for an agent dasik has no directory for — better to remove
+        nothing than to guess a path and delete it.
+        """
+        relative = AGENT_SKILL_DIRS.get(agent)
+        if relative is None:
+            return None
+        return f"{self._home_of(user, homes).rstrip('/')}/{relative}/{name}"
 
     def apply(self, changes) -> None:
         if self._target() is None:
@@ -462,8 +517,22 @@ class AiSkillsAction(AbstractAction):
             canonical, per_agent, skill_sources = skills_state(home)
             present = installed_agents(home)
             declared = self._agents_of(user)
+            tools = self._declared_tools(user)
             for skill in sorted(canonical | {n for names in per_agent.values()
                                              for n in names}):
+                if skill in tools:
+                    # No lock records a skill its own program installed, so
+                    # reality cannot say where it came from. The config can, and
+                    # the machine confirms which agents actually have it.
+                    command, wanted = tools[skill]
+                    agents = {a for a in wanted
+                              if carries_skill(a, skill, canonical, per_agent)}
+                    if agents:
+                        tool_key: Tuple[Any, ...] = ("tool", skill,
+                                                     tuple(sorted(agents)),
+                                                     command)
+                        found.setdefault(tool_key, set()).add(user)
+                    continue
                 source = skill_sources.get(skill)
                 if not source:
                     # Nothing records where it came from, so no other machine
@@ -493,7 +562,10 @@ class AiSkillsAction(AbstractAction):
         for key in sorted(found, key=lambda k: (str(k[1]), str(k[0]))):
             owners = sorted(found[key])
             entry: Dict[str, Any]
-            if key[0] == "skills":
+            if key[0] == "tool":
+                entry = {"name": key[1], "method": "tool", "command": key[3],
+                         "agents": list(key[2])}
+            elif key[0] == "skills":
                 entry = {"name": key[1], "method": "skills", "source": key[3],
                          "agents": list(key[2])}
             else:

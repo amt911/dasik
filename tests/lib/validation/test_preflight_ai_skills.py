@@ -72,3 +72,17 @@ def test_nothing_here_is_ever_an_error():
     assert [i.level for i in issues if i.code.startswith("ai_skills")] == [
         "warning"] * len([i for i in issues if i.code.startswith("ai_skills")])
     assert [i for i in issues if i.code.startswith("ai_skills")]
+
+
+_TOOL = {"name": "graphify", "method": "tool", "command": "graphify",
+         "agents": ["claude-code", "codex"]}
+
+
+def test_a_tool_entry_whose_program_is_not_declared_warns():
+    assert "ai_skills_without_installer" in _codes(_cfg([_TOOL], ["base"]),
+                                                   "warning")
+
+
+def test_a_tool_entry_whose_program_is_a_declared_package_is_quiet():
+    assert "ai_skills_without_installer" not in _codes(
+        _cfg([_TOOL], ["base", "graphify"]))

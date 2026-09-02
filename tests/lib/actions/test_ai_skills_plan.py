@@ -319,3 +319,44 @@ def test_a_different_host_is_a_different_repository(tmp_path):
     _codex_marketplace(tmp_path, "https://gitlab.com/obra/superpowers.git")
     changes = _act(tmp_path, _codex_cfg("obra/superpowers")).plan(managed=[])
     assert [c.op.name for c in changes] == ["MODIFY"]
+
+
+# --- the `tool` method ----------------------------------------------------- #
+#
+# graphify is an AUR/pip package whose own `graphify install --platform <p>`
+# writes the skill matching the installed version. It lands in the AGENT's own
+# directory, not the canonical one.
+
+TOOL_CFG = {"users": [{"username": "andres"}], "ai_skills": {"entries": [
+    {"name": "graphify", "method": "tool", "command": "graphify",
+     "agents": ["claude-code", "codex"]}]}}
+
+
+def _install_tool_skill(root, name="graphify", agents=("claude-code",),
+                        user="andres"):
+    dirs = {"claude-code": ".claude/skills", "codex": ".codex/skills"}
+    for agent in agents:
+        target = _home(root, user) / dirs[agent] / name
+        target.mkdir(parents=True, exist_ok=True)
+        (target / "SKILL.md").write_text(f"---\nname: {name}\n---\n")
+
+
+def test_a_missing_tool_skill_is_planned_per_agent(tmp_path):
+    _passwd(tmp_path)
+    assert _items(_act(tmp_path, TOOL_CFG)) == [
+        ("CREATE", "andres:claude-code:skill:graphify"),
+        ("CREATE", "andres:codex:skill:graphify"),
+    ]
+
+
+def test_a_tool_skill_the_program_installed_plans_nothing(tmp_path):
+    _passwd(tmp_path)
+    _install_tool_skill(tmp_path, agents=("claude-code", "codex"))
+    assert _act(tmp_path, TOOL_CFG).plan(managed=[]) == []
+
+
+def test_one_agent_short_plans_only_that_agent(tmp_path):
+    _passwd(tmp_path)
+    _install_tool_skill(tmp_path, agents=("claude-code",))
+    assert _items(_act(tmp_path, TOOL_CFG)) == [
+        ("CREATE", "andres:codex:skill:graphify")]

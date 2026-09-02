@@ -41,9 +41,16 @@ LOCK_REL = ".agents/.skill-lock.json"
 
 UNIVERSAL_AGENTS = frozenset({"codex", "cursor", "opencode"})
 
-# Agent id -> home-relative skills directory of its own (non-universal only).
+# Agent id -> the skills directory that agent reads on its own. A universal
+# agent reads the canonical directory AS WELL, which is where `npx skills add`
+# puts things — but not the only place: codex's own skill-installer and
+# `graphify install --platform codex` write ~/.codex/skills/<n>, and codex reads
+# that too. Checking only one of the two misses half the installers.
 AGENT_SKILL_DIRS: Dict[str, str] = {
     "claude-code": ".claude/skills",
+    "codex": ".codex/skills",
+    "cursor": ".cursor/skills",
+    "opencode": ".config/opencode/skills",
 }
 
 # How to tell that an agent exists on this machine at all, the same way the
@@ -251,6 +258,10 @@ def carries_skill(agent: str, name: str, canonical: Set[str],
     the installation. An agent dasik does not know is assumed universal, which
     is the CLI's default shape; `check` warns about it separately.
     """
-    if agent in AGENT_SKILL_DIRS:
-        return name in per_agent.get(agent, set())
-    return name in canonical
+    if name in per_agent.get(agent, set()):
+        return True
+    # A universal agent reads the canonical directory too. An agent dasik does
+    # not know is assumed universal, which is the CLI's default shape; `check`
+    # warns about it separately.
+    universal = agent in UNIVERSAL_AGENTS or agent not in AGENT_SKILL_DIRS
+    return universal and name in canonical

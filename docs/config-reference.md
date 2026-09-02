@@ -928,11 +928,12 @@ update` / `npx skills update` and dasik never fights it.
 | `users` | list[string] | Whose `$HOME` receives them. Empty = every declared user except root. These artefacts live in a home directory, so "system-wide" means "every human on the machine". |
 | `failure_policy` | `warn-and-continue` \| `abort` | What `apply` does when an installer fails (no network, no `npx`, marketplace down). Default warns, keeps going, and leaves the item unowned so the next `plan` asks again. |
 | `entries[].name` | string | The artefact as its installer knows it. |
-| `entries[].method` | `claude-plugin` \| `codex-plugin` \| `skills` | Which official installer to drive. |
+| `entries[].method` | `claude-plugin` \| `codex-plugin` \| `skills` \| `tool` | Which official installer to drive. |
 | `entries[].marketplace` | `{name, source?}` | Plugin methods only. `source` (owner/repo, git URL) is what `... plugin marketplace add` registers. **`name` is the name the marketplace's own manifest declares**, which is often not the repository name — `obra/superpowers` registers as `superpowers-dev`; the CLI prints it when adding. Omit `source` only for a marketplace the agent already has: Codex's `openai-curated` is one, but it exists only once codex has populated its own cache, so on a freshly installed codex declare a git source instead. |
 | `entries[].plugin` | string | Plugin name inside the marketplace, when it differs from `name`. |
 | `entries[].source` | string | `skills` only: what `npx skills add` installs from. |
-| `entries[].agents` | list[string] | `skills` only: agent ids of the `skills` CLI — `claude-code`, `codex`, `opencode`, `cursor`. |
+| `entries[].agents` | list[string] | `skills` and `tool`: agent ids — `claude-code`, `codex`, `opencode`, `cursor`. |
+| `entries[].command` | string | `tool` only: the program that ships the skill. dasik runs `<command> install --platform <agent>`. A bare program name — it is executed. |
 | `entries[].users` | list[string] | Narrows this entry to some of the block's users. Only needed when people on one machine carry different sets. |
 
 **There is no `version` field, on purpose.** The block declares *presence*, like
@@ -964,13 +965,34 @@ add` on an existing name would keep pointing at the other repository.
 so it needs the agent's binary — and `nodejs`/`npm` for `npx skills` — installed
 on the target. `check` warns when they are not among the declared packages.
 
+The `tool` method is for a skill that belongs to a program: `graphify` is a
+package (AUR `graphify`, pip `graphifyy`) whose own `graphify install --platform
+claude` writes the skill file **matching the installed version**. Declaring that
+one from a git branch instead would pin a skill to a tool version nobody
+checked, so dasik drives the program:
+
+```json
+{"name": "graphify", "method": "tool", "command": "graphify",
+ "agents": ["claude-code", "codex"]}
+```
+
+Declare the package too (`packages: ["graphify"]`) — `check` warns when the
+program the entry names is not among them. Removing a `tool` skill deletes the
+directory the program wrote, since these tools have no uninstall verb; a skill
+the `skills` CLI recorded is always removed with `npx skills remove` instead.
+`sync` captures a `tool` entry only when the config declares it and the machine
+confirms it: no lock records a skill its own program installed, so nothing else
+could say where it came from.
+
 Where a skill lands is the `skills` CLI's business, and it is not uniform:
 **codex, cursor and opencode read `~/.agents/skills` directly** (the CLI calls
 them universal agents), so installing for them writes that one directory and
 nothing else; **claude-code** gets `~/.claude/skills/<name>` of its own, a link
-to the same copy. dasik reads presence the same way — looking for
-`~/.codex/skills/<name>` is how an earlier version of this domain planned the
-same install forever while every `apply` reported success.
+to the same copy. Other installers — codex's own skill-installer, `graphify
+install --platform codex` — write `~/.codex/skills/<name>`, which codex reads
+too, so dasik counts a skill as present for an agent when it is in **either**
+place. Looking at only one of the two is how an earlier version of this domain
+planned the same install forever while every `apply` reported success.
 
 `sync` reads the agents' own state (`installed_plugins.json`,
 `~/.codex/config.toml`, the canonical and per-agent skill directories and

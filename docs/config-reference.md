@@ -949,6 +949,11 @@ registration as an item of its own:
 + [ai_skills] create andres:codex:skill:impeccable
 ```
 
+Marketplace sources are compared as repositories, not as strings:
+`obra/superpowers`, `https://github.com/obra/superpowers` and
+`…/superpowers.git` are the same source, because each CLI records it in its own
+spelling and comparing the text made the marketplace drift on every plan.
+
 Ordering is load-bearing in both directions: a marketplace is registered before
 the plugin that needs it and removed after it. A marketplace already registered
 from a **different** source is a MODIFY (re-registered), because `marketplace

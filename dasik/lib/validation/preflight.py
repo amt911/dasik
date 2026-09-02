@@ -914,6 +914,52 @@ def preflight(config: Dict[str, Any],
     issues += _check_unlock_keyfile(config)
     issues += _check_config_saver(config)
     issues += _check_wireguard(config)
+    issues += _check_ai_skills(config, packages)
     if environment:
         issues += _check_efi(config, efi_boot)
+    return issues
+
+
+# The package that provides each installer, as declared in `packages`. A user
+# may of course install them another way — hence warnings, never errors.
+_AI_SKILL_PROVIDERS = {
+    "claude-plugin": ("claude-code", "claude"),
+    "codex-plugin": ("codex", "openai-codex"),
+    "skills": ("nodejs", "npm"),
+}
+
+
+def _check_ai_skills(config: Dict[str, Any], packages: Set[str]) -> List[Issue]:
+    """The official installer has to be ON the target for apply to reach it.
+
+    `apply` runs `claude plugin install` / `codex plugin add` / `npx skills add`
+    inside the target as the user. Without the binary every one of them fails,
+    and under the default warn-and-continue policy that is a wall of red at the
+    end of an otherwise good install — worth saying before the first mutation.
+    """
+    from ..actions.ai_skills_state import AGENT_SKILL_DIRS
+
+    block = config.get("ai_skills") or {}
+    entries = block.get("entries") or [] if isinstance(block, dict) else []
+    issues: List[Issue] = []
+    missing: Dict[str, str] = {}
+    for entry in entries:
+        method = entry.get("method")
+        providers = _AI_SKILL_PROVIDERS.get(method, ())
+        if providers and not (packages & set(providers)):
+            missing[method] = " or ".join(providers)
+        for agent in entry.get("agents") or []:
+            if agent not in AGENT_SKILL_DIRS:
+                issues.append(Issue(
+                    "warning", "ai_skills_unknown_agent",
+                    f"ai_skills entry {entry.get('name')!r} targets agent "
+                    f"{agent!r}, which is not one dasik knows how to read back "
+                    f"({', '.join(sorted(AGENT_SKILL_DIRS))}). The install may "
+                    "work, but plan and sync will never see it."))
+    for method, providers in sorted(missing.items()):
+        issues.append(Issue(
+            "warning", "ai_skills_without_installer",
+            f"ai_skills uses method {method!r}, whose installer is not in "
+            f"`packages` (expected {providers}). Every install of that method "
+            "will fail on a machine that does not already have it."))
     return issues

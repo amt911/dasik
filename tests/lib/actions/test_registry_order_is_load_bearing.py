@@ -79,3 +79,17 @@ def test_registering_a_new_action_does_not_break_the_pins():
 
     assert len(at) == len(set(at)), "two actions registered under one name"
     assert at["PacmanHooksAction"] < at["BaseInstallAction"]
+
+
+def test_ai_skills_runs_after_the_user_and_the_binaries_exist():
+    """The installers run AS the user, inside the target, from $HOME.
+
+    Users has to have created the account (and its home), and Packages has to
+    have installed `claude`/`codex`/`nodejs` — every command this domain runs is
+    one of those binaries.
+    """
+    at = _positions()
+
+    assert at["UsersAction"] < at["AiSkillsAction"]
+    assert at["PackagesAction"] < at["AiSkillsAction"]
+    assert at["AiSkillsAction"] < at["BootloaderAction"]

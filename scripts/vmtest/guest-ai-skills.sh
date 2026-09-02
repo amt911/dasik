@@ -122,9 +122,15 @@ echo "AISKILLS-H2: the tool method — a skill its own program ships"
 # graphify is a package whose `graphify install --platform <p>` writes the skill
 # matching the installed version. pip here for the same reason npm was used
 # above: the AUR package pulls ~40 tree-sitter grammars.
-pip install --break-system-packages graphifyy > /tmp/pip.log 2>&1
+# A venv, not --break-system-packages: it is what the user's own machine does
+# (uv tool install graphifyy), and it does not depend on how Arch feels about
+# pip writing into /usr today.
+python -m venv /opt/graphify > /tmp/pip.log 2>&1 \
+  && /opt/graphify/bin/pip install graphifyy >> /tmp/pip.log 2>&1 \
+  && ln -sf /opt/graphify/bin/graphify /usr/local/bin/graphify
 echo "AISKILLS-PIP-RC=$?"; tail -2 /tmp/pip.log
 command -v graphify; echo "AISKILLS-GRAPHIFY-RC=$?"
+graphify 2>&1 | head -3
 python - <<'PY'
 import json
 cfg = json.load(open("/tmp/with-plugins.json"))

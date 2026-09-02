@@ -899,6 +899,76 @@ manifest owns, which is exactly what dasik can honestly claim to have put there.
 
 ---
 
+## `ai_skills` — AI agent skills and plugins  *(sync ✓)*
+
+Declares which skills each user's AI coding agents carry, and installs them with
+**each agent's own official installer** — so updating stays `claude plugin
+update` / `npx skills update` and dasik never fights it.
+
+```json
+"ai_skills": {
+  "users": ["andres"],
+  "failure_policy": "warn-and-continue",
+  "entries": [
+    {"name": "superpowers", "method": "claude-plugin",
+     "marketplace": {"name": "claude-plugins-official",
+                     "source": "anthropics/claude-plugins-official"}},
+    {"name": "superpowers", "method": "codex-plugin",
+     "marketplace": {"name": "openai-curated"}},
+    {"name": "caveman", "method": "claude-plugin",
+     "marketplace": {"name": "caveman", "source": "JuliusBrussee/caveman"}},
+    {"name": "impeccable", "method": "skills",
+     "source": "pbakaus/impeccable", "agents": ["claude-code", "codex"]}
+  ]
+}
+```
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `users` | list[string] | Whose `$HOME` receives them. Empty = every declared user except root. These artefacts live in a home directory, so "system-wide" means "every human on the machine". |
+| `failure_policy` | `warn-and-continue` \| `abort` | What `apply` does when an installer fails (no network, no `npx`, marketplace down). Default warns, keeps going, and leaves the item unowned so the next `plan` asks again. |
+| `entries[].name` | string | The artefact as its installer knows it. |
+| `entries[].method` | `claude-plugin` \| `codex-plugin` \| `skills` | Which official installer to drive. |
+| `entries[].marketplace` | `{name, source?}` | Plugin methods only. `source` (owner/repo, git URL) is what `... plugin marketplace add` registers; omit it for a marketplace the agent ships with, like Codex's `openai-curated`. |
+| `entries[].plugin` | string | Plugin name inside the marketplace, when it differs from `name`. |
+| `entries[].source` | string | `skills` only: what `npx skills add` installs from. |
+| `entries[].agents` | list[string] | `skills` only: agent ids of the `skills` CLI — `claude-code`, `codex`, `opencode`, `cursor`. |
+| `entries[].users` | list[string] | Narrows this entry to some of the block's users. Only needed when people on one machine carry different sets. |
+
+**There is no `version` field, on purpose.** The block declares *presence*, like
+`packages` declares package names: the official CLI owns the version, and
+pinning one here would make every `claude plugin update` look like drift the
+next `plan` reverts.
+
+What `plan` shows is one item per (user, agent, artefact), plus the marketplace
+registration as an item of its own:
+
+```
++ [ai_skills] create andres:claude-code:marketplace:caveman
++ [ai_skills] create andres:claude-code:plugin:caveman@caveman
++ [ai_skills] create andres:codex:skill:impeccable
+```
+
+Ordering is load-bearing in both directions: a marketplace is registered before
+the plugin that needs it and removed after it. A marketplace already registered
+from a **different** source is a MODIFY (re-registered), because `marketplace
+add` on an existing name would keep pointing at the other repository.
+
+`apply` runs every command as the user, inside the target
+(`su - <user> -c 'claude plugin install "$1" -y --scope user' -- sh <plugin>@<mkt>`),
+so it needs the agent's binary — and `nodejs`/`npm` for `npx skills` — installed
+on the target. `check` warns when they are not among the declared packages.
+
+`sync` reads the agents' own state (`installed_plugins.json`,
+`~/.codex/config.toml`, the per-agent skill directories and
+`~/.agents/.skill-lock.json`) and reports the block back. A skill with no
+recorded source is named and omitted: capturing it would produce a config no
+other machine could reproduce. Skills the agent ships with (Codex's
+`~/.codex/skills/.system`) are never captured, and a skill somebody installed by
+hand is left alone unless the manifest owns it.
+
+---
+
 ## `zram`  *(sync ✓)*
 
 Mirrors `/etc/systemd/zram-generator.conf` as `{device: {option: value}}`:

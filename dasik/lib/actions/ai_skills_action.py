@@ -109,17 +109,25 @@ class AiSkillsAction(AbstractAction):
 
     def _passwd(self) -> Dict[str, str]:
         """``{username: home}`` from the TARGET's /etc/passwd."""
-        homes: Dict[str, str] = {}
+        return {user: home for user, (home, _uid) in self._passwd_entries().items()}
+
+    def _passwd_entries(self) -> Dict[str, Tuple[str, int]]:
+        """``{username: (home, uid)}`` from the TARGET's /etc/passwd."""
+        entries: Dict[str, Tuple[str, int]] = {}
         try:
             with open(self._abs("/etc/passwd"), "r", encoding="utf-8") as handle:
                 lines = handle.readlines()
         except OSError:
-            return homes
+            return entries
         for line in lines:
             parts = line.rstrip("\n").split(":")
-            if len(parts) >= 6:
-                homes[parts[0]] = parts[5]
-        return homes
+            if len(parts) < 6:
+                continue
+            try:
+                entries[parts[0]] = (parts[5], int(parts[2]))
+            except ValueError:
+                continue
+        return entries
 
     def _home_of(self, user: str, homes: Dict[str, str]) -> str:
         """Where the machine says *user* lives, or where useradd would put them.
@@ -138,8 +146,16 @@ class AiSkillsAction(AbstractAction):
     def _desired(self) -> Dict[str, Dict[str, Any]]:
         """item -> spec, in install order (marketplace, plugin, skill)."""
         desired: Dict[str, Dict[str, Any]] = {}
-        for user in self._users():
+        managed_users = self._users()
+        for user in managed_users:
             for entry in self._entries:
+                # An entry may narrow the block's users, never widen them: the
+                # block's list is the boundary of the domain, and an entry that
+                # reached outside it would install for somebody whose artefacts
+                # the domain would then never remove.
+                only = _field(entry, "users", []) or []
+                if only and user not in only:
+                    continue
                 method = _field(entry, "method")
                 name = _field(entry, "name")
                 if method in _METHOD_AGENT:
@@ -348,6 +364,95 @@ class AiSkillsAction(AbstractAction):
         if item not in self.failed_items:
             self.failed_items.append(item)
         return False
+
+    # -- sync ---------------------------------------------------------------- #
+
+    def _sync_users(self) -> List[str]:
+        """Whose homes `sync` reads.
+
+        The declared users when there are any, and otherwise the machine's own
+        humans — a bootstrap sync starts from ``{}``, where nothing is declared
+        yet, and a domain that captured nothing there would be invisible until
+        somebody wrote the block by hand. System accounts are never read: their
+        homes are service state, not somebody's tools.
+        """
+        declared = self._users()
+        if declared:
+            return declared
+        return sorted(user for user, (_home, uid) in self._passwd_entries().items()
+                      if 1000 <= uid < 65534)
+
+    def import_state(self, managed=None) -> Dict[str, Any]:
+        """Report the artefacts each user's agents actually carry."""
+        if self._target() is None:
+            return {_DOMAIN: {}}
+
+        homes = self._passwd()
+        users = self._sync_users()
+        # key -> {users}, where the key is everything that makes two artefacts
+        # the same declaration.
+        found: Dict[Tuple[Any, ...], set] = {}
+        skipped: List[str] = []
+
+        for user in users:
+            home = self._abs(self._home_of(user, homes))
+            for method, reader in (("claude-plugin", claude_state),
+                                   ("codex-plugin", codex_state)):
+                plugins, sources = reader(home)
+                for plugin_id in sorted(plugins):
+                    plugin, _, market = plugin_id.partition("@")
+                    if not market:
+                        # No marketplace to install it from again; it cannot be
+                        # expressed as a declaration.
+                        skipped.append(f"{user}: {plugin_id}")
+                        continue
+                    plugin_key: Tuple[Any, ...] = (method, plugin, market,
+                                                   sources.get(market))
+                    found.setdefault(plugin_key, set()).add(user)
+
+            agents_by_skill, skill_sources = skills_state(home)
+            for skill, agents in sorted(agents_by_skill.items()):
+                source = skill_sources.get(skill)
+                if not source:
+                    # Nothing records where it came from, so no other machine
+                    # could reproduce it. Reported, never invented.
+                    skipped.append(f"{user}: {skill}")
+                    continue
+                skill_key: Tuple[Any, ...] = ("skills", skill,
+                                              tuple(sorted(agents)), source)
+                found.setdefault(skill_key, set()).add(user)
+
+        if skipped:
+            print("  ai_skills: not captured (no known source): "
+                  + ", ".join(sorted(skipped)))
+        if not found:
+            return {_DOMAIN: {}}
+
+        present = sorted({u for owners in found.values() for u in owners})
+        entries: List[Dict[str, Any]] = []
+        for key in sorted(found, key=lambda k: (str(k[1]), str(k[0]))):
+            owners = sorted(found[key])
+            entry: Dict[str, Any]
+            if key[0] == "skills":
+                entry = {"name": key[1], "method": "skills", "source": key[3],
+                         "agents": list(key[2])}
+            else:
+                marketplace: Dict[str, Any] = {"name": key[2]}
+                if key[3]:
+                    marketplace["source"] = key[3]
+                entry = {"name": key[1], "method": key[0],
+                         "marketplace": marketplace}
+            if owners != present:
+                entry["users"] = owners
+            entries.append(entry)
+
+        block: Dict[str, Any] = {"users": present, "entries": entries}
+        declared_policy = _field(self._block, "failure_policy")
+        if declared_policy and declared_policy != "warn-and-continue":
+            # Not something a machine can report: policy is carried over from
+            # the config that was applied, or it would be lost on every sync.
+            block["failure_policy"] = declared_policy
+        return {_DOMAIN: block}
 
     def managed_keys(self) -> dict:
         """Items this action owns after apply.

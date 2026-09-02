@@ -126,3 +126,27 @@ def test_failure_policy_abort_is_accepted():
 def test_an_unknown_failure_policy_is_rejected():
     with pytest.raises(ValidationError):
         _model(failure_policy="retry-forever")
+
+
+# --- per-entry users ------------------------------------------------------- #
+# Without this the block could only say "everyone gets everything", and a sync
+# of a machine where one user has caveman and another does not would capture a
+# config that re-plans changes — breaking sync -> plan silence.
+
+def test_an_entry_may_name_its_own_users():
+    model = _model(users=["andres", "otro"],
+                   entries=[{"name": "caveman", "method": "skills",
+                             "source": "JuliusBrussee/caveman",
+                             "agents": ["codex"], "users": ["andres"]}])
+    assert model.entries[0].users == ["andres"]
+
+
+def test_an_entry_defaults_to_the_blocks_users():
+    assert _model().entries[0].users == []
+
+
+def test_duplicate_users_in_an_entry_are_rejected():
+    with pytest.raises(ValidationError):
+        _model(entries=[{"name": "caveman", "method": "skills",
+                         "source": "JuliusBrussee/caveman",
+                         "agents": ["codex"], "users": ["a", "a"]}])

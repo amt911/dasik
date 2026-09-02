@@ -230,3 +230,26 @@ def test_the_action_is_optional_and_named(tmp_path):
     assert action.is_optional is True
     assert action.name == "AI Skills"
     assert AiSkillsAction.empty_config() == {}
+
+
+def test_an_entry_may_be_scoped_to_one_user(tmp_path):
+    _passwd(tmp_path, users=("andres", "otro"))
+    cfg = {"users": [{"username": "andres"}, {"username": "otro"}],
+           "ai_skills": {"entries": [
+               {"name": "impeccable", "method": "skills",
+                "source": "pbakaus/impeccable", "agents": ["codex"],
+                "users": ["otro"]}]}}
+    assert _items(_act(tmp_path, cfg)) == [
+        ("CREATE", "otro:codex:skill:impeccable")]
+
+
+def test_an_entry_user_the_block_does_not_list_is_ignored(tmp_path):
+    # The block's `users` is the boundary of the domain: an entry cannot widen
+    # it, or dropping a user from the block would stop removing their artefacts.
+    _passwd(tmp_path, users=("andres", "otro"))
+    cfg = {"users": [{"username": "andres"}, {"username": "otro"}],
+           "ai_skills": {"users": ["andres"], "entries": [
+               {"name": "impeccable", "method": "skills",
+                "source": "pbakaus/impeccable", "agents": ["codex"],
+                "users": ["otro"]}]}}
+    assert _act(tmp_path, cfg).plan(managed=[]) == []

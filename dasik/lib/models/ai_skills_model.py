@@ -64,12 +64,26 @@ class AiSkillEntry(BaseModel):
         default_factory=list,
         description="`skills` only: agent ids of the `skills` CLI "
                     "(claude-code, codex, opencode, cursor, ...).")
+    users: List[str] = Field(
+        default_factory=list,
+        description="Only these users get this entry. Empty = the block's "
+                    "`users`. It exists so a machine where one person has a "
+                    "skill and another does not can be captured exactly: "
+                    "without it `sync` would report the union and the next "
+                    "`plan` would propose installing it for everybody.")
 
     @field_validator("agents")
     @classmethod
     def _no_duplicate_agents(cls, value: List[str]) -> List[str]:
         if len(set(value)) != len(value):
             raise ValueError("duplicate agent in `agents`")
+        return value
+
+    @field_validator("users")
+    @classmethod
+    def _no_duplicate_entry_users(cls, value: List[str]) -> List[str]:
+        if len(set(value)) != len(value):
+            raise ValueError("duplicate user in `users`")
         return value
 
     @model_validator(mode="after")

@@ -117,9 +117,46 @@ su - $U -c 'codex plugin list' 2>&1 | head -10
 $D plan /tmp/with-plugins.json --target / $L > /tmp/plan6.txt 2>&1
 grep '\[ai_skills\]' /tmp/plan6.txt      # names itself when it is not silent
 absent /tmp/plan6.txt '\[ai_skills\]'; echo "AISKILLS-PLUGIN-REPLAN-QUIET-RC=$?"
-# The last generation that CAN converge: step I deliberately declares a skill
-# that does not exist, so rolling back to anything after this point would
-# (correctly) keep asking for it forever.
+
+echo "AISKILLS-H2: the tool method — a skill its own program ships"
+# graphify is a package whose `graphify install --platform <p>` writes the skill
+# matching the installed version. pip here for the same reason npm was used
+# above: the AUR package pulls ~40 tree-sitter grammars.
+pip install --break-system-packages graphifyy > /tmp/pip.log 2>&1
+echo "AISKILLS-PIP-RC=$?"; tail -2 /tmp/pip.log
+command -v graphify; echo "AISKILLS-GRAPHIFY-RC=$?"
+python - <<'PY'
+import json
+cfg = json.load(open("/tmp/with-plugins.json"))
+cfg["ai_skills"]["entries"].append(
+    {"name": "graphify", "method": "tool", "command": "graphify",
+     "agents": ["claude-code", "codex"]})
+json.dump(cfg, open("/tmp/with-tool.json", "w"), indent=2)
+PY
+$D plan /tmp/with-tool.json --target / $L > /tmp/plan10.txt 2>&1
+grep '\[ai_skills\]' /tmp/plan10.txt
+present /tmp/plan10.txt 'skill:graphify'; echo "AISKILLS-TOOL-PLAN-RC=$?"
+$D apply /tmp/with-tool.json --target / --yes $L; echo "AISKILLS-TOOL-APPLY-RC=$?"
+test -f $H/.claude/skills/graphify/SKILL.md; echo "AISKILLS-TOOL-CLAUDE-RC=$?"
+test -f $H/.codex/skills/graphify/SKILL.md; echo "AISKILLS-TOOL-CODEX-RC=$?"
+$D plan /tmp/with-tool.json --target / $L > /tmp/plan11.txt 2>&1
+grep '\[ai_skills\]' /tmp/plan11.txt
+absent /tmp/plan11.txt '\[ai_skills\]'; echo "AISKILLS-TOOL-REPLAN-QUIET-RC=$?"
+
+echo "AISKILLS-H3: sync captures the tool entry, and its own plan is silent"
+cp /tmp/with-tool.json /tmp/captured-tool.json
+$D sync /tmp/captured-tool.json --target / $L; echo "AISKILLS-TOOL-SYNC-RC=$?"
+python - <<'PY'
+import json
+block = json.load(open("/tmp/captured-tool.json"))["ai_skills"]
+print(json.dumps(block, indent=2))
+tool = [e for e in block["entries"] if e["method"] == "tool"]
+print("AISKILLS-TOOL-CAPTURED-RC=%d" % (0 if tool and tool[0]["command"] == "graphify" else 1))
+PY
+$D check /tmp/captured-tool.json $L; echo "AISKILLS-TOOL-CHECKSYNC-RC=$?"
+$D plan /tmp/captured-tool.json --target / $L > /tmp/plan12.txt 2>&1
+grep '\[ai_skills\]' /tmp/plan12.txt
+absent /tmp/plan12.txt '\[ai_skills\]'; echo "AISKILLS-TOOL-PLANSYNC-QUIET-RC=$?"
 GEN_GOOD=$(basename "$(readlink -f /var/lib/dasik/generations/current)")
 echo "AISKILLS-GEN-GOOD=$GEN_GOOD"
 
@@ -141,7 +178,7 @@ present /tmp/plan7.txt 'skill:nope'; echo "AISKILLS-WARN-REPLAN-RC=$?"
 echo "AISKILLS-J: dropping the block removes what dasik owned"
 python - <<'PY'
 import json
-cfg = json.load(open("config/vm-ai-skills.json"))
+cfg = json.load(open("/tmp/with-tool.json"))
 cfg.pop("ai_skills")
 json.dump(cfg, open("/tmp/no-block.json", "w"), indent=2)
 PY
@@ -150,6 +187,7 @@ grep '\[ai_skills\]' /tmp/plan8.txt
 present /tmp/plan8.txt 'delete .*skill:impeccable'; echo "AISKILLS-REMOVE-PLAN-RC=$?"
 $D apply /tmp/no-block.json --target / --yes $L; echo "AISKILLS-REMOVE-APPLY-RC=$?"
 test ! -e $H/.agents/skills/impeccable; echo "AISKILLS-REMOVED-RC=$?"
+test ! -e $H/.codex/skills/graphify; echo "AISKILLS-TOOL-REMOVED-RC=$?"
 test -d $H/.claude/skills/handmade; echo "AISKILLS-FOREIGN-STILL-RC=$?"
 
 echo "AISKILLS-K: rollback restores the generation and re-plans to nothing"

@@ -268,6 +268,7 @@ A pytest suite exists (~430 tests under `tests/`, mirroring `dasik/lib/`). These
 - **pytest monkeypatch / unittest.mock** to stub system access (`Command.execute`, `pathlib.Path`, `subprocess`). Never touch a real disk in a test.
 - File convention: `test_*.py` under a top-level `tests/` directory mirroring `dasik/lib/` layout.
 - **Coverage gate: 80%** (statements/branches, `fail_under = 80`). Don't lower the gate — exclude untestable modules in config with a written justification instead.
+- **Mutation gate: cero supervivientes reales** en el tier `set_math` (`scripts/mutation.sh`), bloqueante en `pre-push` y en CI. La plantilla fija un **suelo del 60%**; este repo va por encima porque el scope es lógica de decisión pura y pequeña, y ahí un mutante vivo es un test que falta, no ruido. El número es un **trinquete**: sube o se queda, nunca baja al suelo para dejar pasar un push. Si la corrida se vuelve pesada, se estrecha el **scope** (el tier 2, `--reconciler`, ya está separado por eso), nunca el criterio. Los mutantes **equivalentes** se documentan por firma de diff y se dejan vivos a propósito — perseguir el 100% literal no es el objetivo.
 
 ```bash
 pytest                       # unit tests

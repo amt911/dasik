@@ -20,12 +20,23 @@ def _apply(tmp_path, cfg=None, rc=0):
     return action, execute
 
 
+_PROBE = "codex plugin marketplace list"
+
+
 def _argvs(execute):
-    """The ``su`` argv of every call, in order."""
-    return [call.args[1] for call in execute.call_args_list]
+    """The ``su`` argv of every INSTALLER call, in order.
+
+    `plan` also runs a read-only `codex plugin marketplace list` through the
+    same `su`, to warn when a curated marketplace is not in scope (a signed-out
+    codex cannot resolve `plugin@marketplace`). It installs nothing, so it is
+    dropped here; it has its own test file.
+    """
+    return [call.args[1] for call in execute.call_args_list
+            if call.args[1][3] != _PROBE]
 
 
 def _scripts(execute):
+    """The installer scripts, in order."""
     return [argv[3] for argv in _argvs(execute)]
 
 

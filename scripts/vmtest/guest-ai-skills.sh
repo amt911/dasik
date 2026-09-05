@@ -240,6 +240,54 @@ $D plan /tmp/restored.json --target / $L > /tmp/plan9.txt 2>&1
 grep '\[ai_skills\]' /tmp/plan9.txt
 absent /tmp/plan9.txt '\[ai_skills\]'; rc AISKILLS-ROLLBACK-QUIET
 
+echo "AISKILLS-L: a codex marketplace out of scope is EXPLAINED, not just planned"
+# The bug this section exists for: on a machine where codex has never been
+# signed in, `codex plugin add superpowers@openai-curated` fails with
+#   Error: plugin `superpowers` was not found in marketplace `openai-curated`
+# because a curated marketplace is fetched by codex itself and does not exist
+# until then. dasik was right to keep proposing the entry, but the reason only
+# appeared as a red line ~24000 lines into the run log. `plan` must say it.
+#
+# Nothing here is applied: the entry CANNOT converge on this guest, and that is
+# precisely the state under test. Codex is installed here rather than in the
+# config so the rest of this script drives exactly the machine it did before.
+pacman -S --noconfirm --needed openai-codex > /tmp/codexinst.txt 2>&1
+tail -2 /tmp/codexinst.txt
+command -v codex; rc AISKILLS-CODEX-INSTALLED
+
+# The contract, on the real binary. TWO shapes, and the first run of this check
+# got it wrong by assuming only the second:
+#   * this user already has a marketplace of their own (`superpowers-dev`,
+#     registered by section D above) but NOT the curated one — so the table is
+#     printed and `openai-curated` is simply absent from it. That is the sharper
+#     case: the warning has to be about THIS marketplace missing, not about the
+#     user having none at all.
+#   * root has never used codex, and gets the sentence instead.
+# Both exit 0, which is why the OUTPUT is what dasik reads.
+su - $U -c 'codex plugin marketplace list' > /tmp/markets.txt 2>&1
+cat /tmp/markets.txt
+present /tmp/markets.txt 'MARKETPLACE'; rc AISKILLS-MARKET-TABLE
+absent /tmp/markets.txt 'openai-curated'; rc AISKILLS-NO-CURATED
+codex plugin marketplace list > /tmp/markets-root.txt 2>&1
+cat /tmp/markets-root.txt
+present /tmp/markets-root.txt 'No plugin marketplaces in scope'; rc AISKILLS-NONE-SENTENCE
+
+python - <<'PY'
+import json, os
+cfg = json.load(open(os.environ["C"]))
+cfg["ai_skills"]["entries"].append(
+    {"name": "superpowers", "method": "codex-plugin",
+     "marketplace": {"name": "openai-curated"}})
+json.dump(cfg, open("/tmp/codex-plugin.json", "w"), indent=2)
+PY
+$D plan /tmp/codex-plugin.json --target / $L > /tmp/plan10.txt 2>&1
+grep -iE '\[ai_skills\]|marketplace' /tmp/plan10.txt | head -10
+# Both halves matter: the change is still proposed (dasik never pretends an
+# entry it cannot install is done), AND the plan explains why it will fail.
+present /tmp/plan10.txt 'superpowers@openai-curated'; rc AISKILLS-CODEX-PLANNED
+present /tmp/plan10.txt "no marketplace 'openai-curated' in scope"; rc AISKILLS-CODEX-WARNED
+present /tmp/plan10.txt 'codex login'; rc AISKILLS-CODEX-REMEDY
+
 echo "AISKILLS-DONE rc=$FAILS"
 sync
 poweroff -f

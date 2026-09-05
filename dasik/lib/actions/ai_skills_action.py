@@ -27,6 +27,7 @@ from .ai_skills_state import (AGENT_SKILL_DIRS, carries_skill, claude_state,
                               codex_state, installed_agents, skills_state)
 from ..command_worker.command_worker import Command
 from ..exceptions.exceptions import CommandExecutionError
+from ..logging import run_logger
 from ..state.change import Change, Op
 
 _DOMAIN = "ai_skills"
@@ -329,7 +330,96 @@ class AiSkillsAction(AbstractAction):
             if not self._same_source(spec["source"], market_sources.get(item)):
                 modifies.append(Change(_DOMAIN, Op.MODIFY, item,
                                        reason="source drift"))
+        self._warn_unreachable_codex_marketplaces(creates, desired)
         return creates + modifies + deletes
+
+    # -- the prerequisite a plan cannot see ---------------------------------- #
+
+    # `codex plugin marketplace list` prints one of these, and exits 0 EITHER
+    # WAY (measured, codex-cli 0.151.0) — so the output is the signal and the
+    # exit code only says whether the probe itself ran.
+    _NO_MARKETPLACES = "no plugin marketplaces in scope"
+    _MARKETPLACE_PROBE = "codex plugin marketplace list"
+
+    def _warn_unreachable_codex_marketplaces(self, creates, desired) -> None:
+        """Say why a codex plugin will not install, at PLAN time.
+
+        `openai-curated` is not a repository anyone can register: codex fetches
+        it itself, against its API, and it does not exist until codex has been
+        signed in. On a freshly installed machine the marketplace is therefore
+        not in scope, `codex plugin add superpowers@openai-curated` answers
+
+            Error: plugin `superpowers` was not found in marketplace
+            `openai-curated`
+
+        and the entry is proposed again on every run. That is the correct
+        behaviour — the item is never owned, so the plan keeps telling the truth
+        — but the reason only appears as a red line deep in the run log, while
+        the plan shows a bare `+ [ai_skills] create ...`. Reading it out loud
+        here is the difference between "dasik is broken" and "log in first".
+
+        Probed only when a codex plugin is actually proposed: it costs a
+        process, and a plan that changes nothing must ask nothing.
+        """
+        wanted: Dict[str, List[Tuple[str, str]]] = {}
+        for change in creates:
+            spec = desired.get(change.item) or {}
+            if spec.get("kind") != "plugin" or spec.get("agent") != "codex":
+                continue
+            wanted.setdefault(spec["user"], []).append(
+                (spec["marketplace"], f"{spec['plugin']}@{spec['marketplace']}"))
+        for user, entries in sorted(wanted.items()):
+            in_scope = self._codex_marketplaces(user)
+            if in_scope is None:
+                # Cannot tell (no codex, no su, a sandbox). "Unknown" is not
+                # "missing", and a warning nobody can act on is worse than none.
+                continue
+            for marketplace, plugin_id in entries:
+                if marketplace in in_scope:
+                    continue
+                run_logger.get().warning(
+                    f"ai_skills: codex has no marketplace '{marketplace}' in "
+                    f"scope for {user}, so {plugin_id} cannot be installed.",
+                    detail=(
+                        f"`codex plugin add {plugin_id}` will fail with "
+                        f"\"plugin `{plugin_id.split('@')[0]}` was not found in "
+                        f"marketplace `{marketplace}`\". A curated marketplace "
+                        "is fetched by codex itself and does not exist until it "
+                        f"has been signed in: run `codex login` as {user}, check "
+                        "`codex plugin marketplace list`, then apply again. "
+                        "dasik will keep proposing this entry until then — it "
+                        "never claims an item it could not install."),
+                )
+
+    def _codex_marketplaces(self, user: str) -> Optional[set]:
+        """The marketplace names codex has in scope for *user*, or None.
+
+        None means the question could not be asked, which is deliberately
+        different from the empty set: only the latter is evidence.
+        """
+        try:
+            result = Command.execute(
+                "su", self._su_argv(user, self._MARKETPLACE_PROBE),
+                target=self._target(), check=False)
+        except Exception:      # nosec B110 - an unusable probe answers nothing
+            return None
+        if getattr(result, "returncode", 1) != 0:
+            return None
+        out = getattr(result, "stdout", b"") or b""
+        if isinstance(out, bytes):
+            out = out.decode("utf-8", errors="replace")
+        if self._NO_MARKETPLACES in out.lower():
+            return set()
+        names = set()
+        for line in out.splitlines():
+            first = line.split()
+            # The table's own header is not a marketplace.
+            if first and first[0] != "MARKETPLACE":
+                names.add(first[0])
+        # Neither the sentence nor a single row: the probe ran but did not
+        # answer the question (a wrapper, a locale, a stub). Inventing "there
+        # are none" from silence would warn about a machine that is fine.
+        return names or None
 
     # -- apply -------------------------------------------------------------- #
 

@@ -50,6 +50,20 @@ podman pull postgres:17.5 2>&1 | tail -3
 podman pull postgres:17.5 2>&1 | grep -qi 'short-name.*did not resolve' \
     && echo "CONT-SHORTNAME: STILL UNRESOLVED" \
     || echo "CONT-SHORTNAME: resolves"
+# ...and the same question with the config taken away, so this check is known to
+# be able to FAIL. A green that has never been seen red is not evidence, and
+# both overrides are needed: CONTAINERS_REGISTRIES_CONF replaces the file only,
+# the drop-in DIRECTORY is read regardless until CONTAINERS_REGISTRIES_CONF_DIR
+# points somewhere else.
+: > /tmp/empty-registries.conf; mkdir -p /tmp/empty-registries.d
+CONTAINERS_REGISTRIES_CONF=/tmp/empty-registries.conf \
+CONTAINERS_REGISTRIES_CONF_DIR=/tmp/empty-registries.d \
+    podman pull postgres:17.5 2>&1 | tail -1
+CONTAINERS_REGISTRIES_CONF=/tmp/empty-registries.conf \
+CONTAINERS_REGISTRIES_CONF_DIR=/tmp/empty-registries.d \
+    podman pull postgres:17.5 2>&1 | grep -qi 'short-name.*did not resolve' \
+    && echo "CONT-SHORTNAME-NEGATIVE: unresolved without the drop-in, as it must be" \
+    || echo "CONT-SHORTNAME-NEGATIVE: VACUOUS CHECK — resolves with no config at all"
 
 echo "CONT-D: check"
 $D check "$C" $L; echo "CONT-CHECK-RC=$?"

@@ -416,7 +416,10 @@ class AiSkillsAction(AbstractAction):
             # The table's own header is not a marketplace.
             if first and first[0] != "MARKETPLACE":
                 names.add(first[0])
-        return names
+        # Neither the sentence nor a single row: the probe ran but did not
+        # answer the question (a wrapper, a locale, a stub). Inventing "there
+        # are none" from silence would warn about a machine that is fine.
+        return names or None
 
     # -- apply -------------------------------------------------------------- #
 

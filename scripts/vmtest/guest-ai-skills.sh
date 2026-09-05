@@ -255,11 +255,22 @@ pacman -S --noconfirm --needed openai-codex > /tmp/codexinst.txt 2>&1
 tail -2 /tmp/codexinst.txt
 command -v codex; rc AISKILLS-CODEX-INSTALLED
 
-# The contract, measured on the real binary: signed out, there is no
-# marketplace at all, and the probe still exits 0 — so the OUTPUT is the signal.
+# The contract, on the real binary. TWO shapes, and the first run of this check
+# got it wrong by assuming only the second:
+#   * this user already has a marketplace of their own (`superpowers-dev`,
+#     registered by section D above) but NOT the curated one — so the table is
+#     printed and `openai-curated` is simply absent from it. That is the sharper
+#     case: the warning has to be about THIS marketplace missing, not about the
+#     user having none at all.
+#   * root has never used codex, and gets the sentence instead.
+# Both exit 0, which is why the OUTPUT is what dasik reads.
 su - $U -c 'codex plugin marketplace list' > /tmp/markets.txt 2>&1
 cat /tmp/markets.txt
-present /tmp/markets.txt 'No plugin marketplaces in scope'; rc AISKILLS-NO-MARKETPLACES
+present /tmp/markets.txt 'MARKETPLACE'; rc AISKILLS-MARKET-TABLE
+absent /tmp/markets.txt 'openai-curated'; rc AISKILLS-NO-CURATED
+codex plugin marketplace list > /tmp/markets-root.txt 2>&1
+cat /tmp/markets-root.txt
+present /tmp/markets-root.txt 'No plugin marketplaces in scope'; rc AISKILLS-NONE-SENTENCE
 
 python - <<'PY'
 import json, os

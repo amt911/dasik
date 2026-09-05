@@ -124,3 +124,22 @@ def test_the_warning_names_the_entry_that_cannot_converge(tmp_path, monkeypatch,
     _probe(monkeypatch, _EMPTY)
     _plan(_machine(tmp_path), [_CODEX_ENTRY])
     assert _said(warnings, "superpowers@openai-curated")
+
+
+def test_an_unreadable_answer_says_nothing(tmp_path, monkeypatch, warnings):
+    """Empty output with exit 0 is not evidence of anything.
+
+    Real codex either prints the `MARKETPLACE ROOT` table or the sentence
+    `No plugin marketplaces in scope.` Nothing at all means the probe did not
+    answer the question — a stub, a wrapper, a locale — and inventing "there
+    are none" from it warns about a machine that may be perfectly fine.
+    """
+    _probe(monkeypatch, "")
+    _plan(_machine(tmp_path), [_CODEX_ENTRY])
+    assert warnings.call_count == 0
+
+
+def test_only_the_header_says_nothing(tmp_path, monkeypatch, warnings):
+    _probe(monkeypatch, "MARKETPLACE     ROOT\n")
+    _plan(_machine(tmp_path), [_CODEX_ENTRY])
+    assert warnings.call_count == 0

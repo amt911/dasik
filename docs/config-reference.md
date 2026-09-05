@@ -161,7 +161,10 @@ The container **runtime**, installed and configured. dasik does not manage
 containers.
 
 ```json
-"containers": { "runtime": "podman", "rootless": true, "docker_compat": true }
+"containers": {
+  "runtime": "podman", "rootless": true, "docker_compat": true,
+  "search_registries": ["docker.io"]
+}
 ```
 
 | Field | Type | Default | Notes |
@@ -171,6 +174,7 @@ containers.
 | `docker_compat` | bool | `false` | podman: installs `podman-docker`, so `docker` on the command line is podman. Refused for docker. |
 | `compose` | bool | `false` | `podman-compose` / `docker-compose`, following the runtime. |
 | `api_socket` | bool | `false` | Enables `podman.socket` / `docker.socket`. For docker this **replaces** `docker.service`: the engine starts on first use instead of at boot. |
+| `search_registries` | list[str] | `null` | podman only: the registries a **short** image name is searched in, in order. Arch configures none, so `postgres:17.5` fails with `short-name … did not resolve to an alias and no containers-registries.conf(5) was found` until this is set. `["docker.io"]` is what the wiki prescribes to make podman behave like docker. Written as `/etc/containers/registries.conf.d/10-unqualified-search-registries.conf`; absent means dasik does not own that file. Refused for docker, whose daemon never reads it. |
 | `daemon_json` | object | `null` | docker only: `/etc/docker/daemon.json`, written as JSON. Refused for podman, which has no daemon. |
 
 docker also puts every declared user in the `docker` group — the only way to use

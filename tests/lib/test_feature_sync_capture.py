@@ -1095,3 +1095,65 @@ def test_sync_then_plan_is_silent_for_uv_tools(tmp_path):
     action = UvToolsAction({"users": [{"username": "andres"}], **captured},
                            ActionContext(target=Target(root=str(root))))
     assert action.plan(managed=[]) == []
+
+
+# --- container search registries -------------------------------------------- #
+
+def _registry_machine(tmp_path, registries=("docker.io",)):
+    """A podman machine, with or without the unqualified-search drop-in."""
+    from dasik.lib.actions.container_registries_action import DROP_IN
+    (tmp_path / "usr/bin").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "usr/bin/podman").write_text("")
+    (tmp_path / "etc").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "etc/subuid").write_text("andres:100000:65536\n")
+    (tmp_path / "etc/subgid").write_text("andres:100000:65536\n")
+    if registries:
+        path = tmp_path / DROP_IN.lstrip("/")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        listed = ", ".join(f'"{r}"' for r in registries)
+        path.write_text(f"unqualified-search-registries = [{listed}]\n")
+    return tmp_path
+
+
+def _registry_captured(root, seed=None):
+    from dasik.lib.actions.containers_action import ContainersAction
+    config = {"users": [{"username": "andres"}]}
+    if seed is not None:
+        config["containers"] = seed
+    return ContainersAction(
+        config, ActionContext(target=Target(root=str(root)))).import_state([])
+
+
+def test_the_search_registries_are_captured_into_the_containers_block(tmp_path):
+    captured = _registry_captured(_registry_machine(tmp_path, ("docker.io", "quay.io")))
+    assert captured["containers"]["search_registries"] == ["docker.io", "quay.io"]
+
+
+def test_a_machine_without_the_drop_in_invents_no_search_registries(tmp_path):
+    captured = _registry_captured(_registry_machine(tmp_path, ()))
+    assert "search_registries" not in captured["containers"]
+
+
+def test_a_declared_registry_the_machine_lacks_is_cleared_not_kept(tmp_path):
+    """The bug this rule exists for: a config claiming docker.io on a machine
+    whose drop-in is gone would keep claiming it, and `plan` would stay silent
+    about a machine that cannot resolve a short name."""
+    captured = _registry_captured(
+        _registry_machine(tmp_path, ()),
+        seed={"runtime": "podman", "search_registries": ["docker.io"]})
+    assert captured["containers"]["search_registries"] == []
+
+
+def test_the_captured_containers_block_validates(tmp_path):
+    JsonModel.model_validate({"hostname": "box",
+                              **_registry_captured(_registry_machine(tmp_path))})
+
+
+def test_sync_then_plan_is_silent_for_the_search_registries(tmp_path):
+    from dasik.lib.actions.container_registries_action import (
+        ContainerRegistriesAction)
+    root = _registry_machine(tmp_path, ("docker.io",))
+    captured = _registry_captured(root)
+    action = ContainerRegistriesAction(
+        captured, ActionContext(target=Target(root=str(root))))
+    assert action.plan(managed=["docker.io"]) == []

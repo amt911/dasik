@@ -206,6 +206,7 @@ class ContainersAction(AbstractAction):
             # podman-docker is the only reason /usr/bin/docker exists on a
             # machine with no dockerd.
             block["docker_compat"] = os.path.exists(self._p(_DOCKER_BIN))
+            block.update(self._captured_registries())
         block["compose"] = os.path.exists(self._p(_COMPOSE_BINS[runtime]))
         block["api_socket"] = self._unit_enabled(_SOCKET_UNITS[runtime])
         if runtime == "docker":
@@ -213,6 +214,29 @@ class ContainersAction(AbstractAction):
             if daemon is not None:
                 block["daemon_json"] = daemon
         return {"containers": block}
+
+    def _captured_registries(self) -> Dict[str, Any]:
+        """The search order this machine actually has, if anyone owns one.
+
+        The drop-in belongs to ``ContainerRegistriesAction``, but the CAPTURE
+        belongs here: ``ConfigWriter.merge`` splices fragments by top-level key,
+        so two actions both returning a `containers` block would overwrite each
+        other rather than merge.
+
+        Absent AND undeclared captures nothing, so a bootstrap sync adds no key
+        to a machine that never had the file. Absent but DECLARED is cleared to
+        `[]` rather than omitted: merge only overwrites a key, so silence would
+        leave a stale list standing that this machine does not have.
+        """
+        from .container_registries_action import ContainerRegistriesAction
+
+        found = ContainerRegistriesAction(
+            {"containers": self._containers}, self.context).actual()
+        if found:
+            return {"search_registries": found}
+        if self._containers.get("search_registries") is not None:
+            return {"search_registries": []}
+        return {}
 
     def _detect_runtime(self) -> Optional[str]:
         if os.path.exists(self._p(_DOCKERD_BIN)):

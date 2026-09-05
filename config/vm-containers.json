@@ -1,6 +1,6 @@
 {
   "metadata": {
-    "note": "Container runtime (rootless podman + podman-docker) for the QEMU VM harness (scripts/vmtest/qemu.sh install-driven). Proves the subuid/subgid maps land and that `docker` on the command line is podman. Targets the guest's /dev/vda. NOT for real hardware. Autologins root on ttyS0 and ships python-pydantic/python-colorama via pacman, so the driver gets a shell and dasik runs from the 9p-mounted repo with no network."
+    "note": "Container runtime (rootless podman + podman-docker) for the QEMU VM harness (scripts/vmtest/qemu.sh install-driven). Proves the subuid/subgid maps land, that `docker` on the command line is podman, and that an unqualified image name resolves (Arch configures no registries, so `postgres:17.5` does not resolve without the drop-in). Targets the guest's /dev/vda. NOT for real hardware. Autologins root on ttyS0 and ships python-pydantic/python-colorama via pacman, so the driver gets a shell and dasik runs from the 9p-mounted repo with no network."
   },
   "disks": {
     "disks": [
@@ -62,7 +62,10 @@
     "runtime": "podman",
     "rootless": true,
     "docker_compat": true,
-    "api_socket": true
+    "api_socket": true,
+    "search_registries": [
+      "docker.io"
+    ]
   },
   "users": [
     {

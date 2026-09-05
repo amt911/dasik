@@ -5,7 +5,7 @@ The two runtimes are shaped differently and the model refuses to blur that:
 docker has a daemon (`daemon_json`) and a group whose members are effectively
 root, podman has neither and its whole point is running rootless.
 """
-from typing import Any, Dict, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -41,6 +41,18 @@ class ContainersModel(BaseModel):
                     "instead of, for docker, the always-on docker.service. "
                     "Socket activation starts the engine on first use.",
     )
+    search_registries: Optional[List[str]] = Field(
+        default=None,
+        description="podman only: the registries a SHORT image name is looked "
+                    "up in, in order. Arch configures none, so `podman pull "
+                    "postgres:17.5` fails with \"short-name did not resolve to "
+                    "an alias and no containers-registries.conf(5) was found\" "
+                    "until this is set — [\"docker.io\"] is what the wiki "
+                    "prescribes to make podman behave like docker. Written as "
+                    "/etc/containers/registries.conf.d/"
+                    "10-unqualified-search-registries.conf. Absent means dasik "
+                    "does not own the drop-in at all.",
+    )
     daemon_json: Optional[Dict[str, Any]] = Field(
         default=None,
         description="docker only: the contents of /etc/docker/daemon.json "
@@ -58,14 +70,17 @@ class ContainersModel(BaseModel):
         if self.runtime == "docker":
             wrong = [name for name, on in
                      (("rootless", self.rootless),
-                      ("docker_compat", self.docker_compat)) if on]
+                      ("docker_compat", self.docker_compat),
+                      ("search_registries", self.search_registries)) if on]
             if wrong:
                 raise ValueError(
                     f"containers.{', '.join(wrong)} is a podman field; with "
                     "runtime 'docker' it would be ignored. Rootless docker is a "
                     "separate daemon setup (dockerd-rootless-setuptool), not a "
-                    "flag, and podman-docker would fight docker over "
-                    "/usr/bin/docker."
+                    "flag, podman-docker would fight docker over "
+                    "/usr/bin/docker, and dockerd never reads "
+                    "containers-registries.conf(5) — Docker Hub is wired into "
+                    "the daemon."
                 )
         elif self.daemon_json is not None:
             raise ValueError(

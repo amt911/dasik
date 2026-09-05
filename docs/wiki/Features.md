@@ -373,7 +373,10 @@ validated.
 ## `containers` — the runtime, not the containers
 
 ```json
-"containers": { "runtime": "podman", "rootless": true, "docker_compat": true }
+"containers": {
+  "runtime": "podman", "rootless": true, "docker_compat": true,
+  "search_registries": ["docker.io"]
+}
 ```
 
 One engine, installed and configured. dasik does not manage containers.
@@ -394,6 +397,34 @@ would still say "no changes".
 **The `docker` group is root-equivalent** — a member can bind-mount `/` into a
 container. That is not a reason to avoid it (there is no other way to use docker
 without root), it is a reason to know it.
+
+**`search_registries` is what makes a short image name resolve.** Arch
+configures no registries at all — `containers-common` ships the sample under
+`/usr/share/containers` and installs nothing into `/etc/containers` — so on a
+fresh machine the first `docker compose up` dies with
+
+```
+Error: short-name "postgres:17.5" did not resolve to an alias and
+no containers-registries.conf(5) was found
+```
+
+The ArchWiki (Podman#Registries) answers with one drop-in, and that file is the
+`container_registries` domain:
+
+```
+/etc/containers/registries.conf.d/10-unqualified-search-registries.conf
+unqualified-search-registries = ["docker.io"]
+```
+
+The list is a search ORDER — podman tries the registries in turn — so it is
+written in the order declared, and **re-ordering it is a change dasik plans**
+(`~ [container_registries] modify`). Set-math alone cannot see a permutation,
+which would leave the config claiming a policy the machine does not have. A
+registry someone added by hand is drift: kept, appended after the declared ones,
+and never removed. Removing the last one dasik
+owns **deletes the file** rather than writing an empty list — `[]` tells podman
+to search nothing, which is the broken state the domain exists to fix. Refused
+for docker, whose daemon never reads that file.
 
 **subuid/subgid** is the one piece with no other owner. Rootless podman maps
 container uids into a range reserved for the user; `useradd` writes one for

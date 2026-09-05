@@ -66,3 +66,25 @@ def test_json_model_accepts_the_block():
         containers={"runtime": "podman", "docker_compat": True},
     )
     assert m.containers.runtime == "podman"
+
+
+# --- unqualified search registries ------------------------------------------ #
+
+
+def test_search_registries_default_to_unmanaged():
+    """Absent means dasik does not own the drop-in, which is not the same as
+    owning it and declaring it empty."""
+    assert ContainersModel(runtime="podman").search_registries is None
+
+
+def test_podman_accepts_search_registries():
+    c = ContainersModel(runtime="podman", search_registries=["docker.io"])
+    assert c.search_registries == ["docker.io"]
+
+
+def test_docker_rejects_search_registries():
+    """`unqualified-search-registries` is a containers/ (podman, buildah,
+    skopeo) key; dockerd never reads registries.conf, and silently ignoring the
+    list would leave a config describing a search order nobody applies."""
+    with pytest.raises(ValidationError, match="search_registries"):
+        ContainersModel(runtime="docker", search_registries=["docker.io"])

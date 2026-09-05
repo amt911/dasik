@@ -49,6 +49,7 @@ def setup_actions() -> None:
     from .ai_skills_action import AiSkillsAction
     from .uv_tools_action import UvToolsAction
     from .containers_action import ContainersAction
+    from .container_registries_action import ContainerRegistriesAction
     from .libvirt_network_action import LibvirtNetworkAction
     from .sudo_action import SudoAction
     from .packages_action import PackagesAction
@@ -269,6 +270,14 @@ def setup_actions() -> None:
     register_action(
         action_class=ContainersAction,
         config_key='__root__',   # reads root-level `containers` + `users`
+        is_optional=True,
+    )
+    # The drop-in that makes a short image name resolve. Same phase as the
+    # runtime it configures: podman reads the file on every invocation, so it
+    # only has to be there before the first pull, not before the package.
+    register_action(
+        action_class=ContainerRegistriesAction,
+        config_key='__root__',   # reads root-level `containers`
         is_optional=True,
     )
     register_action(

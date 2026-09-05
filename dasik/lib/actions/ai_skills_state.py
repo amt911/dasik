@@ -89,11 +89,62 @@ def _read_json(path: str):
         return None
 
 
+_CLAUDE_PLUGINS = ".claude/plugins"
+
+
+def _payload_present(home: str, plugin_id: str, record: object) -> bool:
+    """Are a plugin installation's files actually on the machine?
+
+    The registry outlives them. `installed_plugins.json` and
+    `known_marketplaces.json` are backed up (they are small and describe an
+    intent); `plugins/cache/` and `plugins/marketplaces/` usually are not, being
+    re-downloadable — so a restored ``$HOME`` claims plugins nobody downloaded.
+    Claude Code itself only half-notices: with the marketplace clone missing it
+    says ``failed to load: cache-miss``, and with the clone present but the
+    plugin cache gone it reports ``enabled`` and loads nothing at all.
+
+    A record that names no path is trusted, because there is nothing to check
+    against: a redundant install costs one command, while inventing an absence
+    would make dasik fight an installation that is really there. A record that
+    DOES name one is verified — but against the home this reader was handed, not
+    against the recorded string: ``installPath`` is absolute *inside the target*
+    (``/home/andres/...``) while an install inspects ``/mnt/home/andres/...``.
+    """
+    if not isinstance(record, dict):
+        return True
+    if not isinstance(record.get("installPath"), str):
+        return True
+    plugin, _, marketplace = plugin_id.partition("@")
+    if not marketplace:
+        return True
+    base = os.path.join(home, _CLAUDE_PLUGINS, "cache", marketplace, plugin)
+    version = record.get("version")
+    if isinstance(version, str) and version:
+        return os.path.isdir(os.path.join(base, version))
+    # No version to look for: any version directory means something is there.
+    try:
+        return any(os.path.isdir(os.path.join(base, name))
+                   for name in os.listdir(base))
+    except OSError:
+        return False
+
+
+# Why the marketplaces are NOT checked the same way, measured on the real CLI:
+# `claude plugin marketplace add <repo>` answers "Marketplace 'x' already on
+# disk — declared in user settings" and exits 0 without cloning anything, so a
+# missing clone is a change dasik would plan and could not apply — forever.
+# Only `remove` + `add` restores it, and `remove` drops that marketplace's
+# plugins from the registry along the way. It does not need to: reinstalling
+# the PLUGIN re-clones its marketplace, which is what the restored-$HOME case
+# (both directories absent) actually needs.
+
+
 def claude_state(home: str) -> Tuple[Set[str], Dict[str, str]]:
     """(installed ``plugin@marketplace`` ids, ``{marketplace: source}``).
 
     *home* is an absolute path on the machine being inspected (already resolved
-    through ``Target.path``).
+    through ``Target.path``). An entry whose files are gone does not count as
+    installed — see ``_payload_present``.
     """
     plugins: Set[str] = set()
     installed = _read_json(os.path.join(home, ".claude/plugins/installed_plugins.json"))
@@ -102,7 +153,10 @@ def claude_state(home: str) -> Tuple[Set[str], Dict[str, str]]:
         if isinstance(entries, dict):
             for key, installations in entries.items():
                 # The key survives an uninstall with an empty list behind it.
-                if isinstance(installations, list) and installations:
+                if not isinstance(installations, list) or not installations:
+                    continue
+                if any(_payload_present(home, key, record)
+                       for record in installations):
                     plugins.add(key)
 
     markets: Dict[str, str] = {}

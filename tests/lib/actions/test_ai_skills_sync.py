@@ -225,3 +225,12 @@ def test_the_captured_tool_block_replans_to_nothing(tmp_path):
     captured = _act(tmp_path, TOOL_CFG).import_state()
     JsonModel(**{"hostname": "x", **captured})
     assert _act(tmp_path, {**_cfg(), **captured}).plan(managed=[]) == []
+
+
+def test_sync_does_not_capture_a_plugin_whose_files_are_gone(tmp_path):
+    # A restored registry is not a machine that carries the plugin. sync reports
+    # reality, so the capture stays empty and the next plan asks for the install.
+    from tests.lib.actions.test_ai_skills_plan import _claude_registry
+    _passwd(tmp_path)
+    _claude_registry(tmp_path)
+    assert _act(tmp_path, _cfg()).import_state() == {"ai_skills": {}}

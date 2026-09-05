@@ -36,7 +36,6 @@ def test_claude_state_reads_installed_plugins_and_marketplaces(tmp_path):
     (home / ".claude/plugins/known_marketplaces.json").write_text(json.dumps({
         "caveman": {"source": {"source": "github", "repo": "JuliusBrussee/caveman"},
                     "installLocation": "/home/andres/.claude/plugins/marketplaces/caveman"}}))
-
     plugins, markets = claude_state(str(home))
 
     assert plugins == {"caveman@caveman", "superpowers@claude-plugins-official"}
@@ -280,3 +279,96 @@ def test_every_agent_has_a_directory_of_its_own_to_check(tmp_path):
                             ("cursor", ".cursor/skills"),
                             ("opencode", ".config/opencode/skills")):
         assert AGENT_SKILL_DIRS[agent] == relative
+
+
+# --- claude: the manifest can outlive the files it describes ---------------- #
+#
+# `installed_plugins.json` and `known_marketplaces.json` are the only two files
+# config-saver archives of ~/.claude/plugins — `cache/` and `marketplaces/` are
+# excluded on purpose ("re-downloadable"). Restore that archive on a fresh
+# machine and the registry claims a plugin nobody ever downloaded: Claude Code
+# says `failed to load: cache-miss` (or, with the marketplace clone present,
+# lies and says `enabled`), and dasik used to believe the registry and plan
+# nothing forever. A recorded path that is not on disk means NOT installed.
+
+def _record(marketplace, plugin, version):
+    """One installation record, shaped like the real CLI writes it."""
+    return {"scope": "user", "version": version,
+            "installPath": ("/home/andres/.claude/plugins/cache/"
+                            f"{marketplace}/{plugin}/{version}")}
+
+
+def _registry(tmp_path, marketplace="claude-plugins-official",
+              plugin="superpowers", version="6.3.0", record=None):
+    home = _claude_home(tmp_path)
+    (home / ".claude/plugins/installed_plugins.json").write_text(json.dumps({
+        "version": 2,
+        "plugins": {f"{plugin}@{marketplace}": [
+            _record(marketplace, plugin, version) if record is None else record]}}))
+    (home / ".claude/plugins/known_marketplaces.json").write_text(json.dumps({
+        marketplace: {
+            "source": {"source": "github", "repo": "anthropics/claude-plugins-official"},
+            "installLocation":
+                f"/home/andres/.claude/plugins/marketplaces/{marketplace}"}}))
+    return home
+
+
+def _payload(home, marketplace="claude-plugins-official", plugin="superpowers",
+             version="6.3.0"):
+    (home / ".claude/plugins/cache" / marketplace / plugin / version).mkdir(parents=True)
+
+
+def _clone(home, marketplace="claude-plugins-official"):
+    (home / ".claude/plugins/marketplaces" / marketplace).mkdir(parents=True)
+
+
+def test_claude_state_keeps_a_plugin_whose_cache_directory_is_on_disk(tmp_path):
+    home = _registry(tmp_path)
+    _payload(home)
+    _clone(home)
+
+    plugins, markets = claude_state(str(home))
+
+    assert plugins == {"superpowers@claude-plugins-official"}
+    assert markets == {"claude-plugins-official": "anthropics/claude-plugins-official"}
+
+
+def test_claude_state_ignores_a_plugin_whose_cache_directory_is_gone(tmp_path):
+    # The restored-registry case: manifests present, `cache/` never restored.
+    home = _registry(tmp_path)
+    _clone(home)
+
+    plugins, _markets = claude_state(str(home))
+
+    assert plugins == set()
+
+
+def test_claude_state_ignores_a_plugin_cached_under_another_version(tmp_path):
+    home = _registry(tmp_path, version="6.3.0")
+    _payload(home, version="6.1.0")
+    _clone(home)
+
+    plugins, _markets = claude_state(str(home))
+
+    assert plugins == set()
+
+
+def test_claude_state_finds_the_payload_under_the_home_it_was_given(tmp_path):
+    # installPath is absolute *inside the target*; the reader is handed the
+    # host-side home (`/mnt/home/andres/...` during an install), so the check
+    # has to rebase onto that home instead of trusting the recorded string.
+    home = _registry(tmp_path)
+    _payload(home)
+    _clone(home)
+
+    assert str(home) not in "/home/andres"
+    assert claude_state(str(home))[0] == {"superpowers@claude-plugins-official"}
+
+
+def test_claude_state_trusts_a_record_that_names_no_path(tmp_path):
+    # Nothing to verify against — an install command we did not need is cheap,
+    # inventing an uninstall is not.
+    home = _registry(tmp_path, record={"scope": "user"})
+    _clone(home)
+
+    assert claude_state(str(home))[0] == {"superpowers@claude-plugins-official"}

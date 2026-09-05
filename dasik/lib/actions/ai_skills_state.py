@@ -129,11 +129,14 @@ def _payload_present(home: str, plugin_id: str, record: object) -> bool:
         return False
 
 
-def _marketplace_present(home: str, name: str, entry: Dict[str, object]) -> bool:
-    """Is a known marketplace's clone on the machine? Same rule as the plugins."""
-    if not isinstance(entry.get("installLocation"), str):
-        return True
-    return os.path.isdir(os.path.join(home, _CLAUDE_PLUGINS, "marketplaces", name))
+# Why the marketplaces are NOT checked the same way, measured on the real CLI:
+# `claude plugin marketplace add <repo>` answers "Marketplace 'x' already on
+# disk — declared in user settings" and exits 0 without cloning anything, so a
+# missing clone is a change dasik would plan and could not apply — forever.
+# Only `remove` + `add` restores it, and `remove` drops that marketplace's
+# plugins from the registry along the way. It does not need to: reinstalling
+# the PLUGIN re-clones its marketplace, which is what the restored-$HOME case
+# (both directories absent) actually needs.
 
 
 def claude_state(home: str) -> Tuple[Set[str], Dict[str, str]]:
@@ -161,7 +164,7 @@ def claude_state(home: str) -> Tuple[Set[str], Dict[str, str]]:
     if isinstance(known, dict):
         for name, entry in known.items():
             source = entry.get("source") if isinstance(entry, dict) else None
-            if isinstance(source, dict) and _marketplace_present(home, name, entry):
+            if isinstance(source, dict):
                 # `repo` for a GitHub marketplace, `url` / `path` for the rest.
                 value = source.get("repo") or source.get("url") or source.get("path")
                 if isinstance(value, str) and value:

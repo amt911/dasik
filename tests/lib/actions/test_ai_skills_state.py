@@ -36,10 +36,6 @@ def test_claude_state_reads_installed_plugins_and_marketplaces(tmp_path):
     (home / ".claude/plugins/known_marketplaces.json").write_text(json.dumps({
         "caveman": {"source": {"source": "github", "repo": "JuliusBrussee/caveman"},
                     "installLocation": "/home/andres/.claude/plugins/marketplaces/caveman"}}))
-    # A marketplace it says it cloned has to BE cloned — see the section on a
-    # registry that outlives its files, below.
-    (home / ".claude/plugins/marketplaces/caveman").mkdir(parents=True)
-
     plugins, markets = claude_state(str(home))
 
     assert plugins == {"caveman@caveman", "superpowers@claude-plugins-official"}
@@ -376,12 +372,3 @@ def test_claude_state_trusts_a_record_that_names_no_path(tmp_path):
     _clone(home)
 
     assert claude_state(str(home))[0] == {"superpowers@claude-plugins-official"}
-
-
-def test_claude_state_ignores_a_marketplace_whose_clone_is_gone(tmp_path):
-    home = _registry(tmp_path)
-    _payload(home)
-
-    _plugins, markets = claude_state(str(home))
-
-    assert markets == {}

@@ -148,8 +148,10 @@ def test_a_registry_that_outlived_its_files_is_planned_again(tmp_path):
     _passwd(tmp_path)
     _claude_registry(tmp_path)
 
+    # The marketplace is left to the registry on purpose: `claude plugin
+    # marketplace add` on a name it already knows is a no-op, so planning it
+    # would never converge — and re-installing the plugin re-clones it anyway.
     assert _items(_act(tmp_path)) == [
-        ("CREATE", "andres:claude-code:marketplace:caveman"),
         ("CREATE", "andres:claude-code:plugin:superpowers@caveman"),
         ("CREATE", "andres:codex:skill:impeccable"),
     ]

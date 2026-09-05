@@ -198,38 +198,51 @@ absent /tmp/plan12.txt '\[ai_skills\]'; rc AISKILLS-TOOL-PLANSYNC-QUIET
 absent /tmp/plan12.txt '\[uv_tools\]'; rc AISKILLS-UV-PLANSYNC-QUIET
 echo "AISKILLS-H4: a registry that outlived the files it describes"
 # The bug: `~/.claude/plugins/{installed_plugins,known_marketplaces}.json` are
-# small and describe an intent, so they get backed up; `cache/` and
-# `marketplaces/` are re-downloadable, so they do not. Restore that $HOME on a
-# fresh machine and the registry claims a plugin nobody downloaded — Claude Code
-# reports `enabled` and loads no skills at all, and dasik used to believe the
-# registry and plan nothing, forever. Simulated here by deleting the files and
-# keeping the manifests, which is exactly what such a restore leaves behind.
+# small and describe an intent, so backups keep them; `cache/` and
+# `marketplaces/` are re-downloadable, so backups skip them. Restore that $HOME
+# on a fresh machine and the registry claims a plugin nobody downloaded — and
+# dasik used to believe the registry, plan nothing, and leave the machine
+# without the skills it declares.
+#
+# TWO things this section learned the hard way:
+#   * the state a restore leaves is BOTH directories gone. With the marketplace
+#     clone still there, any `claude` command re-materialises the plugin cache
+#     from it (asserted in H5), so deleting only the cache tests nothing.
+#   * nothing may run `claude` between the deletion and the plan, for the same
+#     reason: the machine would heal itself and the silence would be correct.
 CACHE=$H/.claude/plugins/cache/caveman/caveman
 CLONE=$H/.claude/plugins/marketplaces/caveman
 test -d "$CACHE"; rc AISKILLS-GHOST-BEFORE
-rm -rf "$CACHE"
+rm -rf "$CACHE" "$CLONE"
 present $H/.claude/plugins/installed_plugins.json 'caveman@caveman'; rc AISKILLS-GHOST-REGISTRY
-su - $U -c 'claude plugin list' 2>&1 | head -12   # says "enabled"; nothing is there
 $D plan /tmp/with-tool.json --target / $L > /tmp/plan-ghost1.txt 2>&1
 grep '\[ai_skills\]' /tmp/plan-ghost1.txt
 present /tmp/plan-ghost1.txt 'plugin:caveman@caveman'; rc AISKILLS-GHOST-PLAN
+# The marketplace is deliberately NOT planned: `claude plugin marketplace add`
+# on a name the registry already knows answers "already on disk" and clones
+# nothing, so planning it could never converge. Re-installing the plugin is
+# what brings the clone back.
+absent /tmp/plan-ghost1.txt 'marketplace:caveman'; rc AISKILLS-GHOST-NO-MARKET-PLAN
 $D apply /tmp/with-tool.json --target / --yes $L; rc AISKILLS-GHOST-APPLY
 test -d "$CACHE"; rc AISKILLS-GHOST-REPAIRED
+test -d "$CLONE"; rc AISKILLS-GHOST-MARKET-BACK
+su - $U -c 'claude plugin list' 2>&1 | head -12
 $D plan /tmp/with-tool.json --target / $L > /tmp/plan-ghost2.txt 2>&1
 absent /tmp/plan-ghost2.txt '\[ai_skills\]'; rc AISKILLS-GHOST-REPLAN-QUIET
 
-echo "AISKILLS-H5: the marketplace clone is checked the same way"
-rm -rf "$CLONE"
+echo "AISKILLS-H5: with the clone in place, the cache comes back on its own"
+# Measured, and the reason H4 deletes both: Claude Code re-materialises a
+# missing plugin cache from the marketplace clone the next time it runs. dasik
+# is right to stay silent about a machine that repairs itself.
+rm -rf "$CACHE"
+su - $U -c 'claude plugin list' > /tmp/ghost-list.txt 2>&1
+head -12 /tmp/ghost-list.txt
+test -d "$CACHE"; rc AISKILLS-GHOST-SELFHEAL
 $D plan /tmp/with-tool.json --target / $L > /tmp/plan-ghost3.txt 2>&1
-grep '\[ai_skills\]' /tmp/plan-ghost3.txt
-present /tmp/plan-ghost3.txt 'marketplace:caveman'; rc AISKILLS-GHOST-MARKET-PLAN
-$D apply /tmp/with-tool.json --target / --yes $L; rc AISKILLS-GHOST-MARKET-APPLY
-test -d "$CLONE"; rc AISKILLS-GHOST-MARKET-REPAIRED
-$D plan /tmp/with-tool.json --target / $L > /tmp/plan-ghost4.txt 2>&1
-absent /tmp/plan-ghost4.txt '\[ai_skills\]'; rc AISKILLS-GHOST-MARKET-QUIET
+absent /tmp/plan-ghost3.txt '\[ai_skills\]'; rc AISKILLS-GHOST-SELFHEAL-QUIET
 
 echo "AISKILLS-H6: sync reports the machine, not the registry"
-rm -rf "$CACHE"
+rm -rf "$CACHE" "$CLONE"
 cp /tmp/with-tool.json /tmp/ghost-captured.json
 $D sync /tmp/ghost-captured.json --target / $L; rc AISKILLS-GHOST-SYNC
 python - <<'PY'

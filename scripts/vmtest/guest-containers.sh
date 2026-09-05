@@ -41,29 +41,42 @@ podman info --format '{{ .Registries }}'; echo "CONT-REGINFO-RC=$?"
 podman info --format '{{ .Registries }}' | grep -q 'docker.io' \
     && echo "CONT-REGISTRY: podman searches docker.io" \
     || echo "CONT-REGISTRY: NOT SEARCHED"
-# And the failure this domain exists to remove. The pull itself cannot succeed
-# (the installed guest has no working network), but the two failures are
-# DIFFERENT and that is the whole assertion: without the drop-in podman refuses
-# before touching the network ("short-name ... did not resolve"), with it the
-# name resolves to docker.io/library/postgres and the pull dies of DNS instead.
-podman pull postgres:17.5 2>&1 | tail -3
-podman pull postgres:17.5 2>&1 | grep -qi 'short-name.*did not resolve' \
+# And the failure this domain exists to remove, asked in BOTH directions.
+#
+# The name is deliberately one that cannot exist and is not in the aliases
+# containers-common ships (/usr/share/containers/registries.conf.d/
+# 00-shortnames.conf). Both matter:
+#   * an ALIASED name resolves with no drop-in at all, so it proves nothing;
+#   * a name already in LOCAL STORAGE resolves without consulting any registry
+#     config — which is exactly how the first version of this check fooled
+#     itself, because the pull above had just put the image there.
+# Neither can happen with a name nothing has and nothing aliases: the pull
+# always fails, and the assertion is WHICH failure comes back.
+NOPE=dasik-no-such-image-xyz:1
+
+echo "CONT-C2a: with the drop-in, the short name must get PAST resolution"
+podman pull "$NOPE" 2>&1 | tail -1
+podman pull "$NOPE" 2>&1 | grep -qi 'short-name.*did not resolve' \
     && echo "CONT-SHORTNAME: STILL UNRESOLVED" \
     || echo "CONT-SHORTNAME: resolves"
-# ...and the same question with the config taken away, so this check is known to
-# be able to FAIL. A green that has never been seen red is not evidence, and
-# both overrides are needed: CONTAINERS_REGISTRIES_CONF replaces the file only,
-# the drop-in DIRECTORY is read regardless until CONTAINERS_REGISTRIES_CONF_DIR
-# points somewhere else.
+
+echo "CONT-C2b: and with the config taken away it must NOT — else this is no test"
+# Both overrides: CONTAINERS_REGISTRIES_CONF replaces the FILE only, the drop-in
+# DIRECTORY is read regardless until CONTAINERS_REGISTRIES_CONF_DIR moves it.
 : > /tmp/empty-registries.conf; mkdir -p /tmp/empty-registries.d
 CONTAINERS_REGISTRIES_CONF=/tmp/empty-registries.conf \
 CONTAINERS_REGISTRIES_CONF_DIR=/tmp/empty-registries.d \
-    podman pull postgres:17.5 2>&1 | tail -1
+    podman pull "$NOPE" 2>&1 | tail -1
 CONTAINERS_REGISTRIES_CONF=/tmp/empty-registries.conf \
 CONTAINERS_REGISTRIES_CONF_DIR=/tmp/empty-registries.d \
-    podman pull postgres:17.5 2>&1 | grep -qi 'short-name.*did not resolve' \
+    podman pull "$NOPE" 2>&1 | grep -qi 'short-name.*did not resolve' \
     && echo "CONT-SHORTNAME-NEGATIVE: unresolved without the drop-in, as it must be" \
     || echo "CONT-SHORTNAME-NEGATIVE: VACUOUS CHECK — resolves with no config at all"
+
+echo "CONT-C2c: and the real thing the user hit — a REAL short name pulls"
+# Last, because a successful pull puts the image in local storage and would
+# make the two checks above answer from there instead of from the config.
+podman pull postgres:17.5 2>&1 | tail -1; echo "CONT-REALPULL-RC=$?"
 
 echo "CONT-D: check"
 $D check "$C" $L; echo "CONT-CHECK-RC=$?"

@@ -973,7 +973,7 @@ update` / `npx skills update` and dasik never fights it.
 | `failure_policy` | `warn-and-continue` \| `abort` | What `apply` does when an installer fails (no network, no `npx`, marketplace down). Default warns, keeps going, and leaves the item unowned so the next `plan` asks again. |
 | `entries[].name` | string | The artefact as its installer knows it. |
 | `entries[].method` | `claude-plugin` \| `codex-plugin` \| `skills` \| `tool` | Which official installer to drive. |
-| `entries[].marketplace` | `{name, source?}` | Plugin methods only. `source` (owner/repo, git URL) is what `... plugin marketplace add` registers. **`name` is the name the marketplace's own manifest declares**, which is often not the repository name — `obra/superpowers` registers as `superpowers-dev`; the CLI prints it when adding. Omit `source` only for a marketplace the agent already has: Codex's `openai-curated` is one, but it exists only once codex has populated its own cache, so on a freshly installed codex declare a git source instead. |
+| `entries[].marketplace` | `{name, source?}` | Plugin methods only. `source` (owner/repo, git URL) is what `... plugin marketplace add` registers. **`name` is the name the marketplace's own manifest declares**, which is often not the repository name — `obra/superpowers` registers as `superpowers-dev`; the CLI prints it when adding. Omit `source` only for a marketplace the agent already has: Codex's `openai-curated` is one, and it is **not** a repository you can register instead — `codex plugin marketplace upgrade` answers *"No configured Git marketplaces to upgrade"*, and the local copy is a git repo with no remote. Codex fetches it from its own API, so it exists only once codex has been **signed in**. Until then `codex plugin marketplace list` says *"No plugin marketplaces in scope"* and the install fails with ``plugin `X` was not found in marketplace `openai-curated` ``. `plan` warns when that is the case, naming the entry and the remedy (`codex login`), and keeps proposing the entry — dasik never claims an item it could not install. |
 | `entries[].plugin` | string | Plugin name inside the marketplace, when it differs from `name`. |
 | `entries[].source` | string | `skills` only: what `npx skills add` installs from. |
 | `entries[].agents` | list[string] | `skills` and `tool`: agent ids — `claude-code`, `codex`, `opencode`, `cursor`. |
@@ -993,6 +993,18 @@ registration as an item of its own:
 + [ai_skills] create andres:claude-code:plugin:caveman@caveman
 + [ai_skills] create andres:codex:skill:impeccable
 ```
+
+A plugin whose marketplace is not in scope is still planned — it is genuinely
+not installed — and the plan explains why it will not install:
+
+```
+warning: ai_skills: codex has no marketplace 'openai-curated' in scope for
+andres, so superpowers@openai-curated cannot be installed.
+```
+
+The probe behind that (`codex plugin marketplace list`, run as the user) only
+happens when such a plugin is actually proposed, and a probe that cannot RUN
+says nothing: "unknown" is not "missing".
 
 Marketplace sources are compared as repositories, not as strings:
 `obra/superpowers`, `https://github.com/obra/superpowers` and

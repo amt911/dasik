@@ -25,7 +25,16 @@ fi
 SRC="$(cd "$(dirname "$0")/../.." && pwd)"
 
 echo ">> Copying dasik out of the read-only share and installing it"
-rm -rf /root/dasik && cp -r "$SRC" /root/dasik
+# Only what the installer needs. `resources/` is a bind-mount of the Arch Wiki
+# plus the old imperative installer (>200 MB across >12k files) and `.venv` /
+# `.git` / `mutants` are the developer's, not the guest's. The ISO's root is
+# RAM-backed with a fixed cowspace, so copying them is both slow and a way to
+# run out of space before pacstrap has started.
+rm -rf /root/dasik && mkdir -p /root/dasik
+tar -C "$SRC" -cf - \
+    --exclude=./resources --exclude=./.venv --exclude=./.git \
+    --exclude=./mutants --exclude=./graphify-out --exclude=./.mypy_cache \
+    . | tar -C /root/dasik -xf -
 cd /root/dasik
 python -m venv /root/venv
 /root/venv/bin/pip install -e .

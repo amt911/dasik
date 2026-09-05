@@ -38,7 +38,16 @@ if ! mount -t 9p -o trans=virtio,ro dasik /mnt-src; then
 fi
 
 # 3. Install dasik into a venv (pydantic/colorama pulled over the guest network).
-cp -r /mnt-src /root/dasik
+# Only what the installer needs: `resources/` is a bind-mount of the Arch Wiki
+# plus the old imperative installer (>200 MB across >12k files), and `.venv` /
+# `.git` / `mutants` belong to the developer's machine. The ISO's root is
+# RAM-backed with a fixed cowspace, so copying them is slow AND a way to run out
+# of space before pacstrap has started.
+mkdir -p /root/dasik
+tar -C /mnt-src -cf - \
+    --exclude=./resources --exclude=./.venv --exclude=./.git \
+    --exclude=./mutants --exclude=./graphify-out --exclude=./.mypy_cache \
+    . | tar -C /root/dasik -xf -
 cd /root/dasik || { echo "DASIK-VM-DONE rc=91"; poweroff -f; }
 python -m venv /root/venv
 if ! /root/venv/bin/pip install -e . ; then

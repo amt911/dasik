@@ -416,8 +416,12 @@ The ArchWiki (Podman#Registries) answers with one drop-in, and that file is the
 unqualified-search-registries = ["docker.io"]
 ```
 
-The list is a search ORDER, so it is written in the order declared. A registry
-someone added by hand is drift: kept, never removed. Removing the last one dasik
+The list is a search ORDER — podman tries the registries in turn — so it is
+written in the order declared, and **re-ordering it is a change dasik plans**
+(`~ [container_registries] modify`). Set-math alone cannot see a permutation,
+which would leave the config claiming a policy the machine does not have. A
+registry someone added by hand is drift: kept, appended after the declared ones,
+and never removed. Removing the last one dasik
 owns **deletes the file** rather than writing an empty list — `[]` tells podman
 to search nothing, which is the broken state the domain exists to fix. Refused
 for docker, whose daemon never reads that file.

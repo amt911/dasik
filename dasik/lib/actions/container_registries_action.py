@@ -132,14 +132,40 @@ class ContainerRegistriesAction(AbstractAction):
     def plan(self, managed: Any) -> List[Change]:
         if self._target() is None:
             return []
+        desired = self._desired()
+        actual = self.actual()
         changes, _drift = compute_changes(
             self._DOMAIN,
-            desired=self._desired(),
+            desired=desired,
             managed=managed or [],
-            actual=self.actual(),
+            actual=actual,
             op_install=Op.CREATE,
         )
-        return changes
+        if changes:
+            # apply rewrites the file in declared order anyway, so an ordering
+            # change on top of a create/remove would be noise.
+            return changes
+        return self._reorder(desired, actual)
+
+    def _reorder(self, desired: List[str], actual: List[str]) -> List[Change]:
+        """A reorder of the SAME set, which set-math cannot see.
+
+        The list is a search order: podman tries the registries in turn, so
+        `["quay.io", "docker.io"]` and `["docker.io", "quay.io"]` are different
+        policies. Plain D/M/A would call them equal and stay silent forever
+        while the config claimed an order the machine does not have.
+
+        Only the DECLARED entries are compared. A registry someone added by
+        hand lands after them by construction (see ``_merge``), so its presence
+        must not read as a reorder on every plan.
+        """
+        if not desired:
+            return []
+        on_disk = [r for r in actual if r in set(desired)]
+        if on_disk == desired:
+            return []
+        return [Change(self._DOMAIN, Op.MODIFY, ", ".join(desired),
+                       reason=f"search order is {', '.join(on_disk)}")]
 
     def managed_keys(self) -> dict:
         return {self._DOMAIN: sorted(self._desired())}
@@ -147,9 +173,9 @@ class ContainerRegistriesAction(AbstractAction):
     def apply(self, changes) -> None:
         if self._target() is None:
             return
-        creates = {c.item for c in changes if c.op is Op.CREATE}
         removes = {c.item for c in changes if c.op is Op.REMOVE}
-        if not creates and not removes:
+        acted = {c.op for c in changes} & {Op.CREATE, Op.REMOVE, Op.MODIFY}
+        if not acted:
             return
         self._write(self._merge(removes))
 

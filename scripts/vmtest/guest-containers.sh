@@ -130,5 +130,32 @@ test -e /etc/containers/registries.conf.d/10-unqualified-search-registries.conf 
 $D apply "$C" --target / --yes $L; echo "CONT-REAPPLY-RC=$?"
 podman info --format '{{ .Registries }}'
 
+echo "CONT-L: the search ORDER is policy, and set-math cannot see a reorder"
+# Two registries first, in one order...
+python - <<'PY'
+import json
+cfg = json.load(open("config/vm-containers.json"))
+cfg["containers"]["search_registries"] = ["docker.io", "quay.io"]
+json.dump(cfg, open("/tmp/order-a.json", "w"), indent=2)
+cfg["containers"]["search_registries"] = ["quay.io", "docker.io"]
+json.dump(cfg, open("/tmp/order-b.json", "w"), indent=2)
+PY
+$D apply /tmp/order-a.json --target / --yes $L; echo "CONT-ORDERA-RC=$?"
+podman info --format '{{ .Registries }}'
+# ...then the SAME SET in the other order. D/M/A calls those equal, so without
+# the ordering check the plan is silent and the config claims an order the
+# machine does not have.
+$D plan /tmp/order-b.json --target / $L | grep -q 'container_registries' \
+    && echo "CONT-REORDER-PLANNED: yes" || echo "CONT-REORDER-PLANNED: NO — silent reorder"
+$D apply /tmp/order-b.json --target / --yes $L; echo "CONT-REORDERAPPLY-RC=$?"
+podman info --format '{{ .Registries }}'
+podman info --format '{{ .Registries }}' | grep -q 'search:\[quay.io docker.io\]' \
+    && echo "CONT-REORDER-APPLIED: podman searches quay.io first" \
+    || echo "CONT-REORDER-APPLIED: ORDER NOT HONOURED"
+$D plan /tmp/order-b.json --target / $L; echo "CONT-REORDER-REPLAN-RC=$?"
+# Back to what the tracked config says, so the run ends converged.
+$D apply "$C" --target / --yes $L; echo "CONT-RESTORE-RC=$?"
+podman info --format '{{ .Registries }}'
+
 echo "CONT-DONE rc=0"
 [ -n "$DASIK_VM_NOPOWEROFF" ] || poweroff -f

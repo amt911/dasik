@@ -202,3 +202,40 @@ def test_the_captured_block_replans_to_nothing(tmp_path):
     root = _podman(_machine(tmp_path, registries=["docker.io"]))
     captured = _captured(root)
     assert _plan(root, captured, managed=["docker.io"]) == []
+
+
+# --- the order is policy, so a reorder is a change ---------------------------- #
+
+
+def test_reordering_the_declared_list_is_planned(tmp_path):
+    """The set is the same, so plain set-math says nothing — but the list IS
+    the search order, and a config claiming one order on a machine that has the
+    other would sit there silently forever."""
+    root = _machine(tmp_path, registries=["docker.io", "quay.io"])
+    plan = _plan(root, {"runtime": "podman",
+                        "search_registries": ["quay.io", "docker.io"]},
+                 managed=["docker.io", "quay.io"])
+    assert plan == [("MODIFY", "quay.io, docker.io")]
+
+
+def test_the_declared_order_already_on_disk_plans_nothing(tmp_path):
+    root = _machine(tmp_path, registries=["quay.io", "docker.io"])
+    assert _plan(root, {"runtime": "podman",
+                        "search_registries": ["quay.io", "docker.io"]},
+                 managed=["docker.io", "quay.io"]) == []
+
+
+def test_an_unowned_registry_does_not_make_the_order_a_change(tmp_path):
+    """Someone else's registry sits after the declared ones by construction,
+    so its presence must not read as a reorder on every plan."""
+    root = _machine(tmp_path, registries=["docker.io", "quay.io"])
+    assert _plan(root, _DOCKER_IO, managed=["docker.io"]) == []
+
+
+def test_applying_the_reorder_writes_the_declared_order(tmp_path):
+    root = _machine(tmp_path, registries=["docker.io", "quay.io"])
+    declared = {"runtime": "podman",
+                "search_registries": ["quay.io", "docker.io"]}
+    action = _action(root, declared)
+    action.apply(action.plan(managed=["docker.io", "quay.io"]))
+    assert _action(root, declared).actual() == ["quay.io", "docker.io"]

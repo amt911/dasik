@@ -196,6 +196,58 @@ $D plan /tmp/captured-tool.json --target / $L > /tmp/plan12.txt 2>&1
 grep '\[ai_skills\]' /tmp/plan12.txt
 absent /tmp/plan12.txt '\[ai_skills\]'; rc AISKILLS-TOOL-PLANSYNC-QUIET
 absent /tmp/plan12.txt '\[uv_tools\]'; rc AISKILLS-UV-PLANSYNC-QUIET
+echo "AISKILLS-H4: a registry that outlived the files it describes"
+# The bug: `~/.claude/plugins/{installed_plugins,known_marketplaces}.json` are
+# small and describe an intent, so they get backed up; `cache/` and
+# `marketplaces/` are re-downloadable, so they do not. Restore that $HOME on a
+# fresh machine and the registry claims a plugin nobody downloaded — Claude Code
+# reports `enabled` and loads no skills at all, and dasik used to believe the
+# registry and plan nothing, forever. Simulated here by deleting the files and
+# keeping the manifests, which is exactly what such a restore leaves behind.
+CACHE=$H/.claude/plugins/cache/caveman/caveman
+CLONE=$H/.claude/plugins/marketplaces/caveman
+test -d "$CACHE"; rc AISKILLS-GHOST-BEFORE
+rm -rf "$CACHE"
+present $H/.claude/plugins/installed_plugins.json 'caveman@caveman'; rc AISKILLS-GHOST-REGISTRY
+su - $U -c 'claude plugin list' 2>&1 | head -12   # says "enabled"; nothing is there
+$D plan /tmp/with-tool.json --target / $L > /tmp/plan-ghost1.txt 2>&1
+grep '\[ai_skills\]' /tmp/plan-ghost1.txt
+present /tmp/plan-ghost1.txt 'plugin:caveman@caveman'; rc AISKILLS-GHOST-PLAN
+$D apply /tmp/with-tool.json --target / --yes $L; rc AISKILLS-GHOST-APPLY
+test -d "$CACHE"; rc AISKILLS-GHOST-REPAIRED
+$D plan /tmp/with-tool.json --target / $L > /tmp/plan-ghost2.txt 2>&1
+absent /tmp/plan-ghost2.txt '\[ai_skills\]'; rc AISKILLS-GHOST-REPLAN-QUIET
+
+echo "AISKILLS-H5: the marketplace clone is checked the same way"
+rm -rf "$CLONE"
+$D plan /tmp/with-tool.json --target / $L > /tmp/plan-ghost3.txt 2>&1
+grep '\[ai_skills\]' /tmp/plan-ghost3.txt
+present /tmp/plan-ghost3.txt 'marketplace:caveman'; rc AISKILLS-GHOST-MARKET-PLAN
+$D apply /tmp/with-tool.json --target / --yes $L; rc AISKILLS-GHOST-MARKET-APPLY
+test -d "$CLONE"; rc AISKILLS-GHOST-MARKET-REPAIRED
+$D plan /tmp/with-tool.json --target / $L > /tmp/plan-ghost4.txt 2>&1
+absent /tmp/plan-ghost4.txt '\[ai_skills\]'; rc AISKILLS-GHOST-MARKET-QUIET
+
+echo "AISKILLS-H6: sync reports the machine, not the registry"
+rm -rf "$CACHE"
+cp /tmp/with-tool.json /tmp/ghost-captured.json
+$D sync /tmp/ghost-captured.json --target / $L; rc AISKILLS-GHOST-SYNC
+python - <<'PY'
+import json, sys
+block = json.load(open("/tmp/ghost-captured.json")).get("ai_skills") or {}
+plugins = [e["name"] for e in block.get("entries", [])
+           if e.get("method") == "claude-plugin"]
+print("captured claude plugins:", plugins)
+# The files are gone, so the machine does not carry it — capturing it anyway
+# would hand back a config describing an installation that is not there.
+sys.exit(0 if "caveman" not in plugins else 1)
+PY
+rc AISKILLS-GHOST-SYNC-REALITY
+$D check /tmp/ghost-captured.json $L; rc AISKILLS-GHOST-CHECKSYNC
+# Put the machine back the way the sections below expect to find it.
+$D apply /tmp/with-tool.json --target / --yes $L; rc AISKILLS-GHOST-RESTORE
+test -d "$CACHE"; rc AISKILLS-GHOST-RESTORED
+
 GEN_GOOD=$(basename "$(readlink -f /var/lib/dasik/generations/current)")
 echo "AISKILLS-GEN-GOOD=$GEN_GOOD"
 

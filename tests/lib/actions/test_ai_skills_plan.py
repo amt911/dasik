@@ -40,14 +40,39 @@ def _home(root, user="andres"):
     return home
 
 
-def _install_claude_plugin(root, plugin="superpowers@caveman", user="andres",
-                           marketplace="caveman", source="JuliusBrussee/caveman"):
+def _claude_registry(root, plugin="superpowers@caveman", user="andres",
+                     marketplace="caveman", source="JuliusBrussee/caveman",
+                     version="1.0.0"):
+    """Write the two manifests `claude plugin install` writes — and nothing else.
+
+    On its own this is the *ghost* state a restored `$HOME` lands in: the
+    registry describes an installation whose files were never restored.
+    """
     plugins_dir = _home(root, user) / ".claude/plugins"
     plugins_dir.mkdir(parents=True, exist_ok=True)
+    name = plugin.partition("@")[0]
     (plugins_dir / "installed_plugins.json").write_text(json.dumps({
-        "version": 2, "plugins": {plugin: [{"scope": "user"}]}}))
+        "version": 2, "plugins": {plugin: [{
+            "scope": "user", "version": version,
+            "installPath": (f"/home/{user}/.claude/plugins/cache/"
+                            f"{marketplace}/{name}/{version}")}]}}))
     (plugins_dir / "known_marketplaces.json").write_text(json.dumps({
-        marketplace: {"source": {"source": "github", "repo": source}}}))
+        marketplace: {
+            "source": {"source": "github", "repo": source},
+            "installLocation":
+                f"/home/{user}/.claude/plugins/marketplaces/{marketplace}"}}))
+    return plugins_dir
+
+
+def _install_claude_plugin(root, plugin="superpowers@caveman", user="andres",
+                           marketplace="caveman", source="JuliusBrussee/caveman",
+                           version="1.0.0"):
+    """The registry AND the files it describes, the way a real install leaves them."""
+    plugins_dir = _claude_registry(root, plugin, user, marketplace, source, version)
+    name = plugin.partition("@")[0]
+    (plugins_dir / "cache" / marketplace / name / version).mkdir(parents=True,
+                                                                exist_ok=True)
+    (plugins_dir / "marketplaces" / marketplace).mkdir(parents=True, exist_ok=True)
 
 
 def _install_skill(root, name="impeccable", agents=("codex",), user="andres",
@@ -113,6 +138,29 @@ def test_the_marketplace_is_planned_before_the_plugin_that_needs_it(tmp_path):
     items = [c.item for c in _act(tmp_path).plan(managed=[])]
     assert (items.index("andres:claude-code:marketplace:caveman")
             < items.index("andres:claude-code:plugin:superpowers@caveman"))
+
+
+def test_a_registry_that_outlived_its_files_is_planned_again(tmp_path):
+    # config-saver archives the plugin manifests and skips `cache/` and
+    # `marketplaces/` (re-downloadable), so a restored $HOME claims plugins
+    # whose files never arrived. dasik used to believe the manifest and plan
+    # nothing, forever; the machine had no skills and `plan` never said so.
+    _passwd(tmp_path)
+    _claude_registry(tmp_path)
+
+    assert _items(_act(tmp_path)) == [
+        ("CREATE", "andres:claude-code:marketplace:caveman"),
+        ("CREATE", "andres:claude-code:plugin:superpowers@caveman"),
+        ("CREATE", "andres:codex:skill:impeccable"),
+    ]
+
+
+def test_a_registry_whose_files_are_back_plans_nothing(tmp_path):
+    # The other half of the pair: re-installing has to converge.
+    _passwd(tmp_path)
+    _install_all(tmp_path)
+    assert [c.item for c in _act(tmp_path).plan(managed=[])
+            if "claude-code" in c.item] == []
 
 
 def test_everything_present_plans_nothing(tmp_path):

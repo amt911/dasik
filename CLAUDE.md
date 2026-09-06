@@ -446,6 +446,7 @@ nothing in it proves the *system*. Every bug in the table above lived in that ga
 
 - **Use superpowers skills whenever they apply** — invoke via `Skill` before acting; process skills before implementation skills.
 - **Don't install packages without asking** — runtime deps are intentionally minimal (`pydantic`, `colorama`); the stack is intentional.
+- **Reuse before you write** — search `dasik/lib/` before adding a helper, model or action (`rg -n "^(def|class) " dasik/`). A new action is assembled from what exists — `Command`/`command_worker` for shelling out, the `models/` pydantic types, the errors module, the existing `is_needed`/`verify`/`import_state` shapes — never from a private copy of them. Two actions that both parse the same system output are one helper waiting to be extracted; do it at the third copy, in the same PR, migrating the call sites. A second copy of a state-detection routine is how `plan` and `sync` start disagreeing about the same machine.
 - **TDD by default** for new logic (`models/`, `json_parser/`, `actions/` `is_needed`/`verify`, `command_worker/`). Don't merge logic without tests.
 - **Don't lower the coverage gate** — exclude untestable modules in config with a written justification instead.
 - **Preserve idempotency** — any new action must implement a real `is_needed()` that reads system state. A re-run of the same JSON must be a no-op.

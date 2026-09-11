@@ -8,6 +8,8 @@ would make a plan silent about something that was never there.
 """
 import json
 
+import pytest
+
 from dasik.lib.actions.ai_skills_state import (
     AGENT_SKILL_DIRS, UNIVERSAL_AGENTS, carries_skill, claude_state,
     codex_state, installed_agents, skills_state)
@@ -204,31 +206,39 @@ def test_a_universal_agent_without_the_skill_anywhere_does_not_carry_it(tmp_path
 # --- the 3.10 TOML fallback ------------------------------------------------ #
 # tomllib arrived in 3.11, so on this interpreter the hand parser is never
 # reached through codex_state. It is still the parser dasik uses on a 3.10
-# target, so it is tested for itself.
+# target, so these read the SAME sections through it, with tomllib forced off.
+# The parser itself lives in toml_reader (tests/lib/actions/test_toml_reader.py);
+# what is pinned here is that ai_skills reads the same file the same way on 3.10.
 
-def test_the_fallback_parser_reads_enabled_plugins_only():
-    from dasik.lib.actions.ai_skills_state import _parse_codex_toml_lines
-    plugins, _markets = _parse_codex_toml_lines(
+
+@pytest.fixture
+def fallback(monkeypatch):
+    from dasik.lib.actions import toml_reader
+    monkeypatch.setattr(toml_reader, "_TOMLLIB", None)
+
+def test_the_fallback_parser_reads_enabled_plugins_only(fallback):
+    from dasik.lib.actions.ai_skills_state import _parse_codex_toml
+    plugins, _markets = _parse_codex_toml(
         '[plugins."superpowers@openai-curated"]\nenabled = true\n'
         '[plugins."old@mkt"]\nenabled = false\n')
     assert plugins == {"superpowers@openai-curated"}
 
 
-def test_the_fallback_parser_reads_marketplaces():
-    from dasik.lib.actions.ai_skills_state import _parse_codex_toml_lines
-    _plugins, markets = _parse_codex_toml_lines(
+def test_the_fallback_parser_reads_marketplaces(fallback):
+    from dasik.lib.actions.ai_skills_state import _parse_codex_toml
+    _plugins, markets = _parse_codex_toml(
         '[plugin_marketplaces.caveman]\nsource = "JuliusBrussee/caveman"\n')
     assert markets == {"caveman": "JuliusBrussee/caveman"}
 
 
-def test_the_fallback_parser_gives_up_on_a_malformed_section():
-    from dasik.lib.actions.ai_skills_state import _parse_codex_toml_lines
-    assert _parse_codex_toml_lines('[plugins."x@y"\nenabled = true\n') == (set(), {})
+def test_the_fallback_parser_gives_up_on_a_malformed_section(fallback):
+    from dasik.lib.actions.ai_skills_state import _parse_codex_toml
+    assert _parse_codex_toml('[plugins."x@y"\nenabled = true\n') == (set(), {})
 
 
-def test_the_fallback_parser_ignores_keys_outside_a_section():
-    from dasik.lib.actions.ai_skills_state import _parse_codex_toml_lines
-    assert _parse_codex_toml_lines('model = "gpt-5.6-sol"\n') == (set(), {})
+def test_the_fallback_parser_ignores_keys_outside_a_section(fallback):
+    from dasik.lib.actions.ai_skills_state import _parse_codex_toml
+    assert _parse_codex_toml('model = "gpt-5.6-sol"\n') == (set(), {})
 
 
 def test_codex_marketplaces_are_read_from_the_section_codex_writes(tmp_path):
@@ -244,9 +254,9 @@ def test_codex_marketplaces_are_read_from_the_section_codex_writes(tmp_path):
     assert markets == {"superpowers-dev": "https://github.com/obra/superpowers.git"}
 
 
-def test_the_fallback_parser_reads_the_same_section(tmp_path):
-    from dasik.lib.actions.ai_skills_state import _parse_codex_toml_lines
-    _plugins, markets = _parse_codex_toml_lines(
+def test_the_fallback_parser_reads_the_same_section(fallback):
+    from dasik.lib.actions.ai_skills_state import _parse_codex_toml
+    _plugins, markets = _parse_codex_toml(
         '[marketplaces.caveman]\nsource = "JuliusBrussee/caveman"\n')
     assert markets == {"caveman": "JuliusBrussee/caveman"}
 

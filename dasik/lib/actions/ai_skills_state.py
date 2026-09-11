@@ -21,8 +21,9 @@ from __future__ import annotations
 
 import json
 import os
-import re
 from typing import Dict, Set, Tuple
+
+from .toml_reader import load_toml
 
 # Where a skill actually lands, per agent. Pinned against the `skills` CLI's own
 # registry and install logic (vercel-labs/skills, src/agents.ts and
@@ -69,15 +70,6 @@ AGENT_HOME_MARKERS: Dict[str, str] = {
 _IGNORED_SKILL_DIRS = {".system"}
 
 _SKILL_FILE = "SKILL.md"
-
-_TOML_SECTION_RE = re.compile(r'^\s*\[([^\]]+)\]\s*$')
-_TOML_PLUGIN_RE = re.compile(r'^plugins\."(?P<id>[^"]+)"$')
-# What `codex plugin marketplace add` really writes, measured in a guest:
-# [marketplaces.<name>] with source_type/source. `plugin_marketplaces` is
-# accepted too, for a codex that ever used that spelling.
-_TOML_MARKET_RE = re.compile(
-    r'^(?:plugin_)?marketplaces\.(?P<name>[A-Za-z0-9._-]+)$')
-_TOML_KV_RE = re.compile(r'^\s*(?P<key>[A-Za-z0-9_]+)\s*=\s*(?P<value>.+?)\s*$')
 
 
 def _read_json(path: str):
@@ -175,70 +167,21 @@ def claude_state(home: str) -> Tuple[Set[str], Dict[str, str]]:
 def _parse_codex_toml(text: str) -> Tuple[Set[str], Dict[str, str]]:
     """Sections of interest from a Codex ``config.toml``.
 
-    ``tomllib`` is used when available (3.11+); the hand parser below is the
-    fallback for 3.10 and, deliberately, the thing that rejects a malformed file
-    the same way tomllib does — by returning nothing.
+    The parsing itself belongs to :mod:`toml_reader`, which ``mcp_servers``
+    reads the same file with: one reader, so the two domains can never disagree
+    about what is in it. An unreadable file arrives here as an empty document
+    and therefore reports nothing installed.
     """
-    try:
-        import tomllib  # type: ignore[import-not-found]
-    except ImportError:
-        tomllib = None  # type: ignore[assignment]
-
-    if tomllib is not None:
-        try:
-            data = tomllib.loads(text)
-        except Exception:
-            return set(), {}
-        plugins = {
-            key for key, value in (data.get("plugins") or {}).items()
-            if isinstance(value, dict) and value.get("enabled", True)
-        }
-        markets = {}
-        for section in ("marketplaces", "plugin_marketplaces"):
-            for name, value in (data.get(section) or {}).items():
-                if isinstance(value, dict) and isinstance(value.get("source"), str):
-                    markets[name] = value["source"]
-        return plugins, markets
-
-    return _parse_codex_toml_lines(text)
-
-
-def _parse_codex_toml_lines(text: str) -> Tuple[Set[str], Dict[str, str]]:
-    """The 3.10 fallback: only the two section shapes this module needs.
-
-    Not a TOML parser — it recognises ``[plugins."<id>"]`` and
-    ``[plugin_marketplaces.<name>]`` and gives up entirely on a line that opens
-    a section it cannot parse, so a malformed file reads as empty exactly like
-    ``tomllib`` would.
-    """
-    plugins: Set[str] = set()
-    markets: Dict[str, str] = {}
-    section = None
-    balanced = True
-    for line in text.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("[") and not _TOML_SECTION_RE.match(line):
-            balanced = False
-            break
-        match = _TOML_SECTION_RE.match(line)
-        if match:
-            section = match.group(1)
-            plugin = _TOML_PLUGIN_RE.match(section)
-            if plugin:
-                plugins.add(plugin.group("id"))
-            continue
-        pair = _TOML_KV_RE.match(line)
-        if not pair or section is None:
-            continue
-        key, value = pair.group("key"), pair.group("value").strip()
-        plugin = _TOML_PLUGIN_RE.match(section)
-        if plugin and key == "enabled" and value == "false":
-            plugins.discard(plugin.group("id"))
-        market = _TOML_MARKET_RE.match(section)
-        if market and key == "source":
-            markets[market.group("name")] = value.strip('"')
-    if not balanced:
-        return set(), {}
+    data = load_toml(text)
+    plugins = {
+        key for key, value in (data.get("plugins") or {}).items()
+        if isinstance(value, dict) and value.get("enabled", True)
+    }
+    markets = {}
+    for section in ("marketplaces", "plugin_marketplaces"):
+        for name, value in (data.get(section) or {}).items():
+            if isinstance(value, dict) and isinstance(value.get("source"), str):
+                markets[name] = value["source"]
     return plugins, markets
 
 

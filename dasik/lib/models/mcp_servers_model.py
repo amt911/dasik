@@ -156,6 +156,11 @@ class McpServersModel(BaseModel):
 
     @model_validator(mode="after")
     def _one_registration_per_name_and_agent(self) -> "McpServersModel":
+        # Deliberately coarser than `_desired()` needs: two entries with the
+        # same (name, agent) and DISJOINT `users` could not collide in practice,
+        # and are still refused. One name is one server, and a config where the
+        # answer to "what is `inkscape_mcp`?" depends on who is reading is a
+        # config nobody can reason about — split the name instead.
         seen = set()
         for entry in self.entries:
             for agent in entry.agents:

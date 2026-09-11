@@ -157,6 +157,33 @@ manifest). Changing `config-saver`'s `ref` and re-applying rebuilds it. Needs
 network in the guest (clones from GitHub + the AUR RPC); the makepkg build runs as
 the unprivileged `_aurbuilder` user, never root.
 
+### Scenario — `mcp_servers` (MCP servers per agent)
+
+`config/vm-mcp.json` + `scripts/vmtest/guest-mcp.sh` drive the whole domain
+against the guest's own `/`, because the install cannot converge it: the agents'
+CLIs are npm packages, so the guest installs `@anthropic-ai/claude-code` and
+`@openai/codex` first and then runs every verb from zero.
+
+```bash
+export DASIK_VM_WORKDIR=/var/tmp/dasik-vmtest-mcp DASIK_VM_DISK=16G
+scripts/vmtest/qemu.sh install-driven config/vm-mcp.json
+scripts/vmtest/qemu.sh drive $DASIK_VM_WORKDIR/vda.qcow2 guest-mcp.sh MCP-DONE
+```
+
+Every `MCP-…-RC=0` line is a pass and `MCP-DONE rc=N` is the verdict. What it
+covers: `check`, `plan` (both agents named), `apply` (the registration lands in
+`~/.claude.json` under the USER scope and in `~/.codex/config.toml`), `plan`
+again (silent), `sync` → `check` → `plan` (silent), `generations` + `rollback`,
+the MODIFY path, an http server with `-H`/`--bearer-token-env-var`, the block
+removed (dasik's registration goes, a hand-made one stays), and a functional
+probe that speaks JSON-RPC to `uvx inkscape_mcp` and makes it draw an SVG.
+
+Two things the guest taught that no unit test could: `uvx inkscape_mcp` does not
+start on a fresh Arch (python 3.14 has no `lxml` wheel and the source build fails
+against libxml2 2.15 — hence `--python 3.13` in the config), and `inkex` pulls
+`pygobject`/`pycairo`, which compile on first run and need `cairo`,
+`gobject-introspection`, `gcc` and `pkgconf` present.
+
 ### Scenario — AUR helper partial retry
 
 Regression for the two bugs behind a failed `apply`: util-linux `su` consuming the

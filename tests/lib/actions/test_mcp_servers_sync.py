@@ -193,3 +193,33 @@ def test_a_captured_authenticated_server_replans_to_nothing(tmp_path):
                               ActionContext(target=Target(root=str(
                                   _root(tmp_path, **kwargs)))))
     assert action.plan(managed=[]) == []
+
+
+def test_one_users_agent_is_never_lent_to_another(tmp_path):
+    """The cross-product bug: two users with the SAME server, different agents.
+
+    Grouping by the spec alone and then flattening the agents claimed that
+    everybody had it everywhere. A config captured that way does not just read
+    wrong — re-applying it runs `codex mcp add` for somebody who never had it,
+    and `sync` -> `plan` stops being silent.
+    """
+    root = _root(tmp_path, users=("andres", "otro"),
+                 per_user={"andres": {"s": {"command": "uvx"}},
+                           "otro": {"s": {"command": "uvx"}}})
+    # `otro` has it on codex as well; `andres` does not.
+    codex_home = root / "home/otro/.codex"
+    codex_home.mkdir(exist_ok=True)
+    (codex_home / "config.toml").write_text('[mcp_servers.s]\ncommand = "uvx"\n')
+
+    action = McpServersAction({}, ActionContext(target=Target(root=str(root))))
+    block = action.import_state()["mcp_servers"]
+    by_agents = {tuple(e["agents"]): e for e in block["entries"]}
+    assert set(by_agents) == {("claude-code",), ("claude-code", "codex")}
+    assert by_agents[("claude-code",)]["users"] == ["andres"]
+    assert by_agents[("claude-code", "codex")]["users"] == ["otro"]
+
+    replan = McpServersAction({"users": [{"username": "andres"},
+                                         {"username": "otro"}],
+                               "mcp_servers": block},
+                              ActionContext(target=Target(root=str(root))))
+    assert replan.plan(managed=[]) == []

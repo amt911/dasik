@@ -150,6 +150,66 @@ rc MCP-DROPPED-GONE-CLAUDE-FOREIGN-ALIVE
 # put it back for the functional probe below
 $D apply "$C" --target / --yes $L; rc MCP-REAPPLY
 
+echo "MCP-L: the http transport, with the option only each CLI understands"
+# Measured on the author's machine and here against the real binaries: claude
+# stores `headers`, codex stores `bearer_token_env_var`. If those key names were
+# wrong, `plan` would go silent on an auth change forever.
+python - <<'PY'
+import json
+cfg = json.load(open("config/vm-mcp.json"))
+cfg["mcp_servers"]["entries"] += [
+    {"name": "remote_claude", "url": "https://example.invalid/mcp",
+     "agents": ["claude-code"], "headers": {"X-Test": "1"}},
+    {"name": "remote_codex", "url": "https://example.invalid/mcp",
+     "agents": ["codex"], "bearer_token_env_var": "TOKEN"},
+]
+json.dump(cfg, open("/tmp/http.json", "w"), indent=2)
+PY
+$D check /tmp/http.json $L; rc MCP-HTTP-CHECK
+$D apply /tmp/http.json --target / --yes $L; rc MCP-HTTP-APPLY
+python - <<'PY'
+import json, sys
+s = json.load(open("/home/test/.claude.json"))["mcpServers"]["remote_claude"]
+print(json.dumps(s))
+sys.exit(0 if s.get("headers") == {"X-Test": "1"}
+         and s.get("url") == "https://example.invalid/mcp" else 1)
+PY
+rc MCP-HTTP-CLAUDE-HEADERS
+grep -A3 'mcp_servers.remote_codex' $H/.codex/config.toml
+present $H/.codex/config.toml 'bearer_token_env_var = "TOKEN"'; rc MCP-HTTP-CODEX-BEARER
+$D plan /tmp/http.json --target / $L > /tmp/plan9.txt 2>&1
+absent /tmp/plan9.txt '\[mcp_servers\]'; rc MCP-HTTP-REPLAN-QUIET
+# a changed header must be VISIBLE, which is the whole reason they are read
+python - <<'PY'
+import json
+cfg = json.load(open("/tmp/http.json"))
+for e in cfg["mcp_servers"]["entries"]:
+    if e["name"] == "remote_claude":
+        e["headers"] = {"X-Test": "2"}
+json.dump(cfg, open("/tmp/http2.json", "w"), indent=2)
+PY
+$D plan /tmp/http2.json --target / $L > /tmp/plan10.txt 2>&1
+grep '\[mcp_servers\]' /tmp/plan10.txt
+present /tmp/plan10.txt 'remote_claude'; rc MCP-HTTP-HEADER-DRIFT
+$D apply /tmp/http2.json --target / --yes $L; rc MCP-HTTP-HEADER-APPLY
+present $H/.claude.json '"X-Test": "2"'; rc MCP-HTTP-HEADER-WRITTEN
+# and sync brings both back as their own entries
+cp /tmp/http2.json /tmp/http-captured.json
+$D sync /tmp/http-captured.json --target / $L; rc MCP-HTTP-SYNC
+python - <<'PY'
+import json, sys
+entries = json.load(open("/tmp/http-captured.json"))["mcp_servers"]["entries"]
+print(json.dumps(entries, indent=2))
+by = {e["name"]: e for e in entries}
+ok = by.get("remote_claude", {}).get("headers") == {"X-Test": "2"} \
+    and by.get("remote_codex", {}).get("bearer_token_env_var") == "TOKEN"
+sys.exit(0 if ok else 1)
+PY
+rc MCP-HTTP-SYNC-AUTH
+$D check /tmp/http-captured.json $L; rc MCP-HTTP-CHECKSYNC
+# back to the declared config: the two remotes are dasik's, so they go
+$D apply "$C" --target / --yes $L; rc MCP-HTTP-CLEANUP
+
 echo "MCP-K: the server itself — does the MCP actually draw anything?"
 # Registration is not usefulness. This speaks JSON-RPC to `uvx inkscape_mcp`
 # over stdio exactly as an agent would: initialize, tools/list, then one

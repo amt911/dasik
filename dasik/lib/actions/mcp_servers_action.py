@@ -387,9 +387,12 @@ class McpServersAction(AbstractAction):
 
         homes = self._passwd()
         users = self._sync_users()
-        # key -> {(user, agent)}, where the key is everything that makes two
-        # registrations the same declaration.
-        found: Dict[Tuple[Any, ...], set] = {}
+        # Per user first: {user: {spec key: {agents}}}. Merging users BEFORE
+        # the agents are known per user is the cross-product bug — one person
+        # carrying the server on codex would lend that agent to everybody else
+        # who has it on claude, and the captured config would then register it
+        # for somebody who never had it.
+        per_user: Dict[str, Dict[Tuple[Any, ...], set]] = {}
         for user in users:
             home = self._abs(self._home_of(user, homes))
             for agent, reader in _READERS.items():
@@ -399,17 +402,24 @@ class McpServersAction(AbstractAction):
                         tuple(spec["args"]), tuple(sorted(spec["env"].items())),
                         spec["url"], tuple(sorted(spec["headers"].items())),
                         spec["bearer_token_env_var"])
-                    found.setdefault(key, set()).add((user, agent))
+                    per_user.setdefault(user, {}).setdefault(key, set()).add(agent)
+
+        # Two users share an entry only when the spec AND the agents match.
+        found: Dict[Tuple[Any, ...], set] = {}
+        for user, specs in per_user.items():
+            for key, agents in specs.items():
+                found.setdefault(key + (tuple(sorted(agents)),),
+                                 set()).add(user)
         if not found:
             return {_DOMAIN: {}}
 
         all_owners = sorted({user for owners in found.values()
-                             for user, _agent in owners})
+                             for user in owners})
         entries: List[Dict[str, Any]] = []
-        for key in sorted(found, key=lambda k: (str(k[0]), str(k[1]))):
-            name, transport, command, args, env, url, headers, bearer = key
-            owners = sorted({user for user, _agent in found[key]})
-            agents = sorted({agent for _user, agent in found[key]})
+        for key in sorted(found, key=lambda k: (str(k[0]), str(k[-1]), str(k[1]))):
+            name, transport, command, args, env, url, headers, bearer = key[:8]
+            entry_agents: List[str] = list(key[8])
+            owners = sorted(found[key])
             entry: Dict[str, Any] = {"name": name}
             if transport == "http":
                 entry["url"] = url
@@ -429,7 +439,7 @@ class McpServersAction(AbstractAction):
                     # the machine, and half a value is not reproducible. A
                     # captured config holding an API key here is private.
                     entry["env"] = dict(env)
-            entry["agents"] = agents
+            entry["agents"] = entry_agents
             if owners != all_owners:
                 entry["users"] = owners
             entries.append(entry)

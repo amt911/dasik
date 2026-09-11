@@ -156,21 +156,21 @@ def _read_value(text: str) -> Tuple[Any, str]:
         return _read_array(text)
     if text[0] == "{":
         return _read_inline_table(text)
-    token, _, rest = text.partition(",")
-    token = token.strip()
-    if token == "true":
-        return True, _rest_after(text, token)
-    if token == "false":
-        return False, _rest_after(text, token)
-    if _INT_RE.match(token):
-        return int(token), _rest_after(text, token)
+    literal, _, rest = text.partition(",")
+    literal = literal.strip()
+    if literal == "true":
+        return True, _rest_after(text, literal)
+    if literal == "false":
+        return False, _rest_after(text, literal)
+    if _INT_RE.match(literal):
+        return int(literal), _rest_after(text, literal)
     # Floats, dates, multi-line strings: nothing dasik reads writes them, and
     # guessing would be worse than admitting the document is unreadable here.
     raise _Malformed(text)
 
 
-def _rest_after(text: str, token: str) -> str:
-    return text[len(text) - len(text.lstrip()) + len(token):]
+def _rest_after(text: str, literal: str) -> str:
+    return text[len(text) - len(text.lstrip()) + len(literal):]
 
 
 def _read_string(text: str) -> Tuple[str, str]:

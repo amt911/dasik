@@ -11,6 +11,8 @@ missing it produces a change, and a target already carrying it produces none.
 indistinguishable from a feature nothing looks at unless the empty case is
 asserted too.
 """
+import json
+
 from unittest.mock import MagicMock, patch
 
 from dasik.lib.actions.action_context import ActionContext
@@ -1231,3 +1233,53 @@ def test_a_uv_tool_the_user_installed_themselves_is_left_alone(tmp_path):
     root = _uv_root(tmp_path)
     _uv_install(root, "semgrep")
     assert _uv_plan(root, {"users": [{"username": "andres"}]}) == []
+
+
+# --- mcp_servers ------------------------------------------------------------ #
+#
+# Same trap as ai_skills, one file further: the registration is a line inside a
+# program's own config, so a domain nobody looks at and a domain already
+# converged both produce an empty plan.
+
+def _mcp_root(tmp_path, registered, user="andres"):
+    (tmp_path / "etc").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "etc/passwd").write_text(
+        "root:x:0:0::/root:/bin/bash\n"
+        f"{user}:x:1000:1000::/home/{user}:/bin/bash\n")
+    home = tmp_path / "home" / user
+    home.mkdir(parents=True, exist_ok=True)
+    (home / ".claude.json").write_text(json.dumps({"mcpServers": registered}))
+    return tmp_path
+
+
+_MCP_CFG = {"users": [{"username": "andres"}], "mcp_servers": {"entries": [
+    {"name": "inkscape_mcp", "command": "uvx", "args": ["inkscape_mcp"],
+     "agents": ["claude-code"]}]}}
+_MCP_ITEM = "andres:claude-code:inkscape_mcp"
+_MCP_REGISTERED = {"inkscape_mcp": {"type": "stdio", "command": "uvx",
+                                    "args": ["inkscape_mcp"]}}
+
+
+def _mcp_plan(root, config, managed=()):
+    from dasik.lib.actions.mcp_servers_action import McpServersAction
+    action = McpServersAction(config, _ctx(root))
+    return [(c.op.name, c.item) for c in action.plan(managed=list(managed))]
+
+
+def test_an_unregistered_mcp_server_is_planned(tmp_path):
+    assert _mcp_plan(_mcp_root(tmp_path, {}), _MCP_CFG) == [("CREATE", _MCP_ITEM)]
+
+
+def test_a_registered_mcp_server_plans_nothing(tmp_path):
+    assert _mcp_plan(_mcp_root(tmp_path, _MCP_REGISTERED), _MCP_CFG) == []
+
+
+def test_an_mcp_server_owned_but_no_longer_declared_is_removed(tmp_path):
+    assert _mcp_plan(_mcp_root(tmp_path, _MCP_REGISTERED),
+                     {"users": [{"username": "andres"}]},
+                     managed=[_MCP_ITEM]) == [("DELETE", _MCP_ITEM)]
+
+
+def test_an_mcp_server_somebody_else_registered_is_left_alone(tmp_path):
+    assert _mcp_plan(_mcp_root(tmp_path, {"theirs": {"command": "x"}}),
+                     {"users": [{"username": "andres"}]}) == []

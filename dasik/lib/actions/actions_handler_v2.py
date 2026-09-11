@@ -47,6 +47,7 @@ def setup_actions() -> None:
     from .home_files_action import HomeFilesAction
     from .config_saver_action import ConfigSaverAction
     from .ai_skills_action import AiSkillsAction
+    from .mcp_servers_action import McpServersAction
     from .uv_tools_action import UvToolsAction
     from .containers_action import ContainersAction
     from .container_registries_action import ContainerRegistriesAction
@@ -262,6 +263,16 @@ def setup_actions() -> None:
     register_action(
         action_class=AiSkillsAction,
         config_key='__root__',   # reads root-level `ai_skills` + `users`
+        is_optional=True,
+    )
+    # The MCP servers those agents talk to, registered through `claude mcp add`
+    # / `codex mcp add`. Same phase and the same reasons as AiSkillsAction:
+    # after Users (the registry lives in $HOME and the CLI runs AS the user) and
+    # after Packages (the agent's binary has to exist). Independent of it —
+    # neither domain reads the other's state.
+    register_action(
+        action_class=McpServersAction,
+        config_key='__root__',   # reads root-level `mcp_servers` + `users`
         is_optional=True,
     )
     # The container runtime's id maps. After Users (useradd writes a range

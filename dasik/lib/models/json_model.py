@@ -29,6 +29,7 @@ from .config_saver_model import ConfigSaverModel
 from .containers_model import ContainersModel
 from .tailscale_model import TailscaleModel
 from .ai_skills_model import AiSkillsModel
+from .mcp_servers_model import McpServersModel
 from .uv_tools_model import UvToolsModel
 from .systemd_conf_model import validate_ini_section
 
@@ -159,6 +160,10 @@ class JsonModel(BaseModel):
     # Presence only — never a version, so `claude plugin update` / `npx skills
     # update` stay the user's and do not read back as drift.
     ai_skills: Optional[AiSkillsModel] = None
+    # MCP servers each agent talks to, registered through `claude mcp add` /
+    # `codex mcp add`. Neither registry file can be owned as a file: they are
+    # the programs' own mutable state.
+    mcp_servers: Optional[McpServersModel] = None
     # Python programs their own upstream ships through `uv tool install`, per
     # user. Runs BEFORE ai_skills, which may need one of them (graphify ships
     # its skill from the program itself).

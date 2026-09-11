@@ -1157,3 +1157,53 @@ def test_sync_then_plan_is_silent_for_the_search_registries(tmp_path):
     action = ContainerRegistriesAction(
         captured, ActionContext(target=Target(root=str(root))))
     assert action.plan(managed=["docker.io"]) == []
+
+
+# --- mcp_servers ------------------------------------------------------------ #
+#
+# End to end through the real registry, because that is the half that broke for
+# every domain before it: `Reconciler.sync` only visits v3 actions, and an
+# action whose import_state nobody reaches captures nothing while looking fine
+# in its own unit test.
+
+def _mcp_machine(tmp_path, registered=None, user="andres"):
+    (tmp_path / "etc").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "etc/passwd").write_text(
+        "root:x:0:0::/root:/bin/bash\n"
+        f"{user}:x:1000:1000::/home/{user}:/bin/bash\n")
+    home = tmp_path / "home" / user
+    home.mkdir(parents=True, exist_ok=True)
+    if registered is not None:
+        (home / ".claude.json").write_text(json.dumps({"mcpServers": registered}))
+    return tmp_path
+
+
+_MCP_ON_DISK = {"inkscape_mcp": {"type": "stdio", "command": "uvx",
+                                 "args": ["inkscape_mcp"], "env": {}}}
+
+
+def test_sync_captures_the_mcp_servers_a_machine_has(tmp_path):
+    captured = _synced(_mcp_machine(tmp_path, _MCP_ON_DISK))
+    assert captured["mcp_servers"] == {
+        "users": ["andres"],
+        "entries": [{"name": "inkscape_mcp", "command": "uvx",
+                     "args": ["inkscape_mcp"], "agents": ["claude-code"]}]}
+
+
+def test_sync_invents_no_mcp_servers_on_a_machine_without_any(tmp_path):
+    captured = _synced(_mcp_machine(tmp_path, {}))
+    assert not captured.get("mcp_servers")
+
+
+def test_the_captured_mcp_block_validates(tmp_path):
+    captured = _synced(_mcp_machine(tmp_path, _MCP_ON_DISK))
+    JsonModel.model_validate({"hostname": "box",
+                              "mcp_servers": captured["mcp_servers"]})
+
+
+def test_sync_then_plan_is_silent_for_the_mcp_servers(tmp_path):
+    from dasik.lib.actions.mcp_servers_action import McpServersAction
+    root = _mcp_machine(tmp_path, _MCP_ON_DISK)
+    captured = _synced(root)
+    action = McpServersAction(captured, ActionContext(target=Target(root=str(root))))
+    assert action.plan(managed=["andres:claude-code:inkscape_mcp"]) == []

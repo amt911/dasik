@@ -24,7 +24,7 @@ def test_claude_reads_a_stdio_server(tmp_path):
         "type": "stdio", "command": "uvx", "args": ["inkscape_mcp"], "env": {}}}})
     assert claude_mcp(home) == {"inkscape_mcp": {
         "transport": "stdio", "command": "uvx", "args": ["inkscape_mcp"],
-        "env": {}, "url": None}}
+        "env": {}, "url": None, "headers": {}, "bearer_token_env_var": None}}
 
 
 def test_claude_ignores_project_scoped_servers(tmp_path):
@@ -44,7 +44,8 @@ def test_claude_reads_an_http_server(tmp_path):
         "type": "http", "url": "https://mcp.sentry.dev/mcp"}}})
     assert claude_mcp(home) == {"sentry": {
         "transport": "http", "command": None, "args": [], "env": {},
-        "url": "https://mcp.sentry.dev/mcp"}}
+        "url": "https://mcp.sentry.dev/mcp", "headers": {},
+        "bearer_token_env_var": None}}
 
 
 def test_a_url_makes_it_http_even_without_a_type(tmp_path):
@@ -73,7 +74,7 @@ def test_codex_reads_a_stdio_server(tmp_path):
                                  'command = "uvx"\nargs = ["inkscape_mcp"]\n')
     assert codex_mcp(home) == {"inkscape_mcp": {
         "transport": "stdio", "command": "uvx", "args": ["inkscape_mcp"],
-        "env": {}, "url": None}}
+        "env": {}, "url": None, "headers": {}, "bearer_token_env_var": None}}
 
 
 def test_codex_reads_env_and_url(tmp_path):
@@ -94,3 +95,29 @@ def test_codex_ignores_every_other_section(tmp_path):
                                  '[mcp_servers.only]\ncommand = "x"\n'
                                  '[hooks.state]\n')
     assert list(codex_mcp(home)) == ["only"]
+
+
+def test_claude_reads_the_headers_it_wrote(tmp_path):
+    """`claude mcp add -H` stores them, so `plan` can see a header change.
+
+    A field the config can declare and the reader ignores is a change nobody
+    can detect: the plan stays silent while the server authenticates with the
+    old header.
+    """
+    home = _home(tmp_path, claude={"mcpServers": {"s": {
+        "type": "http", "url": "https://e/mcp", "headers": {"X-Api-Key": "k"}}}})
+    assert claude_mcp(home)["s"]["headers"] == {"X-Api-Key": "k"}
+    assert claude_mcp(home)["s"]["bearer_token_env_var"] is None
+
+
+def test_codex_reads_the_bearer_variable_it_wrote(tmp_path):
+    home = _home(tmp_path, codex='[mcp_servers.s]\nurl = "https://e/mcp"\n'
+                                 'bearer_token_env_var = "TOKEN"\n')
+    assert codex_mcp(home)["s"]["bearer_token_env_var"] == "TOKEN"
+    assert codex_mcp(home)["s"]["headers"] == {}
+
+
+def test_a_stdio_server_has_no_headers_and_no_bearer(tmp_path):
+    home = _home(tmp_path, claude={"mcpServers": {"s": {"command": "x"}}})
+    assert claude_mcp(home)["s"]["headers"] == {}
+    assert claude_mcp(home)["s"]["bearer_token_env_var"] is None

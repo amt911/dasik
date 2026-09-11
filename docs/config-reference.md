@@ -1114,8 +1114,8 @@ What `plan` shows is one item per (user, agent, server):
 + [mcp_servers] create andres:codex:inkscape_mcp
 ```
 
-A server already registered with a different command, arguments, environment or
-transport is a MODIFY, applied as remove-then-add: `mcp add` on a name that
+A server already registered with a different command, arguments, environment,
+transport, headers or bearer variable is a MODIFY, applied as remove-then-add: `mcp add` on a name that
 already exists does not rewrite it. An absent `env` and `"env": {}` are the same
 registration — `claude mcp add` writes the empty object for a server the config
 never gave an environment, and treating them as different would plan the same

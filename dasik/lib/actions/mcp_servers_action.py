@@ -57,6 +57,8 @@ def _spec_of(entry: Any) -> Dict[str, Any]:
         "args": list(_field(entry, "args", []) or []),
         "env": dict(_field(entry, "env", {}) or {}),
         "url": url or None,
+        "headers": dict(_field(entry, "headers", {}) or {}),
+        "bearer_token_env_var": _field(entry, "bearer_token_env_var") or None,
     }
 
 
@@ -167,10 +169,7 @@ class McpServersAction(AbstractAction):
                 for agent in _field(entry, "agents", []) or []:
                     spec = _spec_of(entry)
                     spec.update(user=user, agent=agent,
-                                name=_field(entry, "name"),
-                                headers=dict(_field(entry, "headers", {}) or {}),
-                                bearer_token_env_var=_field(
-                                    entry, "bearer_token_env_var"))
+                                name=_field(entry, "name"))
                     desired[self._item(user, agent, spec["name"])] = spec
         return desired
 
@@ -203,12 +202,14 @@ class McpServersAction(AbstractAction):
                            registered: Dict[str, Any]) -> bool:
         """Whether what is registered is what the config asked for.
 
-        Headers and the bearer variable are deliberately NOT compared: neither
-        CLI writes them anywhere dasik can read (claude keeps headers, codex
-        keeps the variable name, and neither is exposed the same way), so a
-        comparison would either be a MODIFY on every run or a lie.
+        The auth fields count: each agent stores the one it supports (claude
+        keeps `headers`, codex keeps `bearer_token_env_var`), and a change
+        nothing compares is a change `plan` can never show — the server would
+        go on authenticating with the old key while every run reported
+        convergence.
         """
-        keys = ("transport", "command", "args", "env", "url")
+        keys = ("transport", "command", "args", "env", "url", "headers",
+                "bearer_token_env_var")
         return all(declared.get(k) == registered.get(k) for k in keys)
 
     def plan(self, managed) -> List[Change]:
@@ -396,7 +397,8 @@ class McpServersAction(AbstractAction):
                     key: Tuple[Any, ...] = (
                         name, spec["transport"], spec["command"],
                         tuple(spec["args"]), tuple(sorted(spec["env"].items())),
-                        spec["url"])
+                        spec["url"], tuple(sorted(spec["headers"].items())),
+                        spec["bearer_token_env_var"])
                     found.setdefault(key, set()).add((user, agent))
         if not found:
             return {_DOMAIN: {}}
@@ -405,12 +407,19 @@ class McpServersAction(AbstractAction):
                              for user, _agent in owners})
         entries: List[Dict[str, Any]] = []
         for key in sorted(found, key=lambda k: (str(k[0]), str(k[1]))):
-            name, transport, command, args, env, url = key
+            name, transport, command, args, env, url, headers, bearer = key
             owners = sorted({user for user, _agent in found[key]})
             agents = sorted({agent for _user, agent in found[key]})
             entry: Dict[str, Any] = {"name": name}
             if transport == "http":
                 entry["url"] = url
+                # Each agent stores only the option it supports, so these never
+                # collide — and a server both agents carry with different auth
+                # stays two entries, which is the only shape the model accepts.
+                if headers:
+                    entry["headers"] = dict(headers)
+                if bearer:
+                    entry["bearer_token_env_var"] = bearer
             else:
                 entry["command"] = command
                 if args:

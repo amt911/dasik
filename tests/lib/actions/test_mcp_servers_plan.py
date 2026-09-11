@@ -158,3 +158,42 @@ def test_actual_reports_what_is_registered(tmp_path):
         _root(tmp_path, claude=REGISTERED_CLAUDE, codex=REGISTERED_CODEX)))))
     assert action.actual() == {"andres:claude-code:inkscape_mcp",
                                "andres:codex:inkscape_mcp"}
+
+
+# --- the auth fields are part of the registration, not decoration ----------- #
+
+def _http(headers=None, agents=("claude-code",), bearer=None):
+    entry = {"name": "s", "url": "https://e/mcp", "agents": list(agents)}
+    if headers:
+        entry["headers"] = headers
+    if bearer:
+        entry["bearer_token_env_var"] = bearer
+    return {"users": [{"username": "andres"}], "mcp_servers": {"entries": [entry]}}
+
+
+def test_a_changed_header_is_a_modify(tmp_path):
+    """The silent-forever bug if headers were not compared: the plan says
+    nothing while the server keeps authenticating with the old key."""
+    assert _plan(tmp_path, _http({"X-Api-Key": "new"}),
+                 claude={"s": {"type": "http", "url": "https://e/mcp",
+                               "headers": {"X-Api-Key": "old"}}}) == [
+        ("MODIFY", "andres:claude-code:s")]
+
+
+def test_the_same_header_plans_nothing(tmp_path):
+    assert _plan(tmp_path, _http({"X-Api-Key": "k"}),
+                 claude={"s": {"type": "http", "url": "https://e/mcp",
+                               "headers": {"X-Api-Key": "k"}}}) == []
+
+
+def test_a_changed_bearer_variable_is_a_modify(tmp_path):
+    assert _plan(tmp_path, _http(agents=("codex",), bearer="NEW"),
+                 codex='[mcp_servers.s]\nurl = "https://e/mcp"\n'
+                       'bearer_token_env_var = "OLD"\n') == [
+        ("MODIFY", "andres:codex:s")]
+
+
+def test_the_same_bearer_variable_plans_nothing(tmp_path):
+    assert _plan(tmp_path, _http(agents=("codex",), bearer="TOKEN"),
+                 codex='[mcp_servers.s]\nurl = "https://e/mcp"\n'
+                       'bearer_token_env_var = "TOKEN"\n') == []

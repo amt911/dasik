@@ -17,7 +17,8 @@ would delete it.
 Both readers normalize to the same dict::
 
     {"transport": "stdio" | "http",
-     "command": str | None, "args": [str], "env": {str: str}, "url": str | None}
+     "command": str | None, "args": [str], "env": {str: str}, "url": str | None,
+     "headers": {str: str}, "bearer_token_env_var": str | None}
 
 so ``plan`` can compare a claude registration, a codex one and a declaration
 without caring which file they came from. An absent, truncated or unexpected
@@ -37,17 +38,29 @@ _CLAUDE_REL = ".claude.json"
 _CODEX_REL = ".codex/config.toml"
 
 
-def _spec(command: Any, args: Any, env: Any, url: Any) -> Dict[str, Any]:
-    """One registration, in the shape every reader and the config share."""
+def _spec(command: Any, args: Any, env: Any, url: Any,
+          headers: Any = None, bearer: Any = None) -> Dict[str, Any]:
+    """One registration, in the shape every reader and the config share.
+
+    The auth fields are read too, not only the transport: a header the config
+    declares and the reader ignores is a change nothing can detect — `plan`
+    would stay silent while the server kept authenticating with the old one.
+    Each agent stores only the one it supports, so the other is empty here.
+    """
     clean_args = [str(a) for a in args] if isinstance(args, list) else []
     clean_env = {str(k): str(v) for k, v in env.items()} \
         if isinstance(env, dict) else {}
+    clean_headers = {str(k): str(v) for k, v in headers.items()} \
+        if isinstance(headers, dict) else {}
     return {
         "transport": "http" if isinstance(url, str) and url else "stdio",
         "command": command if isinstance(command, str) and command else None,
         "args": clean_args,
         "env": clean_env,
         "url": url if isinstance(url, str) and url else None,
+        "headers": clean_headers,
+        "bearer_token_env_var": bearer if isinstance(bearer, str) and bearer
+        else None,
     }
 
 
@@ -76,7 +89,8 @@ def claude_mcp(home: str) -> Dict[str, Dict[str, Any]]:
         if not isinstance(entry, dict):
             continue
         found[str(name)] = _spec(entry.get("command"), entry.get("args"),
-                                 entry.get("env"), entry.get("url"))
+                                 entry.get("env"), entry.get("url"),
+                                 headers=entry.get("headers"))
     return found
 
 
@@ -93,5 +107,6 @@ def codex_mcp(home: str) -> Dict[str, Dict[str, Any]]:
         if not isinstance(entry, dict):
             continue
         found[str(name)] = _spec(entry.get("command"), entry.get("args"),
-                                 entry.get("env"), entry.get("url"))
+                                 entry.get("env"), entry.get("url"),
+                                 bearer=entry.get("bearer_token_env_var"))
     return found

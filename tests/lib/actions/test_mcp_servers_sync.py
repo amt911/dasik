@@ -153,3 +153,43 @@ def test_a_captured_http_server_also_replans_to_nothing(tmp_path):
                               ActionContext(target=Target(root=str(
                                   _root(tmp_path, **kwargs)))))
     assert action.plan(managed=[]) == []
+
+
+def test_headers_are_captured_for_claude(tmp_path):
+    """A capture that dropped them would re-apply an unauthenticated server."""
+    block = _sync(tmp_path, claude={"s": {"type": "http", "url": "https://e/mcp",
+                                          "headers": {"X-Api-Key": "k"}}})
+    assert block["entries"][0] == {"name": "s", "url": "https://e/mcp",
+                                   "headers": {"X-Api-Key": "k"},
+                                   "agents": ["claude-code"]}
+
+
+def test_the_bearer_variable_is_captured_for_codex(tmp_path):
+    block = _sync(tmp_path, codex='[mcp_servers.s]\nurl = "https://e/mcp"\n'
+                                  'bearer_token_env_var = "TOKEN"\n')
+    assert block["entries"][0] == {"name": "s", "url": "https://e/mcp",
+                                   "bearer_token_env_var": "TOKEN",
+                                   "agents": ["codex"]}
+
+
+def test_the_same_server_with_different_auth_per_agent_stays_two_entries(tmp_path):
+    """One entry could not express it: the model refuses `headers` for codex."""
+    block = _sync(tmp_path,
+                  claude={"s": {"type": "http", "url": "https://e/mcp",
+                                "headers": {"X": "y"}}},
+                  codex='[mcp_servers.s]\nurl = "https://e/mcp"\n'
+                        'bearer_token_env_var = "TOKEN"\n')
+    McpServersModel(**block)
+    assert [e["agents"] for e in block["entries"]] == [["claude-code"], ["codex"]]
+
+
+def test_a_captured_authenticated_server_replans_to_nothing(tmp_path):
+    kwargs = dict(claude={"s": {"type": "http", "url": "https://e/mcp",
+                                "headers": {"X-Api-Key": "k"}}})
+    captured = _sync(tmp_path, **kwargs)
+    McpServersModel(**captured)
+    action = McpServersAction({"users": [{"username": "andres"}],
+                               "mcp_servers": captured},
+                              ActionContext(target=Target(root=str(
+                                  _root(tmp_path, **kwargs)))))
+    assert action.plan(managed=[]) == []

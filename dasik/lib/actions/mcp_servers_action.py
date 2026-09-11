@@ -362,5 +362,73 @@ class McpServersAction(AbstractAction):
             self.failed_items.append(item)
         return False
 
+    # -- sync ---------------------------------------------------------------- #
+
+    def _sync_users(self) -> List[str]:
+        """Whose homes `sync` reads.
+
+        The declared users when there are any, and otherwise the machine's own
+        humans — a bootstrap sync starts from ``{}``, where nothing is declared
+        yet, and a domain that captured nothing there would stay invisible until
+        somebody wrote the block by hand. System accounts are never read: their
+        homes are service state, not somebody's tools.
+        """
+        declared = self._users()
+        if declared:
+            return declared
+        return sorted(user for user, (_home, uid) in self._passwd_entries().items()
+                      if 1000 <= uid < 65534)
+
     def import_state(self, managed=None) -> Dict[str, Any]:
-        raise NotImplementedError    # Task 5
+        """Report the MCP servers each user's agents are registered against."""
+        if self._target() is None:
+            return {_DOMAIN: {}}
+
+        homes = self._passwd()
+        users = self._sync_users()
+        # key -> {(user, agent)}, where the key is everything that makes two
+        # registrations the same declaration.
+        found: Dict[Tuple[Any, ...], set] = {}
+        for user in users:
+            home = self._abs(self._home_of(user, homes))
+            for agent, reader in _READERS.items():
+                for name, spec in reader(home).items():
+                    key: Tuple[Any, ...] = (
+                        name, spec["transport"], spec["command"],
+                        tuple(spec["args"]), tuple(sorted(spec["env"].items())),
+                        spec["url"])
+                    found.setdefault(key, set()).add((user, agent))
+        if not found:
+            return {_DOMAIN: {}}
+
+        all_owners = sorted({user for owners in found.values()
+                             for user, _agent in owners})
+        entries: List[Dict[str, Any]] = []
+        for key in sorted(found, key=lambda k: (str(k[0]), str(k[1]))):
+            name, transport, command, args, env, url = key
+            owners = sorted({user for user, _agent in found[key]})
+            agents = sorted({agent for _user, agent in found[key]})
+            entry: Dict[str, Any] = {"name": name}
+            if transport == "http":
+                entry["url"] = url
+            else:
+                entry["command"] = command
+                if args:
+                    entry["args"] = list(args)
+                if env:
+                    # Verbatim, like WireGuard's PrivateKey: a capture describes
+                    # the machine, and half a value is not reproducible. A
+                    # captured config holding an API key here is private.
+                    entry["env"] = dict(env)
+            entry["agents"] = agents
+            if owners != all_owners:
+                entry["users"] = owners
+            entries.append(entry)
+
+        block: Dict[str, Any] = {"users": all_owners, "entries": entries}
+        declared_policy = _field(self._block, "failure_policy")
+        if declared_policy and declared_policy != "warn-and-continue":
+            # Not something a machine can report: policy is carried over from
+            # the config that was applied, or it would be lost on every sync.
+            block["failure_policy"] = declared_policy
+        return {_DOMAIN: block}

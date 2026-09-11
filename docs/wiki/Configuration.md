@@ -265,6 +265,36 @@ update` and `npx skills update` stay yours instead of reading back as drift.
 state files and reports the block back, omitting — out loud — any skill whose
 origin nothing records, since no other machine could reproduce it.
 
+### `mcp_servers` — MCP servers per agent
+
+```json
+"mcp_servers": { "entries": [
+  { "name": "inkscape_mcp", "command": "uvx", "args": ["inkscape_mcp"],
+    "agents": ["claude-code", "codex"] }
+] }
+```
+
+Registered with each agent's own CLI (`claude mcp add -s user`, `codex mcp
+add`), never by writing the files: `~/.claude.json` and `~/.codex/config.toml`
+are the programs' own state — account material, per-project history, hook
+hashes — and owning them as files would delete it.
+
+| Key | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `users` | list of strings | every declared user except root | the registration lives in `$HOME` |
+| `failure_policy` | `warn-and-continue` \| `abort` | `warn-and-continue` | an agent that is not installed must not abort an install |
+| `entries[].agents` | list of strings | — | `claude-code`, `codex` |
+| `entries[].command` + `args` + `env` | string, list, object | — | stdio transport |
+| `entries[].url` | string | — | http transport; excludes `command` |
+| `entries[].headers` | object | `{}` | `url` + claude-code only |
+| `entries[].bearer_token_env_var` | string | — | `url` + codex only |
+
+An option only one CLI understands must name that agent alone — otherwise the
+plan promises a registration that arrives without it. Only Claude Code's **user
+scope** is read and written; `projects.<path>.mcpServers` belongs to a
+repository. `sync` captures `env` **verbatim**, like WireGuard's `PrivateKey`:
+a captured config holding an API key is private.
+
 ### `uv_tools` — Python programs uv installs per user
 
 ```json

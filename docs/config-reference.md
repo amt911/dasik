@@ -1064,6 +1064,83 @@ hand is left alone unless the manifest owns it.
 
 ---
 
+## `mcp_servers` — MCP servers per agent  *(sync ✓)*
+
+Declares which MCP servers each user's agents talk to, and registers them with
+**each agent's own CLI** (`claude mcp add`, `codex mcp add`). dasik never writes
+either registry file itself: `~/.claude.json` carries account material and
+per-project history, `~/.codex/config.toml` carries project trust levels and
+hook state, and owning them as files would delete what the program keeps there.
+
+```json
+"mcp_servers": {
+  "users": ["andres"],
+  "failure_policy": "warn-and-continue",
+  "entries": [
+    {"name": "inkscape_mcp", "command": "uvx", "args": ["inkscape_mcp"],
+     "agents": ["claude-code", "codex"]},
+    {"name": "sentry", "url": "https://mcp.sentry.dev/mcp",
+     "agents": ["claude-code"], "headers": {"X-Api-Key": "…"}}
+  ]
+}
+```
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `users` | list[string] | Whose agents get them. Empty = every declared user except root — the registration lives in a home directory, so "system-wide" means "every human on the machine". |
+| `failure_policy` | `warn-and-continue` \| `abort` | What `apply` does when the agent's CLI fails (not installed, not logged in). Default warns, keeps going and leaves the item unowned, so the next `plan` asks again. |
+| `entries[].name` | string | The server name as the agent registers it. |
+| `entries[].agents` | list[string] | `claude-code`, `codex`. Another id is refused: there is no MCP CLI to drive. |
+| `entries[].command` | string | stdio transport: the program that serves MCP on stdio (`uvx`, `npx`, an absolute path). Mutually exclusive with `url`. |
+| `entries[].args` | list[string] | Arguments for `command`. |
+| `entries[].env` | object | Environment for `command`. **Captured verbatim by `sync`** — see below. |
+| `entries[].url` | string | http transport: the streamable HTTP endpoint. Mutually exclusive with `command`. |
+| `entries[].headers` | object | `url` + **claude-code only** (`claude mcp add -H`). An entry using it must declare `agents: ["claude-code"]` alone. |
+| `entries[].bearer_token_env_var` | string | `url` + **codex only** (`codex mcp add --bearer-token-env-var`). An entry using it must declare `agents: ["codex"]` alone. |
+| `entries[].users` | list[string] | Narrows this entry to some of the block's users. |
+
+The two CLIs are not symmetric, and the model refuses to paper over it: an
+option only one of them understands must name that agent alone, or the plan
+would promise a registration that silently arrives without it. A server both
+agents need with different auth is two entries.
+
+**There is no `version` field**, like every other domain that names a tool:
+`uvx`/`npx` own what they fetch.
+
+What `plan` shows is one item per (user, agent, server):
+
+```
++ [mcp_servers] create andres:claude-code:inkscape_mcp
++ [mcp_servers] create andres:codex:inkscape_mcp
+```
+
+A server already registered with a different command, arguments, environment or
+transport is a MODIFY, applied as remove-then-add: `mcp add` on a name that
+already exists does not rewrite it. An absent `env` and `"env": {}` are the same
+registration — `claude mcp add` writes the empty object for a server the config
+never gave an environment, and treating them as different would plan the same
+MODIFY forever.
+
+`apply` runs every command as the user, inside the target
+(`su - <user> -c 'claude mcp add "$1" -s user -- "$2" "$3"' -- sh inkscape_mcp uvx inkscape_mcp`),
+so the agent's binary has to exist on the target. **`-s user` is not optional**:
+`claude mcp add` defaults to the `local` scope, which belongs to the directory
+it was run from, not to the machine.
+
+Only Claude Code's **user scope** is read and written. The `projects.<path>.mcpServers`
+half of `~/.claude.json` is a repository's own configuration: dasik neither
+captures it nor registers into it.
+
+`sync` reads both registries back and reports one entry per server, listing the
+agents that carry it and — when they differ from the block's — the users. **An
+`env` is captured verbatim**, the same rule as WireGuard's `PrivateKey`: a
+capture describes the machine, and half a value reproduces nothing. A config
+captured from a machine whose MCP server holds an API key is private; keep it
+out of a shared repository, or declare that value through `$include_line` from
+a gitignored `secrets/` file.
+
+---
+
 ## `zram`  *(sync ✓)*
 
 Mirrors `/etc/systemd/zram-generator.conf` as `{device: {option: value}}`:

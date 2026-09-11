@@ -61,8 +61,8 @@ command = "uvx"
 args = ["inkscape_mcp"]
 ```
 
-The http shapes, measured the same way (`claude mcp add … --transport http … -H
-"X-Test: 1"` and `codex mcp add … --url … --bearer-token-env-var TOKEN`):
+Las formas http, medidas igual (`claude mcp add … --transport http … -H
+"X-Test: 1"` y `codex mcp add … --url … --bearer-token-env-var TOKEN`):
 
 ```jsonc
 // ~/.claude.json
@@ -77,9 +77,9 @@ url = "https://example.invalid/mcp"
 bearer_token_env_var = "TOKEN"
 ```
 
-Those two key names are what the state reader looks for, and the guest script
-re-measures them against the real binaries — a wrong guess there would make
-`plan` silent about an auth change forever.
+Esos dos nombres de clave son los que busca el lector de estado, y el script del
+invitado los vuelve a medir contra los binarios reales: adivinarlos mal dejaría
+al `plan` mudo ante un cambio de credencial para siempre.
 
 ## Modelo (`dasik/lib/models/mcp_servers_model.py`)
 

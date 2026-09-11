@@ -160,7 +160,7 @@ su - $U -c 'cd /tmp && uvx --python 3.13 inkscape_mcp --help' > /tmp/uvx.txt 2>&
 rc MCP-SERVER-STARTS; tail -3 /tmp/uvx.txt
 cp scripts/vmtest/mcp_probe.py /tmp/mcp_probe.py
 chmod 0755 /tmp/mcp_probe.py
-su - $U -c 'cd /tmp && python /tmp/mcp_probe.py --command uvx --args --python 3.13 inkscape_mcp' > /tmp/probe.txt 2>&1
+su - $U -c 'cd /tmp && python /tmp/mcp_probe.py --server "uvx --python 3.13 inkscape_mcp"' > /tmp/probe.txt 2>&1
 rc MCP-PROBE
 cat /tmp/probe.txt
 test -s /tmp/chorra.svg; rc MCP-SVG-EXISTS

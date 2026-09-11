@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shlex
 import subprocess  # nosec B404 - launching the MCP server is the whole point
 import sys
 import threading
@@ -98,10 +99,11 @@ class Server:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--command", default="uvx",
-                        help="the MCP server's program (default: uvx)")
-    parser.add_argument("--args", nargs="*", default=["inkscape_mcp"],
-                        help="its arguments (default: inkscape_mcp)")
+    # ONE string, split with shlex: an `--args` list made argparse swallow the
+    # server's own flags as the probe's ("unrecognized arguments: --python").
+    parser.add_argument("--server", default="uvx inkscape_mcp",
+                        help="the MCP server's command line "
+                             "(default: 'uvx inkscape_mcp')")
     parser.add_argument("--output", default="/tmp/chorra.svg",  # nosec B108
                         help="where the drawing has to end up")
     parser.add_argument("--data", default="dasik",
@@ -113,7 +115,12 @@ def main() -> int:
     if os.path.exists(options.output):
         os.unlink(options.output)     # a stale file would pass the check
 
-    server = Server([options.command, *options.args], options.timeout)
+    argv = shlex.split(options.server)
+    if not argv:
+        print("--server is empty", file=sys.stderr)
+        return 1
+    print("server command:", " ".join(argv))
+    server = Server(argv, options.timeout)
     try:
         info = server.request("initialize", {
             "protocolVersion": PROTOCOL,

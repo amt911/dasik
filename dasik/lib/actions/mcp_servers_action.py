@@ -24,6 +24,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from .abstract_action import AbstractAction
 from .mcp_servers_state import claude_mcp, codex_mcp
+from ..command_worker.command_worker import Command
+from ..exceptions.exceptions import CommandExecutionError
 from ..state.change import Change, Op
 
 _DOMAIN = "mcp_servers"
@@ -243,8 +245,122 @@ class McpServersAction(AbstractAction):
     def verify(self) -> bool:
         return not self.plan(managed=[])
 
-    def import_state(self, managed=None) -> Dict[str, Any]:
-        raise NotImplementedError    # Task 5
+    # -- apply -------------------------------------------------------------- #
+
+    @staticmethod
+    def _su_argv(user: str, script: str, *args: str) -> List[str]:
+        """``su - <user> -c <script> -- sh <args>``.
+
+        ``--`` terminates util-linux ``su``'s own option parsing before the
+        shell's positional argv, and every value travels as ``$1``.. so a name,
+        a URL or an env value arrives as inert data instead of code.
+        """
+        return ["-", user, "-c", script, "--", "sh", *args]
+
+    def _add_command(self, spec: Dict[str, Any]) -> Tuple[str, Tuple[str, ...]]:
+        """The registration command for one (agent, transport) pair.
+
+        `claude mcp add` defaults to the LOCAL scope — the directory it was run
+        from — so `-s user` is what makes the registration belong to the machine
+        rather than to whatever `su` happened to cd into.
+        """
+        claude = spec["agent"] == "claude-code"
+        cli = "claude mcp add" if claude else "codex mcp add"
+        scope = " -s user" if claude else ""
+        args: List[str] = [spec["name"]]
+        if spec["transport"] == "http":
+            script = f'{cli} "$1"{scope}'
+            if claude:
+                script += ' --transport http "$2"'
+            else:
+                script += ' --url "$2"'
+            args.append(spec["url"])
+            index = 3
+            for key, value in sorted((spec.get("headers") or {}).items()):
+                # Only claude-code takes headers; the model refuses them for any
+                # other agent, so no branch is needed here.
+                script += f' -H "${index}"'
+                args.append(f"{key}: {value}")
+                index += 1
+            if spec.get("bearer_token_env_var"):
+                script += f' --bearer-token-env-var "${index}"'
+                args.append(spec["bearer_token_env_var"])
+            return script, tuple(args)
+
+        env_flag = "-e" if claude else "--env"
+        script = f'{cli} "$1"{scope}'
+        index = 2
+        for key, value in sorted((spec.get("env") or {}).items()):
+            script += f' {env_flag} "${index}"'
+            args.append(f"{key}={value}")
+            index += 1
+        script += f' -- "${index}"'
+        args.append(spec["command"])
+        index += 1
+        for argument in spec.get("args") or []:
+            script += f' "${index}"'
+            args.append(argument)
+            index += 1
+        return script, tuple(args)
+
+    def _remove_command(self, spec: Dict[str, Any]) -> Tuple[str, Tuple[str, ...]]:
+        if spec["agent"] == "claude-code":
+            return 'claude mcp remove "$1" -s user', (spec["name"],)
+        return 'codex mcp remove "$1"', (spec["name"],)
+
+    def _command_for(self, change: Change, spec: Dict[str, Any]
+                     ) -> List[Tuple[str, Tuple[str, ...]]]:
+        """The official command(s) for one change: (script, args) pairs."""
+        if change.op is Op.DELETE:
+            return [self._remove_command(spec)]
+        if change.op is Op.MODIFY:
+            # Re-register: `mcp add` on a name that already exists does not
+            # rewrite it, so the old registration would survive untouched.
+            return [self._remove_command(spec), self._add_command(spec)]
+        return [self._add_command(spec)]
+
+    @staticmethod
+    def _spec_from_item(item: str) -> Optional[Dict[str, Any]]:
+        """Rebuild what a removal needs from an item the config dropped."""
+        parts = item.split(":", 2)
+        if len(parts) != 3:
+            return None
+        user, agent, name = parts
+        return {"user": user, "agent": agent, "name": name}
 
     def apply(self, changes) -> None:
-        raise NotImplementedError    # Task 4
+        if self._target() is None:
+            return
+        desired = self._desired()
+        for change in changes:
+            spec = desired.get(change.item) or self._spec_from_item(change.item)
+            if spec is None:
+                continue
+            for script, args in self._command_for(change, spec):
+                if not self._run(spec["user"], script, args, change.item):
+                    break
+
+    def _run(self, user: str, script: str, args: Tuple[str, ...],
+             item: str) -> bool:
+        """Run one CLI command. False when it failed (and was tolerated)."""
+        result = Command.execute(
+            "su", self._su_argv(user, script, *args),
+            target=self._target(), check=False, stream=True,
+            label=f"mcp_servers: {item}")
+        if getattr(result, "returncode", 1) == 0:
+            return True
+        detail = (getattr(result, "stderr", "") or "").strip()
+        message = (f"mcp_servers: {item} failed. Command: su - {user} -c "
+                   f"{script!r} -- sh {' '.join(args)}"
+                   + (f"\n{detail}" if detail else ""))
+        if self.failure_policy == "abort":
+            raise CommandExecutionError(message)
+        # warn-and-continue: the rest of the apply is worth more than one
+        # registration, and disowning the item makes the next plan ask again.
+        print(f"\033[31m{message}\033[0m")
+        if item not in self.failed_items:
+            self.failed_items.append(item)
+        return False
+
+    def import_state(self, managed=None) -> Dict[str, Any]:
+        raise NotImplementedError    # Task 5

@@ -85,7 +85,7 @@ print(json.dumps(block, indent=2))
 entries = (block or {}).get("entries", [])
 ok = any(e["name"] == "inkscape_mcp"
          and e.get("command") == "uvx"
-         and e.get("args") == ["inkscape_mcp"]
+         and e.get("args") == ["--python", "3.13", "inkscape_mcp"]
          and sorted(e.get("agents", [])) == ["claude-code", "codex"]
          for e in entries)
 sys.exit(0 if ok else 1)
@@ -154,11 +154,13 @@ echo "MCP-K: the server itself — does the MCP actually draw anything?"
 # Registration is not usefulness. This speaks JSON-RPC to `uvx inkscape_mcp`
 # over stdio exactly as an agent would: initialize, tools/list, then one
 # tools/call that has to leave an SVG on disk.
-su - $U -c 'cd /tmp && uvx inkscape_mcp --help' > /tmp/uvx.txt 2>&1
-tail -3 /tmp/uvx.txt
+# The same interpreter the config declares — see the config's python_pin note:
+# lxml has no 3.14 wheel and its source build fails against libxml2 2.15.
+su - $U -c 'cd /tmp && uvx --python 3.13 inkscape_mcp --help' > /tmp/uvx.txt 2>&1
+rc MCP-SERVER-STARTS; tail -3 /tmp/uvx.txt
 cp scripts/vmtest/mcp_probe.py /tmp/mcp_probe.py
 chmod 0755 /tmp/mcp_probe.py
-su - $U -c 'cd /tmp && python /tmp/mcp_probe.py' > /tmp/probe.txt 2>&1
+su - $U -c 'cd /tmp && python /tmp/mcp_probe.py --command uvx --args --python 3.13 inkscape_mcp' > /tmp/probe.txt 2>&1
 rc MCP-PROBE
 cat /tmp/probe.txt
 test -s /tmp/chorra.svg; rc MCP-SVG-EXISTS

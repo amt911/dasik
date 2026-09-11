@@ -1,7 +1,8 @@
 {
   "metadata": {
-    "note": "MCP servers declared per agent and registered through each agent's own CLI (`claude mcp add -s user`, `codex mcp add`). For the QEMU VM harness (scripts/vmtest/qemu.sh install-driven, then drive with guest-mcp.sh). NOT for real hardware. Needs NETWORK in the guest: npm installs the two agent CLIs and uvx fetches the MCP server. The install itself CANNOT converge this domain — the agents' binaries are npm packages, not pacman ones — so the domain is deliberately left unowned by the install and the guest script drives the whole cycle afterwards, which is also the day-2 case the domain exists for. Autologins root on ttyS0 and ships python-pydantic/python-colorama so dasik runs from the 9p-mounted repo. `inkscape` is here so the MCP server can be exercised for real, not only registered, and gcc/libxml2/libxslt/pkgconf because `uvx inkscape_mcp` builds lxml from source on a python the wheels do not cover yet (3.14): without them the server never starts and the functional probe reports an empty tool list.",
-    "disk": "8G is not enough with inkscape's dependency tree: run with DASIK_VM_DISK=16G."
+    "note": "MCP servers declared per agent and registered through each agent's own CLI (`claude mcp add -s user`, `codex mcp add`). For the QEMU VM harness (scripts/vmtest/qemu.sh install-driven, then drive with guest-mcp.sh). NOT for real hardware. Needs NETWORK in the guest: npm installs the two agent CLIs and uvx fetches the MCP server. The install itself CANNOT converge this domain — the agents' binaries are npm packages, not pacman ones — so the domain is deliberately left unowned by the install and the guest script drives the whole cycle afterwards, which is also the day-2 case the domain exists for. Autologins root on ttyS0 and ships python-pydantic/python-colorama so dasik runs from the 9p-mounted repo. `inkscape` is here so the MCP server can be exercised for real, not only registered.",
+    "disk": "8G is not enough with inkscape's dependency tree: run with DASIK_VM_DISK=16G.",
+    "python_pin": "`--python 3.13` is not decoration: inkscape_mcp pulls inkex -> lxml 5.4.0, which has no wheel for python 3.14 and whose source build fails against libxml2 2.15 (measured on both the host and the guest). Plain `uvx inkscape_mcp` only works on a machine whose uv cache still holds an environment built under an older python — which a fresh install never has."
   },
   "disks": {
     "disks": [
@@ -43,11 +44,7 @@
     "python",
     "python-pydantic",
     "python-colorama",
-    "inkscape",
-    "gcc",
-    "libxml2",
-    "libxslt",
-    "pkgconf"
+    "inkscape"
   ],
   "bootloader": "sd-boot",
   "hostname": "dasik-mcp",
@@ -77,6 +74,8 @@
         "name": "inkscape_mcp",
         "command": "uvx",
         "args": [
+          "--python",
+          "3.13",
           "inkscape_mcp"
         ],
         "agents": [

@@ -247,7 +247,10 @@ that crashes before it ever reaches `is_needed()`.
 ## Working rules
 
 - **Use superpowers skills whenever they apply** — invoke via `Skill` before acting; process skills before implementation skills.
-- **Don't install packages without asking** — runtime deps are intentionally minimal (`pydantic`, `colorama`); the stack is intentional.
+- **New dependencies: ask first, then install** — adding a package is allowed when the task
+  genuinely needs one, but ask before installing (which package, why, what it replaces) and wait
+  for the go-ahead. Runtime deps are intentionally minimal (`pydantic`, `colorama`), so check what
+  is already there first.
 - **TDD by default** for new logic (`models/`, `json_parser/`, `actions/` `is_needed`/`verify`, `command_worker/`). Don't merge logic without tests.
 - **Don't lower the coverage gate** — exclude untestable modules in config with a written justification instead.
 - **Preserve idempotency** — any new action must implement a real `is_needed()` that reads system state. A re-run of the same JSON must be a no-op.

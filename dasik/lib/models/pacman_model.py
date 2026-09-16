@@ -1,5 +1,60 @@
-"""Models for pacman configuration."""
-from pydantic import BaseModel, Field
+"""Models for pacman configuration, including third-party repositories and keys.
+
+``pacman.repositories`` declares extra ``pacman.conf`` sections beyond the
+official ones (e.g. a personal signed repo like ``[amt911]``), and
+``pacman.keys`` declares the PGP keys those repositories need trusted before
+their database can be synced. Both lists are optional and default empty —
+declaring neither changes nothing.
+"""
+import re
+from typing import List, Optional
+from urllib.parse import urlsplit
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+# dasik does not own these sections: the official repos are Arch's, `options`
+# is pacman.conf's own global section, and `multilib` already has its own
+# dedicated boolean field on PacmanModel. A declared repository naming one of
+# these would either silently shadow it or duplicate an existing knob.
+OFFICIAL_REPOS: frozenset[str] = frozenset({
+    "core", "extra", "multilib", "options",
+    "core-testing", "extra-testing", "multilib-testing",
+    "gnome-unstable", "kde-unstable", "testing", "community",
+})
+
+# pacman.conf(5) repository name grammar: must start with an alphanumeric,
+# then alphanumerics/'.'/'_'/'-'. No shell metacharacters, no leading '-'
+# (which pacman/getopt would read as a flag), no '/' (path separator).
+_VALID_REPO_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+
+# pacman.conf(5) SigLevel grammar: whitespace-separated tokens, each an
+# optional Package/Database prefix plus one of the five level keywords.
+_SIG_LEVEL_TOKEN = re.compile(r"(Package|Database)?(Never|Optional|Required|TrustedOnly|TrustAll)")
+
+_SHA1_FINGERPRINT = re.compile(r"[0-9A-Fa-f]{40}")
+
+
+def _validate_server_url(value: str) -> None:
+    """Refuse anything that is not a plain ``https://`` or ``file://`` URL.
+
+    Mirrors ``GitPackageSourceModel._validate_url``: ``urlsplit`` and reject
+    credentials, since ``sync`` copies these values verbatim into a config
+    file.
+    """
+    parts = urlsplit(value)
+    if parts.scheme not in ("https", "file"):
+        raise ValueError(
+            f"pacman repository server must be https:// or file://, got {value!r}"
+        )
+    if "@" in parts.netloc:
+        raise ValueError(
+            f"pacman repository server must not carry credentials, got {value!r}; "
+            "a synced config would copy the secret verbatim"
+        )
+    if parts.scheme == "https" and not parts.netloc:
+        raise ValueError(f"pacman repository server has no host: {value!r}")
+    if parts.scheme == "file" and not parts.path:
+        raise ValueError(f"pacman repository server has no path: {value!r}")
 
 
 class PacmanOptionsModel(BaseModel):
@@ -9,7 +64,140 @@ class PacmanOptionsModel(BaseModel):
     VerbosePkgLists: bool = Field(default=False, description="Enable verbose package lists")
 
 
+class PacmanRepositoryModel(BaseModel):
+    """A third-party ``pacman.conf`` repository section, e.g. ``[amt911]``.
+
+    Exactly one of ``servers`` (non-empty) or ``include`` is required, mirroring
+    the two ways pacman.conf itself points a repo at its mirrors: a literal
+    ``Server =`` list, or an ``Include =`` file (the form ``sync`` uses to
+    capture something like chaotic-aur without inventing servers).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    servers: List[str] = Field(default_factory=list)
+    include: Optional[str] = None
+    sig_level: Optional[str] = None
+
+    @field_validator("name")
+    @classmethod
+    def _validate_name(cls, value: str) -> str:
+        if not _VALID_REPO_NAME.fullmatch(value):
+            raise ValueError(f"pacman repository name is invalid: {value!r}")
+        if value in OFFICIAL_REPOS:
+            raise ValueError(
+                f"pacman repository name {value!r} is reserved (an official "
+                "repo, or the [options] section) — dasik does not own it"
+            )
+        return value
+
+    @field_validator("servers")
+    @classmethod
+    def _validate_servers(cls, value: List[str]) -> List[str]:
+        for url in value:
+            _validate_server_url(url)
+        return value
+
+    @field_validator("include")
+    @classmethod
+    def _validate_include(cls, value: Optional[str]) -> Optional[str]:
+        if value is not None and not value.startswith("/"):
+            raise ValueError(
+                f"pacman repository include must be an absolute path, got {value!r}"
+            )
+        return value
+
+    @field_validator("sig_level")
+    @classmethod
+    def _validate_sig_level(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return value
+        tokens = value.split()
+        if not tokens:
+            raise ValueError("pacman repository sig_level must not be empty")
+        for token in tokens:
+            if not _SIG_LEVEL_TOKEN.fullmatch(token):
+                raise ValueError(
+                    f"pacman repository sig_level has an invalid token: {token!r}"
+                )
+        return value
+
+    @model_validator(mode="after")
+    def _servers_xor_include(self) -> "PacmanRepositoryModel":
+        has_servers = bool(self.servers)
+        has_include = self.include is not None
+        if has_servers and has_include:
+            raise ValueError(
+                f"pacman repository '{self.name}': `servers` and `include` are "
+                "mutually exclusive"
+            )
+        if not has_servers and not has_include:
+            raise ValueError(
+                f"pacman repository '{self.name}': exactly one of `servers` "
+                "(non-empty) or `include` is required"
+            )
+        return self
+
+
+class PacmanKeyModel(BaseModel):
+    """A PGP key a third-party repository needs trusted before it can sync.
+
+    ``url`` is optional: it is how dasik fetches the key (``pacman-key --add``
+    on the downloaded file); without it, dasik falls back to
+    ``pacman-key --recv-keys``. Either way the key is only ever trusted if its
+    fetched primary fingerprint matches ``fingerprint`` exactly.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    fingerprint: str
+    url: Optional[str] = None
+
+    @field_validator("fingerprint")
+    @classmethod
+    def _validate_fingerprint(cls, value: str) -> str:
+        if not _SHA1_FINGERPRINT.fullmatch(value):
+            raise ValueError(
+                f"pacman key fingerprint must be 40 hex characters, got {value!r}"
+            )
+        return value.upper()
+
+    @field_validator("url")
+    @classmethod
+    def _validate_url(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return value
+        if not value.startswith("https://"):
+            raise ValueError(f"pacman key url must be https://, got {value!r}")
+        parts = urlsplit(value)
+        if "@" in parts.netloc:
+            raise ValueError(
+                f"pacman key url must not carry credentials, got {value!r}; "
+                "a synced config would copy the secret verbatim"
+            )
+        return value
+
+
 class PacmanModel(BaseModel):
     """Pacman configuration."""
     options: PacmanOptionsModel = Field(default_factory=PacmanOptionsModel)
     multilib: bool = Field(default=False, description="Enable multilib repository")
+    repositories: List[PacmanRepositoryModel] = Field(default_factory=list)
+    keys: List[PacmanKeyModel] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _no_duplicates(self) -> "PacmanModel":
+        seen_names = set()
+        for repo in self.repositories:
+            if repo.name in seen_names:
+                raise ValueError(f"pacman repository '{repo.name}' is declared twice")
+            seen_names.add(repo.name)
+        seen_fingerprints = set()
+        for key in self.keys:
+            if key.fingerprint in seen_fingerprints:
+                raise ValueError(
+                    f"pacman key fingerprint '{key.fingerprint}' is declared twice"
+                )
+            seen_fingerprints.add(key.fingerprint)
+        return self

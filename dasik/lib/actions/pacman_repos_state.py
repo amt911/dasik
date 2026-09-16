@@ -45,7 +45,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Any, Iterable, List, Optional, Tuple
+from typing import Any, Iterable, List, Optional, Set, Tuple
 
 from ..models.pacman_model import OFFICIAL_REPOS
 
@@ -263,3 +263,136 @@ def section_of(model: Any) -> RepoSection:
         servers=servers,
         include=_field(model, "include"),
     )
+
+
+# --- gpg --with-colons keyring parsing (pure) ------------------------------
+#
+# The functions below parse the *raw* ``gpg --with-colons`` output for the
+# pacman keyring (``/etc/pacman.d/gnupg``), never ``pacman-key``'s own
+# output: FACT-PR-1 (docs/FACTS.md) measured the two differ in exit code and
+# in output shape (``pacman-key`` prints no parseable colon data at all on
+# an absent key). They also parse the ``*-trusted`` files a keyring package
+# ships (FACT-PR-5, ``<40-hex-fingerprint>:4:`` per line).
+#
+# "Trusted" here means *locally* signed by the keyring's own master key
+# (what ``pacman-key --lsign-key`` does), not merely valid through the web
+# of trust. FACT-PR-2 measured that the plain validity field (2nd column of
+# a ``pub:`` record) reaches ``f`` for an ordinary signed-by-someone-else
+# key too — on a real keyring every Arch packager key would look "trusted"
+# by that column alone. The reliable signal is a ``sig:`` record whose class
+# (field 11) carries the trailing ``l`` (LOCAL/non-exportable) and whose
+# issuer key id (field 5) is one of the keyring's own secret ("master") key
+# ids — never a self-signature (``13x``/``18x``, both exportable and issued
+# by the key on itself).
+
+
+def _colon_fields(line: str) -> List[str]:
+    """Split one ``gpg --with-colons`` line into its ``:``-separated fields."""
+    return line.rstrip("\r").split(":")
+
+
+def _field_at(fields: List[str], index: int) -> str:
+    """``fields[index]``, or ``""`` when the line was too short to have it.
+
+    Guards against short/garbage lines (stderr noise, a stray ``tru:``
+    record) that happen to share a prefix but not the full field count.
+    """
+    return fields[index] if len(fields) > index else ""
+
+
+def primary_fingerprints(colons: str) -> Set[str]:
+    """Every primary-key fingerprint in *colons*, uppercased.
+
+    A primary fingerprint is the ``fpr`` record that directly follows a
+    ``pub`` record (field 10). A ``fpr`` record following a ``sub`` (subkey)
+    record never counts — tracked via the type of the immediately preceding
+    record, which only a ``pub`` line arms.
+    """
+    fingerprints: Set[str] = set()
+    last_type: Optional[str] = None
+    for line in colons.split("\n"):
+        if not line:
+            last_type = None
+            continue
+        fields = _colon_fields(line)
+        record_type = fields[0]
+        if record_type == "fpr" and last_type == "pub":
+            fingerprint = _field_at(fields, 9)
+            if fingerprint:
+                fingerprints.add(fingerprint.upper())
+        last_type = record_type
+    return fingerprints
+
+
+def secret_keyids(colons: str) -> Set[str]:
+    """Long key ids (field 5, uppercased) of every ``sec`` record.
+
+    Parses ``gpg --list-secret-keys --with-colons`` output. In the pacman
+    keyring this is the "Pacman Keyring Master Key" used to locally sign
+    (``pacman-key --lsign-key``) every key it trusts.
+    """
+    keyids: Set[str] = set()
+    for line in colons.split("\n"):
+        if not line:
+            continue
+        fields = _colon_fields(line)
+        if fields[0] == "sec":
+            keyid = _field_at(fields, 4)
+            if keyid:
+                keyids.add(keyid.upper())
+    return keyids
+
+
+def trusted_fingerprints(colons: str, master_keyids: Set[str]) -> Set[str]:
+    """Primary fingerprints carrying a LOCAL signature by ``master_keyids``.
+
+    Parses ``gpg --list-sigs --with-colons`` output. A ``sig`` record
+    belongs to the most recent ``pub`` record above it — sigs appear nested
+    under that ``pub``'s ``uid`` (and, for a self-signature on a subkey,
+    under its ``sub``) but neither resets the current fingerprint, only the
+    next ``pub`` record does. Only a signature whose class (field 11) ends
+    in ``l`` (local/non-exportable — what ``pacman-key --lsign-key``
+    produces) AND whose issuer key id (field 5, compared uppercase) is in
+    ``master_keyids`` counts. Self-signatures (``13x``, ``18x``) are issued
+    by the key on itself and are exportable, so they never satisfy this.
+    """
+    master_upper = {keyid.upper() for keyid in master_keyids}
+    trusted: Set[str] = set()
+    current_fpr: Optional[str] = None
+    last_type: Optional[str] = None
+    for line in colons.split("\n"):
+        if not line:
+            last_type = None
+            continue
+        fields = _colon_fields(line)
+        record_type = fields[0]
+        if record_type == "pub":
+            current_fpr = None
+        elif record_type == "fpr" and last_type == "pub":
+            fingerprint = _field_at(fields, 9)
+            current_fpr = fingerprint.upper() if fingerprint else None
+        elif record_type == "sig" and current_fpr is not None:
+            sig_class = _field_at(fields, 10)
+            issuer = _field_at(fields, 4).upper()
+            if sig_class.endswith("l") and issuer in master_upper:
+                trusted.add(current_fpr)
+        last_type = record_type
+    return trusted
+
+
+def packaged_trusted(texts: Iterable[str]) -> Set[str]:
+    """Fingerprints declared by ``*-trusted`` keyring files, uppercased.
+
+    Each line is ``<40-hex-fingerprint>:4:`` (FACT-PR-5). A blank line or a
+    line without a ``:`` is ignored.
+    """
+    fingerprints: Set[str] = set()
+    for text in texts:
+        for line in text.split("\n"):
+            stripped = line.strip()
+            if not stripped or ":" not in stripped:
+                continue
+            fingerprint = stripped.split(":", 1)[0]
+            if fingerprint:
+                fingerprints.add(fingerprint.upper())
+    return fingerprints

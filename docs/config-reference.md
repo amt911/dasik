@@ -110,7 +110,7 @@ written into those directories instead of inlined
 | `initramfs` | string | mkinitcpio or dracut |
 | `kernel_cmdline` | list | Extra kernel parameters |
 | `systemd` | object | Enable/disable units + sockets |
-| `pacman` | object | `/etc/pacman.conf` options + multilib |
+| `pacman` | object | `/etc/pacman.conf` options + multilib + third-party repositories/keys |
 | `udev_rules`, `modprobe_conf`, `modules_load`, `sysctl_d`, `tmpfiles_d`, `sddm_conf_d`, `profile_d` | list | Local `/etc/*.d` snippet files |
 | `etc_environment` | list | `/etc/environment` lines |
 | `files` | list | Arbitrary `/etc/...` files (verbatim). Anything under `/etc/systemd/` triggers a `systemctl daemon-reload` on a live target — see below |
@@ -844,6 +844,114 @@ Two rules worth knowing:
 | `options.Color` | bool | `true` | |
 | `options.VerbosePkgLists` | bool | `false` | |
 | `multilib` | bool | `false` | Enable the `[multilib]` repo. |
+| `repositories` | list | `[]` | Third-party `pacman.conf` sections — see below. |
+| `keys` | list | `[]` | PGP keys those repositories need trusted — see below. |
+
+### `repositories[]` — your own (or another third-party) `pacman.conf` section
+
+```json
+"repositories": [
+  {"name": "amt911", "sig_level": "Required",
+   "servers": ["https://amt911.github.io/arch-packages/$arch"]}
+]
+```
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `name` | string | `pacman.conf(5)` grammar (`[A-Za-z0-9][A-Za-z0-9._-]*`). Refused if it names an official repo, `options`, or `multilib` (that one has its own boolean field above) — dasik does not own those sections. Declaring the same name twice is a validation error. |
+| `servers` | list[string] | `https://` or `file://`, one `Server =` line each, written in the declared order. No credentials in the URL — a synced config would copy the secret verbatim. Mutually exclusive with `include`; exactly one of the two (a non-empty `servers`, or `include`) is required. |
+| `include` | string | An absolute path, written as `Include = <path>`. This is the form `sync` uses to capture a repo like chaotic-aur without inventing a server list of its own. |
+| `sig_level` | string | Space-separated `pacman.conf(5)` `SigLevel` tokens (`Required`, `Optional`, `Never`, `TrustedOnly`, `TrustAll`, each optionally prefixed `Package`/`Database`) — an unrecognised token is a validation error. Omitted = no `SigLevel` line is written, so the section inherits `[options]`'s. |
+
+A URL, an `include` path and a `SigLevel` value are also checked for control
+characters: pacman.conf is a text file dasik writes to verbatim, so a value
+containing `\n` could otherwise inject an extra directive or a whole extra
+section.
+
+Declared repositories are always written **immediately above `[core]`, in the
+declared order** — the one spot a third-party repo is guaranteed not to
+collide with a future official section Arch adds after `[options]`. This is
+not configurable. A hand-edited section with the right name living anywhere
+else in the file — including one that already sits below `[core]`, in the
+wrong position — is picked up by name and moved back into place on the next
+`apply`.
+
+`plan` reports a MODIFY (not silence) for a declared repository whose on-disk
+section exists but differs, in this order — first match wins, since the
+reasons are not mutually exclusive:
+
+1. **section drift** — `SigLevel`, `Server`/`Include` differ from declared.
+2. **below `[core]`** — the section exists, correctly, but sits after `[core]`.
+3. **database not synced** — `/var/lib/pacman/sync/<name>.db` is missing, so
+   the package resolver would classify the repo's own packages as AUR — the
+   same silent failure `multilib_synced` already had to guard against
+   (2026-08-18).
+
+`apply` performs one read and one write of `pacman.conf` per batch (removing
+owned/to-delete sections and reinserting the declared ones above `[core]`),
+then runs `pacman -Sy --config <temp>` **once per created/modified
+repository**, where `<temp>` holds the target's real `[options]` section plus
+*only* that one repository — never a plain `-Sy` against the whole file.
+Measured against a real `pacman`: this refreshes exactly `<name>.db` and
+leaves `core.db`/`extra.db` byte-identical, so a repository apply never causes
+a partial core/extra refresh.
+
+### `keys[]` — the PGP keys those repositories need trusted
+
+```json
+"keys": [
+  {"fingerprint": "6C6568CE34894645A23ABC44B5BD6F8F9023E53B",
+   "url": "https://amt911.github.io/arch-packages/amt911.gpg"}
+]
+```
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `fingerprint` | string | 40 hex characters, normalised to uppercase. Declaring the same fingerprint twice is a validation error. |
+| `url` | string | Optional, `https://` only, no credentials. Present: the key is downloaded and verified (below) before it is ever trusted. Absent: dasik falls back to `pacman-key --recv-keys <fingerprint>` (the wiki's *Pacman/Package signing § Adding unofficial keys* procedure) — a key `sync` only ever saw already sitting in the keyring has no URL of its own to replay. |
+
+With a `url`, `apply` downloads the key to a target-local temp file under
+`/var/tmp` (`arch-chroot` mounts a **private** `/tmp`, so a file the host
+wrote there would be invisible once inside the chroot), reads it with
+`gpg --show-keys --with-colons`, and **aborts without ever running
+`pacman-key --add`** unless the file's set of primary fingerprints is
+*exactly* `{fingerprint}` — a subkey's fingerprint never counts on its own,
+and a file carrying an extra key (by mistake or by design) is refused
+whole rather than filtered down to the one you asked for. Only then does it
+run `pacman-key --add` followed by `pacman-key --lsign-key`. The temp file is
+always removed afterwards, mismatch or not. Without a `url`, the same
+`--lsign-key` follows a plain `--recv-keys` — there is nothing to verify a
+fingerprint against in that path, so the key is trusted as fetched from the
+configured keyservers.
+
+"Trusted" here is narrower than pacman's own web of trust: a fingerprint
+counts only when it carries a **local** signature — the mark
+`pacman-key --lsign-key` leaves, a signature class ending in `l` — issued by
+the target keyring's *own* master key. Plain validity (`gpg`'s own `f` column)
+is not enough: an ordinary key signed by someone else reaches `f` too, without
+ever being locally signed by this machine. A fingerprint a `*-keyring`
+package (`archlinux-keyring`, …) already ships as trusted
+(`/usr/share/pacman/keyrings/*-trusted`) is excluded entirely — a package put
+it there, not this config, so it is not reported as drift, owned, or anything
+else dasik would act on.
+
+### Ownership, and what `sync` captures
+
+A repository or key dasik owns — previously declared, now absent from the
+config — is removed on the next `apply`: the section deleted from
+`pacman.conf`, the key with `pacman-key --delete`. A repository or key dasik
+neither declared nor owns is left untouched, wherever it lives.
+
+`sync` captures every non-official `pacman.conf` section (name, in file
+order, its `servers` or `include`, and `sig_level` when present) and every
+fingerprint currently locally trusted (minus anything a keyring package
+ships). A key's `url` is recovered from **the seed config being synced from**
+when that seed already declares the same fingerprint; a fingerprint `sync`
+finds trusted that the seed never mentioned comes back with no `url` (falling
+back to `--recv-keys` on the next apply — a no-op, since the key is already
+trusted). A machine with no third-party repositories or keys captures both
+lists empty, and a list the config declares that the machine no longer
+carries is captured empty too: `sync` reports the machine, not the seed.
 
 ---
 

@@ -26,11 +26,49 @@ fi
 
 # Documented EQUIVALENT mutants — behaviourally identical to the original, so no
 # test can kill them (CLAUDE.md § Quality: document, don't chase). Matched by a
-# STABLE diff signature, not the volatile mutant number:
-#   ScalarV3Action.is_needed/verify call plan(managed=[]); scalar plan() ignores
-#   `managed`, so mutating it to plan(managed=None) changes nothing.
-# See docs/mutation-testing.md § Equivalent mutants.
-_EQUIVALENT_SIGNATURE='plan(managed=None)'
+# STABLE diff signature, not the volatile mutant number. One array entry per
+# signature (a signature may cover more than one mutant when the same
+# reasoning applies verbatim to two functions — e.g. the two `last_type`
+# entries below, one per parser). See docs/mutation-testing.md § Equivalent
+# mutants for the full reasoning behind each one.
+_EQUIVALENT_SIGNATURES=(
+  # ScalarV3Action.is_needed/verify call plan(managed=[]); scalar plan()
+  # ignores `managed`, so mutating it to plan(managed=None) changes nothing.
+  'plan(managed=None)'
+  # pacman_repos_state.options_block: `end = len(lines)` -> `end = None`.
+  # `lines[start:None] == lines[start:]` in Python slicing, always.
+  'end = None'
+  # pacman_repos_state.section_of: the two ways mutmut removes the `[]`
+  # default from `_field(model, "servers", ...)`. Either way `_field` then
+  # returns `None` instead of `[]` for an absent "servers" key, but the
+  # surrounding `... or []` immediately turns that `None` back into `[]` —
+  # the default only matters when it is itself falsy.
+  '_field(model, "servers", None) or []'
+  '_field(model, "servers", ) or []'
+  # pacman_repos_state.primary_fingerprints / trusted_fingerprints: the
+  # `None` sentinel for "last record was not a pub" mutated to `""`. Both
+  # functions compare it ONLY via `last_type == "pub"`, never `is None`, so
+  # any non-"pub" placeholder is indistinguishable — covers both the initial
+  # declaration and the blank-line reset, in both functions.
+  'last_type: Optional[str] = ""'
+  'last_type = ""'
+  # pacman_repos_state.packaged_trusted: `stripped.split(":", 1)[0]` with the
+  # maxsplit argument removed or changed to 2. `str.split(sep, n)[0]` is the
+  # substring before the FIRST separator for any n >= 1 (or unlimited) — the
+  # element at index 0 never depends on how many further splits happen.
+  'stripped.split(":", )'
+  'stripped.split(":", 2)'
+)
+
+_is_equivalent_diff() {
+  local diff="$1" sig
+  for sig in "${_EQUIVALENT_SIGNATURES[@]}"; do
+    if grep -qF "$sig" <<< "$diff"; then
+      return 0
+    fi
+  done
+  return 1
+}
 
 report_survivors() {
   echo
@@ -46,7 +84,9 @@ report_survivors() {
   fi
   while IFS= read -r m; do
     [ -z "$m" ] && continue
-    if mutmut show "$m" 2>/dev/null | grep -qF "$_EQUIVALENT_SIGNATURE"; then
+    local diff
+    diff="$(mutmut show "$m" 2>/dev/null)"
+    if _is_equivalent_diff "$diff"; then
       echo "   (equivalent, expected) $m"
     else
       echo "   SURVIVED        $m"

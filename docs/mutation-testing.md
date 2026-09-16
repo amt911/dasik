@@ -24,16 +24,19 @@ The pure reconciliation core — the highest-value target per `AGENTS.md`:
 
 | Tier | Files | When | Wired into CI |
 | --- | --- | --- | --- |
-| 1 | `state/set_math.py` + `actions/scalar_action.py` + `actions/composite_action.py` | every run; fast (~110 mutants, ~1.5 s) | ✅ advisory `mutation` job |
+| 1 | `state/set_math.py` + `actions/scalar_action.py` + `actions/composite_action.py` + `actions/pacman_repos_state.py` | every run; fast (~500 mutants, well under a minute) | ✅ advisory `mutation` job |
 | 2 | `+ dasik/lib/reconciler/reconciler.py` | on demand, when touching the reconciler | ❌ (many mutants, slow) |
 
 The tier-1 files are the pure idempotency cores every domain routes through:
 `set_math.compute_changes` (the whole `D`/`M`/`A`/`F` → `Change` set-math behind
 packages, users, systemd, files, kernel-cmdline — a flipped comparison turns a
 no-op re-run destructive); `ScalarV3Action.plan` (the single-value reconcile
-behind timezone/initramfs); and `CompositeV3Action.plan` (the multi-field
-reconcile behind locale/network/pacman). All are mutation-clean modulo the two
-documented equivalents below.
+behind timezone/initramfs); `CompositeV3Action.plan` (the multi-field
+reconcile behind locale/network/pacman); and `pacman_repos_state.py` (the pure
+`pacman.conf`-section and `gpg --with-colons` reader/renderer behind
+`pacman.repositories`/`pacman.keys` — a flipped comparison there silently
+trusts an unverified key, or rewrites the wrong section of `pacman.conf`). All
+are mutation-clean modulo the documented equivalents below.
 
 ## Run it
 
@@ -82,11 +85,15 @@ Occasionally a mutant is *semantically equivalent* — the change can't alter
 observable behaviour. Those cannot be killed by any test. Don't contort a test to
 chase them: document why, and move on.
 
-`scripts/mutation.sh` knows the current equivalents by a **stable diff
-signature** (not the volatile mutant number) and reports them as
-`(equivalent, expected)`, so a run with only equivalents still exits 0.
+`scripts/mutation.sh` knows the current equivalents by a **list of stable diff
+signatures** (`_EQUIVALENT_SIGNATURES`, not the volatile mutant number) and
+reports a matching survivor as `(equivalent, expected)`, so a run with only
+equivalents still exits 0. A survivor's `mutmut show <name>` diff only needs
+to *contain* one of the signatures — one signature can cover more than one
+mutant when the exact same reasoning applies verbatim to two functions (see
+the `last_type` pair below).
 
-Current equivalents (both in `scalar_action.py`):
+In `scalar_action.py`:
 
 - `ScalarV3Action.is_needed` and `ScalarV3Action.verify` call
   `self.plan(managed=[])`, but scalar `plan()` **ignores** its `managed`
@@ -95,6 +102,46 @@ Current equivalents (both in `scalar_action.py`):
   `plan(managed=None)`.
 
 `set_math.py` has **no** equivalents — all its mutants are real and killed.
+
+In `pacman_repos_state.py` (added for `pacman.repositories`/`pacman.keys`,
+2026-09):
+
+- `options_block`: `end = len(lines)` mutated to `end = None`. Python slicing
+  makes `lines[start:None]` and `lines[start:]` (equivalently, `lines[start:
+  len(lines)]`) identical for any list — there is no input that can tell
+  `None` and `len(lines)` apart as a slice's upper bound. Signature:
+  `end = None`.
+- `section_of`: `_field(model, "servers", [])` mutated so the default becomes
+  `None` instead of `[]` (two distinct mutants — an explicit `None` and a
+  removed argument). Either way the line reads
+  `tuple(_field(model, "servers", ...) or [])`: the trailing `or []` turns
+  any falsy default (`None` **or** `[]`) back into `[]`, so the choice of
+  default is never observable. Signatures: `_field(model, "servers", None) or
+  []` and `_field(model, "servers", ) or []`.
+- `primary_fingerprints` and `trusted_fingerprints`: the `None` sentinel for
+  "the previous record was not `pub`" (`last_type`) mutated to `""`, both at
+  its initial declaration and at its blank-line reset. `last_type` is
+  compared **only** via `last_type == "pub"` in both functions — never `is
+  None` — so any non-`"pub"` placeholder is indistinguishable from any other.
+  One signature per site covers both functions, since the mutated line is
+  textually identical in each: `last_type: Optional[str] = ""` (declaration)
+  and `last_type = ""` (reset).
+- `packaged_trusted`: `stripped.split(":", 1)[0]` mutated to drop the `1` or
+  change it to `2`. `str.split(sep, n)[0]` is the substring before the
+  *first* separator for any `n >= 1` (or unlimited) — the element at index
+  `0` never depends on how many further splits happen, so no `n` other than
+  `0` can change it. Signatures: `stripped.split(":", )` and
+  `stripped.split(":", 2)`.
+
+All ten of the equivalents above were confirmed by generating mutmut's own
+mutated function bodies (`mutants/dasik/lib/actions/pacman_repos_state.py`,
+one variant per mutant behind a `MUTANT_UNDER_TEST`-driven trampoline) and
+calling them directly against a battery of hand-picked inputs — not assumed
+from reading the diff. Every *other* survivor found the same way turned out
+to be reachable through a concrete input and got a killing test instead (see
+`tests/lib/actions/test_pacman_repos_conf.py` and
+`test_pacman_repos_keyring.py`); none of the ten above ever produced a
+different result for any input tried.
 
 ## CI
 

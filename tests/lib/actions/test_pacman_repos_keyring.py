@@ -11,6 +11,8 @@ whose class (field 11) ends in ``l`` and whose issuer key id is one of them.
 from pathlib import Path
 
 from dasik.lib.actions.pacman_repos_state import (
+    _colon_fields,
+    _field_at,
     packaged_trusted,
     primary_fingerprints,
     secret_keyids,
@@ -138,8 +140,15 @@ def test_trusted_fingerprints_added_but_not_lsigned_is_empty():
 
 
 def test_packaged_trusted_reads_fingerprints_from_trusted_file():
+    # All three real lines of the fixture must be read as separate entries —
+    # not just the first one, which is what a whole-file-as-one-line bug
+    # (splitting on the wrong separator) would still get right.
     result = packaged_trusted([ARCHLINUX_TRUSTED_HEAD])
-    assert "2AC0A42EFB0B5CBC7A0402ED4DC95B6D7BE9892E" in result
+    assert result == {
+        "2AC0A42EFB0B5CBC7A0402ED4DC95B6D7BE9892E",
+        "3572FA2A1B067F22C58AF155F8B821B42A6FDCD7",
+        "69E6471E3AE065297529832E6BA0F5A2037F4F41",
+    }
 
 
 def test_packaged_trusted_ignores_blank_and_colonless_lines():
@@ -149,3 +158,153 @@ def test_packaged_trusted_ignores_blank_and_colonless_lines():
 
 def test_packaged_trusted_empty_on_no_texts():
     assert packaged_trusted([]) == set()
+
+
+def test_packaged_trusted_skips_a_malformed_line_and_keeps_reading():
+    text = "not-a-trusted-line\n" + ("A" * 40) + ":4:\n"
+    assert packaged_trusted([text]) == {"A" * 40}
+
+
+def test_packaged_trusted_does_not_split_on_a_tab_within_one_line():
+    # A tab glued between two fingerprint entries on the SAME physical line
+    # is not a second entry -- only "\n" ends a line here.
+    fpr_a, fpr_b = "A" * 40, "B" * 40
+    text = f"{fpr_a}:4:\t{fpr_b}:4:\n"
+    assert packaged_trusted([text]) == {fpr_a}
+
+
+# --- mutation-testing round: killers for pacman_repos_state.py survivors ---
+# (pyproject.toml [tool.mutmut].only_mutate; see docs/mutation-testing.md).
+
+
+def test_colon_fields_only_strips_a_trailing_carriage_return():
+    # rstrip("\r") must not become a generic whitespace strip: a trailing
+    # space in the last field is data (however unlikely in real gpg output),
+    # and must survive.
+    assert _colon_fields("a:b ") == ["a", "b "]
+
+
+def test_colon_fields_strips_from_the_right_not_the_left():
+    assert _colon_fields("a:bX\r") == ["a", "bX"]
+
+
+def test_colon_fields_does_not_strip_a_trailing_x():
+    assert _colon_fields("a:bX") == ["a", "bX"]
+
+
+def test_field_at_is_empty_past_the_end_including_the_exact_boundary():
+    fields = ["a", "b"]
+    assert _field_at(fields, 2) == ""  # len(fields) == index: still out of range
+    assert _field_at(fields, 5) == ""
+
+
+def test_primary_fingerprints_a_whitespace_only_line_is_not_silently_dropped():
+    # A line that is a single space is non-empty (truthy), so it is a real
+    # ``record_type=" "`` line, not the blank-line reset -- it overwrites
+    # last_type away from "pub", and the fingerprint on the next line is
+    # correctly NOT attributed. Splitting on "\n" only (never all whitespace)
+    # is what keeps this line from vanishing instead of being read as one.
+    fpr = "A" * 40
+    text = f"pub:-:4096:1:AAAA:1700000000:::-:::scESC::::::23::0:\n \nfpr:::::::::{fpr}:\n"
+    assert primary_fingerprints(text) == set()
+
+
+def test_primary_fingerprints_two_keys_separated_by_a_blank_line():
+    fpr_a, fpr_b = "A" * 40, "B" * 40
+    text = (
+        "pub:-:4096:1:AAAA:1700000000:::-:::scESC::::::23::0:\n"
+        f"fpr:::::::::{fpr_a}:\n"
+        "\n"
+        "pub:-:4096:1:BBBB:1700000000:::-:::scESC::::::23::0:\n"
+        f"fpr:::::::::{fpr_b}:\n"
+    )
+    assert primary_fingerprints(text) == {fpr_a, fpr_b}
+
+
+def test_secret_keyids_does_not_match_an_indented_sec_line():
+    # secret_keyids splits strictly on "\n", so a line's own indentation is
+    # part of the line and _colon_fields never sees a bare "sec" — matching
+    # the convention every other parser in this module follows (split by
+    # newline, never by generic whitespace).
+    assert secret_keyids("  sec:-:4096:1:AAAAAAAAAAAAAAAA:1700000000::::::::::::::::0:\n") == set()
+
+
+def test_secret_keyids_two_keys_separated_by_a_blank_line():
+    text = (
+        "sec:-:4096:1:2535D4F912C7BF3C:1700000000::::::::::::::::0:\n"
+        "\n"
+        "sec:-:4096:1:AAAAAAAAAAAAAAAA:1700000000::::::::::::::::0:\n"
+    )
+    assert secret_keyids(text) == {"2535D4F912C7BF3C", "AAAAAAAAAAAAAAAA"}
+
+
+def test_trusted_fingerprints_a_lone_sig_with_no_preceding_pub_trusts_nothing():
+    # No "pub"/"fpr" ever seen -> current_fpr must still be None (not the
+    # empty string), or a bare local sig with no key context "trusts" "".
+    text = f"sig:::1:{MASTER_KEYID}:1700000000::::Name:10l::{MASTER_FPR}:::10:\n"
+    assert trusted_fingerprints(text, {MASTER_KEYID}) == set()
+
+
+def test_trusted_fingerprints_a_pub_with_no_fpr_line_guards_its_own_sig():
+    # A "pub" with no "fpr" record at all (malformed capture) resets
+    # current_fpr to None; the sig right after it must not be attributed to
+    # a fingerprint that was never read (must not become "" either).
+    text = (
+        "pub:-:4096:1:AAAA:1700000000:::-:::scESC::::::23::0:\n"
+        f"sig:::1:{MASTER_KEYID}:1700000000::::Name:10l::{MASTER_FPR}:::10:\n"
+    )
+    assert trusted_fingerprints(text, {MASTER_KEYID}) == set()
+
+
+def test_trusted_fingerprints_two_real_keys_separated_by_a_blank_line():
+    text = (
+        "pub:-:4096:1:AAAA:1700000000:::-:::scESC::::::23::0:\n"
+        f"fpr:::::::::{'A' * 40}:\n"
+        "uid:-::::1700000000::deadbeef::A::::::::::0:\n"
+        f"sig:::1:{MASTER_KEYID}:1700000000::::Name:10l::{MASTER_FPR}:::10:\n"
+        "\n"
+        "pub:-:4096:1:BBBB:1700000000:::-:::scESC::::::23::0:\n"
+        f"fpr:::::::::{'B' * 40}:\n"
+        "uid:-::::1700000000::cafebabe::B::::::::::0:\n"
+        f"sig:::1:{MASTER_KEYID}:1700000000::::Name:10l::{MASTER_FPR}:::10:\n"
+    )
+    assert trusted_fingerprints(text, {MASTER_KEYID}) == {"A" * 40, "B" * 40}
+
+
+def test_trusted_fingerprints_a_malformed_second_key_does_not_leak_the_first():
+    # Key A has NO local sig of its own (untrusted). Key B is malformed: a
+    # "pub" with no "fpr" record, followed straight by a local sig. That sig
+    # must never be credited to A just because current_fpr was never reset
+    # by B's own (absent) "pub" handling.
+    text = (
+        "pub:-:4096:1:AAAA:1700000000:::-:::scESC::::::23::0:\n"
+        f"fpr:::::::::{'A' * 40}:\n"
+        "uid:-::::1700000000::deadbeef::A::::::::::0:\n"
+        "pub:-:4096:1:BBBB:1700000000:::-:::scESC::::::23::0:\n"
+        f"sig:::1:{MASTER_KEYID}:1700000000::::Name:10l::{MASTER_FPR}:::10:\n"
+    )
+    assert trusted_fingerprints(text, {MASTER_KEYID}) == set()
+
+
+def test_trusted_fingerprints_a_uid_record_is_never_mistaken_for_an_fpr():
+    # A "uid" record right after "pub" (last_type == "pub") must not be
+    # treated as the key's fingerprint just because a stray field happens to
+    # look like one.
+    text = (
+        "pub:-:4096:1:AAAA:1700000000:::-:::scESC::::::23::0:\n"
+        "uid:-::::1700000000::deadbeef::SNEAKYFPRLOOKALIKEVALUEHERE1234567890AB::::::::::0:\n"
+        f"sig:::1:{MASTER_KEYID}:1700000000::::Name:10l::{MASTER_FPR}:::10:\n"
+    )
+    assert trusted_fingerprints(text, {MASTER_KEYID}) == set()
+
+
+def test_trusted_fingerprints_a_uid_record_is_never_mistaken_for_a_sig():
+    # A "uid" record, even with a master-matching field 4 and a field 10
+    # ending in "l" by coincidence, must not count as a trust signature --
+    # only an actual "sig" record type does.
+    text = (
+        "pub:-:4096:1:AAAA:1700000000:::-:::scESC::::::23::0:\n"
+        f"fpr:::::::::{'A' * 40}:\n"
+        f"uid:a:b:c:{MASTER_KEYID}:e:f:g:h:i:10l:extra\n"
+    )
+    assert trusted_fingerprints(text, {MASTER_KEYID}) == set()

@@ -4,7 +4,8 @@ import pytest
 from hypothesis import given, strategies as st
 
 from dasik.lib.actions.pacman_repos_state import (RepoSection, parse_sections, third_party,
-                                                   below_core, render)
+                                                   below_core, render, options_block,
+                                                   section_of, _is_blank, _field)
 
 STOCK = Path("tests/fixtures/pacman_repos/pacman.conf.stock").read_text()
 AMT = RepoSection("amt911", "Required", ("https://amt911.github.io/arch-packages/$arch",), None)
@@ -114,3 +115,111 @@ def test_crlf_input_is_parsed_and_rendered():
 def test_render_raises_on_duplicate_declared_name():
     with pytest.raises(ValueError, match="amt911"):
         render(STOCK, [AMT, AMT], remove=[])
+
+
+# --- mutation-testing round: killers for pacman_repos_state.py survivors ---
+# (pyproject.toml [tool.mutmut].only_mutate; see docs/mutation-testing.md). Each
+# test below is paired 1:1 with a mutant diff confirmed, via a scratch harness
+# replaying mutmut's own generated variants, to actually change behaviour for
+# the given input — not just "looks like it should".
+
+def test_is_blank_direct():
+    assert _is_blank("")
+    assert _is_blank("   ")
+    assert _is_blank("\r")
+    assert not _is_blank("x")
+
+
+def test_field_reads_dict_key_or_default():
+    assert _field({"a": 1}, "a", "default") == 1
+    assert _field({"a": 1}, "b", "default") == "default"
+
+
+def test_field_reads_attribute_or_default():
+    class _Obj:
+        pass
+    obj = _Obj()
+    obj.a = 1
+    assert _field(obj, "a", "default") == 1
+    assert _field(obj, "b", "default") == "default"
+
+
+def test_body_stops_at_comment_with_no_key_lines_so_comment_survives_removal():
+    # A section with NO key lines at all, immediately followed by a comment
+    # (not a blank line): _body_end must stop AT that comment (not one line
+    # past it), or render()'s removal range swallows the neighbouring comment.
+    text = "[options]\n\n[mine]\n#a stray comment\n\n[core]\nInclude = /x\n"
+    out = render(text, [], remove=["mine"])
+    assert out == "[options]\n\n#a stray comment\n\n[core]\nInclude = /x\n"
+
+
+def test_parse_sections_excludes_options_by_name_not_by_accident():
+    assert "options" not in {s.name for s in parse_sections(STOCK)}
+
+
+def test_parse_sections_skips_a_stray_non_key_line_and_keeps_reading():
+    # A line inside a section's body that is neither a key line, a comment,
+    # nor blank must be skipped (continue), not treated as the end of the
+    # body — otherwise a later real key line in the same section is lost.
+    text = "[a]\nSomeJunkLine\nServer = https://y\n\n[core]\n"
+    sections = {s.name: s for s in parse_sections(text)}
+    assert sections["a"].servers == ("https://y",)
+
+
+def test_below_core_false_when_there_is_no_core_section_at_all():
+    text = "[a]\nServer = https://a\n\n[b]\nServer = https://b\n"
+    assert below_core(text, "b") is False
+
+
+def test_below_core_false_for_a_name_that_does_not_exist_as_a_header():
+    text = "[options]\n\n[a]\nServer = https://a\n\n[core]\nInclude = /x\n"
+    assert below_core(text, "zzz") is False
+
+
+def test_below_core_false_when_querying_core_itself():
+    text = "[options]\n\n[a]\nServer = https://a\n\n[core]\nInclude = /x\n"
+    assert below_core(text, "core") is False
+
+
+def test_below_core_uses_the_first_core_occurrence_on_a_duplicate():
+    # Malformed input with [core] declared twice: below_core must anchor on
+    # the FIRST occurrence for both the core position and a same-named query,
+    # so a query for "core" itself is still False (never "below itself").
+    text = "[core]\nInclude=/y\n[core]\nInclude=/y\n"
+    assert below_core(text, "core") is False
+
+
+def test_below_core_two_headers_glued_on_one_physical_line_are_not_headers():
+    # "[a] [b]" is ONE line containing two bracket pairs; the header grammar
+    # (_HEADER_RE, applied to the whole stripped line) rejects it as a header
+    # at all -- it must not be treated as two separate headers "a" and "b".
+    text = "[core]\nInclude=/x\n\n[a] [b]\nServer=y\n"
+    assert below_core(text, "b") is False
+
+
+def test_options_block_stops_at_the_next_header_when_two_headers_exist():
+    text = "[options]\nColor\n\n[core]\nInclude=/x\n"
+    assert options_block(text) == "[options]\nColor\n"
+
+
+def test_render_of_an_include_repo_does_not_crash_and_writes_include_line():
+    section = RepoSection("chaotic-aur", None, (), "/etc/pacman.d/chaotic-mirrorlist")
+    out = render(STOCK, [section], remove=[])
+    assert "Include = /etc/pacman.d/chaotic-mirrorlist" in out
+
+
+def test_render_separates_a_rendered_section_with_an_empty_line():
+    section = RepoSection("amt911", "Required", ("https://x/$arch",), None)
+    out = render(STOCK, [section], remove=[])
+    assert "Server = https://x/$arch\n\n[core]" in out
+
+
+def test_render_preserves_a_trailing_blank_line_after_removing_the_last_section():
+    text = "[options]\n\n[core]\nInclude = /etc/pacman.d/mirrorlist\n\n[z]\nServer = https://z/$arch\n"
+    out = render(text, [], remove=["z"])
+    assert out == "[options]\n\n[core]\nInclude = /etc/pacman.d/mirrorlist\n\n"
+
+
+def test_section_of_reads_include_field_from_a_dict():
+    section = section_of({"name": "chaotic-aur", "include": "/etc/pacman.d/chaotic-mirrorlist"})
+    assert section.include == "/etc/pacman.d/chaotic-mirrorlist"

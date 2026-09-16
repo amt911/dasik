@@ -151,6 +151,65 @@ gpg --homedir "$GNUPGHOME" --with-colons --list-keys "$FPR"
 rc=$?
 end 9 "$rc"
 
+# ---------------------------------------------------------------------------
+# Fix round 1: FACT-PR-1 claimed the keyring command works identically
+# "under both --target / and arch-chroot" but measurement 7 only ran
+# findmnt/ls through arch-chroot, never gpg/pacman-key themselves. This
+# repeats the add/lsign/list/delete cycle THROUGH arch-chroot (same
+# bind-mount scaffold as measurement 7) and diffs the resulting colon
+# output against the native (no-chroot) listing of the same keyring,
+# since /mnt is a bind mount of / and both views resolve to the same
+# real /etc/pacman.d/gnupg on disk.
+echo "== measurement 10: same keyring ops through arch-chroot vs native =="
+begin 10
+mkdir -p /mnt
+mount --bind / /mnt
+mnt_rc=$?
+echo "PROBE-10-MOUNT-RC=$mnt_rc"
+
+echo "-- 10a: arch-chroot gpg --list-keys, key absent --"
+arch-chroot /mnt gpg --homedir "$GNUPGHOME" --with-colons --list-keys "$FPR" 2>&1
+rc10a=$?
+echo "PROBE-10A-RC=$rc10a"
+
+echo "-- 10b: arch-chroot pacman-key --add --"
+arch-chroot /mnt pacman-key --add "$KEYFILE" 2>&1
+rc10b=$?
+echo "PROBE-10B-RC=$rc10b"
+
+echo "-- 10c: arch-chroot pacman-key --lsign-key --"
+arch-chroot /mnt pacman-key --lsign-key "$FPR" 2>&1
+rc10c=$?
+echo "PROBE-10C-RC=$rc10c"
+
+echo "-- 10d: arch-chroot gpg --list-keys, key lsigned (through arch-chroot) --"
+arch-chroot /mnt gpg --homedir "$GNUPGHOME" --with-colons --list-keys "$FPR" > /var/tmp/chroot-listkeys.txt 2>&1
+rc10d_chroot=$?
+cat /var/tmp/chroot-listkeys.txt
+echo "PROBE-10D-CHROOT-RC=$rc10d_chroot"
+
+echo "-- 10d: same key listed NATIVELY (no chroot), same keyring via the bind mount --"
+gpg --homedir "$GNUPGHOME" --with-colons --list-keys "$FPR" > /var/tmp/native-listkeys.txt 2>&1
+rc10d_native=$?
+cat /var/tmp/native-listkeys.txt
+echo "PROBE-10D-NATIVE-RC=$rc10d_native"
+
+echo "-- 10d: diff native vs arch-chroot listing --"
+if diff -u /var/tmp/native-listkeys.txt /var/tmp/chroot-listkeys.txt; then
+    echo "PROBE-10D-DIFF=IDENTICAL"
+else
+    echo "PROBE-10D-DIFF=DIFFERS"
+fi
+
+echo "-- 10e: arch-chroot pacman-key --delete --"
+arch-chroot /mnt pacman-key --delete "$FPR" 2>&1
+rc10e=$?
+echo "PROBE-10E-RC=$rc10e"
+
+umount /mnt
+rm -f /var/tmp/chroot-listkeys.txt /var/tmp/native-listkeys.txt
+end 10 "$rc10d_chroot"
+
 echo "PROBE-DONE rc=0"
 sync
 poweroff -f

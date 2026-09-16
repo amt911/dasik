@@ -1,0 +1,7 @@
+gpg: WARNING: unsafe permissions on homedir '/etc/pacman.d/gnupg'
+tru::1:1789592795:1793050326:3:1:5
+pub:f:4096:1:B5BD6F8F9023E53B:1789487636:::-:::scESC::::::23::0:
+fpr:::::::::6C6568CE34894645A23ABC44B5BD6F8F9023E53B:
+uid:f::::1789487636::505F4FBC096C4EE85BE42D6CA6C6D6B013640A18::amt911 Arch Repository (package signing) <a.merlo.truji10@gmail.com>::::::::::0:
+sub:f:4096:1:A917D03BA23DF1C8:1789487636::::::e::::::23:
+fpr:::::::::5018DF894BFD550663C32381A917D03BA23DF1C8:

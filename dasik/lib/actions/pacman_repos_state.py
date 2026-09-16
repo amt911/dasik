@@ -167,6 +167,36 @@ def below_core(text: str, name: str) -> bool:
     return name_index > core_index
 
 
+def options_block(text: str) -> str:
+    """The ``[options]`` section of *text*, verbatim: its header through the
+    line before the next uncommented header, or through the end of the file
+    if ``[options]`` is the last (or only) section. ``""`` if there is no
+    ``[options]`` header at all.
+
+    Used by ``PacmanRepositoriesAction.apply`` to build the single-repo
+    ``pacman.conf`` for ``pacman -Sy --config <temp>`` (FACT-PR-4,
+    docs/FACTS.md): that temp file must carry the real ``[options]``
+    verbatim (``Architecture``, ``SigLevel``, ...) plus exactly one
+    repository section — extracting by "next uncommented header" (not "next
+    ``[core]``") means it still isolates ``[options]`` correctly even after a
+    declared section has just been re-homed directly above ``[core]``, ahead
+    of it in the file.
+    """
+    lines = text.split("\n")
+    headers = _iter_headers(lines)
+    start: Optional[int] = None
+    end = len(lines)
+    for index, (header_index, name) in enumerate(headers):
+        if name == "options":
+            start = header_index
+            if index + 1 < len(headers):
+                end = headers[index + 1][0]
+            break
+    if start is None:
+        return ""
+    return "\n".join(lines[start:end])
+
+
 def _render_block(section: RepoSection) -> List[str]:
     """``[name]`` + directive lines + one trailing blank line."""
     lines = [f"[{section.name}]"]

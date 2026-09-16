@@ -48,14 +48,18 @@ from .abstract_action import AbstractAction
 from .pacman_repos_state import (
     RepoSection,
     below_core,
+    options_block,
     packaged_trusted,
     parse_sections,
+    primary_fingerprints,
+    render,
     secret_keyids,
     section_of,
     third_party,
     trusted_fingerprints,
 )
 from ..command_worker.command_worker import Command
+from ..exceptions.exceptions import PacmanKeyMismatchError
 from ..state.change import Change, Op
 from ..state.set_math import compute_changes
 
@@ -68,6 +72,22 @@ _SYNC_DB_DIR = "/var/lib/pacman/sync"
 
 _KEY_PREFIX = "key:"
 _REPO_PREFIX = "repo:"
+
+
+def _key_download_path(fingerprint: str) -> str:
+    """In-target path a CREATE key with a ``url`` is downloaded to.
+
+    Lives under ``/var/tmp`` (never ``/tmp``): ``arch-chroot`` mounts a
+    private ``/tmp``, so a file the host wrote there is invisible once inside
+    the chroot (FACT-PR-3, docs/FACTS.md); ``/var/tmp`` is shared.
+    """
+    return f"/var/tmp/dasik-key-{fingerprint}.gpg"
+
+
+def _repo_sync_conf_path(name: str) -> str:
+    """In-target path of the single-repo ``pacman.conf`` used to ``pacman -Sy``
+    just *name*'s database (FACT-PR-4: leaves every other repo's DB alone)."""
+    return f"/var/tmp/dasik-pacman-{name}.conf"
 
 
 def _field(entry: Any, key: str, default: Any = None) -> Any:
@@ -276,3 +296,117 @@ class PacmanRepositoriesAction(AbstractAction):
 
     def verify(self) -> bool:
         return not self.plan(managed=[])
+
+    # -- apply ---------------------------------------------------------- #
+
+    def _remove_if_exists(self, host_path: str) -> None:
+        """Best-effort cleanup of a temp file — never lets a missing file
+        (e.g. a mocked/failed download that never wrote one) raise out of a
+        ``finally`` block and mask the real error."""
+        try:
+            os.remove(host_path)
+        except OSError:
+            pass
+
+    def _apply_key_create(self, fingerprint: str, url: Optional[str]) -> None:
+        """One CREATE key: with a ``url``, download + verify + trust it; without
+        one, fetch it from the configured keyservers directly. Order and
+        commands per the design doc's ``apply`` §1."""
+        target = self._target()
+        if url is None:
+            Command.execute("pacman-key", ["--recv-keys", fingerprint],
+                            target=target, check=True)
+            Command.execute("pacman-key", ["--lsign-key", fingerprint],
+                            target=target, check=True)
+            return
+
+        key_target_path = _key_download_path(fingerprint)
+        key_host_path = self._path(key_target_path)
+        try:
+            Command.execute("curl", ["-fsSL", url, "-o", key_target_path],
+                            target=target, check=True)
+            result = Command.execute(
+                "gpg", ["--show-keys", "--with-colons", key_target_path],
+                target=target, check=True)
+            found = primary_fingerprints(_decode(getattr(result, "stdout", "")))
+            declared = {fingerprint}
+            if found != declared:
+                raise PacmanKeyMismatchError(
+                    f"declared fingerprint {declared!r} does not match the "
+                    f"downloaded key file {url!r}, which contains {found!r}"
+                )
+            Command.execute("pacman-key", ["--add", key_target_path],
+                            target=target, check=True)
+            Command.execute("pacman-key", ["--lsign-key", fingerprint],
+                            target=target, check=True)
+        finally:
+            self._remove_if_exists(key_host_path)
+
+    def _apply_repo_sync(self, name: str, new_conf_text: str) -> None:
+        """One CREATE/MODIFY ``repo:``: build the single-repo ``pacman.conf`` (the real
+        ``[options]`` verbatim + only this section) and ``pacman -Sy`` against
+        it, so only *name*'s database is refreshed (FACT-PR-4, docs/FACTS.md)."""
+        section = self._declared_section(name)
+        if section is None:
+            return  # a CREATE/MODIFY repo: item is always declared; defensive only
+        single_conf = render(options_block(new_conf_text), [section], remove=[])
+        conf_target_path = _repo_sync_conf_path(name)
+        conf_host_path = self._path(conf_target_path)
+        try:
+            with open(conf_host_path, "w", encoding="utf-8") as handle:
+                handle.write(single_conf)
+            Command.execute("pacman", ["-Sy", "--config", conf_target_path],
+                            target=self._target(), check=True, stream=True)
+        finally:
+            self._remove_if_exists(conf_host_path)
+
+    def apply(self, changes: List[Change]) -> None:
+        if self._target() is None or not changes:
+            return
+
+        key_creates = sorted(
+            (c for c in changes if c.op is Op.CREATE and c.item.startswith(_KEY_PREFIX)),
+            key=lambda c: c.item)
+        repo_changes = [c for c in changes if c.item.startswith(_REPO_PREFIX)]
+        repo_deletes = sorted((c for c in repo_changes if c.op is Op.DELETE),
+                              key=lambda c: c.item)
+        repo_upserts = sorted(
+            (c for c in repo_changes if c.op in (Op.CREATE, Op.MODIFY)),
+            key=lambda c: c.item)
+        key_deletes = sorted(
+            (c for c in changes if c.op is Op.DELETE and c.item.startswith(_KEY_PREFIX)),
+            key=lambda c: c.item)
+
+        # 1. keys, created first — a repo's SigLevel=Required db refresh
+        # would otherwise need a key that never made it into the keyring.
+        for change in key_creates:
+            fingerprint = change.item[len(_KEY_PREFIX):]
+            self._apply_key_create(fingerprint, self._keys.get(fingerprint))
+
+        # 2. one read + one write of pacman.conf, whenever any repo: item
+        # (CREATE, MODIFY or DELETE) is in this batch.
+        new_conf_text = ""
+        if repo_changes:
+            conf_host_path = self._path(_CONF_PATH)
+            current_text = self._conf_text()
+            if current_text is None:
+                raise FileNotFoundError(
+                    f"cannot read {conf_host_path} to apply pacman_repositories")
+            remove_names = [c.item[len(_REPO_PREFIX):] for c in repo_deletes]
+            new_conf_text = render(current_text, declared=self._repos,
+                                   remove=remove_names)
+            with open(conf_host_path, "w", encoding="utf-8") as handle:
+                handle.write(new_conf_text)
+
+        # 3. sync each created/modified repo's own database.
+        for change in repo_upserts:
+            name = change.item[len(_REPO_PREFIX):]
+            self._apply_repo_sync(name, new_conf_text)
+
+        # 4. keys no longer declared, last — never strand a repo that still
+        # needs one (a DELETE key alongside a surviving repo would be a
+        # config the model already refuses, but ordering costs nothing).
+        for change in key_deletes:
+            fingerprint = change.item[len(_KEY_PREFIX):]
+            Command.execute("pacman-key", ["--delete", fingerprint],
+                            target=self._target(), check=True)

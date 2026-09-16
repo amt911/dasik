@@ -302,3 +302,50 @@ def test_no_target_plans_and_reports_nothing():
                                        "keys": [AMT_KEY_CFG]}, None)
     assert action.actual() == set()
     assert action.plan(managed=[]) == []
+
+
+# --- Reconciler probe (finding 1): `pacman` key absent from the WHOLE config -
+#
+# `Reconciler._any_managed_for` (reconciler.py) decides whether an optional
+# domain whose config slice is missing still owns something to clean up by
+# probing the class with `cls.__new__(cls)` — no `__init__`, so `self.config`/
+# `self.context` are set by hand and every other instance attribute is
+# whatever `__init__` would have set is simply absent. `managed_keys()` must
+# survive that probe: `PacmanRepositoriesAction` carries class-level `_repos`/
+# `_keys` defaults precisely so `_desired()` doesn't raise `AttributeError` on
+# an uninitialized instance (see the class body). Without that tolerance the
+# probe's broad `except Exception` swallows the error, `_any_managed_for`
+# reports "owns nothing", and `build_plan` skips the action outright — the
+# owned repo/key are never proposed for DELETE, which contradicts the spec's
+# "block absent ⇒ DELETE of what the manifest owns" (design doc § plan()).
+
+
+def test_pacman_block_absent_from_the_whole_config_deletes_what_the_manifest_owns(tmp_path):
+    from dasik.lib.actions.action_registry import get_default_registry
+    from dasik.lib.actions.actions_handler_v2 import setup_actions
+    from dasik.lib.reconciler.reconciler import Reconciler
+
+    _write_conf(tmp_path, render(STOCK, [AMT_SECTION], remove=[]))
+    _write_db(tmp_path, "amt911")
+
+    setup_actions()
+    metas = [m for m in get_default_registry().get_all_actions()
+             if m["class"] is PacmanRepositoriesAction]
+    assert len(metas) == 1, "PacmanRepositoriesAction is not registered"
+    assert metas[0]["config_key"] == "pacman"
+
+    # No "pacman" key anywhere in this config — not even `{}` — the case
+    # `build_plan` hands to `_any_managed_for` before ever constructing the
+    # action with a real config.
+    config = {"hostname": "box"}
+    manifest = {"managed": {"pacman_repositories": sorted([CREATE_KEY, CREATE_REPO])}}
+
+    reconciler = Reconciler(config=config, target=Target(root=str(tmp_path)),
+                            manifest=manifest, action_metas=metas)
+    with _patched(secret_out=LIST_SECRET_KEYS, sigs_out=LIST_SIGS_LSIGNED):
+        plan, _results = reconciler.build_plan()
+
+    changes = [(c.op.name, c.item) for c in plan.changes
+              if c.domain == "pacman_repositories"]
+    assert ("DELETE", CREATE_KEY) in changes
+    assert ("DELETE", CREATE_REPO) in changes

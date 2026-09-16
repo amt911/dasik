@@ -111,6 +111,24 @@ class PacmanRepositoriesAction(AbstractAction):
 
     _DOMAIN = _DOMAIN
 
+    # Class-level, immutable-in-practice defaults for the two attributes
+    # __init__ normally sets. `Reconciler._any_managed_for` probes an
+    # optional action whose config slice is absent by calling
+    # `managed_keys()` on `cls.__new__(cls)` — no `__init__`, so
+    # `self._repos`/`self._keys` would otherwise not exist and
+    # `_desired()` (which `managed_keys()` calls) would raise
+    # `AttributeError`, swallowed by that probe's broad `except Exception`
+    # into "owns nothing". That made a `pacman` block ABSENT from the whole
+    # config skip this action entirely instead of planning the DELETE of
+    # whatever the manifest owns (the spec's "block absent" rule). These
+    # class attributes give the probe instance something to read; every
+    # real instance immediately shadows them in `__init__` with its own
+    # list/dict, and the probe itself only ever reads `managed_keys()`
+    # (never mutates `_repos`/`_keys`), so sharing the same empty
+    # list/dict across probes is safe.
+    _repos: List[RepoSection] = []
+    _keys: Dict[str, Optional[str]] = {}
+
     def __init__(self, config: Any, context: Any = None):
         super().__init__(config, context)
         repos_raw = _field(config, "repositories", []) or []

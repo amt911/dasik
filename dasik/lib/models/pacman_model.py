@@ -33,27 +33,68 @@ _SIG_LEVEL_TOKEN = re.compile(r"(Package|Database)?(Never|Optional|Required|Trus
 
 _SHA1_FINGERPRINT = re.compile(r"[0-9A-Fa-f]{40}")
 
+# ASCII control characters (0x00-0x1F, plus DEL 0x7F). `urlsplit` strips
+# \t\r\n from its *internal* parsing copy but the validators below return the
+# original string unchanged — so a value like
+# "https://good.example/$arch\nSigLevel = Never\n[evil]\nServer = ..." parsed
+# fine and was written to pacman.conf verbatim, injecting an extra directive
+# or a whole extra section. Every value that ends up in a config file dasik
+# writes must be checked against the raw string, not just the parsed URL.
+_CONTROL_CHAR = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def _reject_control_chars(value: str, what: str) -> None:
+    if _CONTROL_CHAR.search(value):
+        raise ValueError(
+            f"{what} must not contain control characters, got {value!r}; "
+            "dasik writes this value verbatim into a config file"
+        )
+
+
+def _validate_https_url(value: str, what: str) -> None:
+    """Shared ``https://`` URL check: scheme, non-empty host, no credentials,
+    no control characters.
+
+    Used by both ``PacmanRepositoryModel.servers`` (its https branch) and
+    ``PacmanKeyModel.url`` so the two can never drift apart again — they
+    previously duplicated this logic and ``PacmanKeyModel.url`` silently
+    accepted a hostless URL (``"https://"``, ``"https:///k.gpg"``) that the
+    servers check would have refused.
+    """
+    _reject_control_chars(value, what)
+    parts = urlsplit(value)
+    if parts.scheme != "https":
+        raise ValueError(f"{what} must be https://, got {value!r}")
+    if "@" in parts.netloc:
+        raise ValueError(
+            f"{what} must not carry credentials, got {value!r}; "
+            "a synced config would copy the secret verbatim"
+        )
+    if not parts.netloc:
+        raise ValueError(f"{what} has no host: {value!r}")
+
 
 def _validate_server_url(value: str) -> None:
     """Refuse anything that is not a plain ``https://`` or ``file://`` URL.
 
-    Mirrors ``GitPackageSourceModel._validate_url``: ``urlsplit`` and reject
-    credentials, since ``sync`` copies these values verbatim into a config
-    file.
+    The https branch delegates to ``_validate_https_url`` (shared with
+    ``PacmanKeyModel.url``); ``file://`` keeps its own path-only check.
     """
+    _reject_control_chars(value, "pacman repository server")
     parts = urlsplit(value)
     if parts.scheme not in ("https", "file"):
         raise ValueError(
             f"pacman repository server must be https:// or file://, got {value!r}"
         )
+    if parts.scheme == "https":
+        _validate_https_url(value, "pacman repository server")
+        return
     if "@" in parts.netloc:
         raise ValueError(
             f"pacman repository server must not carry credentials, got {value!r}; "
             "a synced config would copy the secret verbatim"
         )
-    if parts.scheme == "https" and not parts.netloc:
-        raise ValueError(f"pacman repository server has no host: {value!r}")
-    if parts.scheme == "file" and not parts.path:
+    if not parts.path:
         raise ValueError(f"pacman repository server has no path: {value!r}")
 
 
@@ -102,7 +143,10 @@ class PacmanRepositoryModel(BaseModel):
     @field_validator("include")
     @classmethod
     def _validate_include(cls, value: Optional[str]) -> Optional[str]:
-        if value is not None and not value.startswith("/"):
+        if value is None:
+            return value
+        _reject_control_chars(value, "pacman repository include")
+        if not value.startswith("/"):
             raise ValueError(
                 f"pacman repository include must be an absolute path, got {value!r}"
             )
@@ -168,14 +212,7 @@ class PacmanKeyModel(BaseModel):
     def _validate_url(cls, value: Optional[str]) -> Optional[str]:
         if value is None:
             return value
-        if not value.startswith("https://"):
-            raise ValueError(f"pacman key url must be https://, got {value!r}")
-        parts = urlsplit(value)
-        if "@" in parts.netloc:
-            raise ValueError(
-                f"pacman key url must not carry credentials, got {value!r}; "
-                "a synced config would copy the secret verbatim"
-            )
+        _validate_https_url(value, "pacman key url")
         return value
 
 

@@ -97,3 +97,55 @@ def test_bad_key_url_refused(url):
 def test_unknown_field_refused():
     with pytest.raises(ValidationError):
         PacmanModel(repositories=[{"name": "x", "servers": [SRV], "usage": "All"}])
+
+
+# --- fix round 1: control-character injection + hostless https URLs -------
+
+_CONTROL_CHARS = ["\n", "\r", "\t"]
+
+
+@pytest.mark.parametrize("ctrl", _CONTROL_CHARS)
+def test_control_chars_in_server_refused(ctrl):
+    with pytest.raises(ValidationError):
+        PacmanModel(repositories=[{"name": "x", "servers": [
+            f"https://good.example/$arch{ctrl}SigLevel = Never"
+        ]}])
+
+
+@pytest.mark.parametrize("ctrl", _CONTROL_CHARS)
+def test_control_chars_in_include_refused(ctrl):
+    with pytest.raises(ValidationError):
+        PacmanModel(repositories=[{"name": "x", "include": f"/etc/pacman.d/m{ctrl}[evil]"}])
+
+
+@pytest.mark.parametrize("ctrl", _CONTROL_CHARS)
+def test_control_chars_in_key_url_refused(ctrl):
+    with pytest.raises(ValidationError):
+        PacmanModel(keys=[{"fingerprint": FPR, "url": f"https://e.example/k.gpg{ctrl}x"}])
+
+
+def test_server_newline_injection_refused():
+    # Reproduces the reported config-injection payload verbatim: a Server
+    # entry that would append a whole extra section to pacman.conf.
+    with pytest.raises(ValidationError):
+        PacmanModel(repositories=[{"name": "x", "servers": [
+            "https://good.example/$arch\nSigLevel = Never\n[evil]\n"
+            "Server = https://evil.example/$arch"
+        ]}])
+
+
+def test_include_newline_injection_refused():
+    with pytest.raises(ValidationError):
+        PacmanModel(repositories=[{"name": "x", "include":
+                                    "/etc/pacman.d/m\n[evil]\nServer = https://e/$arch"}])
+
+
+def test_key_url_newline_injection_refused():
+    with pytest.raises(ValidationError):
+        PacmanModel(keys=[{"fingerprint": FPR, "url": "https://e.example/k.gpg\nx"}])
+
+
+@pytest.mark.parametrize("url", ["https://", "https:///k.gpg"])
+def test_hostless_key_url_refused(url):
+    with pytest.raises(ValidationError):
+        PacmanModel(keys=[{"fingerprint": FPR, "url": url}])

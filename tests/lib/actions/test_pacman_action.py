@@ -210,9 +210,14 @@ def test_import_fragment_shape(tmp_path):
     _write_conf(tmp_path, _ACTIVE)
     a = PacmanAction(_cfg(), _ctx(tmp_path))
     frag = a.import_state(managed=[])
+    # repositories/keys: task 7, PacmanAction._import_fragment folds in
+    # PacmanRepositoriesAction.captured() — always present, empty here since
+    # `_ACTIVE` declares no third-party section and no gpg keyring to trust.
     assert frag == {"pacman": {
         "options": {"Parallel": True, "Color": True, "VerbosePkgLists": True},
         "multilib": True,
+        "repositories": [],
+        "keys": [],
     }}
 
 
@@ -248,7 +253,10 @@ def test_an_undeclared_pacman_section_captures_the_machine(tmp_path):
 
     assert action.import_state(managed=[]) == {"pacman": {
         "options": {"Parallel": True, "Color": True, "VerbosePkgLists": False},
-        "multilib": True}}
+        "multilib": True,
+        "repositories": [],
+        "keys": [],
+    }}
 
 
 def test_sync_invents_no_pacman_config_without_a_pacman_conf(tmp_path):

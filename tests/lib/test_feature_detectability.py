@@ -1283,3 +1283,73 @@ def test_an_mcp_server_owned_but_no_longer_declared_is_removed(tmp_path):
 def test_an_mcp_server_somebody_else_registered_is_left_alone(tmp_path):
     assert _mcp_plan(_mcp_root(tmp_path, {"theirs": {"command": "x"}}),
                      {"users": [{"username": "andres"}]}) == []
+
+
+# --- pacman.repositories / pacman.keys -------------------------------------- #
+#
+# The full CREATE/silence/MODIFY(reason)/DELETE/drift-left-alone matrix for
+# PacmanRepositoriesAction lives in test_pacman_repositories_plan.py (task 5) —
+# this section only pins the part specific to THIS suite's concern: the
+# feature is actually reachable through `dasik plan` via the real registry
+# (`setup_actions()`, `config_key='pacman'`), not only through directly
+# instantiating the action class. A registration mistake (wrong config_key, a
+# missing register_action call) would leave the action fully correct in
+# isolation and invisible from `dasik plan` — exactly the silent failure this
+# file exists to catch.
+
+def test_pacman_repositories_is_registered_on_the_pacman_config_key():
+    from dasik.lib.actions.action_registry import get_default_registry
+    from dasik.lib.actions.actions_handler_v2 import setup_actions
+    from dasik.lib.actions.pacman_repositories_action import PacmanRepositoriesAction
+
+    setup_actions()
+    metas = {meta["class"]: meta for meta in get_default_registry().get_all_actions()}
+    meta = metas[PacmanRepositoriesAction]
+    assert meta["config_key"] == "pacman"
+    assert meta["is_optional"] is True
+
+
+def _pacman_repos_plan(root, config, managed=(), secret_out="", sigs_out=""):
+    from unittest.mock import MagicMock, patch
+    from dasik.lib.actions.pacman_repositories_action import PacmanRepositoriesAction
+
+    def gpg(cmd, args, **kwargs):
+        if "--list-secret-keys" in args:
+            return MagicMock(returncode=0, stdout=secret_out)
+        return MagicMock(returncode=0, stdout=sigs_out)
+
+    action = PacmanRepositoriesAction(config, _ctx(root))
+    with patch("dasik.lib.actions.pacman_repositories_action.Command.execute",
+              side_effect=gpg):
+        return [(c.op.name, c.item) for c in action.plan(managed=list(managed))]
+
+
+_PACMAN_REPO_CFG = {
+    "repositories": [{"name": "amt911", "sig_level": "Required",
+                      "servers": ["https://amt911.github.io/arch-packages/$arch"]}],
+    "keys": [{"fingerprint": "6C6568CE34894645A23ABC44B5BD6F8F9023E53B",
+             "url": "https://amt911.github.io/arch-packages/amt911.gpg"}],
+}
+
+
+def test_a_declared_pacman_repository_missing_from_the_target_is_planned(tmp_path):
+    (tmp_path / "etc").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "etc/pacman.conf").write_text("[options]\n")
+    changes = _pacman_repos_plan(tmp_path, _PACMAN_REPO_CFG)
+    assert ("CREATE", "repo:amt911") in changes
+    assert ("CREATE", "key:6C6568CE34894645A23ABC44B5BD6F8F9023E53B") in changes
+
+
+_PACMAN_REPO_ONLY_CFG = {"repositories": _PACMAN_REPO_CFG["repositories"]}
+
+
+def test_a_pacman_repository_already_on_the_target_plans_nothing(tmp_path):
+    """No `[core]` header in this minimal conf, so `below_core` can't fire; the
+    sync db for the repo is present too — every MODIFY reason is covered."""
+    (tmp_path / "etc").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "etc/pacman.conf").write_text(
+        "[options]\n\n[amt911]\nSigLevel = Required\n"
+        "Server = https://amt911.github.io/arch-packages/$arch\n")
+    (tmp_path / "var/lib/pacman/sync").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "var/lib/pacman/sync/amt911.db").write_text("")
+    assert _pacman_repos_plan(tmp_path, _PACMAN_REPO_ONLY_CFG) == []

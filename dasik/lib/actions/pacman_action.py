@@ -147,6 +147,18 @@ class PacmanAction(CompositeV3Action):
         st = self._actual_state()
         if st is None:
             return {}
+        # repositories/keys are read by PacmanRepositoriesAction's own private
+        # readers (_conf_text / parse_sections / _trusted_keys) — the same
+        # ones its plan()/actual() use — via its captured() helper, so plan
+        # and sync can never disagree about the same machine. It is built
+        # from `self.config` (the same raw `pacman` block this action was
+        # constructed with) so a declared key's `url` is copied from THIS
+        # seed, never invented. PacmanRepositoriesAction.import_state() itself
+        # always returns {} (see its docstring): Reconciler.sync merges
+        # fragments by top-level key, and two `pacman` fragments would
+        # overwrite each other — this is the one that wins.
+        from .pacman_repositories_action import PacmanRepositoriesAction
+        captured = PacmanRepositoriesAction(self.config, self.context).captured()
         return {self._DOMAIN: {
             "options": {
                 "Parallel": st["Parallel"],
@@ -154,6 +166,8 @@ class PacmanAction(CompositeV3Action):
                 "VerbosePkgLists": st["VerbosePkgLists"],
             },
             "multilib": st["multilib"],
+            "repositories": captured["repositories"],
+            "keys": captured["keys"],
         }}
 
     def _set_value(self) -> None:

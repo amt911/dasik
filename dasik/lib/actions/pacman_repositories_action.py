@@ -222,6 +222,48 @@ class PacmanRepositoriesAction(AbstractAction):
         key_items = {f"{_KEY_PREFIX}{fpr}" for fpr in self._trusted_keys()}
         return repo_items | key_items
 
+    def captured(self) -> Dict[str, list]:
+        """``repositories``/``keys`` as ``sync`` should write them.
+
+        Reads the machine with the exact same private readers ``plan()``/
+        ``actual()`` use — ``_conf_text``, ``parse_sections``/``third_party``,
+        ``_trusted_keys`` — so plan and sync can never disagree about the same
+        machine. Called by ``PacmanAction._import_fragment`` (never returned
+        from this action's own ``import_state``, see its docstring): the two
+        actions share the ``pacman`` config key, and ``Reconciler.sync``
+        merges fragments by top-level key, so only one of them may report it.
+
+        Both lists are always present, possibly empty — a repository or key
+        this machine no longer carries is CLEARED from a declared list,
+        because sync reports reality, not the seed. ``url`` is copied from
+        this action's own declared ``keys`` (the seed's ``pacman.keys``) when
+        the fingerprint matches (compared uppercase, as ``__init__`` already
+        stores them); omitted otherwise, since a bare fingerprint sitting in
+        the keyring carries no URL of its own.
+        """
+        repositories: List[Dict[str, Any]] = []
+        text = self._conf_text()
+        if text is not None:
+            for section in third_party(parse_sections(text)):
+                entry: Dict[str, Any] = {"name": section.name}
+                if section.servers:
+                    entry["servers"] = list(section.servers)
+                else:
+                    entry["include"] = section.include
+                if section.sig_level is not None:
+                    entry["sig_level"] = section.sig_level
+                repositories.append(entry)
+
+        keys: List[Dict[str, Any]] = []
+        for fingerprint in sorted(self._trusted_keys()):
+            key_entry: Dict[str, Any] = {"fingerprint": fingerprint}
+            url = self._keys.get(fingerprint)
+            if url is not None:
+                key_entry["url"] = url
+            keys.append(key_entry)
+
+        return {"repositories": repositories, "keys": keys}
+
     # -- desired state ------------------------------------------------------ #
 
     def _desired(self) -> Set[str]:
@@ -293,6 +335,24 @@ class PacmanRepositoriesAction(AbstractAction):
 
     def managed_keys(self) -> dict:
         return {_DOMAIN: sorted(self._desired())}
+
+    def import_state(self, managed=None) -> dict:
+        """Nothing: ``PacmanAction._import_fragment`` captures ``repositories``/
+        ``keys`` as part of ITS OWN ``pacman`` fragment, via ``captured()``
+        above.
+
+        ``Reconciler.sync`` merges every action's ``import_state`` fragment
+        with ``fragments.update(fragment)`` — by top-level key
+        (``reconciler.py``). This action's ``config_key`` is ``'pacman'``,
+        the same one ``PacmanAction`` reads, so two ``{"pacman": ...}``
+        fragments here would silently overwrite each other: whichever ran
+        last would win, and the other's half of the block (options/multilib
+        vs. repositories/keys) would vanish from the captured config. One
+        fragment, one owner — ``PacmanAction`` — so plan (which DOES read
+        this action separately) and sync can never disagree about who reports
+        what.
+        """
+        return {}
 
     def verify(self) -> bool:
         return not self.plan(managed=[])

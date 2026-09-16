@@ -12,19 +12,34 @@ A ``pacman.conf`` repository section looks like::
     SigLevel = Required
     Server = https://amt911.github.io/arch-packages/$arch
 
-The header must be **uncommented** (a line that is exactly ``[name]``, not
-``#[name]``) to count as a real section — a commented-out header such as the
-stock file's ``#[core-testing]`` is inert to pacman and must be inert here too.
-A section's body is its **contiguous** key lines right after the header: the
-first blank line, comment line, or next header line ends it. That stop rule is
-what lets ``render`` remove one section without disturbing a neighbouring
-commented-out block like ``#[core-testing]`` two lines below it.
+The header must be **uncommented** (a line that, once leading/trailing
+whitespace is stripped, reads exactly ``[name]``, not ``#[name]``) to count as
+a real section — a commented-out header such as the stock file's
+``#[core-testing]`` is inert to pacman and must be inert here too. A section's
+body is its **contiguous** key lines right after the header: the first blank
+line, comment line, or next header line ends it. That stop rule is what lets
+``render`` remove one section without disturbing a neighbouring commented-out
+block like ``#[core-testing]`` two lines below it.
+
+Every line is classified (header / comment / blank / key) after stripping its
+leading/trailing whitespace — which also strips a trailing ``\r``, since
+``pacman-conf`` itself accepts ``  [name]  ``, an indented ``   Server =
+...``, and CRLF line endings and parses all of them the same as their
+untrimmed forms (measured against the real binary, not assumed). A removed
+section's *original* lines are deleted whatever their spacing; a
+freshly-inserted ``declared`` block is always written out canonical (plain
+``\n``, no leading whitespace). Everything else in the file — including an
+untouched line's original spacing — is byte-identical on the way out.
 
 ``render`` always re-homes the sections it manages (``declared``) immediately
 above the ``[core]`` header — a hand-edited section anywhere else, even one
 below ``[core]``, gets picked up by name and moved back into place — because
 that is the one spot a *third-party* repo is guaranteed not to collide with a
-future official section pacman adds after ``[options]``.
+future official section pacman adds after ``[options]``. ``declared`` must not
+repeat a name — that would silently render as two ``[name]`` blocks — so
+``render`` raises ``ValueError`` naming the duplicate instead (the model
+already refuses this upstream; ``render`` enforces its own precondition rather
+than trusting the caller).
 """
 from __future__ import annotations
 
@@ -34,14 +49,32 @@ from typing import Any, Iterable, List, Optional, Tuple
 
 from ..models.pacman_model import OFFICIAL_REPOS
 
-# A real header: a line that is *exactly* "[name]" — no leading "#" (which
-# would make it a comment pacman ignores), no trailing junk.
+# A real header: a line that, once stripped of leading/trailing whitespace, is
+# *exactly* "[name]" — no leading "#" (which would make it a comment pacman
+# ignores), no trailing junk. Applied to the stripped line, never the raw one,
+# so "  [x]  " and "[x]\r" (CRLF) are headers too, matching pacman-conf(5).
 _HEADER_RE = re.compile(r"^\[([^\[\]]+)\]$")
 
 # The three directives a repository section carries. Values are taken
 # verbatim (whitespace-trimmed) — dasik never rewrites what a value means,
-# only where the section lives.
+# only where the section lives. Applied to the stripped line, so an indented
+# "   Server = ..." is recognised the same as an unindented one.
 _KEY_RE = re.compile(r"^(SigLevel|Server|Include)\s*=\s*(.*)$")
+
+
+def _is_blank(line: str) -> bool:
+    """A line that is empty once whitespace (incl. a trailing ``\\r``) is stripped."""
+    return line.strip() == ""
+
+
+def _is_comment(line: str) -> bool:
+    """A line whose first non-whitespace character is ``#``."""
+    return line.strip().startswith("#")
+
+
+def _match_header(line: str) -> Optional["re.Match[str]"]:
+    """``_HEADER_RE`` applied to the line's stripped content."""
+    return _HEADER_RE.match(line.strip())
 
 
 @dataclass(frozen=True)
@@ -65,7 +98,7 @@ def _iter_headers(lines: List[str]) -> List[Tuple[int, str]]:
     """Every uncommented header's ``(line index, name)``, in file order."""
     headers = []
     for index, line in enumerate(lines):
-        match = _HEADER_RE.match(line)
+        match = _match_header(line)
         if match:
             headers.append((index, match.group(1)))
     return headers
@@ -82,7 +115,7 @@ def _body_end(lines: List[str], header_index: int) -> int:
     total = len(lines)
     while index < total:
         line = lines[index]
-        if line == "" or line.startswith("#") or _HEADER_RE.match(line):
+        if _is_blank(line) or _is_comment(line) or _match_header(line):
             break
         index += 1
     return index
@@ -100,7 +133,7 @@ def parse_sections(text: str) -> List[RepoSection]:
         servers: List[str] = []
         include: Optional[str] = None
         for line in lines[header_index + 1:body_end]:
-            match = _KEY_RE.match(line)
+            match = _KEY_RE.match(line.strip())
             if not match:
                 continue
             key, value = match.group(1), match.group(2).strip()
@@ -154,10 +187,22 @@ def render(text: str, declared: List[RepoSection], remove: Iterable[str]) -> str
     Removal takes the header, its contiguous key lines, and at most one
     following blank line — never more, so a neighbouring blank line that was
     already part of the surrounding file structure survives. Every occurrence
-    of a removed name is deleted (a hand-edited duplicate included). Sections
-    dasik neither declares nor is told to remove are untouched, wherever they
-    live in the file.
+    of a removed name is deleted (a hand-edited duplicate included), whatever
+    that occurrence's original spacing. Sections dasik neither declares nor is
+    told to remove are untouched, wherever they live in the file and however
+    they are spaced.
+
+    Raises ``ValueError`` if ``declared`` repeats a name — that would silently
+    render as two ``[name]`` blocks in the same file.
     """
+    seen_names: set = set()
+    for section in declared:
+        if section.name in seen_names:
+            raise ValueError(
+                f"pacman render: duplicate declared repository name {section.name!r}"
+            )
+        seen_names.add(section.name)
+
     trailing_newline = text.endswith("\n")
     lines = text.split("\n")
     if trailing_newline:
@@ -171,7 +216,7 @@ def render(text: str, declared: List[RepoSection], remove: Iterable[str]) -> str
             continue
         body_end = _body_end(lines, header_index)
         end = body_end
-        if end < len(lines) and lines[end] == "":
+        if end < len(lines) and _is_blank(lines[end]):
             end += 1
         ranges.append((header_index, end))
     ranges.sort()

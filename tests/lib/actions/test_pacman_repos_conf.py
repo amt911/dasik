@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import pytest
 from hypothesis import given, strategies as st
 
 from dasik.lib.actions.pacman_repos_state import (RepoSection, parse_sections, third_party,
@@ -72,3 +73,44 @@ def test_property_render_parse_roundtrip(names):
     assert third_party(parse_sections(out)) == declared
     assert render(out, declared, remove=[]) == out
     assert render(out, [], remove=names) == STOCK
+
+
+# --- fix round 1: pacman trims whitespace/CRLF when classifying lines; render
+# must reject a repeated declared name instead of silently duplicating it. ---
+
+def test_render_inserts_above_core_with_trailing_spaces_in_header():
+    text = STOCK.replace("[core]\n", "[core]  \n")
+    assert "[core]  \n" in text  # sanity: the replace actually landed
+    out = render(text, [AMT], remove=[])
+    assert third_party(parse_sections(out)) == [AMT]
+    assert out.index("[amt911]") < out.index("[core]")
+    assert not below_core(out, "amt911")
+
+
+X = RepoSection("x", None, ("https://x/$arch",), None)
+
+
+def test_hand_written_section_with_odd_spacing_is_parsed_and_moved():
+    text = STOCK + "\n  [x]  \n   Server = https://x/$arch\n"
+    sections = [s for s in third_party(parse_sections(text)) if s.name == "x"]
+    assert sections == [X]
+    assert below_core(text, "x")
+    out = render(text, [X], remove=[])
+    assert not below_core(out, "x")
+    assert out.count("[x]") == 1
+    assert out.index("[x]") < out.index("[core]")
+
+
+def test_crlf_input_is_parsed_and_rendered():
+    text = ("[options]\r\n\r\n[mine]\r\nServer = https://m.example/$arch\r\n\r\n"
+            "[core]\r\nInclude = /etc/pacman.d/mirrorlist\r\n")
+    mine = RepoSection("mine", None, ("https://m.example/$arch",), None)
+    assert third_party(parse_sections(text)) == [mine]
+    out = render(text, [mine], remove=[])
+    assert out.count("[mine]") == 1
+    assert out.index("[mine]") < out.index("[core]")
+
+
+def test_render_raises_on_duplicate_declared_name():
+    with pytest.raises(ValueError, match="amt911"):
+        render(STOCK, [AMT, AMT], remove=[])

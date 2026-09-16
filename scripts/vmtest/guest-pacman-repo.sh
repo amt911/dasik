@@ -98,7 +98,9 @@ PY
 rc PACREPO-EMPTYSYNC-CAPTURED
 
 echo "PACREPO-D: generations list it; state.json records the domain"
-$D generations --target / $L | tail -20
+$D generations --target / $L > /tmp/gens.txt 2>&1; rc PACREPO-GENERATIONS
+cat /tmp/gens.txt
+present /tmp/gens.txt '^Generation '; rc PACREPO-GENERATIONS-LISTED
 present /var/lib/dasik/state.json 'pacman_repositories'; rc PACREPO-MANIFEST
 
 echo "PACREPO-E: remove section+key BY HAND -> plan proposes both creates -> apply -> replan silent"

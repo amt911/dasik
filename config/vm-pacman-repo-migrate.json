@@ -1,0 +1,88 @@
+{
+  "metadata": {
+    "note": "PLAN v3 Task 9 scenario B (controller ruling): the migration path the author's three real machines take today — `config-saver` built from Git via `package_sources` (pkgbuild-git, pinned SHA), no `[amt911]` repo declared at all. The guest driver (guest-pacman-repo-migrate.sh) then `plan`s config/vm-pacman-repo.json (the repo config, WITHOUT package_sources) against this already-installed machine and asserts the switch only ever ADDS the key+repo — it must never touch [packages] (config-saver is already installed; the repo just becomes its new provider). NOT for real hardware. Needs NETWORK: git clone of config-saver-aur.git during install, then (in the guest driver) the real https://amt911.github.io/arch-packages/$arch sync. Autologins root on ttyS0 and ships python-pydantic/python-colorama so dasik runs from the 9p-mounted repo for the guest driver.",
+    "disk": "12G: config-saver's build (base-devel + its own dependency tree) needs more room than the 8G minimal configs."
+  },
+  "disks": {
+    "disks": [
+      {
+        "device": "/dev/vda",
+        "partition_table": "gpt",
+        "wipe_disk": false,
+        "partitions": [
+          {
+            "label": "ESP",
+            "size": "512MiB",
+            "filesystem": "fat32",
+            "partition_type": "esp",
+            "mountpoint": "/boot",
+            "format": true
+          },
+          {
+            "label": "ROOT",
+            "size": "rest",
+            "filesystem": "ext4",
+            "partition_type": "linux",
+            "mountpoint": "/",
+            "format": true
+          }
+        ]
+      }
+    ]
+  },
+  "enable_microcode": false,
+  "packages": [
+    "base",
+    "linux",
+    "linux-firmware",
+    "sudo",
+    "git",
+    "base-devel",
+    "python",
+    "python-pydantic",
+    "python-colorama",
+    "config-saver"
+  ],
+  "package_sources": {
+    "config-saver": {
+      "type": "pkgbuild-git",
+      "url": "https://github.com/amt911/config-saver-aur.git",
+      "ref": "20146633bb3988e64a0c6dc317dd5545d5f5c41a",
+      "subdir": "."
+    }
+  },
+  "bootloader": "sd-boot",
+  "hostname": "dasik-pacman-migrate",
+  "kernel_cmdline": [
+    "console=ttyS0,115200"
+  ],
+  "timezone": {
+    "region": "Etc",
+    "city": "UTC"
+  },
+  "locales": {
+    "selected_locales": [
+      "en_US.UTF-8 UTF-8"
+    ],
+    "desired_locale": "en_US.UTF-8",
+    "desired_tty_layout": "us"
+  },
+  "network": {
+    "type": "systemd-networkd"
+  },
+  "users": [
+    {
+      "username": "test",
+      "hashed_password": "$6$dasikvmtest$pfoSKqgh8yWKbmkwBpNuvQuJ4/kLeJmwCPCezBolW4pKbtJbtvMGQCM5f7W/hkbF/FmtCMZMYr/NLwDO4OJm7.",
+      "groups": [
+        "wheel"
+      ]
+    }
+  ],
+  "files": [
+    {
+      "path": "/etc/systemd/system/serial-getty@ttyS0.service.d/autologin.conf",
+      "content": "[Service]\nExecStart=\nExecStart=-/sbin/agetty --autologin root --noclear --keep-baud 115200,38400,9600 %I $TERM\n"
+    }
+  ]
+}

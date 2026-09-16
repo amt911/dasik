@@ -1,7 +1,7 @@
 # Mutation testing
 
 > Coverage measures how much code *runs*, not whether it's *correct*.
-> — `CLAUDE.md` § Quality beyond coverage
+> — `AGENTS.md` § Quality beyond coverage
 
 This is especially treacherous with AI-written code: the model tends to write
 the test *and* the implementation in one move, so a misread requirement gets
@@ -20,7 +20,7 @@ a line, swap `&` for `|`, `domain` → `None`) and re-runs the suite:
 
 ## What we mutate
 
-The pure reconciliation core — the highest-value target per `CLAUDE.md`:
+The pure reconciliation core — the highest-value target per `AGENTS.md`:
 
 | Tier | Files | When | Wired into CI |
 | --- | --- | --- | --- |

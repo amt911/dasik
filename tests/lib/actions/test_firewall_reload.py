@@ -87,3 +87,48 @@ def test_the_ufw_backend_never_touches_firewall_cmd(tmp_path, monkeypatch):
                    responses={"ufw": MagicMock(returncode=1, stdout=b"")})
     action.apply(action.plan(managed=[]))
     assert not any(cmd in ("firewall-cmd", "systemctl") for cmd, _ in calls)
+
+
+# --- the reload must be best-effort: firewalld can be mid-reinstall ------- #
+#
+# VM-caught (fix round 1): `rollback` restoring a dropped `firewall` block
+# re-applies FirewallAction (writes the zone, reloads) BEFORE PackagesAction
+# (which reinstalls the `firewalld` package the PREVIOUS apply just
+# uninstalled, per the SAME registry order that keeps a ufw REMOVE working
+# while the binary is still there). `systemctl is-active firewalld` can still
+# report "active" (a resident process from before the uninstall) while
+# `/usr/bin/firewall-cmd` is genuinely gone from disk at that exact moment --
+# `subprocess.run` then raises a bare `FileNotFoundError`, which used to
+# propagate out of `apply()` and abort the ENTIRE apply/rollback over a
+# cosmetic reload. The reload must be best-effort, exactly like
+# `_ufw_status`'s own "a failed probe means unknown" idiom.
+
+def test_a_missing_firewall_cmd_binary_never_aborts_the_apply(tmp_path, monkeypatch):
+    action = _fw("/", allowed_services=["syncthing"])
+    action._zone_file = lambda zone="public": str(tmp_path / f"{zone}.xml")
+
+    def fake(cmd, args=None, **kw):
+        if cmd == "systemctl":
+            return MagicMock(returncode=0, stdout=b"")     # stale "active" state
+        if cmd == "firewall-cmd":
+            raise FileNotFoundError(2, "No such file or directory", "firewall-cmd")
+        return MagicMock(returncode=0, stdout=b"")
+
+    monkeypatch.setattr("dasik.lib.actions.firewall_action.Command.execute", fake)
+    action.apply(action.plan([]))              # must NOT raise
+    assert (tmp_path / "public.xml").exists()  # the zone write itself still happened
+
+
+def test_a_missing_systemctl_probe_never_aborts_the_apply(tmp_path, monkeypatch):
+    """Defensive: the probe call itself is wrapped too, not just the reload."""
+    action = _fw("/", allowed_services=["syncthing"])
+    action._zone_file = lambda zone="public": str(tmp_path / f"{zone}.xml")
+
+    def fake(cmd, args=None, **kw):
+        if cmd == "systemctl":
+            raise FileNotFoundError(2, "No such file or directory", "systemctl")
+        return MagicMock(returncode=0, stdout=b"")
+
+    monkeypatch.setattr("dasik.lib.actions.firewall_action.Command.execute", fake)
+    action.apply(action.plan([]))              # must NOT raise
+    assert (tmp_path / "public.xml").exists()

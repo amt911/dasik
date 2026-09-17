@@ -155,6 +155,58 @@ $D plan "$C" --target / $L > /tmp/plan-final.txt 2>&1; rc SFRM-FINAL-PLAN
 cat /tmp/plan-final.txt
 silent /tmp/plan-final.txt; rc SFRM-FINAL-SILENT
 
+# ===================== S2 (fix round 1): sync must not dispossess ========= #
+#
+# `sync` computes `managed <- actual ∩ (claimable ∪ declared)`. Before S2,
+# `actual()` returned `set()` whenever the block was disabled/absent, so a
+# `sync` run BEFORE the next apply wiped ownership and the FOLLOWING plan/
+# apply against the SAME still-disabled/absent config saw nothing to remove.
+# Uses SCRATCH copies of the disabled/absent configs -- `sync` rewrites its
+# argument in place, and $C itself must stay untouched for later steps.
+
+echo "SFRM-S2-A: snapper enable:false -- sync (scratch) must keep ownership"
+cp /tmp/snapper-disabled.json /tmp/s2-snapper.json
+$D sync /tmp/s2-snapper.json --target / $L > /tmp/s2-snapper-sync.txt 2>&1; rc SFRM-S2-SNAP-SYNC
+cat /tmp/s2-snapper-sync.txt
+$D plan /tmp/s2-snapper.json --target / $L > /tmp/s2-snapper-plan.txt 2>&1; rc SFRM-S2-SNAP-PLAN
+cat /tmp/s2-snapper-plan.txt
+present /tmp/s2-snapper-plan.txt 'remove root'; rc SFRM-S2-SNAP-REMOVE-PLANNED
+$D apply /tmp/s2-snapper.json --target / --yes $L > /tmp/s2-snapper-apply.txt 2>&1; rc SFRM-S2-SNAP-APPLY
+cat /tmp/s2-snapper-apply.txt
+[ ! -e /etc/snapper/configs/root ]; rc SFRM-S2-SNAP-GONE
+
+echo "SFRM-S2-B: rollback snapper before firewall's S2 pass"
+$D rollback --target / --yes $L > /tmp/s2-snapper-rollback.txt 2>&1; rc SFRM-S2-SNAP-ROLLBACK
+[ -e /etc/snapper/configs/root ]; rc SFRM-S2-SNAP-ROLLBACK-BACK
+
+echo "SFRM-S2-C: firewall block ABSENT -- sync (scratch) must keep ownership"
+cp /tmp/no-firewall.json /tmp/s2-firewall.json
+$D sync /tmp/s2-firewall.json --target / $L > /tmp/s2-fw-sync.txt 2>&1; rc SFRM-S2-FW-SYNC
+cat /tmp/s2-fw-sync.txt
+$D plan /tmp/s2-firewall.json --target / $L > /tmp/s2-fw-plan.txt 2>&1; rc SFRM-S2-FW-PLAN
+cat /tmp/s2-fw-plan.txt
+present /tmp/s2-fw-plan.txt 'remove public'; rc SFRM-S2-FW-REMOVE-PLANNED
+$D apply /tmp/s2-firewall.json --target / --yes $L > /tmp/s2-fw-apply.txt 2>&1; rc SFRM-S2-FW-APPLY
+cat /tmp/s2-fw-apply.txt
+[ ! -e /etc/firewalld/zones/public.xml ]; rc SFRM-S2-FW-GONE
+
+echo "SFRM-N4: the firewalld REMOVE reloaded the running daemon (N4)"
+if systemctl is-active --quiet firewalld; then
+  firewall-cmd --zone=public --list-services > /tmp/n4-services.txt 2>&1; rc SFRM-N4-LIST-SERVICES
+  cat /tmp/n4-services.txt
+  present /tmp/n4-services.txt 'ssh'; rc SFRM-N4-DEFAULT-SSH
+  present /tmp/n4-services.txt 'dhcpv6-client'; rc SFRM-N4-DEFAULT-DHCPV6
+else
+  echo "SFRM-N4-SKIPPED (firewalld not active in this guest)"
+fi
+
+echo "SFRM-S2-D: rollback firewall -- fully converged again (same state SFRM-O expects)"
+$D rollback --target / --yes $L > /tmp/s2-fw-rollback.txt 2>&1; rc SFRM-S2-FW-ROLLBACK
+[ -e /etc/firewalld/zones/public.xml ]; rc SFRM-S2-FW-ROLLBACK-BACK
+$D plan "$C" --target / $L > /tmp/s2-plan-check.txt 2>&1; rc SFRM-S2-PLAN-CHECK
+cat /tmp/s2-plan-check.txt
+silent /tmp/s2-plan-check.txt; rc SFRM-S2-SILENT
+
 # ============================= SYNC / CHECK / GENERATIONS ================== #
 
 echo "SFRM-O: sync -> check -> plan silent on the converged machine"
@@ -169,6 +221,93 @@ silent /tmp/plan-after-sync.txt; rc SFRM-SYNC-PLAN-SILENT
 echo "SFRM-P: generations recorded the snapper/firewall domains"
 $D generations --target / $L > /tmp/generations.txt 2>&1; rc SFRM-GENERATIONS
 cat /tmp/generations.txt
+
+# ===================== B1 (fix round 1, BLOCKER) =========================== #
+#
+# A REMOVE of a config whose SUBVOLUME= cannot be read must refuse before any
+# destructive call -- never guess "/" and delete a DIFFERENT, still-declared
+# config's snapshots. Machine state after this section is NOT restored to
+# silence (nothing runs after S1 below except SFRM-DONE/poweroff).
+
+echo "SFRM-B1-A: add a second snapper config (home on @home)"
+python - <<'PY'
+import json
+cfg = json.load(open("config/vm-snapper-firewall-removal.json"))
+
+two = dict(cfg)
+two["snapper"] = {"enable": True, "configs": [
+    {"name": "root", "subvolume": "/"},
+    {"name": "home", "subvolume": "/home"},
+]}
+json.dump(two, open("/tmp/two-snapper-configs.json", "w"), indent=2)
+
+drop_home = dict(cfg)
+drop_home["snapper"] = {"enable": True, "configs": [{"name": "root", "subvolume": "/"}]}
+json.dump(drop_home, open("/tmp/drop-home.json", "w"), indent=2)
+
+drop_root_keep_home = dict(cfg)
+drop_root_keep_home["snapper"] = {"enable": True, "configs": [{"name": "home", "subvolume": "/home"}]}
+json.dump(drop_root_keep_home, open("/tmp/drop-root-keep-home.json", "w"), indent=2)
+PY
+rc SFRM-B1-BUILD-CONFIGS
+
+$D apply /tmp/two-snapper-configs.json --target / --yes $L > /tmp/b1-add-home.txt 2>&1; rc SFRM-B1-ADD-HOME
+cat /tmp/b1-add-home.txt
+[ -e /etc/snapper/configs/home ]; rc SFRM-B1-HOME-CREATED
+
+echo "SFRM-B1-B: fresh snapshots on root -- must survive the botched home removal"
+snapper -c root create --description sfrm-b1-1; rc SFRM-B1-SNAP1
+snapper -c root create --description sfrm-b1-2; rc SFRM-B1-SNAP2
+btrfs subvolume list / > /tmp/b1-before-subvols.txt; rc SFRM-B1-SUBVOL-LIST-BEFORE
+cat /tmp/b1-before-subvols.txt
+
+echo "SFRM-B1-C: corrupt home's SUBVOLUME= line by hand"
+sed -i '/^SUBVOLUME=/d' /etc/snapper/configs/home; rc SFRM-B1-CORRUPT
+! grep -q '^SUBVOLUME=' /etc/snapper/configs/home; rc SFRM-B1-CORRUPT-VERIFIED
+
+echo "SFRM-B1-D: drop home from the declaration -- apply --yes must REFUSE, not guess"
+$D plan /tmp/drop-home.json --target / $L > /tmp/b1-plan.txt 2>&1; rc SFRM-B1-PLAN
+cat /tmp/b1-plan.txt
+present /tmp/b1-plan.txt 'remove home'; rc SFRM-B1-REMOVE-PLANNED
+$D apply /tmp/drop-home.json --target / --yes $L > /tmp/b1-apply.txt 2>&1
+b1_apply_rc=$?
+cat /tmp/b1-apply.txt
+[ "$b1_apply_rc" -ne 0 ]; rc SFRM-B1-APPLY-REFUSED
+present /tmp/b1-apply.txt 'SUBVOLUME'; rc SFRM-B1-REFUSAL-MENTIONS-SUBVOLUME
+
+echo "SFRM-B1-E: root's snapshots are UNTOUCHED by the botched home removal"
+btrfs subvolume list / > /tmp/b1-after-subvols.txt; rc SFRM-B1-SUBVOL-LIST-AFTER
+cat /tmp/b1-after-subvols.txt
+diff /tmp/b1-before-subvols.txt /tmp/b1-after-subvols.txt; rc SFRM-B1-ROOT-SNAPSHOTS-UNTOUCHED
+[ -e /etc/snapper/configs/root ]; rc SFRM-B1-ROOT-CONFIG-STILL-THERE
+[ -e /etc/snapper/configs/home ]; rc SFRM-B1-HOME-CONFIG-STILL-THERE
+
+# ===================== S1 (fix round 1): retry-safe after interruption ===== #
+#
+# A numbered `<N>/` whose `snapshot` subvolume is already gone (simulating a
+# run killed between the btrfs delete and its bookkeeping cleanup) must not
+# get the REMOVE stuck forever -- it converges, cleaning up the leftover.
+
+echo "SFRM-S1-A: delete one snapshot subvolume by hand, leaving a stale bookkeeping dir"
+N=$(ls /.snapshots | grep -E '^[0-9]+$' | sort -n | tail -1)
+echo "SFRM-S1-TARGET-N=$N"
+btrfs subvolume delete "/.snapshots/$N/snapshot"; rc SFRM-S1-MANUAL-DELETE
+[ ! -e "/.snapshots/$N/snapshot" ]; rc SFRM-S1-SNAPSHOT-GONE
+[ -e "/.snapshots/$N/info.xml" ]; rc SFRM-S1-LEFTOVER-STILL-THERE
+
+echo "SFRM-S1-B: removing root now must converge despite the stale leftover"
+$D plan /tmp/drop-root-keep-home.json --target / $L > /tmp/s1-plan.txt 2>&1; rc SFRM-S1-PLAN
+cat /tmp/s1-plan.txt
+present /tmp/s1-plan.txt 'remove root'; rc SFRM-S1-REMOVE-PLANNED
+$D apply /tmp/drop-root-keep-home.json --target / --yes $L > /tmp/s1-apply.txt 2>&1; rc SFRM-S1-APPLY-CONVERGES
+cat /tmp/s1-apply.txt
+[ ! -e /etc/snapper/configs/root ]; rc SFRM-S1-ROOT-CONFIG-GONE
+[ ! -e "/.snapshots/$N" ]; rc SFRM-S1-LEFTOVER-CLEANED
+
+echo "SFRM-S1-C: re-plan is silent"
+$D plan /tmp/drop-root-keep-home.json --target / $L > /tmp/s1-replan.txt 2>&1; rc SFRM-S1-REPLAN
+cat /tmp/s1-replan.txt
+silent /tmp/s1-replan.txt; rc SFRM-S1-REPLAN-SILENT
 
 echo "SFRM-DONE rc=$FAILS"
 sync

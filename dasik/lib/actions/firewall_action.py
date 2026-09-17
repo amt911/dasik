@@ -476,14 +476,31 @@ class FirewallAction(AbstractAction):
         running daemon re-reads it -- on a LIVE target only (N4, mirrors
         ``DropFilesAction._reload_systemd`` / issue #300's same lesson):
         there is no running firewalld under an install target at ``/mnt`` to
-        reload, and its first boot reads the zone fresh."""
+        reload, and its first boot reads the zone fresh.
+
+        Best-effort, like ``_ufw_status``'s own probe (VM-caught): dropping
+        the whole `firewall` block undeclares the `firewalld` package too,
+        and PackagesAction runs AFTER this action (same registry order that
+        keeps a ufw REMOVE working while `ufw` is still installed) — so a
+        `rollback` that restores the block runs this reload BEFORE Packages
+        reinstalls `firewalld`. `systemctl is-active` can still report the
+        unit as active (a resident process from before the uninstall) while
+        `/usr/bin/firewall-cmd` is genuinely gone from disk at that exact
+        moment, and a bare `FileNotFoundError` from `subprocess.run` used to
+        propagate out of `apply()` and abort the WHOLE apply/rollback over a
+        cosmetic reload. The zone file is already written either way; a
+        failed reload only delays the daemon noticing, never loses data.
+        """
         target = self._target()
         if target is None or getattr(target, "is_chroot", True):
             return
-        probe = Command.execute("systemctl", ["is-active", "firewalld"], target=target)
-        if getattr(probe, "returncode", 1) != 0:
-            return
-        Command.execute("firewall-cmd", ["--reload"], target=target)
+        try:
+            probe = Command.execute("systemctl", ["is-active", "firewalld"], target=target)
+            if getattr(probe, "returncode", 1) != 0:
+                return
+            Command.execute("firewall-cmd", ["--reload"], target=target)
+        except Exception:      # nosec B110 - best-effort reload, see docstring
+            pass
 
     def managed_keys(self) -> dict:
         if self._is_ufw():

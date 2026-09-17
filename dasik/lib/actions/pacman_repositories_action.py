@@ -45,6 +45,7 @@ import os
 from typing import Any, Dict, List, Optional, Set
 
 from .abstract_action import AbstractAction
+from .config_access import field as _field
 from .pacman_repos_state import (
     RepoSection,
     below_core,
@@ -93,13 +94,6 @@ def _repo_sync_conf_path(name: str) -> str:
     """In-target path of the single-repo ``pacman.conf`` used to ``pacman -Sy``
     just *name*'s database (FACT-PR-4: leaves every other repo's DB alone)."""
     return f"/var/tmp/dasik-pacman-{name}.conf"
-
-
-def _field(entry: Any, key: str, default: Any = None) -> Any:
-    """Read *key* from a dict or from a pydantic model, whichever arrived."""
-    if isinstance(entry, dict):
-        return entry.get(key, default)
-    return getattr(entry, key, default)
 
 
 def _decode(data: Any) -> str:

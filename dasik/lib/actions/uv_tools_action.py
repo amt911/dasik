@@ -24,6 +24,7 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from .abstract_action import AbstractAction
+from .config_access import field as _field
 from ..command_worker.command_worker import Command
 from ..exceptions.exceptions import CommandExecutionError
 from ..state.change import Change, Op
@@ -38,13 +39,6 @@ _UV_TOOL_DIR = ".local/share/uv/tools"
 
 # `semgrep[all]==1.2.3` -> `semgrep`: the name uv gives the directory.
 _DIST_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]*")
-
-
-def _field(entry: Any, key: str, default: Any = None) -> Any:
-    """Read *key* from a dict or from a pydantic model, whichever arrived."""
-    if isinstance(entry, dict):
-        return entry.get(key, default)
-    return getattr(entry, key, default)
 
 
 class UvToolsAction(AbstractAction):

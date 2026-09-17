@@ -54,6 +54,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Iterable, List, Optional, Set, Tuple
 
+from .config_access import field as _field
 from ..models.pacman_model import OFFICIAL_REPOS
 
 # A real header: a line that, once stripped of leading/trailing whitespace, is
@@ -87,13 +88,6 @@ class RepoSection:
     sig_level: Optional[str]
     servers: Tuple[str, ...]
     include: Optional[str]
-
-
-def _field(entry: Any, key: str, default: Any = None) -> Any:
-    """Read *key* from a dict or from a pydantic model, whichever arrived."""
-    if isinstance(entry, dict):
-        return entry.get(key, default)
-    return getattr(entry, key, default)
 
 
 def _iter_headers(lines: List[str]) -> List[Tuple[int, str]]:

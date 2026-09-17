@@ -23,6 +23,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional, Tuple
 
 from .abstract_action import AbstractAction
+from .config_access import field as _field
 from .mcp_servers_state import claude_mcp, codex_mcp
 from ..command_worker.command_worker import Command
 from ..exceptions.exceptions import CommandExecutionError
@@ -33,13 +34,6 @@ _DOMAIN = "mcp_servers"
 _READERS = {"claude-code": claude_mcp, "codex": codex_mcp}
 
 _ROOT = "root"
-
-
-def _field(entry: Any, key: str, default: Any = None) -> Any:
-    """Read *key* from a dict or from a pydantic model, whichever arrived."""
-    if isinstance(entry, dict):
-        return entry.get(key, default)
-    return getattr(entry, key, default)
 
 
 def _spec_of(entry: Any) -> Dict[str, Any]:

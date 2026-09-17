@@ -130,12 +130,11 @@ cat /tmp/apply-no-snapper.txt
 ! grep -q '^root$\|"root"' /etc/conf.d/snapper; rc SFRM-CONFD-CLEARED
 mountpoint -q /.snapshots; rc SFRM-SNAPSHOTS-STILL-MOUNTED
 ( touch /.snapshots/sfrm-probe && rm -f /.snapshots/sfrm-probe ); rc SFRM-SNAPSHOTS-USABLE
-# `--no-dbus`, never plain `snapper list`: a plain (D-Bus) call can return
-# STALE data for a config just deleted out-of-band -- MEASURED (FACT-SFRM-4)
-# -- because the daemon, once activated, caches its own view. `--no-dbus`
-# reads straight from disk, where the config file is genuinely gone.
-! snapper --no-dbus -c root list > /tmp/snapper-list-after.txt 2>&1; rc SFRM-SNAPPER-LIST-IMPOSSIBLE
-cat /tmp/snapper-list-after.txt
+# N-8: the "config genuinely gone" check moved to the S1 section below --
+# dropping the WHOLE `snapper` block here also undeclares the package
+# (PackagesAction uninstalls `snapper`/`snap-pac` in the SAME apply), so a
+# `--no-dbus list` failing here measures a MISSING BINARY
+# (`/usr/bin/snapper: No such file or directory`), not a missing config.
 ! btrfs subvolume list / | grep -q '\.snapshots/[0-9]*/snapshot'; rc SFRM-NO-SNAPSHOT-SUBVOL-LEFT
 
 echo "SFRM-F: re-plan is silent (converged)"
@@ -185,6 +184,17 @@ echo "SFRM-L: rollback firewall -- zone restored, plan silent"
 $D rollback --target / --yes $L > /tmp/rollback-fw.txt 2>&1; rc SFRM-FW-ROLLBACK
 cat /tmp/rollback-fw.txt
 [ -e /etc/firewalld/zones/public.xml ]; rc SFRM-FW-ROLLBACK-BACK
+# SF-3: the FILE being restored is not the same thing as the RUNNING daemon
+# enforcing it. Registry order is Firewall < Packages < Systemd, so this
+# rollback writes the zone + attempts a reload BEFORE Packages reinstalls
+# `firewalld` (the previous drop-block apply uninstalled it) and Systemd only
+# `enable`s (never `--now`/starts) the unit -- measure the DAEMON directly,
+# not just the plan/file, which cannot tell "restored on disk" apart from
+# "the daemon nobody told".
+firewall-cmd --state; rc SFRM-FW-ROLLBACK-DAEMON-RUNNING
+firewall-cmd --zone=public --list-services > /tmp/fw-rollback-live.txt 2>&1; rc SFRM-FW-ROLLBACK-DAEMON-LIST
+cat /tmp/fw-rollback-live.txt
+present /tmp/fw-rollback-live.txt 'samba'; rc SFRM-FW-ROLLBACK-DAEMON-HAS-SAMBA
 $D plan "$C" --target / $L > /tmp/plan-after-fw-rollback.txt 2>&1; rc SFRM-PLAN-AFTER-FW-ROLLBACK
 silent /tmp/plan-after-fw-rollback.txt; rc SFRM-FW-ROLLBACK-SILENT
 
@@ -352,6 +362,18 @@ $D apply /tmp/drop-root-keep-home.json --target / --yes $L > /tmp/s1-apply.txt 2
 cat /tmp/s1-apply.txt
 [ ! -e /etc/snapper/configs/root ]; rc SFRM-S1-ROOT-CONFIG-GONE
 [ ! -e "/.snapshots/$N" ]; rc SFRM-S1-LEFTOVER-CLEANED
+pacman -Qq snapper; rc SFRM-S1-SNAPPER-STILL-INSTALLED
+# N-8 (moved from the SFRM-E section above): `home` is STILL declared here,
+# so `snapper`/`snap-pac` stay installed throughout -- this genuinely
+# measures a missing CONFIG, not a missing binary. `--no-dbus`, never plain
+# `snapper list`: a plain (D-Bus) call can return STALE data for a config
+# just deleted out-of-band -- MEASURED (FACT-SFRM-4) -- because the daemon,
+# once activated, caches its own view. `--no-dbus` reads straight from disk,
+# where root's config file is genuinely gone (host measurement, same FACT:
+# `snapper --no-dbus -c <missing> list` -> "Config '<name>' not found." rc=1,
+# snapper 0.13.1).
+! snapper --no-dbus -c root list > /tmp/s1-snapper-list-after.txt 2>&1; rc SFRM-S1-SNAPPER-LIST-IMPOSSIBLE
+cat /tmp/s1-snapper-list-after.txt
 
 echo "SFRM-S1-C: re-plan is silent"
 $D plan /tmp/drop-root-keep-home.json --target / $L > /tmp/s1-replan.txt 2>&1; rc SFRM-S1-REPLAN

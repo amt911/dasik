@@ -63,22 +63,34 @@ def test_zones_are_refused_under_ufw():
                       zones={"home": {"allowed_services": ["ssh"]}})
 
 
-# --- zone name validation (S3): firewalld's own 1-17 char limit ------------ #
+# --- zone name validation (S3/SF-1): firewalld's REAL 1-96 char limit ------ #
 #
-# `zone.identifier` (see firewalld-zone(5)) accepts only [A-Za-z0-9_-],
-# 1-17 characters. An unvalidated name is also interpolated straight into a
-# filename (`FirewallAction._zone_file`) and firewall-cmd argv — a name
-# firewalld itself would reject is worth catching at the config boundary
-# rather than surfacing as an obscure firewalld error mid-apply.
+# firewalld 2.5.1's own `max_zone_name_len()` (functions.py) returns 96, not
+# the iptables-chain-name-era 17 an earlier round of this validator quoted —
+# measured directly on this host (SF-1). ASCII-only and no `/` stays a
+# deliberate dasik restriction narrower than firewalld itself: firewalld's
+# `Zone.check_name` also tolerates non-ASCII (`str.isalnum()`) and a `/`
+# (sub-directory zone names), but `_customised_zones()` cannot capture a
+# sub-directory zone and `_zone_file` would create one, so both are refused
+# here rather than silently mishandled. An unvalidated name is also
+# interpolated straight into a filename (`FirewallAction._zone_file`) and
+# firewall-cmd argv — a name firewalld itself would reject is worth catching
+# at the config boundary rather than surfacing as an obscure firewalld error
+# mid-apply.
 
 def test_a_valid_zone_name_is_still_accepted():
     model = FirewallModel(enable=True, zones={"internal-1": {"allowed_services": ["ssh"]}})
     assert "internal-1" in model.zones
 
 
-def test_a_zone_name_over_17_characters_is_refused():
-    with pytest.raises(ValueError, match="17"):
-        FirewallModel(enable=True, zones={"a" * 18: {"allowed_services": ["ssh"]}})
+def test_a_96_character_zone_name_is_accepted():
+    model = FirewallModel(enable=True, zones={"a" * 96: {"allowed_services": ["ssh"]}})
+    assert "a" * 96 in model.zones
+
+
+def test_a_zone_name_over_96_characters_is_refused():
+    with pytest.raises(ValueError, match="96"):
+        FirewallModel(enable=True, zones={"a" * 97: {"allowed_services": ["ssh"]}})
 
 
 def test_an_empty_zone_name_is_refused():
@@ -89,6 +101,16 @@ def test_an_empty_zone_name_is_refused():
 def test_a_zone_name_with_illegal_characters_is_refused():
     with pytest.raises(ValueError):
         FirewallModel(enable=True, zones={"my zone!": {"allowed_services": ["ssh"]}})
+
+
+def test_a_19_character_zone_name_from_a_sync_capture_validates_with_check():
+    """SF-1's own scenario: `firewall-cmd --permanent --new-zone=workstation-vlan-40`
+    (19 chars) is legal firewalld and would come back from a real `sync`
+    capture under `zones` — the stale 17-char bound rejected exactly this,
+    the "sync output that check refuses" failure class."""
+    model = FirewallModel(enable=True,
+                          zones={"workstation-vlan-40": {"allowed_services": ["ssh"]}})
+    assert "workstation-vlan-40" in model.zones
 
 
 # --------------------------------------------------------------------------- #

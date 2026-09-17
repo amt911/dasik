@@ -366,3 +366,60 @@ def test_actual_ufw_reports_every_live_rule_even_when_disabled():
     with patch("dasik.lib.actions.firewall_action.Command.execute",
               return_value=SimpleNamespace(stdout=live_status, returncode=0)):
         assert a.actual() == {"allow 22/tcp", "allow 9999/tcp"}
+
+
+def test_actual_with_no_recorded_backend_reports_both_backends_reality(tmp_path):
+    """SF-4 residual: block absent, no explicit `backend` declared, and the
+    manifest has NO recorded backend at all (a manifest that predates S3, or
+    one from a converged apply -- `_cmd_apply` never persists a decision when
+    the plan was already empty). `actual()` never sees `managed`, so the
+    shape heuristic can never classify an empty tuple and always answers
+    "firewalld" -- probing only firewalld and reporting `set()` for a ufw
+    machine, which is exactly the S2 dispossession bug reopened for this one
+    case (PROBE-3c). The unresolved case must report reality from BOTH
+    backends; the reconciler's own intersection with claimable/declared still
+    scopes it to what dasik actually owns."""
+    zones = tmp_path / "etc/firewalld/zones"
+    zones.mkdir(parents=True)
+    (zones / "public.xml").write_text("<zone></zone>\n")
+    live_status = ("Status: active\n\nTo Action From\n-- ------ ----\n"
+                  "22/tcp ALLOW IN Anywhere\n")
+    a = FirewallAction(FirewallAction.empty_config(),
+                       ActionContext(target=Target(root=str(tmp_path))))
+    with patch("dasik.lib.actions.firewall_action.Command.execute",
+              return_value=SimpleNamespace(stdout=live_status, returncode=0)):
+        assert a.actual() == {"public", "allow 22/tcp"}
+
+
+def test_actual_with_an_explicit_backend_never_reports_the_other(tmp_path):
+    """The union is only for the genuinely UNRESOLVED case -- a machine that
+    settles the question with an explicit `backend: ufw` must never ALSO
+    claim a firewalld zone that merely happens to have a file on disk (e.g.
+    left by a previous firewalld install), which is what `sync` scoping
+    unowned drift to nothing depends on."""
+    zones = tmp_path / "etc/firewalld/zones"
+    zones.mkdir(parents=True)
+    (zones / "public.xml").write_text("<zone></zone>\n")
+    cfg = {"enable": False, "backend": "ufw", "rules": ["allow 22/tcp"]}
+    live_status = ("Status: active\n\nTo Action From\n-- ------ ----\n"
+                  "22/tcp ALLOW IN Anywhere\n")
+    a = FirewallAction(cfg, ActionContext(target=Target(root=str(tmp_path))))
+    with patch("dasik.lib.actions.firewall_action.Command.execute",
+              return_value=SimpleNamespace(stdout=live_status, returncode=0)):
+        assert a.actual() == {"allow 22/tcp"}
+
+
+def test_actual_with_a_recorded_backend_never_reports_the_other(tmp_path):
+    """Same, for the manifest-recorded path (block absent, no explicit
+    `backend`, but a previous apply recorded which one it actually used)."""
+    zones = tmp_path / "etc/firewalld/zones"
+    zones.mkdir(parents=True)
+    (zones / "public.xml").write_text("<zone></zone>\n")
+    manifest = {"action_state": {"firewall": {"backend": "ufw"}}}
+    live_status = ("Status: active\n\nTo Action From\n-- ------ ----\n"
+                  "22/tcp ALLOW IN Anywhere\n")
+    a = FirewallAction(FirewallAction.empty_config(),
+                       ActionContext(target=Target(root=str(tmp_path)), manifest=manifest))
+    with patch("dasik.lib.actions.firewall_action.Command.execute",
+              return_value=SimpleNamespace(stdout=live_status, returncode=0)):
+        assert a.actual() == {"allow 22/tcp"}

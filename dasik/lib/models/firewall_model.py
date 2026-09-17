@@ -16,11 +16,18 @@ _UFW_RULE_RE = re.compile(
 # /etc/services — those are the ones ufw rewrites.
 _SERVICE_NAME_TRAP = {"ssh", "http", "https", "ftp", "smtp", "dns", "domain",
                       "telnet", "imap", "pop3", "ntp", "snmp", "ldap", "smb"}
-# firewalld's own zone name limit (firewalld-zone(5): 1-17 chars of
-# [A-Za-z0-9_-]) -- also interpolated straight into a filename
-# (`FirewallAction._zone_file`) and firewall-cmd argv, so an illegal name is
-# worth catching at the config boundary (S3).
-_ZONE_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,17}$")
+# firewalld's REAL zone name limit, MEASURED on firewalld 2.5.1 (the version
+# dasik targets): `firewall.functions.max_zone_name_len()` returns 96, not the
+# iptables-chain-name-era 17 firewalld-zone(5) once documented (SF-1). Kept
+# ASCII-only and without `/` on purpose, narrower than firewalld itself:
+# `Zone.check_name` (core/io/zone.py) also accepts Unicode `str.isalnum()`
+# plus `_ - /`, but `_customised_zones()` cannot capture a sub-directory zone
+# and `_zone_file` would create one, so non-ASCII names and sub-directory
+# names are unsupported by dasik even though firewalld tolerates them. Also
+# interpolated straight into a filename (`FirewallAction._zone_file`) and
+# firewall-cmd argv, so an illegal name is worth catching at the config
+# boundary (S3).
+_ZONE_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,96}$")
 
 
 class FirewallZoneModel(BaseModel):
@@ -86,8 +93,10 @@ class FirewallModel(BaseModel):
             if not _ZONE_NAME_RE.fullmatch(name):
                 raise ValueError(
                     f"Invalid firewalld zone name {name!r}: must match "
-                    f"{_ZONE_NAME_RE.pattern!r} (firewalld's own 1-17 "
-                    "character limit)."
+                    f"{_ZONE_NAME_RE.pattern!r} (firewalld's own 1-96 "
+                    "character limit, ASCII only, no '/' — dasik does not "
+                    "support non-ASCII or sub-directory zone names, which "
+                    "firewalld itself tolerates)."
                 )
         return v
 

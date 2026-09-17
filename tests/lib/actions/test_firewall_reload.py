@@ -16,6 +16,15 @@ from dasik.lib.actions.firewall_action import FirewallAction
 from dasik.lib.target.target import Target
 
 
+def _mock_logger(monkeypatch):
+    """Patch the module's run_logger.get() with a MagicMock and return it, so
+    a test can assert on `.warning(...)` calls (SF-2)."""
+    logger = MagicMock()
+    monkeypatch.setattr("dasik.lib.actions.firewall_action.run_logger.get",
+                        lambda: logger)
+    return logger
+
+
 def _fw(root, **cfg):
     cfg.setdefault("enable", True)
     return FirewallAction(cfg, SimpleNamespace(target=Target(root=root)))
@@ -106,8 +115,11 @@ def test_the_ufw_backend_never_touches_firewall_cmd(tmp_path, monkeypatch):
 def test_a_missing_firewall_cmd_binary_never_aborts_the_apply(tmp_path, monkeypatch):
     action = _fw("/", allowed_services=["syncthing"])
     action._zone_file = lambda zone="public": str(tmp_path / f"{zone}.xml")
+    logger = _mock_logger(monkeypatch)
+    calls = []
 
     def fake(cmd, args=None, **kw):
+        calls.append((cmd, list(args or [])))
         if cmd == "systemctl":
             return MagicMock(returncode=0, stdout=b"")     # stale "active" state
         if cmd == "firewall-cmd":
@@ -117,14 +129,26 @@ def test_a_missing_firewall_cmd_binary_never_aborts_the_apply(tmp_path, monkeypa
     monkeypatch.setattr("dasik.lib.actions.firewall_action.Command.execute", fake)
     action.apply(action.plan([]))              # must NOT raise
     assert (tmp_path / "public.xml").exists()  # the zone write itself still happened
+    # N-5: the guard is against the fix regressing, not against an
+    # intermediate commit -- assert the reload was genuinely attempted.
+    assert ("systemctl", ["is-active", "firewalld"]) in calls
+    assert ("firewall-cmd", ["--reload"]) in calls
+    # SF-2: a swallowed reload failure must not be silent.
+    assert logger.warning.called
+    message = str(logger.warning.call_args)
+    assert "firewalld" in message
+    assert "systemctl restart firewalld" in message
 
 
 def test_a_missing_systemctl_probe_never_aborts_the_apply(tmp_path, monkeypatch):
     """Defensive: the probe call itself is wrapped too, not just the reload."""
     action = _fw("/", allowed_services=["syncthing"])
     action._zone_file = lambda zone="public": str(tmp_path / f"{zone}.xml")
+    logger = _mock_logger(monkeypatch)
+    calls = []
 
     def fake(cmd, args=None, **kw):
+        calls.append((cmd, list(args or [])))
         if cmd == "systemctl":
             raise FileNotFoundError(2, "No such file or directory", "systemctl")
         return MagicMock(returncode=0, stdout=b"")
@@ -132,3 +156,25 @@ def test_a_missing_systemctl_probe_never_aborts_the_apply(tmp_path, monkeypatch)
     monkeypatch.setattr("dasik.lib.actions.firewall_action.Command.execute", fake)
     action.apply(action.plan([]))              # must NOT raise
     assert (tmp_path / "public.xml").exists()
+    assert ("systemctl", ["is-active", "firewalld"]) in calls
+    assert logger.warning.called
+    message = str(logger.warning.call_args)
+    assert "firewalld" in message
+    assert "systemctl restart firewalld" in message
+
+
+def test_a_reload_failure_rc_warns_with_remediation(tmp_path, monkeypatch):
+    """SF-2: `firewall-cmd --reload` returning rc!=0 (e.g. a zone naming a
+    service firewalld does not know) must not be silent -- the daemon keeps
+    the previous runtime while dasik reports "Applied"."""
+    action = _fw("/", allowed_services=["syncthing"])
+    logger = _mock_logger(monkeypatch)
+    calls = _wired(action, tmp_path, monkeypatch,
+                   responses={"firewall-cmd": MagicMock(returncode=1, stdout=b"",
+                                                        stderr=b"Error: INVALID_SERVICE")})
+    action.apply(action.plan([]))
+    assert ("firewall-cmd", ["--reload"]) in calls
+    assert logger.warning.called
+    message = str(logger.warning.call_args)
+    assert "firewalld" in message
+    assert "systemctl restart firewalld" in message

@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Optional
 from .abstract_action import AbstractAction
 from ..command_worker.command_worker import Command
 from ..exceptions.exceptions import ConfigValidationError
+from ..logging import run_logger
 from ..state.change import Change, Op
 
 _ZONES_DIR = "/etc/firewalld/zones"
@@ -310,7 +311,17 @@ class FirewallAction(AbstractAction):
         # go. On a fresh INSTALL, `ufw` may not be installed yet either (this
         # action now runs before Packages), so it installs its own
         # prerequisite the same way SnapperAction does for `snapper`.
-        self._ensure_ufw_installed()
+        #
+        # N-7: only actually NEEDED for an INSTALL. `_plan_ufw`'s REMOVE half
+        # only ever fires for a rule currently `in live` (`_live_ufw_rules()`
+        # read straight off `ufw status`), so a REMOVE-only apply can never be
+        # the first thing to touch a machine without `ufw` on it — by
+        # construction, ufw is already there. Gating this on an INSTALL being
+        # present makes the wiki's "never installs the package just to remove
+        # something from it" sentence true in the stronger, code-enforced
+        # sense, not merely true of the configs anyone happens to write.
+        if any(c.op is Op.INSTALL for c in changes):
+            self._ensure_ufw_installed()
         for change in changes:
             # Split here, never in the shell: `ufw allow 22/tcp` is two
             # arguments, and this string comes from the config.
@@ -416,10 +427,31 @@ class FirewallAction(AbstractAction):
         block just got fully deleted would probe an empty
         `/etc/firewalld/zones` and lose ownership the same way the `enable`
         gate did.
+
+        SF-4: `_resolved_backend()`'s own shape-heuristic fallback cannot run
+        HERE, because `actual()` has no `managed` to classify (it answers
+        "what does the machine have", not "what does the manifest own") --
+        calling it with an empty tuple always answers "firewalld". So when
+        the question is genuinely unresolved (disabled/absent, no explicit
+        `backend`, and no manifest recording either -- a manifest predating
+        S3, or a converged apply that never persisted a decision), report
+        reality from BOTH backends rather than silently picking one: the
+        reconciler's own intersection with claimable/declared still scopes
+        this down to what dasik actually owns, exactly as it does for the
+        resolved cases above.
         """
-        if self._resolved_backend(()) == "ufw":
+        backend: Optional[str]
+        if self.enable:
+            backend = self.backend
+        elif self._is_ufw():
+            backend = "ufw"
+        else:
+            backend = self._recorded_backend()
+        if backend == "ufw":
             return set(self._live_ufw_rules())
-        return set(self._customised_zones())
+        if backend == "firewalld":
+            return set(self._customised_zones())
+        return set(self._customised_zones()) | set(self._live_ufw_rules())
 
     def plan(self, managed):
         managed = list(managed or ())
@@ -490,6 +522,14 @@ class FirewallAction(AbstractAction):
         propagate out of `apply()` and abort the WHOLE apply/rollback over a
         cosmetic reload. The zone file is already written either way; a
         failed reload only delays the daemon noticing, never loses data.
+
+        Best-effort does not mean silent (SF-2): a swallowed rc!=0 or
+        exception used to leave no trace anywhere — no raise, no log line —
+        so "Applied" was reported while the running daemon still enforced the
+        stale zone. Every failure to reload is now a warning naming the
+        remediation, through the same ``run_logger`` every other action uses
+        for a non-fatal problem (e.g. ``LibvirtNetworkAction``,
+        ``DropFilesAction``).
         """
         target = self._target()
         if target is None or getattr(target, "is_chroot", True):
@@ -498,9 +538,22 @@ class FirewallAction(AbstractAction):
             probe = Command.execute("systemctl", ["is-active", "firewalld"], target=target)
             if getattr(probe, "returncode", 1) != 0:
                 return
-            Command.execute("firewall-cmd", ["--reload"], target=target)
-        except Exception:      # nosec B110 - best-effort reload, see docstring
-            pass
+            result = Command.execute("firewall-cmd", ["--reload"], target=target)
+        except Exception as exc:      # nosec B110 - best-effort reload, see docstring
+            self._warn_reload_failed(f"running `firewall-cmd --reload` raised {exc!r}")
+            return
+        if getattr(result, "returncode", 1) != 0:
+            self._warn_reload_failed(
+                f"`firewall-cmd --reload` exited {result.returncode}"
+            )
+
+    def _warn_reload_failed(self, cause: str) -> None:
+        run_logger.get().warning(
+            f"firewalld: zone written but the running daemon could not be "
+            f"reloaded ({cause}).",
+            detail="the daemon keeps enforcing the previous zone until it is "
+                   "restarted by hand: run `systemctl restart firewalld`.",
+        )
 
     def managed_keys(self) -> dict:
         if self._is_ufw():
@@ -508,12 +561,22 @@ class FirewallAction(AbstractAction):
         return {self._DOMAIN: self._declared_zones() if self.enable else []}
 
     def state_metadata(self) -> dict:
-        """Persist which backend dasik actually applied (S3), so a later
-        plan on a disabled/absent block — whose own ``backend`` field
-        defaults to "firewalld" and cannot be trusted — can read back the
-        true history via ``_recorded_backend()`` instead of guessing from
-        the shape of ``managed`` (kept only as the fallback for a manifest
-        written before this field existed, dasik <= 0.18.0)."""
+        """Which backend dasik actually applied (S3), for the reconciler to
+        persist into the manifest — so a later plan on a disabled/absent
+        block, whose own ``backend`` field defaults to "firewalld" and cannot
+        be trusted, can read back the true history via
+        ``_recorded_backend()`` instead of guessing from the shape of
+        ``managed`` (kept only as the fallback for a manifest written before
+        this field existed, dasik <= 0.18.0).
+
+        N-13: this method's RETURN VALUE is computed on every ``plan()``, but
+        it is only actually written to disk by the next apply that produces a
+        non-empty plan — ``Reconciler.apply()`` returns before persisting a
+        manifest when ``plan.is_empty()``, and ``_cmd_apply`` returns before
+        even calling ``reconciler.apply()`` in that case. A no-op plan
+        therefore never updates the recorded backend (there is nothing new to
+        record — the existing one, if any, is still correct).
+        """
         if self._teardown_backend not in ("ufw", "firewalld"):
             return {}
         return {self._DOMAIN: {"backend": self._teardown_backend}}

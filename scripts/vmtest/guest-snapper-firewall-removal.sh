@@ -34,6 +34,54 @@ $D plan "$C" --target / $L > /tmp/plan-baseline.txt 2>&1; rc SFRM-BASELINE-PLAN
 cat /tmp/plan-baseline.txt
 silent /tmp/plan-baseline.txt; rc SFRM-BASELINE-SILENT
 
+# ===================== N4 (fix round 1): firewalld reload while ENABLED === #
+#
+# A MODIFY, not a REMOVE: every removal scenario in this script ALSO
+# undeclares the `firewalld` package (the same toggle that installs it
+# gates on `enable`), so PackagesAction uninstalls the binary in the SAME
+# apply -- proving nothing reliable about "is firewall-cmd on disk right
+# after" (racy: `systemctl is-active` can still read a stale "active" from
+# a not-yet-exited process either way). A MODIFY keeps `enable: true`, so
+# `firewalld` stays installed throughout, and it is the clean, non-racy way
+# to prove the RUNNING daemon actually reflects a rewritten zone file
+# without a manual restart.
+
+echo "SFRM-N4-A: build a MODIFY-only config (samba dropped, block stays enabled)"
+python - <<'PY'
+import json
+cfg = json.load(open("config/vm-snapper-firewall-removal.json"))
+cfg["firewall"]["allowed_services"] = []
+json.dump(cfg, open("/tmp/n4-modify.json", "w"), indent=2)
+PY
+rc SFRM-N4-BUILD-CONFIG
+
+echo "SFRM-N4-B: baseline -- samba currently allowed live"
+firewall-cmd --zone=public --list-services > /tmp/n4-before.txt 2>&1; rc SFRM-N4-BEFORE-LIST
+cat /tmp/n4-before.txt
+present /tmp/n4-before.txt 'samba'; rc SFRM-N4-SAMBA-ALLOWED-BEFORE
+
+echo "SFRM-N4-C: apply the MODIFY -- firewalld package stays installed"
+$D plan /tmp/n4-modify.json --target / $L > /tmp/n4-plan.txt 2>&1; rc SFRM-N4-PLAN
+cat /tmp/n4-plan.txt
+present /tmp/n4-plan.txt 'modify public'; rc SFRM-N4-MODIFY-PLANNED
+$D apply /tmp/n4-modify.json --target / --yes $L > /tmp/n4-apply.txt 2>&1; rc SFRM-N4-APPLY
+cat /tmp/n4-apply.txt
+pacman -Qq firewalld; rc SFRM-N4-FIREWALLD-STILL-INSTALLED
+
+echo "SFRM-N4-D: the running daemon reflects the rewritten zone LIVE (reloaded)"
+firewall-cmd --zone=public --list-services > /tmp/n4-after.txt 2>&1; rc SFRM-N4-AFTER-LIST
+cat /tmp/n4-after.txt
+! present /tmp/n4-after.txt 'samba'; rc SFRM-N4-SAMBA-GONE-LIVE
+present /tmp/n4-after.txt 'ssh'; rc SFRM-N4-DEFAULT-SSH
+present /tmp/n4-after.txt 'dhcpv6-client'; rc SFRM-N4-DEFAULT-DHCPV6
+
+echo "SFRM-N4-E: rollback -- samba restored, fully converged again"
+$D rollback --target / --yes $L > /tmp/n4-rollback.txt 2>&1; rc SFRM-N4-ROLLBACK
+cat /tmp/n4-rollback.txt
+$D plan "$C" --target / $L > /tmp/n4-plan-after-rollback.txt 2>&1; rc SFRM-N4-PLAN-AFTER-ROLLBACK
+cat /tmp/n4-plan-after-rollback.txt
+silent /tmp/n4-plan-after-rollback.txt; rc SFRM-N4-SILENT
+
 echo "SFRM-B: create two snapshots on root (something for delete-config to destroy)"
 snapper -c root create --description sfrm-1; rc SFRM-SNAP1
 snapper -c root create --description sfrm-2; rc SFRM-SNAP2
@@ -161,17 +209,28 @@ silent /tmp/plan-final.txt; rc SFRM-FINAL-SILENT
 # `actual()` returned `set()` whenever the block was disabled/absent, so a
 # `sync` run BEFORE the next apply wiped ownership and the FOLLOWING plan/
 # apply against the SAME still-disabled/absent config saw nothing to remove.
-# Uses SCRATCH copies of the disabled/absent configs -- `sync` rewrites its
-# argument in place, and $C itself must stay untouched for later steps.
+#
+# `sync` is run against a SCRATCH copy (it rewrites its argument in place),
+# but the FOLLOWING plan/apply deliberately target the ORIGINAL, UNTOUCHED
+# disabled/absent config file (`snapper-disabled.json` / `no-firewall.json`),
+# never the just-synced scratch copy: `sync` reports REALITY, and the
+# config/zone still genuinely exists on the machine at this point in the
+# script, so syncing the scratch copy re-populates the very block the test
+# means to keep disabled/absent -- proving nothing about S2. What S2 tests
+# is the REAL, machine-side manifest the `sync` call persists via
+# StateStore (independent of which config path was handed to it): the next
+# `plan`/`apply` reads that SAME persisted manifest through a DIFFERENT
+# (untouched) config path, which is exactly the real-world shape of the bug
+# (a `sync` run for any unrelated reason, before the next `apply`).
 
 echo "SFRM-S2-A: snapper enable:false -- sync (scratch) must keep ownership"
-cp /tmp/snapper-disabled.json /tmp/s2-snapper.json
-$D sync /tmp/s2-snapper.json --target / $L > /tmp/s2-snapper-sync.txt 2>&1; rc SFRM-S2-SNAP-SYNC
+cp /tmp/snapper-disabled.json /tmp/s2-snapper-scratch.json
+$D sync /tmp/s2-snapper-scratch.json --target / $L > /tmp/s2-snapper-sync.txt 2>&1; rc SFRM-S2-SNAP-SYNC
 cat /tmp/s2-snapper-sync.txt
-$D plan /tmp/s2-snapper.json --target / $L > /tmp/s2-snapper-plan.txt 2>&1; rc SFRM-S2-SNAP-PLAN
+$D plan /tmp/snapper-disabled.json --target / $L > /tmp/s2-snapper-plan.txt 2>&1; rc SFRM-S2-SNAP-PLAN
 cat /tmp/s2-snapper-plan.txt
 present /tmp/s2-snapper-plan.txt 'remove root'; rc SFRM-S2-SNAP-REMOVE-PLANNED
-$D apply /tmp/s2-snapper.json --target / --yes $L > /tmp/s2-snapper-apply.txt 2>&1; rc SFRM-S2-SNAP-APPLY
+$D apply /tmp/snapper-disabled.json --target / --yes $L > /tmp/s2-snapper-apply.txt 2>&1; rc SFRM-S2-SNAP-APPLY
 cat /tmp/s2-snapper-apply.txt
 [ ! -e /etc/snapper/configs/root ]; rc SFRM-S2-SNAP-GONE
 
@@ -180,25 +239,15 @@ $D rollback --target / --yes $L > /tmp/s2-snapper-rollback.txt 2>&1; rc SFRM-S2-
 [ -e /etc/snapper/configs/root ]; rc SFRM-S2-SNAP-ROLLBACK-BACK
 
 echo "SFRM-S2-C: firewall block ABSENT -- sync (scratch) must keep ownership"
-cp /tmp/no-firewall.json /tmp/s2-firewall.json
-$D sync /tmp/s2-firewall.json --target / $L > /tmp/s2-fw-sync.txt 2>&1; rc SFRM-S2-FW-SYNC
+cp /tmp/no-firewall.json /tmp/s2-firewall-scratch.json
+$D sync /tmp/s2-firewall-scratch.json --target / $L > /tmp/s2-fw-sync.txt 2>&1; rc SFRM-S2-FW-SYNC
 cat /tmp/s2-fw-sync.txt
-$D plan /tmp/s2-firewall.json --target / $L > /tmp/s2-fw-plan.txt 2>&1; rc SFRM-S2-FW-PLAN
+$D plan /tmp/no-firewall.json --target / $L > /tmp/s2-fw-plan.txt 2>&1; rc SFRM-S2-FW-PLAN
 cat /tmp/s2-fw-plan.txt
 present /tmp/s2-fw-plan.txt 'remove public'; rc SFRM-S2-FW-REMOVE-PLANNED
-$D apply /tmp/s2-firewall.json --target / --yes $L > /tmp/s2-fw-apply.txt 2>&1; rc SFRM-S2-FW-APPLY
+$D apply /tmp/no-firewall.json --target / --yes $L > /tmp/s2-fw-apply.txt 2>&1; rc SFRM-S2-FW-APPLY
 cat /tmp/s2-fw-apply.txt
 [ ! -e /etc/firewalld/zones/public.xml ]; rc SFRM-S2-FW-GONE
-
-echo "SFRM-N4: the firewalld REMOVE reloaded the running daemon (N4)"
-if systemctl is-active --quiet firewalld; then
-  firewall-cmd --zone=public --list-services > /tmp/n4-services.txt 2>&1; rc SFRM-N4-LIST-SERVICES
-  cat /tmp/n4-services.txt
-  present /tmp/n4-services.txt 'ssh'; rc SFRM-N4-DEFAULT-SSH
-  present /tmp/n4-services.txt 'dhcpv6-client'; rc SFRM-N4-DEFAULT-DHCPV6
-else
-  echo "SFRM-N4-SKIPPED (firewalld not active in this guest)"
-fi
 
 echo "SFRM-S2-D: rollback firewall -- fully converged again (same state SFRM-O expects)"
 $D rollback --target / --yes $L > /tmp/s2-fw-rollback.txt 2>&1; rc SFRM-S2-FW-ROLLBACK

@@ -223,3 +223,60 @@ def test_render_preserves_a_trailing_blank_line_after_removing_the_last_section(
 def test_section_of_reads_include_field_from_a_dict():
     section = section_of({"name": "chaotic-aur", "include": "/etc/pacman.d/chaotic-mirrorlist"})
     assert section.include == "/etc/pacman.d/chaotic-mirrorlist"
+
+
+# --- fix round 2: a section's body must reach its LAST key line, not stop at
+# the FIRST interior comment/blank line — a hand-written section following
+# the repo's own README (a comment right under the header) or with a blank
+# line between two directives was torn: `render` moved only the header and
+# left the key lines dangling where the header used to be, which pacman then
+# reads as directives of whatever section precedes them. ---
+
+AMT_SERVER = "https://amt911.github.io/arch-packages/$arch"
+
+
+def test_hand_written_section_with_an_interior_comment_is_parsed_and_removed_whole():
+    text = (STOCK + "\n[amt911]\n# my personal repo\nSigLevel = Required\n"
+            f"Server = {AMT_SERVER}\n")
+
+    sections = {s.name: s for s in third_party(parse_sections(text))}
+    assert sections["amt911"].sig_level == "Required"
+    assert sections["amt911"].servers == (AMT_SERVER,)
+
+    declared = RepoSection("amt911", "Required", (AMT_SERVER,), None)
+    out = render(text, [declared], remove=[])
+
+    lines = out.split("\n")
+    assert lines.count("[amt911]") == 1
+    block_index = lines.index("[amt911]")
+    assert block_index < lines.index("[core]")
+    assert lines[block_index:block_index + 3] == [
+        "[amt911]", "SigLevel = Required", f"Server = {AMT_SERVER}",
+    ]
+    # Nothing from the hand-written body may survive OUTSIDE that one
+    # freshly-rendered block — this is what the old `_body_end` got wrong:
+    # it left these lines dangling right where the original header was.
+    remainder_lines = lines[:block_index] + lines[block_index + 3:]
+    assert "# my personal repo" not in remainder_lines
+    assert "SigLevel = Required" not in remainder_lines
+    assert f"Server = {AMT_SERVER}" not in remainder_lines
+
+
+def test_hand_written_section_with_a_blank_line_between_directives_keeps_both():
+    text = (STOCK + "\n[amt911]\nSigLevel = Required\n\n"
+            f"Server = {AMT_SERVER}\n")
+
+    sections = {s.name: s for s in third_party(parse_sections(text))}
+    assert sections["amt911"].sig_level == "Required"
+    assert sections["amt911"].servers == (AMT_SERVER,)  # was () under the old _body_end
+
+    declared = RepoSection("amt911", "Required", (AMT_SERVER,), None)
+    out = render(text, [declared], remove=[])
+
+    lines = out.split("\n")
+    assert lines.count("[amt911]") == 1
+    block_index = lines.index("[amt911]")
+    assert block_index < lines.index("[core]")
+    remainder_lines = lines[:block_index] + lines[block_index + 3:]
+    assert "SigLevel = Required" not in remainder_lines
+    assert f"Server = {AMT_SERVER}" not in remainder_lines

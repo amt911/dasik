@@ -16,10 +16,17 @@ The header must be **uncommented** (a line that, once leading/trailing
 whitespace is stripped, reads exactly ``[name]``, not ``#[name]``) to count as
 a real section — a commented-out header such as the stock file's
 ``#[core-testing]`` is inert to pacman and must be inert here too. A section's
-body is its **contiguous** key lines right after the header: the first blank
-line, comment line, or next header line ends it. That stop rule is what lets
-``render`` remove one section without disturbing a neighbouring commented-out
-block like ``#[core-testing]`` two lines below it.
+body runs from just after the header up to and including its **last** key
+line (``SigLevel``/``Server``/``Include``) before the next header (or end of
+file) — never further. An interior comment or blank line **between** two key
+lines is part of the body (a hand-written section following the repo's own
+README often opens with a comment right under the header, or has a blank
+line between directives); a trailing comment or blank line **after** the
+last key line is not, which is what lets ``render`` remove one section
+without disturbing a neighbouring commented-out block like
+``#[core-testing]`` two lines below it. A section with no key lines at all
+has no body (its end equals its header's own index plus one): a lone
+comment is not a directive to keep.
 
 Every line is classified (header / comment / blank / key) after stripping its
 leading/trailing whitespace — which also strips a trailing ``\r``, since
@@ -67,11 +74,6 @@ def _is_blank(line: str) -> bool:
     return line.strip() == ""
 
 
-def _is_comment(line: str) -> bool:
-    """A line whose first non-whitespace character is ``#``."""
-    return line.strip().startswith("#")
-
-
 def _match_header(line: str) -> Optional["re.Match[str]"]:
     """``_HEADER_RE`` applied to the line's stripped content."""
     return _HEADER_RE.match(line.strip())
@@ -105,20 +107,27 @@ def _iter_headers(lines: List[str]) -> List[Tuple[int, str]]:
 
 
 def _body_end(lines: List[str], header_index: int) -> int:
-    """Index (exclusive) where *header_index*'s contiguous key lines stop.
+    """Index (exclusive) where *header_index*'s body ends: right after its
+    LAST key line before the next header (or end of file).
 
-    Stops at the first blank line, comment line, or next header — whichever
-    comes first — so a commented-out neighbour is never absorbed into the
-    section above it.
+    An interior comment/blank line between two key lines is inside this
+    range (and simply skipped by callers that only look for ``_KEY_RE``
+    matches); a trailing comment/blank line after the last key line is not,
+    so a commented-out neighbour like ``#[core-testing]`` is never absorbed
+    into the section above it. A section with no key lines at all has no
+    body: this returns ``header_index + 1``.
     """
-    index = header_index + 1
     total = len(lines)
-    while index < total:
-        line = lines[index]
-        if _is_blank(line) or _is_comment(line) or _match_header(line):
+    boundary = total
+    for index in range(header_index + 1, total):
+        if _match_header(lines[index]):
+            boundary = index
             break
-        index += 1
-    return index
+    last_key = header_index
+    for index in range(header_index + 1, boundary):
+        if _KEY_RE.match(lines[index].strip()):
+            last_key = index
+    return last_key + 1
 
 
 def parse_sections(text: str) -> List[RepoSection]:

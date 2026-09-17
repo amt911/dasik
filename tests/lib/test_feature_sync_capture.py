@@ -1317,15 +1317,31 @@ def _synced_btrfs_root(tmp_path):
 
 
 def test_sync_captures_noatime_on_a_declared_btrfs_root(tmp_path):
+    """N6 (review of fix/rootflags-sync-drift): assert on partition ∪
+    subvolume options, not the subvolume alone — if the correction path ever
+    starts hoisting an option shared by every subvolume (as discovery already
+    does), this must not go red for the WRONG reason."""
     captured = _synced_btrfs_root(tmp_path)
     root_part = captured["disks"]["disks"][0]["partitions"][1]
     root_sv = next(s for s in root_part["btrfs_subvolumes"] if s["name"] == "@")
 
-    assert "noatime" in root_sv["mount_options"]
+    everywhere = set(root_part.get("mount_options", [])) | set(root_sv["mount_options"])
+    assert "noatime" in everywhere
 
 
 def test_the_captured_btrfs_root_config_validates(tmp_path):
     JsonModel.model_validate(_synced_btrfs_root(tmp_path))
+
+
+# The managed set a REAL install of `_BTRFS_SEED` (the bare, undeclared-level
+# config) actually writes to the manifest for `kernel_cmdline`: at install
+# time the entry does not exist yet, so there is nothing to substitute and
+# `managed_keys()` records the literal bare token — this is what
+# `test_the_captured_btrfs_root_replans_to_nothing` must diff against, not an
+# install manifest with no `rootflags=` at all (S6 review finding: no real
+# install manifest ever omits the token it owns).
+_INSTALL_MANAGED = ["root=LABEL=root", "rw",
+                    "rootflags=compress-force=zstd,noatime,subvol=@", "quiet"]
 
 
 def test_the_captured_btrfs_root_replans_to_nothing(tmp_path):
@@ -1338,4 +1354,22 @@ def test_the_captured_btrfs_root_replans_to_nothing(tmp_path):
     action = KernelCmdlineAction(expand_config(captured),
                                  ActionContext(target=Target(root=str(tmp_path))))
 
-    assert action.plan(managed=["root=LABEL=root", "rw", "quiet"]) == []
+    assert action.plan(managed=_INSTALL_MANAGED) == []
+
+
+def test_the_manifest_after_a_silent_plan_still_agrees_with_the_entry(tmp_path):
+    """S3 (review of fix/rootflags-sync-drift): `managed_keys()` must record
+    the token that is REALLY on the entry (the bare `zstd`), not the literal
+    captured `zstd:3` the config derives — otherwise a manifest rebuilt after
+    this silent plan would own a `rootflags=` the entry does not carry, and
+    the next `sync` could find neither the literal nor the live bare token
+    among "owned ∪ declared", silently losing ownership of `rootflags=`."""
+    captured = _synced_btrfs_root(tmp_path)
+    action = KernelCmdlineAction(expand_config(captured),
+                                 ActionContext(target=Target(root=str(tmp_path))))
+    assert action.plan(managed=_INSTALL_MANAGED) == []   # sanity: still silent
+
+    managed = action.managed_keys()["kernel_cmdline"]
+
+    assert "rootflags=compress-force=zstd,noatime,subvol=@" in managed
+    assert "rootflags=compress-force=zstd:3,noatime,subvol=@" not in managed

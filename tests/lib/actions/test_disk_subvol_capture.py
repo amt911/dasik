@@ -92,6 +92,42 @@ def test_a_declared_noatime_option_is_captured_alongside_compress():
     assert root["mount_options"] == ["noatime"]   # compress-force is the partition base
 
 
+def test_a_data_disks_subvolume_of_the_same_name_never_leaks_into_root():
+    """S1 (review of fix/rootflags-sync-drift, measured via probe_managed_and_
+    merge.py P4): `_live_subvol_options` used to key by subvolume NAME across
+    the WHOLE machine, so a data disk that happens to reuse `@` (a common
+    layout for VM image stores) could transplant its own options onto the
+    ROOT subvolume's capture — the root disk's `noatime`/`compress-force`
+    would be silently replaced by the data disk's `nodatacow`, and the
+    derived `rootflags=` would then mount `/` uncompressed with checksums
+    off for new files."""
+    declared = {
+        "disks": [
+            _DECLARED["disks"][0],
+            {"device": "/dev/sda", "partition_table": "gpt",
+             "partitions": [
+                 {"label": "data", "size": "rest", "filesystem": "btrfs",
+                  "partition_type": "linux", "mountpoint": None,
+                  "btrfs_subvolumes": [{"name": "@", "mountpoint": "/mnt/data"}]},
+             ]},
+        ]}
+    rows = list(_ROWS) + [
+        ("/mnt/data", "/dev/sda1[/@]",
+         "rw,relatime,nodatacow,space_cache=v2,subvolid=256,subvol=/@"),
+    ]
+    action = DiskPartitionAction(declared, ActionContext(target=Target(root="/")))
+    with patch.object(DiskPartitionAction, "_findmnt_btrfs_rows", return_value=rows), \
+         patch("dasik.lib.actions.disk_partition_action.Command.execute",
+               side_effect=FileNotFoundError("no cryptsetup here")):
+        captured = action.import_state(managed=[])
+
+    part = _root_partition(captured)
+    root_sv = next(s for s in part["btrfs_subvolumes"] if s["name"] == "@")
+
+    assert root_sv["mount_options"] == []            # unchanged: compress-force is the base
+    assert "nodatacow" not in root_sv["mount_options"]
+
+
 def test_an_unmounted_subvolume_keeps_what_the_config_declared():
     """Nothing to read means nothing to correct — capturing an empty list there
     would silently drop an option from a subvolume that simply is not mounted."""

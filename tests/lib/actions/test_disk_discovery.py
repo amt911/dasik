@@ -240,14 +240,20 @@ def test_discovery_captures_declarable_btrfs_flags_besides_compress():
     """Root cause A (rootflags sync drift): only `compress*` survived capture,
     so a REAL declared option like `noatime` was silently dropped and a
     reinstall from the capture lost it. `noatime`/`nodiratime`/`lazytime`/
-    `strictatime`/`autodefrag`/`nodatacow`/`nodatasum`/`commit=<n>` are real,
+    `autodefrag`/`nodatacow`/`nodatasum`/`commit=<n>` are real,
     user-declarable btrfs options and must survive alongside `compress*`.
 
-    The findmnt row below packs every one into a single (unrealistic — some
-    are mutually exclusive, e.g. `noatime`/`strictatime`) mount just to drive
-    the predicate through each case in one assertion; kernel bookkeeping and
-    defaults (`rw`, `ssd`, `discard=async`, `space_cache=`, `subvolid=`,
-    `subvol=`) must still be dropped.
+    The findmnt row below packs every one into a single (unrealistic) mount
+    just to drive the predicate through each case in one assertion; kernel
+    bookkeeping and defaults (`rw`, `ssd`, `discard=async`, `space_cache=`,
+    `subvolid=`, `subvol=`) must still be dropped — and so must `strictatime`
+    (S2, review of fix/rootflags-sync-drift): measured (reviewer, and
+    re-measured in the vmtest guest — docs/FACTS.md), `-o strictatime`
+    reports back with NO atime word at all, so the kernel never emits this
+    string and it can never be captured. The row still carries it (as a
+    findmnt-shaped string, standing in for "if this ever appeared") purely to
+    prove the predicate actively drops it rather than merely never being
+    asked about it.
     """
     findmnt = [
         ("/", "/dev/mapper/cryptroot[/@]",
@@ -260,11 +266,11 @@ def test_discovery_captures_declarable_btrfs_flags_besides_compress():
     root = next(p for p in nvme["partitions"] if p.get("encrypt"))
     opts = root["mount_options"]
 
-    for kept in ("noatime", "nodiratime", "lazytime", "strictatime", "autodefrag",
+    for kept in ("noatime", "nodiratime", "lazytime", "autodefrag",
                  "nodatacow", "nodatasum", "commit=30", "compress-force=zstd"):
         assert kept in opts, opts
     for dropped in ("rw", "ssd", "discard=async", "space_cache=v2",
-                    "subvolid=256", "subvol=/@"):
+                    "subvolid=256", "subvol=/@", "strictatime"):
         assert dropped not in opts, opts
 
 

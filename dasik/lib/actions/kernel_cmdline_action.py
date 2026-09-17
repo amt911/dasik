@@ -10,7 +10,13 @@ from __future__ import annotations
 import os
 import re
 import subprocess
-from .partition_utils import keydev_spec, mount_option_name, mounts_root
+from .partition_utils import (
+    keydev_spec,
+    merge_mount_options_by_name,
+    mounts_root,
+    normalize_compress_value,
+    token_name,
+)
 from typing import Any, Dict, List, Optional
 from .abstract_action import AbstractAction
 from ..command_worker.command_worker import Command
@@ -38,40 +44,35 @@ _KEYFILE_TIMEOUT = "keyfile-timeout=10s"
 _BLOCK_OWNED_PARAMS = ("amd_pstate", "intel_pstate", "sysrq_always_enabled",
                        "lsm", "audit", "audit_backlog_limit")
 
-# The kernel's own default compression LEVEL for a btrfs `compress`/
-# `compress-force` mount option declared without one — verified against
-# `Btrfs.html#MOUNT_OPTIONS` (arch-wiki) and findmnt on a real mount: a bare
-# `compress-force=zstd` is reported back as `compress-force=zstd:3`. lzo has
-# no level at all, so it is deliberately absent here (see docs/FACTS.md).
-_COMPRESS_DEFAULT_LEVEL = {"zstd": "3", "zlib": "3"}
-
-
-def _normalize_compress_value(value: str) -> str:
-    """`zstd` <-> `zstd:3` (the kernel's default level) for EQUIVALENCE only.
-
-    An explicit level is never touched — `zstd:1` stays `zstd:1`, so it is
-    never confused with the default `zstd:3`. lzo has no default to fill in.
-    """
-    if ":" in value:
-        return value
-    default = _COMPRESS_DEFAULT_LEVEL.get(value)
-    return f"{value}:{default}" if default else value
-
 
 def _rootflags_option_set(value: str) -> frozenset:
     """The comma-separated options of a `rootflags=` VALUE (no `subvol=`/…
     dropped — every option counts), as an order-insensitive, level-normalized
-    set. Reuses `mount_option_name` — the same name/value split
-    `DiskPartitionAction._subvol_mount_options` already does — rather than a
-    second copy of it."""
-    out = set()
+    set.
+
+    Keyed by NAME with LAST occurrence winning (S4, review of
+    fix/rootflags-sync-drift), not a plain `set` of whole tokens: a plain set
+    treats `zstd,zstd:3` as one element (already normalized to the same
+    string) but `zstd:1,zstd:3` — two DIFFERENT explicit levels for the same
+    option — as two separate elements, which is not how the kernel resolves a
+    repeated mount option (the later one wins, silently). Reuses
+    `token_name`/`normalize_compress_value` — the same name/value split and
+    compression-level table `DiskPartitionAction` uses — rather than a second
+    copy of either.
+    """
+    by_name: Dict[str, str] = {}
     for opt in value.split(","):
-        name = mount_option_name(opt)
+        name = token_name(opt)
         if name in ("compress", "compress-force") and "=" in opt:
             _, _, raw = opt.partition("=")
-            opt = f"{name}={_normalize_compress_value(raw)}"
-        out.add(opt)
-    return frozenset(out)
+            opt = f"{name}={normalize_compress_value(raw)}"
+        elif name == "subvol" and "=" in opt:
+            # N1: `subvol=/@` and `subvol=@` name the same subvolume — only
+            # `subvolid=` (an unrelated, numeric identity) is left alone.
+            _, _, raw = opt.partition("=")
+            opt = f"subvol={raw[1:] if raw.startswith('/') else raw}"
+        by_name[name] = opt
+    return frozenset(by_name.values())
 
 
 def _rootflags_equivalent(a: str, b: str) -> bool:
@@ -172,7 +173,17 @@ class KernelCmdlineAction(AbstractAction):
                     uuid = luks_uuid(dm_name, part.get("luks_uuid"))
                     params.append(f"rd.luks.name={uuid}={dm_name}")
                     if mounts_root(part):
-                        params.append(f"root=/dev/mapper/{dm_name} rw")
+                        # Two separate params, not one "root=... rw" string
+                        # (B2, review of fix/rootflags-sync-drift): `_merge`'s
+                        # conflict check keys each AUTO param by its OWN name
+                        # BEFORE flattening, so a combined string's key was
+                        # always "root" and an explicit `ro` — whose key is
+                        # `rw` — could never suppress the `rw` hidden inside
+                        # it. `_tokens()` flattens on whitespace regardless, so
+                        # the two forms produce the identical final token list
+                        # when nothing conflicts.
+                        params.append(f"root=/dev/mapper/{dm_name}")
+                        params.append("rw")
                     keyfile = part.get("unlock_keyfile")
                     keydev = part.get("unlock_keydev")
                     if keyfile:
@@ -215,7 +226,12 @@ class KernelCmdlineAction(AbstractAction):
                     # declared — and a manifest that owned them (every manifest
                     # a sync wrote) made the next plan propose deleting the root
                     # of the filesystem (issue #189).
-                    params.append(f"root=LABEL={part.get('label', 'root')} rw")
+                    #
+                    # Two separate params, not one "root=... rw" string (B2,
+                    # review of fix/rootflags-sync-drift) — see the comment on
+                    # the encrypted branch above for why.
+                    params.append(f"root=LABEL={part.get('label', 'root')}")
+                    params.append("rw")
 
                 # rootflags describe the mount of /, so only the partition that
                 # provides it contributes them — an encrypted btrfs /home must
@@ -227,10 +243,15 @@ class KernelCmdlineAction(AbstractAction):
                     sv_name = root_sv["name"] if root_sv else "@"
                     # Partition-level mount_options are the base (a shared option
                     # like compress-force is hoisted there and the subvol's own
-                    # list may be empty); the subvol's own options add on top.
+                    # list may be empty); the subvol's own options replace the
+                    # base BY NAME (S4, review of fix/rootflags-sync-drift) — a
+                    # whole-token dedup let a hoisted `compress-force=zstd` and
+                    # the subvol's captured `compress-force=zstd:3` both survive
+                    # into one rootflags= value, which the kernel resolves by
+                    # silently taking the last (garbled, not a merge).
                     base = list(part.get("mount_options", []) or [])
                     sv_opts = root_sv.get("mount_options", []) if root_sv else []
-                    options = base + [o for o in sv_opts if o not in base]
+                    options = merge_mount_options_by_name(base, sv_opts)
                     if not options:
                         options = ["compress-force=zstd"]
                     opts_str = ",".join(options + [f"subvol={sv_name}"])
@@ -328,16 +349,31 @@ class KernelCmdlineAction(AbstractAction):
     # and stopped booting.
     _REPEATABLE = ("rd.luks.name", "rd.luks.key", "rd.luks.options")
 
+    # rw/ro are mutually exclusive flags (no `=`), never two independent
+    # parameters: one CONFLICTS with the other exactly the same way an
+    # explicit `root=` conflicts with the derived one. Before this (B2, review
+    # of fix/rootflags-sync-drift) `_merge.key_of` keyed them as two unrelated
+    # names, so `_derive_from_disks`'s always-emitted `root=... rw` and an
+    # explicit `kernel_cmdline: ["ro"]` both survived into D — and because
+    # `_new_tokens`' rw/ro supersede treats an INSTALL of either as replacing
+    # the other, the entry flip-flopped `rw`<->`ro` on every single apply,
+    # never converging.
+    _RW_RO = ("rw", "ro")
+
     @classmethod
     def _merge(cls, auto: List[str], explicit: List[str]) -> List[str]:
         """Merge auto-derived and explicit params; explicit wins on conflict.
 
-        "Conflict" means the same single-valued key (``root=``, ``resume=``).
-        A repeatable parameter never conflicts: the explicit token is added
-        alongside the derived ones, deduplicated by full value.
+        "Conflict" means the same single-valued key (``root=``, ``resume=``),
+        and rw/ro count as ONE such key (B2) — an explicit ``ro`` suppresses
+        the derived ``rw`` the same way an explicit ``root=`` suppresses the
+        derived one. A repeatable parameter never conflicts: the explicit
+        token is added alongside the derived ones, deduplicated by full value.
         """
         def key_of(param: str) -> str:
-            name = param.split("=")[0] if "=" in param else param
+            name = cls._token_key(param)
+            if name in cls._RW_RO:
+                name = "rw"
             # Repeatable: the token itself is the identity, so a different
             # device can never collide with another device's entry.
             return param if name in cls._REPEATABLE else name
@@ -472,13 +508,16 @@ class KernelCmdlineAction(AbstractAction):
 
     @staticmethod
     def _token_key(token: str) -> str:
-        return mount_option_name(token)
+        """The kernel-cmdline-flavored alias of the shared ``token_name``
+        splitter (N4, review of fix/rootflags-sync-drift) — a kernel parameter
+        is not a mount option, so this name says what the caller is asking."""
+        return token_name(token)
 
     @classmethod
     def _defines_root(cls, token: str) -> bool:
         return cls._token_key(token) in cls._ROOT_DEFINING
 
-    def _desired_tokens_for_diff(self, actual: "set") -> List[str]:
+    def _desired_tokens_for_diff(self, actual) -> List[str]:
         """`_desired_tokens()`, but a `rootflags=` describing the SAME mount as
         the live one is compared as EQUIVALENT rather than as an exact string.
 
@@ -489,11 +528,36 @@ class KernelCmdlineAction(AbstractAction):
         same mount, so `plan` must stay silent — `apply` still writes the
         DERIVED value verbatim; only this plan-time diff treats them as already
         satisfied.
+
+        B1 (review of fix/rootflags-sync-drift): *actual* is normally a `set`
+        (`self.actual()`), and `set` iteration order depends on
+        `PYTHONHASHSEED` — the ORIGINAL bug here was
+        `next(t for t in actual if t.startswith("rootflags="))`, which silently
+        picked WHICHEVER of two live `rootflags=` tokens happened to iterate
+        first when the entry carried the pre-fix duplicate (root cause C). On
+        some seeds that stale token was equivalent to desired and the plan went
+        silent about a genuinely divergent machine; on others it was not and an
+        INSTALL was planned — non-deterministic, and either way the "exactly
+        one `rootflags=`" invariant was not actually checked. Enumerating every
+        match into a list first and checking its LENGTH is a pure cardinality
+        test — order-independent even over a `set` — so this is now
+        deterministic under any hash seed without needing an ordered source at
+        all: with exactly ONE live `rootflags=` token, compare it for
+        equivalence as before; with more than one, never substitute — the
+        entry is genuinely divergent and must not read as converged just
+        because one of the duplicates happens to match. The literal derived
+        token is then planned as an INSTALL, and `_new_tokens` collapses every
+        existing `rootflags=` into the one new one.
         """
         desired = self._desired_tokens()
         d_tok = next((t for t in desired if t.startswith("rootflags=")), None)
-        a_tok = next((t for t in actual if t.startswith("rootflags=")), None)
-        if not d_tok or not a_tok or d_tok == a_tok:
+        if not d_tok:
+            return desired
+        live_rootflags = [t for t in actual if t.startswith("rootflags=")]
+        if len(live_rootflags) != 1:
+            return desired
+        a_tok = live_rootflags[0]
+        if d_tok == a_tok:
             return desired
         if _rootflags_equivalent(d_tok[len("rootflags="):], a_tok[len("rootflags="):]):
             return [a_tok if t == d_tok else t for t in desired]
@@ -513,7 +577,29 @@ class KernelCmdlineAction(AbstractAction):
                 if not (c.op is Op.REMOVE and self._defines_root(c.item))]
 
     def managed_keys(self) -> dict:
-        return {self._DOMAIN: self._desired_tokens()}
+        """What `plan` compared the config against — not the literal desired
+        list (S3, review of fix/rootflags-sync-drift).
+
+        A silent plan (root cause B's equivalence: declared `zstd:3`, entry
+        has bare `zstd`) used to still record the LITERAL derived token as
+        owned, so the manifest claimed a `rootflags=` that is not on the
+        entry — invisible until another domain's apply rebuilt the manifest
+        and the next `sync` could find neither the literal nor the live token
+        among "owned ∪ declared", silently losing ownership of `rootflags=`
+        altogether. Diffing through the same substitution `plan()` uses keeps
+        the manifest saying what is REALLY on the entry: the literal after a
+        real apply (nothing to substitute — `actual` already equals it), the
+        live bare token after a silent plan.
+
+        Short-circuits before reading the target at all when the config
+        derives no `rootflags=` (the common case for a day-2 / non-disks
+        config) — `managed_keys()` must stay a pure function of the config
+        whenever there is nothing for the live entry to disambiguate.
+        """
+        desired = self._desired_tokens()
+        if not any(t.startswith("rootflags=") for t in desired):
+            return {self._DOMAIN: desired}
+        return {self._DOMAIN: self._desired_tokens_for_diff(self.actual())}
 
     def live_params(self) -> List[str]:
         """The parameters on the target's default boot entry (``[]`` if unread).
@@ -563,21 +649,17 @@ class KernelCmdlineAction(AbstractAction):
         if plymouth_installed(self._target()):
             derived_keys.add(_SPLASH_PARAM)
         for token in self._tokens(self._derived()):
-            name = token.split("=")[0] if "=" in token else token
+            name = self._token_key(token)
             derived_keys.add(token if name in self._REPEATABLE else name)
 
         kept: List[str] = []
         for token in live:
-            name = token.split("=")[0] if "=" in token else token
+            name = self._token_key(token)
             key = token if name in self._REPEATABLE else name
             if key in derived_keys or token in kept:
                 continue
             kept.append(token)
         return {self._DOMAIN: kept, "sysrq": _SYSRQ_PARAM in live}
-
-    # rw/ro are mutually exclusive flags (no `=`): installing one replaces the
-    # other, the same way a changed `_ROOT_KEYED` value replaces its old one.
-    _RW_RO = ("rw", "ro")
 
     def _new_tokens(self, changes) -> List[str]:
         """The entry's new token list: removes applied, installs added.
@@ -665,8 +747,7 @@ class KernelCmdlineAction(AbstractAction):
     def _param_present(self, current: str, param: str) -> bool:
         """Check if a kernel param (key=val or flag) is already present."""
         if "=" in param:
-            key = param.split("=")[0]
-            return key in current
+            return self._token_key(param) in current
         return param in current.split()
 
     def _missing_params(self) -> List[str]:

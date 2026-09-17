@@ -1,5 +1,5 @@
 """Shared partition predicates (used by the bootloader + kernel-cmdline actions)."""
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 # `unlock_keydev` spec kinds and the /dev/disk/by-* directory each resolves to.
 _BY_DIR = {"UUID": "by-uuid", "PARTUUID": "by-partuuid",
@@ -39,14 +39,97 @@ def keydev_spec(value: str) -> str:
     return value if "=" in value or value.startswith("/dev/") else f"UUID={value}"
 
 
-def mount_option_name(option: str) -> str:
-    """The key half of a ``name`` or ``name=value`` mount option.
+def token_name(token: str) -> str:
+    """The key half of a ``name`` or ``name=value`` token.
 
-    Shared so the btrfs subvolume-option merge (``DiskPartitionAction``) and
-    the kernel-cmdline ``rootflags=`` equivalence check (``KernelCmdlineAction``)
-    never grow two copies of the same one-line split.
+    Deliberately not "mount option" in the name (N4, review of
+    fix/rootflags-sync-drift): this splits a btrfs mount option
+    (``compress-force=zstd`` -> ``compress-force``) exactly the same way it
+    splits a kernel command-line parameter (``rootflags=...`` -> ``rootflags``)
+    — a kernel parameter is not a mount option, so a mount-option-flavored
+    name would mislead the next reader at the second call site.
+    ``KernelCmdlineAction._token_key`` is the kernel-flavored alias other code
+    in that module reads.
+
+    Shared so the btrfs subvolume-option merge (``merge_mount_options_by_name``,
+    ``DiskPartitionAction._correct_subvol_options``), the rootflags=
+    equivalence check, ``KernelCmdlineAction._merge``'s explicit-wins key, and
+    ``import_state``'s derived-key subtraction never grow a second copy of the
+    same one-line split.
     """
-    return option.split("=", 1)[0]
+    return token.split("=", 1)[0]
+
+
+# The kernel's own default compression LEVEL for a btrfs `compress`/
+# `compress-force` mount option declared without one. Measured via findmnt on
+# a real mount (a bare `compress-force=zstd` comes back `...zstd:3`) and, for
+# the fuller table of edge levels, a loopback btrfs image in the vmtest guest
+# — see docs/FACTS.md FACT-RFD-1. lzo has no level at all, so it is
+# deliberately absent here.
+_COMPRESS_DEFAULT_LEVEL = {"zstd": "3", "zlib": "3"}
+_COMPRESS_NAMES = ("compress", "compress-force")
+
+
+def normalize_compress_value(value: str) -> str:
+    """``zstd`` <-> ``zstd:3`` (the kernel's default level) for EQUIVALENCE
+    only. An explicit level is never touched — ``zstd:1`` stays ``zstd:1``, so
+    it is never confused with the default ``zstd:3``. lzo has no default to
+    fill in."""
+    if ":" in value:
+        return value
+    default = _COMPRESS_DEFAULT_LEVEL.get(value)
+    return f"{value}:{default}" if default else value
+
+
+def option_equivalent(a: str, b: str) -> bool:
+    """Whether two individual mount options describe the SAME setting.
+
+    Same NAME (``token_name``), and for ``compress``/``compress-force`` the
+    kernel's default level filled in, so a bare ``compress-force=zstd``
+    matches a kernel-reported ``compress-force=zstd:3``. Everything else
+    compares as an exact token.
+
+    Shared by the rootflags= equivalence check (``KernelCmdlineAction``) and
+    ``DiskPartitionAction._correct_subvol_options`` (S4, review of
+    fix/rootflags-sync-drift) — a live ``compress-force=zstd:3`` subtracted
+    from a declared base ``compress-force=zstd`` by whole-token comparison
+    used to survive as "new" and get captured a second time onto the
+    subvolume, so the derived ``rootflags=`` carried the same option twice.
+    """
+    name_a, name_b = token_name(a), token_name(b)
+    if name_a != name_b:
+        return False
+    if name_a in _COMPRESS_NAMES and "=" in a and "=" in b:
+        _, _, va = a.partition("=")
+        _, _, vb = b.partition("=")
+        return normalize_compress_value(va) == normalize_compress_value(vb)
+    return a == b
+
+
+def merge_mount_options_by_name(base: "List[str]", overrides: "List[str]") -> "List[str]":
+    """Merge two option lists by NAME: an option in *overrides* replaces the
+    base option of the SAME NAME in place — the more specific statement wins —
+    rather than being appended next to it.
+
+    Shared (S4, review of fix/rootflags-sync-drift) by
+    ``DiskPartitionAction._subvol_mount_options`` (the mount pass, working on
+    pydantic models) and ``KernelCmdlineAction._derive_from_disks`` (the
+    rootflags= derivation, working on plain config dicts) — a whole-token dedup
+    in the latter let a hoisted partition-level ``compress-force=zstd`` and a
+    subvolume-level ``compress-force=zstd:3`` both survive into one
+    ``rootflags=`` value, which is not a merge but a contradiction the kernel
+    resolves by silently taking the last one.
+    """
+    merged = list(base)
+    for opt in overrides:
+        name = token_name(opt)
+        for i, existing in enumerate(merged):
+            if token_name(existing) == name:
+                merged[i] = opt      # the override is more specific, in place
+                break
+        else:
+            merged.append(opt)
+    return merged
 
 
 def mounts_root(part: Dict[str, Any]) -> bool:

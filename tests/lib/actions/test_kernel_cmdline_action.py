@@ -57,7 +57,13 @@ def test_derive_encryption_uses_deterministic_uuid_no_probe():
     a = KernelCmdlineAction(_enc_cfg())
     derived = a._derive_from_disks()
     assert f"rd.luks.name={luks_uuid('croot')}=croot" in derived
-    assert "root=/dev/mapper/croot rw" in derived
+    # Two separate params, not one "root=... rw" string (B2, review of
+    # fix/rootflags-sync-drift): `_merge`'s per-param conflict key is
+    # computed BEFORE flattening, so a combined string's key was always
+    # "root" and an explicit `ro` (key `rw`) could never suppress the `rw`
+    # hidden inside it.
+    assert "root=/dev/mapper/croot" in derived
+    assert "rw" in derived
 
 
 def test_derive_uses_explicit_luks_uuid_when_set():
@@ -211,6 +217,29 @@ def test_apply_grub_rewrites_line_and_regens():
     assert 'GRUB_CMDLINE_LINUX="quiet new=1"' in body
     assert (run.call_args.args[0], run.call_args.args[1]) == (
         "grub-mkconfig", ["-o", "/boot/grub/grub.cfg"])
+
+
+def test_apply_grub_replaces_rootflags_in_place():
+    """S6 (review of fix/rootflags-sync-drift): the existing grub apply test
+    above only covers append (`new=1`/`old`); the replace-in-place fix (root
+    cause C) needs its own grub-path coverage, mirroring the sd-boot test in
+    test_kernel_cmdline_rootflags_equivalence.py. grub and sd-boot share
+    `_new_tokens` — only where the line lands differs."""
+    a = KernelCmdlineAction({"bootloader": "grub"}, _ctx("/"))
+    a._current_cmdline = lambda: (
+        "root=LABEL=root rw rootflags=compress-force=zstd,noatime,subvol=@ quiet")
+    grub_text = ('GRUB_CMDLINE_LINUX="root=LABEL=root rw '
+                 'rootflags=compress-force=zstd,noatime,subvol=@ quiet"\n')
+    changes = [Change("kernel_cmdline", Op.INSTALL,
+                      "rootflags=compress-force=zstd:1,noatime,subvol=@")]
+    with patch("builtins.open", mock_open(read_data=grub_text)) as m, \
+         patch("dasik.lib.actions.kernel_cmdline_action.Command.execute"):
+        a.apply(changes)
+    body = "".join(c.args[0] for c in m().write.call_args_list)
+    line = next(ln for ln in body.splitlines() if ln.startswith("GRUB_CMDLINE_LINUX="))
+    tokens = line.split('"')[1].split()
+    assert [t for t in tokens if t.startswith("rootflags=")] == \
+        ["rootflags=compress-force=zstd:1,noatime,subvol=@"]
 
 
 def test_apply_noop_without_target():

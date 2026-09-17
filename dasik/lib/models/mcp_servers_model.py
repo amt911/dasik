@@ -17,8 +17,11 @@ material and per-project history, ``~/.codex/config.toml`` carries project trust
 levels and hook hashes. dasik reads them and drives the official CLI.
 """
 from typing import Dict, List, Literal, Optional
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from ._url_validation import reject_control_chars
 
 # The agents dasik knows how to drive. Another id is not a limitation to work
 # around: there is no MCP CLI to run, so a declaration naming one would be a
@@ -56,6 +59,34 @@ class McpServerEntry(BaseModel):
         None, min_length=1,
         description="http transport: the streamable HTTP endpoint. Mutually "
                     "exclusive with `command`.")
+
+    @field_validator("url")
+    @classmethod
+    def _validate_url(cls, v: Optional[str]) -> Optional[str]:
+        # This value reaches `claude mcp add --transport http "$2"` /
+        # `codex mcp add --url "$2"` as argv and is then stored verbatim in
+        # ~/.claude.json / ~/.codex/config.toml — check the RAW string before
+        # urlsplit, which silently drops \t\r\n. See `_url_validation`.
+        if v is None:
+            return v
+        reject_control_chars(v, "mcp server url")
+        parts = urlsplit(v)
+        if parts.scheme not in ("http", "https"):
+            raise ValueError(
+                f"mcp server url must be http:// or https://, got {v!r}")
+        if "@" in parts.netloc:
+            raise ValueError(
+                f"mcp server url must not carry credentials, got {v!r}; "
+                "a synced config would copy them verbatim"
+            )
+        try:
+            host = parts.hostname
+            parts.port  # raises on a non-numeric / out-of-range port
+        except ValueError as exc:
+            raise ValueError(f"mcp server url has an unusable port: {v!r}") from exc
+        if not host:
+            raise ValueError(f"mcp server url must have a host, got {v!r}")
+        return v
     headers: Dict[str, str] = Field(
         default_factory=dict,
         description="`url` + claude-code only: extra HTTP headers.")

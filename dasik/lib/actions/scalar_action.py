@@ -48,7 +48,10 @@ class ScalarV3Action(AbstractAction):
         return []
 
     def apply(self, changes) -> None:
-        target = getattr(self.context, "target", None) if self.context else None
+        # getattr(None, "target", None) is already None: no separate branch for a
+        # missing context (mutmut 3.8 flags `if self.context` as an equivalent
+        # mutant, which is how the redundancy was noticed).
+        target = getattr(self.context, "target", None)
         if changes and target is not None:
             self._set_value()
 

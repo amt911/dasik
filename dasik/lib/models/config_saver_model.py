@@ -13,6 +13,8 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
+from ._url_validation import reject_control_chars
+
 _SHA1_HEX = re.compile(r"[0-9a-fA-F]{40}")
 _CONFIG_NAME = re.compile(r"[A-Za-z0-9_.-]{1,128}")
 _VALID_USERNAME = re.compile(r"[a-z_][a-z0-9_-]*\$?")
@@ -27,6 +29,7 @@ class ConfigSaverSource(BaseModel):
     @field_validator("url")
     @classmethod
     def _https(cls, v: str) -> str:
+        reject_control_chars(v, "config_saver.source.url")
         if not v.startswith("https://") or not v.endswith(".git"):
             raise ValueError(f"config_saver.source.url must be an https .git URL, got {v!r}")
         return v
@@ -34,9 +37,20 @@ class ConfigSaverSource(BaseModel):
     @field_validator("ref")
     @classmethod
     def _full_sha(cls, v: str) -> str:
+        # `_SHA1_HEX.fullmatch` already refuses any non-hex byte (including
+        # every control character); called explicitly too so every field on
+        # this model shares the same first line of defense — see
+        # `_url_validation.reject_control_chars`.
+        reject_control_chars(v, "config_saver.source.ref")
         if not _SHA1_HEX.fullmatch(v):
             raise ValueError(
                 f"config_saver.source.ref must be a full 40-char commit SHA, got {v!r}")
+        return v
+
+    @field_validator("subdir")
+    @classmethod
+    def _no_control_chars_subdir(cls, v: str) -> str:
+        reject_control_chars(v, "config_saver.source.subdir")
         return v
 
 

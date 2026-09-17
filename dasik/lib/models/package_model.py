@@ -15,6 +15,8 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, field_validator
 
+from ._url_validation import reject_control_chars
+
 # Arch package-name grammar (pacman.conf(5)/PKGBUILD(5)): a leading '-' or any
 # shell metacharacter is refused so a config value never reaches pacman argv or a
 # shell unsafely. Same grammar PackageResolver/PackagesAction enforce.
@@ -94,6 +96,7 @@ class GitPackageSourceModel(BaseModel):
     @field_validator("url")
     @classmethod
     def _validate_url(cls, v: str) -> str:
+        reject_control_chars(v, "package source url")
         if not v.startswith("https://"):
             raise ValueError(f"package source url must be https://, got {v!r}")
         if not v.endswith(".git"):
@@ -119,6 +122,11 @@ class GitPackageSourceModel(BaseModel):
     @field_validator("ref")
     @classmethod
     def _validate_ref(cls, v: str) -> str:
+        # `_SHA1_HEX.fullmatch` already refuses any non-hex byte (including
+        # every control character), but the guard is called explicitly here
+        # too so every field on this model goes through the same first line
+        # of defense — see `_url_validation.reject_control_chars`.
+        reject_control_chars(v, "package source ref")
         if not _SHA1_HEX.fullmatch(v):
             raise ValueError(
                 f"package source ref must be a full 40-char hex commit SHA, got {v!r}"
@@ -128,6 +136,7 @@ class GitPackageSourceModel(BaseModel):
     @field_validator("subdir")
     @classmethod
     def _validate_subdir(cls, v: str) -> str:
+        reject_control_chars(v, "package source subdir")
         if v.startswith("/"):
             raise ValueError(f"package source subdir must be relative, got {v!r}")
         normalized = normpath(v)

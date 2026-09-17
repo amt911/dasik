@@ -86,6 +86,8 @@ class AiSkillsAction(AbstractAction):
         # managed_keys so the manifest never claims dasik installed something it
         # could not — the next plan then asks for it again.
         self.failed_items: List[str] = []
+        # (user, skill) pairs already removed for every agent in this apply.
+        self._removed_everywhere: set = set()
 
     @classmethod
     def empty_config(cls) -> Any:
@@ -545,12 +547,30 @@ class AiSkillsAction(AbstractAction):
         home = self._abs(self._home_of(user, self._passwd()))
         canonical, _per_agent, sources = skills_state(home)
         if name in canonical and name in sources:
+            if not self._still_wanted(user, name):
+                # Nobody in the config wants it any more. Per-agent removals
+                # never delete the canonical copy while some other UNIVERSAL
+                # agent is merely detected on the machine (FACT-AGY-6), which
+                # left the skill readable by every universal agent. The
+                # agent-less remove takes the copy, the links and the lock
+                # entry at once — so it runs once for the whole skill.
+                if (user, name) in self._removed_everywhere:
+                    return []
+                self._removed_everywhere.add((user, name))
+                return [('npx -y skills remove --skill "$1" --global --yes',
+                         (name,))]
             return [('npx -y skills remove --skill "$1" --agent "$2" '
                      '--global --yes', (name, agent))]
         directory = self._skill_dir_for(user, agent, name, self._passwd())
         if directory is None:
             return []
         return [('rm -rf -- "$1"', (directory,))]
+
+    def _still_wanted(self, user: str, name: str) -> bool:
+        """Whether any agent of *user* still declares skill *name*."""
+        return any(spec["kind"] == "skill" and spec["user"] == user
+                   and spec.get("name") == name
+                   for spec in self._desired().values())
 
     def _skill_dir_for(self, user: str, agent: str, name: str,
                        homes: Dict[str, str]) -> Optional[str]:

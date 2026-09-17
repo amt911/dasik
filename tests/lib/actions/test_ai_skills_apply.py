@@ -119,13 +119,36 @@ def test_each_user_gets_their_own_commands(tmp_path):
 
 # --- removals -------------------------------------------------------------- #
 
-def test_removing_a_skill_uses_the_official_remove(tmp_path):
+def test_removing_a_skill_no_agent_wants_any_more_removes_it_everywhere(tmp_path):
+    """Measured with skills 1.7.0 (FACT-AGY-6): per-agent removals never delete
+    the canonical copy while another UNIVERSAL agent is merely detected on the
+    machine (e.g. ~/.gemini/antigravity-cli exists) — the CLI cannot know dasik
+    is removing that one too. The skill then stayed readable by every
+    universal agent after the config dropped it. One agent-less remove deletes
+    the copy, every link and the lock entry, and nothing else."""
     _passwd(tmp_path)
-    _install_skill(tmp_path)
+    _install_skill(tmp_path, agents=("claude-code", "codex"))
     action = _act(tmp_path, {"users": [{"username": "andres"}]})
+    managed = ["andres:claude-code:skill:impeccable", "andres:codex:skill:impeccable"]
     with patch("dasik.lib.actions.ai_skills_action.Command.execute") as execute:
         execute.return_value = MagicMock(returncode=0, stdout="", stderr="")
-        action.apply(action.plan(managed=["andres:codex:skill:impeccable"]))
+        action.apply(action.plan(managed=managed))
+        assert action.failed_items == []
+    assert _scripts(execute) == [
+        'npx -y skills remove --skill "$1" --global --yes']
+    assert _argvs(execute)[0][6:] == ["impeccable"]
+
+
+def test_removing_a_skill_from_one_agent_keeps_it_for_the_others(tmp_path):
+    _passwd(tmp_path)
+    _install_skill(tmp_path, agents=("claude-code", "codex"))
+    action = _act(tmp_path, {"users": [{"username": "andres"}], "ai_skills": {
+        "entries": [{"name": "impeccable", "method": "skills",
+                     "source": "pbakaus/impeccable", "agents": ["claude-code"]}]}})
+    with patch("dasik.lib.actions.ai_skills_action.Command.execute") as execute:
+        execute.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        action.apply(action.plan(managed=["andres:claude-code:skill:impeccable",
+                                          "andres:codex:skill:impeccable"]))
     assert _scripts(execute) == [
         'npx -y skills remove --skill "$1" --agent "$2" --global --yes']
     assert _argvs(execute)[0][6:] == ["impeccable", "codex"]

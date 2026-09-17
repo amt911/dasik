@@ -1,0 +1,167 @@
+{
+  "metadata": {
+    "note": "Antigravity as a third agent (dasik >= 0.19): skills for antigravity/antigravity-cli, MCP servers through `agy mcp`, superpowers and 21st through `agy plugin install`, next to claude-code and codex. Driven by scripts/vmtest/guest-antigravity.sh. NOT for hardware."
+  },
+  "disks": {
+    "disks": [
+      {
+        "device": "/dev/vda",
+        "partition_table": "gpt",
+        "wipe_disk": false,
+        "partitions": [
+          {
+            "label": "ESP",
+            "size": "512MiB",
+            "filesystem": "fat32",
+            "partition_type": "esp",
+            "mountpoint": "/boot",
+            "format": true
+          },
+          {
+            "label": "ROOT",
+            "size": "rest",
+            "filesystem": "ext4",
+            "partition_type": "linux",
+            "mountpoint": "/",
+            "format": true
+          }
+        ]
+      }
+    ]
+  },
+  "enable_microcode": false,
+  "packages": [
+    "base",
+    "base-devel",
+    "linux",
+    "linux-firmware",
+    "sudo",
+    "git",
+    "nodejs",
+    "npm",
+    "python",
+    "python-pydantic",
+    "python-colorama",
+    "openai-codex",
+    "claude-code",
+    "antigravity-cli"
+  ],
+  "bootloader": "sd-boot",
+  "hostname": "vm-antigravity",
+  "kernel_cmdline": [
+    "console=ttyS0,115200"
+  ],
+  "timezone": {
+    "region": "Etc",
+    "city": "UTC"
+  },
+  "locales": {
+    "selected_locales": [
+      "en_US.UTF-8 UTF-8"
+    ],
+    "desired_locale": "en_US.UTF-8",
+    "desired_tty_layout": "us"
+  },
+  "network": {
+    "type": "systemd-networkd"
+  },
+  "ai_skills": {
+    "users": [
+      "test"
+    ],
+    "entries": [
+      {
+        "name": "frontend-design",
+        "method": "skills",
+        "source": "anthropics/skills",
+        "agents": [
+          "claude-code",
+          "codex",
+          "antigravity",
+          "antigravity-cli"
+        ]
+      },
+      {
+        "name": "android-cli",
+        "method": "skills",
+        "source": "android/skills",
+        "agents": [
+          "claude-code",
+          "codex",
+          "antigravity",
+          "antigravity-cli"
+        ]
+      },
+      {
+        "name": "superpowers",
+        "method": "antigravity-plugin",
+        "source": "obra/superpowers"
+      },
+      {
+        "name": "21st",
+        "method": "antigravity-plugin",
+        "source": "21st-dev/magic-mcp"
+      }
+    ]
+  },
+  "mcp_servers": {
+    "users": [
+      "test"
+    ],
+    "entries": [
+      {
+        "name": "shadcn",
+        "command": "npx",
+        "args": [
+          "shadcn@latest",
+          "mcp"
+        ],
+        "agents": [
+          "claude-code",
+          "codex",
+          "antigravity"
+        ]
+      },
+      {
+        "name": "chrome-devtools",
+        "command": "npx",
+        "args": [
+          "-y",
+          "chrome-devtools-mcp@latest",
+          "--executablePath",
+          "/usr/bin/chromium",
+          "--no-usage-statistics"
+        ],
+        "agents": [
+          "claude-code",
+          "codex",
+          "antigravity"
+        ]
+      },
+      {
+        "name": "figma",
+        "url": "https://mcp.figma.com/mcp",
+        "agents": [
+          "claude-code",
+          "codex",
+          "antigravity"
+        ]
+      }
+    ]
+  },
+  "users": [
+    {
+      "username": "test",
+      "hashed_password": "$6$dasikvmtest$pfoSKqgh8yWKbmkwBpNuvQuJ4/kLeJmwCPCezBolW4pKbtJbtvMGQCM5f7W/hkbF/FmtCMZMYr/NLwDO4OJm7.",
+      "groups": [
+        "wheel"
+      ]
+    }
+  ],
+  "files": [
+    {
+      "path": "/etc/systemd/system/serial-getty@ttyS0.service.d/autologin.conf",
+      "content": "[Service]\nExecStart=\nExecStart=-/sbin/agetty --autologin root --noclear --keep-baud 115200,38400,9600 %I $TERM\n"
+    }
+  ]
+}

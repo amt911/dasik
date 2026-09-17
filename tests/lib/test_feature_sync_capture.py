@@ -1207,3 +1207,64 @@ def test_sync_then_plan_is_silent_for_the_mcp_servers(tmp_path):
     captured = _synced(root)
     action = McpServersAction(captured, ActionContext(target=Target(root=str(root))))
     assert action.plan(managed=["andres:claude-code:inkscape_mcp"]) == []
+
+
+# --- pacman.repositories / pacman.keys (task 7) ----------------------------- #
+#
+# Same boundary as the git-source packages case above: PacmanRepositoriesAction
+# reads the pacman keyring via `gpg`, which the end-to-end `_synced` harness
+# cannot answer against a fake root without a real gnupg homedir. The pacman
+# boundary is faked here (same gpg-mock idiom as test_pacman_repositories_plan.py,
+# reused via import); the capture logic under test — PacmanAction._import_fragment
+# adding `repositories`/`keys` to its own fragment, and
+# PacmanRepositoriesAction.import_state staying `{}` so the two never collide on
+# the shared `pacman` config_key (see both docstrings) — is the real code.
+
+from dasik.lib.actions.pacman_action import PacmanAction  # noqa: E402
+from dasik.lib.actions.pacman_repos_state import render  # noqa: E402
+from tests.lib.actions.test_pacman_repositories_plan import (  # noqa: E402
+    AMT911_FPR, AMT_KEY_CFG, AMT_REPO_CFG, AMT_SECTION, AMT_SERVER,
+    LIST_SECRET_KEYS, LIST_SIGS_LSIGNED, STOCK, _patched, _write_conf, _write_db,
+)
+
+
+def _pacman_capture(tmp_path, seed_pacman, secret_out=LIST_SECRET_KEYS,
+                    sigs_out=LIST_SIGS_LSIGNED):
+    action = PacmanAction(seed_pacman, ActionContext(target=Target(root=str(tmp_path))))
+    with _patched(secret_out=secret_out, sigs_out=sigs_out):
+        return action.import_state()["pacman"]
+
+
+def test_sync_captures_the_declared_repository_and_key(tmp_path):
+    _write_conf(tmp_path, render(STOCK, [AMT_SECTION], remove=[]))
+    _write_db(tmp_path, "amt911")
+    captured = _pacman_capture(
+        tmp_path, {"repositories": [AMT_REPO_CFG], "keys": [AMT_KEY_CFG]})
+    assert captured["repositories"] == [
+        {"name": "amt911", "servers": [AMT_SERVER], "sig_level": "Required"}]
+    assert captured["keys"] == [
+        {"fingerprint": AMT911_FPR, "url": AMT_KEY_CFG["url"]}]
+
+
+def test_sync_invents_no_repository_or_key_on_a_machine_without_either(tmp_path):
+    _write_conf(tmp_path, STOCK)  # no [amt911] section, no trusted key
+    captured = _pacman_capture(
+        tmp_path, {"repositories": [AMT_REPO_CFG], "keys": [AMT_KEY_CFG]},
+        secret_out="", sigs_out="")
+    assert captured["repositories"] == []
+    assert captured["keys"] == []
+
+
+def test_the_captured_pacman_block_validates_and_re_plans_to_nothing(tmp_path):
+    from dasik.lib.actions.pacman_repositories_action import PacmanRepositoriesAction
+
+    _write_conf(tmp_path, render(STOCK, [AMT_SECTION], remove=[]))
+    _write_db(tmp_path, "amt911")
+    captured = _pacman_capture(
+        tmp_path, {"repositories": [AMT_REPO_CFG], "keys": [AMT_KEY_CFG]})
+
+    JsonModel.model_validate({"pacman": captured})
+
+    action = PacmanRepositoriesAction(captured, ActionContext(target=Target(root=str(tmp_path))))
+    with _patched(secret_out=LIST_SECRET_KEYS, sigs_out=LIST_SIGS_LSIGNED):
+        assert action.plan(managed=[]) == []

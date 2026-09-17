@@ -43,6 +43,7 @@ def setup_actions() -> None:
     from .locale_action import LocaleAction
     from .network_action import NetworkAction
     from .pacman_action import PacmanAction
+    from .pacman_repositories_action import PacmanRepositoriesAction
     from .users_action import UsersAction
     from .home_files_action import HomeFilesAction
     from .config_saver_action import ConfigSaverAction
@@ -146,6 +147,18 @@ def setup_actions() -> None:
     )
     register_action(
         action_class=PacmanAction,
+        config_key='pacman',
+        is_optional=True,
+    )
+    # Third-party repositories/keys, right after PacmanAction (same config_key
+    # — see PacmanAction._import_fragment / PacmanRepositoriesAction.import_state
+    # for why sync's capture is nonetheless owned by one of them). MUST precede
+    # Phase 3 (Snapper, then Packages): apply() here does the `pacman -Sy
+    # --config <temp>` for a new/modified repo, so its database exists by the
+    # time PackagesAction resolves a package only that repo provides — in the
+    # SAME run, not a second `dasik apply`.
+    register_action(
+        action_class=PacmanRepositoriesAction,
         config_key='pacman',
         is_optional=True,
     )

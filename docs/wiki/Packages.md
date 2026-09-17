@@ -188,6 +188,44 @@ Bidirectional: a flag set back to `false` is commented out again, and
 whether the [`drivers`](Features.md#gpu-drivers) toggle adds the `lib32-*`
 packages — the ones 32-bit applications like Steam need.
 
+## Your own signed repository
+
+If you publish packages of your own — a personal PKGBUILD collection served
+as a real pacman repository — declare it under `pacman.repositories` and its
+signing key under `pacman.keys` instead of a `package_sources` entry per
+package:
+
+```json
+"pacman": {
+  "repositories": [
+    {"name": "amt911", "sig_level": "Required",
+     "servers": ["https://amt911.github.io/arch-packages/$arch"]}
+  ],
+  "keys": [
+    {"fingerprint": "6C6568CE34894645A23ABC44B5BD6F8F9023E53B",
+     "url": "https://amt911.github.io/arch-packages/amt911.gpg"}
+  ]
+}
+```
+
+dasik trusts the key **before** the first sync of the repository's database
+(`SigLevel = Required` demands it): the file at `url` is downloaded, and the
+apply **refuses to trust it** unless it contains exactly the primary key
+`6C6568CE34894645A23ABC44B5BD6F8F9023E53B` — a wrong file, or one bundling
+extra keys, aborts rather than trusting whatever it found. The section is
+then written directly above `[core]` and `pacman -Sy`'d on its own, so
+`core`/`extra` are never touched just to pick up a personal repository.
+
+Once a package — `dasik` and `config-saver` for the `amt911` example — is
+served from a repository like this, drop its `package_sources` entry
+(and its `ref` pin) entirely: the package resolver already prefers a
+configured repo over `package_sources`/AUR, so keeping both is a trap, not a
+belt-and-suspenders — `PackagesAction.plan` still compares the old Git `ref`
+of an already-installed package and could plan an unnecessary rebuild from
+source. See `docs/config-reference.md` § `pacman` for the full field reference
+(validation rules, the `include` alternative to `servers`, MODIFY reasons,
+what `sync` captures).
+
 ## Mirrors
 
 ```json

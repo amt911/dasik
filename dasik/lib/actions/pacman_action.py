@@ -147,14 +147,39 @@ class PacmanAction(CompositeV3Action):
         st = self._actual_state()
         if st is None:
             return {}
-        return {self._DOMAIN: {
+        # repositories/keys are read by PacmanRepositoriesAction's own private
+        # readers (_conf_text / parse_sections / _trusted_keys) — the same
+        # ones its plan()/actual() use — via its captured() helper, so plan
+        # and sync can never disagree about the same machine. It is built
+        # from `self.config` (the same raw `pacman` block this action was
+        # constructed with) so a declared key's `url` is copied from THIS
+        # seed, never invented. PacmanRepositoriesAction.import_state() itself
+        # always returns {} (see its docstring): Reconciler.sync merges
+        # fragments by top-level key, and two `pacman` fragments would
+        # overwrite each other — this is the one that wins.
+        from .pacman_repositories_action import PacmanRepositoriesAction
+        captured = PacmanRepositoriesAction(self.config, self.context).captured()
+        fragment: Dict[str, Any] = {
             "options": {
                 "Parallel": st["Parallel"],
                 "Color": st["Color"],
                 "VerbosePkgLists": st["VerbosePkgLists"],
             },
             "multilib": st["multilib"],
-        }}
+        }
+        # An empty repositories/keys list is only worth writing back when the
+        # SEED itself declared that key — otherwise it is noise added to a
+        # config that never mentioned repositories/keys at all. When the seed
+        # DID declare it, keep clearing it to `[]`: sync reports reality, not
+        # the seed. `_cmd_sync`'s own "drop newly-added empty keys" pass only
+        # looks at TOP-LEVEL config keys (dasik/__main__.py), so it can never
+        # reach this deep inside the "pacman" fragment — this has to do it.
+        seed = self.config if isinstance(self.config, dict) else {}
+        if captured["repositories"] or "repositories" in seed:
+            fragment["repositories"] = captured["repositories"]
+        if captured["keys"] or "keys" in seed:
+            fragment["keys"] = captured["keys"]
+        return {self._DOMAIN: fragment}
 
     def _set_value(self) -> None:
         text = self._read() or ""

@@ -100,7 +100,23 @@ class RunLogger:
     # -- console ------------------------------------------------------------
 
     def _console(self, text: str) -> None:
-        print(text, file=self._stream)
+        """Best-effort console echo.
+
+        The file record (``_write_file``) is the authoritative log; the
+        console is a nice-to-have that must never take the caller down with
+        it. ``self._stream`` is whatever ``sys.stderr`` resolved to when this
+        (process-wide, not reset between every test) singleton was built —
+        pytest's own capture machinery routinely swaps and closes the
+        stream objects it hands out across test/module boundaries, so a
+        caller emitting a warning long after that can hit a stream that has
+        since gone away. Swallow exactly that: a closed/broken stream
+        (``ValueError``/``OSError``, e.g. a closed file or a broken pipe),
+        never anything else.
+        """
+        try:
+            print(text, file=self._stream)
+        except (ValueError, OSError):
+            pass
 
     def _red(self, s: str) -> str:
         return f"{Fore.RED}{s}{Style.RESET_ALL}" if self.color else s

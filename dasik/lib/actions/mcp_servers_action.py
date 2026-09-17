@@ -23,6 +23,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional, Tuple
 
 from .abstract_action import AbstractAction
+from .config_access import field as _field
 from .mcp_servers_state import claude_mcp, codex_mcp
 from ..command_worker.command_worker import Command
 from ..exceptions.exceptions import CommandExecutionError
@@ -40,13 +41,6 @@ _ROOT = "root"
 # codex-cli 0.154.0 against https://mcp.figma.com/mcp). Discovery before the
 # write is the only part that needs time, and a minute covers a slow network.
 _CODEX_HTTP_ADD_BOUND_SECS = 60
-
-
-def _field(entry: Any, key: str, default: Any = None) -> Any:
-    """Read *key* from a dict or from a pydantic model, whichever arrived."""
-    if isinstance(entry, dict):
-        return entry.get(key, default)
-    return getattr(entry, key, default)
 
 
 def _spec_of(entry: Any) -> Dict[str, Any]:

@@ -30,9 +30,11 @@ the AUR RPC, and an unreachable AUR is reported as "unresolved", never as
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import subprocess  # nosec B404 - runs pacman with a fixed argv, no shell
 import sys
+import tarfile
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -118,6 +120,71 @@ def sample_config_names() -> Dict[str, Tuple[Set[str], Set[str]]]:
 
 # --- resolution ------------------------------------------------------------ #
 
+def declared_repositories() -> Dict[str, List[dict]]:
+    """{config file: its `pacman.repositories`} for configs that declare any.
+
+    A package such a config names may live only in that third-party repository
+    (e.g. `config-saver` in `[amt911]`), which the container's pacman never
+    syncs — so it is resolved against the repository's own database instead.
+    """
+    out: Dict[str, List[dict]] = {}
+    for path in sorted((REPO_ROOT / "config").glob("*.json")):
+        try:
+            data = json.loads(path.read_text())
+        except (OSError, ValueError):
+            continue
+        pacman = data.get("pacman") if isinstance(data, dict) else None
+        repos = (pacman or {}).get("repositories") if isinstance(pacman, dict) else None
+        if isinstance(repos, list) and repos:
+            out[path.name] = [r for r in repos if isinstance(r, dict) and r.get("name")]
+    return out
+
+
+def repository_package_names(repo: dict, arch: str = "x86_64") -> Tuple[Set[str], bool]:
+    """(package names in a declared repository's sync DB, reachable).
+
+    Tries each `servers` entry (`$repo`/`$arch` expanded) until one serves
+    `<name>.db`. The DB is a tar (zstd, gzip, xz…) of `<pkg>-<ver>/desc` files,
+    each carrying `%NAME%`. Anything that cannot be fetched or read is
+    "unreachable" — never evidence that a package is gone.
+    """
+    name = repo.get("name")
+    for server in repo.get("servers") or []:
+        base = str(server).replace("$repo", str(name)).replace("$arch", arch)
+        url = f"{base.rstrip('/')}/{name}.db"
+        if not url.startswith("https://"):
+            continue
+        try:
+            with urllib.request.urlopen(url, timeout=30) as resp:  # nosec B310 - https only, checked above
+                body = resp.read()
+            names: Set[str] = set()
+            with tarfile.open(fileobj=io.BytesIO(body), mode="r:*") as tar:
+                for member in tar.getmembers():
+                    if not member.name.endswith("/desc"):
+                        continue
+                    handle = tar.extractfile(member)
+                    if handle is None:
+                        continue
+                    lines = handle.read().decode("utf-8", "replace").splitlines()
+                    if "%NAME%" in lines:
+                        index = lines.index("%NAME%") + 1
+                        if index < len(lines) and lines[index].strip():
+                            names.add(lines[index].strip())
+            return names, True
+        except (urllib.error.URLError, OSError, tarfile.TarError, ValueError):
+            continue
+    return set(), False
+
+
+def missing_names(names: Set[str], sources: Set[str], unknown: Set[str],
+                  in_aur: Set[str], from_repositories: Set[str]) -> List[str]:
+    """Names a sample config declares that resolve nowhere."""
+    return sorted(n for n in names
+                  if n in unknown - in_aur and n not in sources
+                  and n not in from_repositories
+                  and not n.startswith("dasik-package-does-not-exist"))
+
+
 def _pacman(args: List[str]) -> Set[str]:
     try:
         res = subprocess.run(["pacman", *args], capture_output=True,  # nosec B603, B607
@@ -200,14 +267,26 @@ def main() -> int:
         unknown_to_pacman = {n for n in every - repos if not _pacman(["-Ssq", f"^{n}$"])}
         in_aur, reachable = aur_names(unknown_to_pacman)
         per_config: Dict[str, List[str]] = {}
+        unverifiable: List[str] = []
+        declared = declared_repositories()
         for filename, (names, sources) in samples.items():
-            gone = sorted(n for n in names
-                          if n in unknown_to_pacman - in_aur and n not in sources
-                          and not n.startswith("dasik-package-does-not-exist"))
-            if gone:
+            from_repositories: Set[str] = set()
+            repos_ok = True
+            for repo in declared.get(filename, []):
+                repo_names_found, repo_ok = repository_package_names(repo)
+                from_repositories |= repo_names_found
+                repos_ok = repos_ok and repo_ok
+            gone = missing_names(names, sources, unknown_to_pacman, in_aur,
+                                 from_repositories)
+            if gone and not repos_ok:
+                # A repository this config declares could not be read: its
+                # packages cannot be told apart from a genuinely gone name.
+                unverifiable.append(filename)
+            elif gone:
                 per_config[filename] = gone
         report["configs"] = {"checked": len(every), "missing": per_config,
-                             "aur_reachable": reachable}
+                             "aur_reachable": reachable,
+                             "unverifiable_repositories": unverifiable}
         # An unreachable AUR is not evidence of absence.
         failed = failed or (bool(per_config) and reachable)
 

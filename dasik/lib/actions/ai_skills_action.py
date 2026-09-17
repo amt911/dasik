@@ -25,6 +25,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from .abstract_action import AbstractAction
 from .ai_skills_state import (AGENT_SKILL_DIRS, carries_skill, claude_state,
                               codex_state, installed_agents, skills_state)
+from .config_access import field as _field
 from ..command_worker.command_worker import Command
 from ..exceptions.exceptions import CommandExecutionError
 from ..logging import run_logger
@@ -48,13 +49,6 @@ _KIND_ORDER = {"marketplace": 0, "plugin": 1, "skill": 2}
 _TOOL_PLATFORMS = {"claude-code": "claude"}
 
 _ROOT = "root"
-
-
-def _field(entry: Any, key: str, default: Any = None) -> Any:
-    """Read *key* from a dict or from a pydantic model, whichever arrived."""
-    if isinstance(entry, dict):
-        return entry.get(key, default)
-    return getattr(entry, key, default)
 
 
 class AiSkillsAction(AbstractAction):

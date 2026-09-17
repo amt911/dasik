@@ -44,3 +44,28 @@ def test_warning_without_detail_ok():
     rl.reset()
     logger = rl.get()
     logger.warning("no detail")  # must not raise
+
+
+def test_warning_on_a_closed_stream_does_not_raise(tmp_path):
+    """A process-wide `RunLogger` singleton is not reset between every test
+    (only tests that opt in do it, see `_fresh_run_logger`-style fixtures),
+    and pytest's own capture machinery routinely swaps/closes the
+    `sys.stderr`-derived stream objects it hands out across test/module
+    boundaries. A caller emitting a warning (a nice-to-have console notice —
+    the file log, when configured, is the authoritative record) must never
+    crash because THAT stream went away — found via mutation testing's own
+    "clean" baseline run hitting exactly this on an unrelated, correctly
+    mocked test the moment `pacman_repositories_action` started calling
+    `warning()` from a path many tests exercise incidentally."""
+    log = tmp_path / "dasik.log"
+    stream = io.StringIO()
+    stream.close()
+    logger = rl.RunLogger(log_path=log, verbose=False, color=False, stream=stream)
+
+    logger.warning("keyring could not be read")  # must not raise
+    logger.error("a hard failure too")            # same guarantee for error()
+
+    # the file record still went through — only the console echo is best-effort
+    file_text = log.read_text()
+    assert "[WARNING] keyring could not be read" in file_text
+    assert "[ERROR] a hard failure too" in file_text

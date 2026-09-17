@@ -171,7 +171,11 @@ def test_import_fragment_never_captures_the_synced_key(tmp_path):
     """sync capture unchanged: multilib_synced is plan/apply state, not config."""
     _write_conf(tmp_path, _ACTIVE)
     a = PacmanAction(_cfg(), _ctx(tmp_path))
-    fragment = a._import_fragment(None)["pacman"]
+    # See test_import_fragment_shape: _import_fragment reaches the real
+    # Command.execute (via PacmanRepositoriesAction.captured()) unless
+    # patched.
+    with _patched():
+        fragment = a._import_fragment(None)["pacman"]
     assert "multilib_synced" not in fragment
     assert fragment["multilib"] is True
 

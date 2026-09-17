@@ -1404,3 +1404,66 @@ def test_pacman_repositories_block_absent_from_the_whole_config_deletes_owned_it
               if c.domain == "pacman_repositories"]
     assert ("DELETE", CREATE_KEY) in changes
     assert ("DELETE", CREATE_REPO) in changes
+
+
+# --- the same trap, two more of the seven domains it hit (issue: reconciler
+# block removal) -------------------------------------------------------------
+#
+# `Reconciler._any_managed_for`'s uninitialized-probe path broke the SAME way
+# for six other actions besides `PacmanRepositoriesAction` — the full matrix
+# (disks/timezone/locales/pacman/snapper/firewall silent+release, systemd
+# DISABLE) lives in `tests/lib/reconciler/test_reconciler_block_removal.py`,
+# which is the reconciler-focused home for this defect. These two are pinned
+# here as well because they are the two shapes that section doesn't otherwise
+# show elsewhere in THIS file's per-domain matrix: `systemd` is a set-math
+# domain where fixing the probe changes the PLAN itself (a DISABLE appears,
+# not just a manifest fix), and `timezone` is the plainest "silent absent
+# block" case — no derived items, no expand toggle, nothing else in this file
+# exercises it at all.
+
+def test_systemd_block_absent_from_the_whole_config_disables_the_owned_unit(tmp_path):
+    from dasik.lib.actions.action_registry import get_default_registry
+    from dasik.lib.actions.actions_handler_v2 import setup_actions
+    from dasik.lib.reconciler.reconciler import Reconciler
+
+    setup_actions()
+    metas = [m for m in get_default_registry().get_all_actions()
+             if m["class"] is SystemdAction]
+    assert len(metas) == 1, "SystemdAction is not registered"
+
+    enabled = MagicMock(stdout=b"sshd.service enabled\n", returncode=0)
+    manifest = {"managed": {"systemd": ["sshd.service"]}}
+    reconciler = Reconciler(config={"hostname": "box"}, target=Target(root=str(tmp_path)),
+                            manifest=manifest, action_metas=metas)
+    with patch("dasik.lib.actions.systemd_action.Command.execute",
+              return_value=enabled):
+        plan, _results = reconciler.build_plan()
+
+    changes = [(c.op.name, c.item) for c in plan.changes if c.domain == "systemd"]
+    assert changes == [("DISABLE", "sshd.service")]
+
+
+def test_timezone_block_absent_from_the_whole_config_plans_nothing(tmp_path):
+    from dasik.lib.actions.action_registry import get_default_registry
+    from dasik.lib.actions.actions_handler_v2 import setup_actions
+    from dasik.lib.actions.timezone_action import TimezoneAction
+    from dasik.lib.reconciler.reconciler import Reconciler
+
+    setup_actions()
+    metas = [m for m in get_default_registry().get_all_actions()
+             if m["class"] is TimezoneAction]
+    assert len(metas) == 1, "TimezoneAction is not registered"
+
+    etc = tmp_path / "etc"
+    etc.mkdir(parents=True, exist_ok=True)
+    (etc / "localtime").symlink_to("/usr/share/zoneinfo/Europe/Madrid")
+
+    manifest = {"managed": {"timezone": ["Europe/Madrid"]}}
+    reconciler = Reconciler(config={"hostname": "box"}, target=Target(root=str(tmp_path)),
+                            manifest=manifest, action_metas=metas)
+    plan, results = reconciler.build_plan()
+
+    assert [(c.op.name, c.item) for c in plan.changes if c.domain == "timezone"] == []
+    # The point of this row: TimezoneAction must be VISITED (so the domain's
+    # ownership is released deliberately), not silently skipped by the probe.
+    assert len(results) == 1

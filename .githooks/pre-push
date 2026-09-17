@@ -21,6 +21,14 @@ set -euo pipefail
 
 cd "$(git rev-parse --show-toplevel)"
 
+# git exports its own GIT_* variables to hooks — from a worktree that includes
+# GIT_DIR=<main>/.git/worktrees/<name>. The suite spawns `git` in temporary
+# repositories (tests/lib/test_git_save.py, test_main_save.py), and an inherited
+# GIT_DIR points every one of those commands at THIS repository instead: 6 failed
+# and 14 errors on a tree whose suite is green outside the hook (measured
+# 2026-09-17). The gates must see the environment a developer's shell has.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX GIT_COMMON_DIR
+
 # Prefer the repo venv's tools if present (so `pytest`/`mypy`/`mutmut` resolve).
 if [ -f .venv/bin/activate ]; then
   # shellcheck disable=SC1091

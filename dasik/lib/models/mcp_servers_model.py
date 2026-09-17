@@ -6,8 +6,9 @@ the line points at (``uvx inkscape_mcp``, a URL) is fetched by the agent when it
 starts the server. So the declaration names the *command* or the *URL*, and
 never a version — ``uvx`` owns that the way pacman owns a package's.
 
-The two CLIs are not symmetric, and the model refuses to paper over it: only
-Claude Code takes ``--header``, only codex takes ``--bearer-token-env-var``. An
+The CLIs are not symmetric, and the model refuses to paper over it: only
+Claude Code and Antigravity take ``--header``, only codex takes
+``--bearer-token-env-var``. An
 entry naming one of them for both agents would plan a registration that arrives
 without it, which is the class of bug where ``apply`` reports success forever
 and the server never authenticates.
@@ -26,11 +27,11 @@ from ._url_validation import reject_control_chars
 # The agents dasik knows how to drive. Another id is not a limitation to work
 # around: there is no MCP CLI to run, so a declaration naming one would be a
 # promise nothing keeps.
-AGENTS = ("claude-code", "codex")
+AGENTS = ("claude-code", "codex", "antigravity")
 
-# Which agent can be told what, measured from `claude mcp add --help` and
-# `codex mcp add --help`.
-_HEADERS_AGENT = "claude-code"
+# Which agent can be told what, measured from `claude mcp add --help`,
+# `codex mcp add --help` and `agy mcp add --help`.
+_HEADERS_AGENTS = ("claude-code", "antigravity")
 _BEARER_AGENT = "codex"
 
 
@@ -43,7 +44,7 @@ class McpServerEntry(BaseModel):
                       description="Server name as the agent registers it "
                                   "(e.g. 'inkscape_mcp')")
     agents: List[str] = Field(
-        ..., description="Agent ids: claude-code, codex.")
+        ..., description="Agent ids: claude-code, codex, antigravity.")
     command: Optional[str] = Field(
         None, min_length=1,
         description="stdio transport: the program that serves MCP on stdio "
@@ -89,7 +90,7 @@ class McpServerEntry(BaseModel):
         return v
     headers: Dict[str, str] = Field(
         default_factory=dict,
-        description="`url` + claude-code only: extra HTTP headers.")
+        description="`url` + claude-code/antigravity only: extra HTTP headers.")
     bearer_token_env_var: Optional[str] = Field(
         None, min_length=1,
         description="`url` + codex only: the variable codex reads the bearer "
@@ -138,11 +139,12 @@ class McpServerEntry(BaseModel):
             if self.bearer_token_env_var:
                 raise ValueError("`bearer_token_env_var` belongs to `url`, not "
                                  "to `command`")
-        if self.headers and self.agents != [_HEADERS_AGENT]:
+        if self.headers and not set(self.agents) <= set(_HEADERS_AGENTS):
             raise ValueError(
-                "`headers` is a claude-code option (`claude mcp add -H`); an "
-                f"entry using it must declare agents: ['{_HEADERS_AGENT}'] "
-                "alone. Split the server into one entry per agent.")
+                "`headers` is a claude-code/antigravity option (`claude mcp add "
+                "-H`, `agy mcp add -H`); an entry using it may only declare "
+                f"agents among {list(_HEADERS_AGENTS)}. Split the server into "
+                "one entry per agent.")
         if self.bearer_token_env_var and self.agents != [_BEARER_AGENT]:
             raise ValueError(
                 "`bearer_token_env_var` is a codex option (`codex mcp add "

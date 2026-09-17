@@ -1088,8 +1088,11 @@ update` / `npx skills update` and dasik never fights it.
      "marketplace": {"name": "openai-curated"}},
     {"name": "caveman", "method": "claude-plugin",
      "marketplace": {"name": "caveman", "source": "JuliusBrussee/caveman"}},
+    {"name": "superpowers", "method": "antigravity-plugin",
+     "source": "obra/superpowers"},
     {"name": "impeccable", "method": "skills",
-     "source": "pbakaus/impeccable", "agents": ["claude-code", "codex"]}
+     "source": "pbakaus/impeccable",
+     "agents": ["claude-code", "codex", "antigravity", "antigravity-cli"]}
   ]
 }
 ```
@@ -1099,13 +1102,37 @@ update` / `npx skills update` and dasik never fights it.
 | `users` | list[string] | Whose `$HOME` receives them. Empty = every declared user except root. These artefacts live in a home directory, so "system-wide" means "every human on the machine". |
 | `failure_policy` | `warn-and-continue` \| `abort` | What `apply` does when an installer fails (no network, no `npx`, marketplace down). Default warns, keeps going, and leaves the item unowned so the next `plan` asks again. |
 | `entries[].name` | string | The artefact as its installer knows it. |
-| `entries[].method` | `claude-plugin` \| `codex-plugin` \| `skills` \| `tool` | Which official installer to drive. |
+| `entries[].method` | `claude-plugin` \| `codex-plugin` \| `antigravity-plugin` \| `skills` \| `tool` | Which official installer to drive. |
 | `entries[].marketplace` | `{name, source?}` | Plugin methods only. `source` (owner/repo, git URL) is what `... plugin marketplace add` registers. **`name` is the name the marketplace's own manifest declares**, which is often not the repository name — `obra/superpowers` registers as `superpowers-dev`; the CLI prints it when adding. Omit `source` only for a marketplace the agent already has: Codex's `openai-curated` is one, and it is **not** a repository you can register instead — `codex plugin marketplace upgrade` answers *"No configured Git marketplaces to upgrade"*, and the local copy is a git repo with no remote. Codex fetches it from its own API, so it exists only once codex has been **signed in**. Until then `codex plugin marketplace list` says *"No plugin marketplaces in scope"* and the install fails with ``plugin `X` was not found in marketplace `openai-curated` ``. `plan` warns when that is the case, naming the entry and the remedy (`codex login`), and keeps proposing the entry — dasik never claims an item it could not install. |
 | `entries[].plugin` | string | Plugin name inside the marketplace, when it differs from `name`. |
-| `entries[].source` | string | `skills` only: what `npx skills add` installs from. |
-| `entries[].agents` | list[string] | `skills` and `tool`: agent ids — `claude-code`, `codex`, `opencode`, `cursor`. |
+| `entries[].source` | string | `skills`: what `npx skills add` installs from. `antigravity-plugin`: the plugin repository, as `owner/repo` or an `https://` URL — see below. |
+| `entries[].agents` | list[string] | `skills` and `tool`: agent ids — `claude-code`, `codex`, `opencode`, `cursor`, `antigravity`, `antigravity-cli`. |
 | `entries[].command` | string | `tool` only: the program that ships the skill. dasik runs `<command> install --platform <agent>`. A bare program name — it is executed. |
 | `entries[].users` | list[string] | Narrows this entry to some of the block's users. Only needed when people on one machine carry different sets. |
+
+**`antigravity-plugin`** installs an Antigravity plugin with `agy plugin install`
+(package `antigravity-cli`). `agy` only installs from a **directory**, so `apply`
+clones `source` into a temporary directory as the user, installs from it and
+deletes the clone — `git` has to be on the target too, and `plan` warns when
+either is missing from `packages`. The plugin's name is the one its own
+`.agents/plugins/marketplace.json` declares (`obra/superpowers` → `superpowers`,
+`21st-dev/magic-mcp` → `21st`); set `plugin` when it differs from `name`.
+Presence is read from `~/.gemini/config/import_manifest.json` **and** the copy
+under `~/.gemini/config/plugins/<name>/` — a restored manifest whose copy is
+gone is not an installation. `agy` records no source, so `sync` captures an
+Antigravity plugin only when the config already declares it, and reports the
+rest as not captured.
+
+`graphify` (`tool`) installs for both Antigravity agents through its single
+`antigravity` platform. Where it lands depends on the graphify version —
+`~/.gemini/config/skills/graphify` since 0.9.63, `~/.agents/skills/graphify`
+before it — so dasik reads both, and dropping the entry removes whichever is
+there. The two Antigravity agents share that directory, so a skill is only
+removed once no agent of that user declares it.
+
+Both Antigravity agents read skills from the shared `~/.agents/skills`, like
+codex: `npx skills add -g -a antigravity` writes nothing under
+`~/.gemini/antigravity/skills`, whatever the `skills` CLI's registry says.
 
 **There is no `version` field, on purpose.** The block declares *presence*, like
 `packages` declares package names: the official CLI owns the version, and
@@ -1194,8 +1221,8 @@ hand is left alone unless the manifest owns it.
 ## `mcp_servers` — MCP servers per agent  *(sync ✓)*
 
 Declares which MCP servers each user's agents talk to, and registers them with
-**each agent's own CLI** (`claude mcp add`, `codex mcp add`). dasik never writes
-either registry file itself: `~/.claude.json` carries account material and
+**each agent's own CLI** (`claude mcp add`, `codex mcp add`, `agy mcp add`). dasik
+never writes any registry file itself: `~/.claude.json` carries account material and
 per-project history, `~/.codex/config.toml` carries project trust levels and
 hook state, and owning them as files would delete what the program keeps there.
 
@@ -1207,7 +1234,7 @@ hook state, and owning them as files would delete what the program keeps there.
     {"name": "inkscape_mcp", "command": "uvx", "args": ["inkscape_mcp"],
      "agents": ["claude-code", "codex"]},
     {"name": "sentry", "url": "https://mcp.sentry.dev/mcp",
-     "agents": ["claude-code"], "headers": {"X-Api-Key": "…"}}
+     "agents": ["claude-code", "antigravity"], "headers": {"X-Api-Key": "…"}}
   ]
 }
 ```
@@ -1217,16 +1244,16 @@ hook state, and owning them as files would delete what the program keeps there.
 | `users` | list[string] | Whose agents get them. Empty = every declared user except root — the registration lives in a home directory, so "system-wide" means "every human on the machine". |
 | `failure_policy` | `warn-and-continue` \| `abort` | What `apply` does when the agent's CLI fails (not installed, not logged in). Default warns, keeps going and leaves the item unowned, so the next `plan` asks again. |
 | `entries[].name` | string | The server name as the agent registers it. |
-| `entries[].agents` | list[string] | `claude-code`, `codex`. Another id is refused: there is no MCP CLI to drive. |
+| `entries[].agents` | list[string] | `claude-code`, `codex`, `antigravity`. Another id is refused: there is no MCP CLI to drive. |
 | `entries[].command` | string | stdio transport: the program that serves MCP on stdio (`uvx`, `npx`, an absolute path). Mutually exclusive with `url`. |
 | `entries[].args` | list[string] | Arguments for `command`. |
 | `entries[].env` | object | Environment for `command`. **Captured verbatim by `sync`** — see below. |
 | `entries[].url` | string | http transport: the streamable HTTP endpoint. Mutually exclusive with `command`. |
-| `entries[].headers` | object | `url` + **claude-code only** (`claude mcp add -H`). An entry using it must declare `agents: ["claude-code"]` alone. |
+| `entries[].headers` | object | `url` + **claude-code / antigravity only** (`claude mcp add -H`, `agy mcp add -H`). An entry using it may not name `codex`. |
 | `entries[].bearer_token_env_var` | string | `url` + **codex only** (`codex mcp add --bearer-token-env-var`). An entry using it must declare `agents: ["codex"]` alone. |
 | `entries[].users` | list[string] | Narrows this entry to some of the block's users. |
 
-The two CLIs are not symmetric, and the model refuses to paper over it: an
+The CLIs are not symmetric, and the model refuses to paper over it: an
 option only one of them understands must name that agent alone, or the plan
 would promise a registration that silently arrives without it. A server both
 agents need with different auth is two entries.
@@ -1243,7 +1270,14 @@ What `plan` shows is one item per (user, agent, server):
 
 A server already registered with a different command, arguments, environment,
 transport, headers or bearer variable is a MODIFY, applied as remove-then-add: `mcp add` on a name that
-already exists does not rewrite it. An absent `env` and `"env": {}` are the same
+already exists does not rewrite it. Antigravity is the exception: `agy mcp add`
+replaces an existing name, so its MODIFY is a single re-add.
+
+**`antigravity`** registrations live in `~/.gemini/config/mcp_config.json`, the
+user-level file the Antigravity IDE and its CLI (`agy`, package
+`antigravity-cli`) share. Every `agy` flag goes before the server name, and a
+server switched off with `agy mcp disable` counts as not registered — `apply`
+re-adds it, which switches it back on. An absent `env` and `"env": {}` are the same
 registration — `claude mcp add` writes the empty object for a server the config
 never gave an environment, and treating them as different would plan the same
 MODIFY forever.

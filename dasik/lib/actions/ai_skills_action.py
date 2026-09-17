@@ -16,25 +16,42 @@ Item grammar::
 
     <user>:<agent>:marketplace:<name>
     <user>:<agent>:plugin:<plugin>@<marketplace>
+    <user>:antigravity:plugin:<plugin>
     <user>:<agent>:skill:<name>
 """
 from __future__ import annotations
 
+import os
 from typing import Any, Dict, List, Optional, Tuple
 
 from .abstract_action import AbstractAction
-from .ai_skills_state import (AGENT_SKILL_DIRS, carries_skill, claude_state,
-                              codex_state, installed_agents, skills_state)
+from .ai_skills_state import (AGENT_SKILL_DIRS, CANONICAL_SKILL_DIR,
+                              antigravity_plugins,
+                              carries_skill, claude_state, codex_state,
+                              installed_agents, skills_state)
 from .config_access import field as _field
 from ..command_worker.command_worker import Command
 from ..exceptions.exceptions import CommandExecutionError
 from ..logging import run_logger
+from ..models.ai_skills_model import PLUGIN_NAME_RE
 from ..state.change import Change, Op
 
 _DOMAIN = "ai_skills"
 
-# Which agent each plugin method installs for.
+# Which agent each marketplace plugin method installs for.
 _METHOD_AGENT = {"claude-plugin": "claude-code", "codex-plugin": "codex"}
+
+_AGY_METHOD = "antigravity-plugin"
+_AGY_AGENT = "antigravity"
+
+# `agy plugin install` takes a directory and nothing else (FACT-AGY-5), so the
+# repository is cloned into a throwaway directory first. `--` stops git reading
+# the URL as an option; the clone is removed whatever happened, and the exit
+# status is the installer's.
+_AGY_INSTALL = ('dir=$(mktemp -d) || exit 1; '
+                'git clone --depth 1 --quiet -- "$1" "$dir/plugin" '
+                '&& agy plugin install "$dir/plugin"; rc=$?; '
+                'rm -rf -- "$dir"; exit $rc')
 
 # A marketplace has to exist before a plugin can be installed from it, and a
 # plugin has to be gone before its marketplace can be removed — so creates run
@@ -46,7 +63,14 @@ _KIND_ORDER = {"marketplace": 0, "plugin": 1, "skill": 2}
 # passed through: `codex`, `opencode` and `cursor` are already the names
 # graphify uses (graphify/install.py, _PLATFORM_CONFIG plus gemini and cursor),
 # and only Claude Code differs.
-_TOOL_PLATFORMS = {"claude-code": "claude"}
+#
+# graphify has one `antigravity` platform for both Antigravity agents: it writes
+# the shared ~/.agents/skills/graphify, which the IDE and `agy` both read.
+_TOOL_PLATFORMS = {"claude-code": "claude", "antigravity-cli": "antigravity"}
+
+# Agents that SHARE one skills directory: whatever is removed for one is removed
+# for the other, so a removal waits until no agent of the user declares it.
+_SHARED_SKILL_DIR_AGENTS = {"antigravity", "antigravity-cli"}
 
 _ROOT = "root"
 
@@ -64,6 +88,13 @@ class AiSkillsAction(AbstractAction):
         # managed_keys so the manifest never claims dasik installed something it
         # could not — the next plan then asks for it again.
         self.failed_items: List[str] = []
+        # (user, skill) pairs already removed for every agent in this apply.
+        self._removed_everywhere: set = set()
+        # (user, agent, skill) triples this apply is deleting.
+        self._deleting: set = set()
+        # Directories already removed in this apply (the Antigravity agents
+        # share one, so the second DELETE would repeat the same rm).
+        self._removed_dirs: set = set()
 
     @classmethod
     def empty_config(cls) -> Any:
@@ -161,7 +192,14 @@ class AiSkillsAction(AbstractAction):
                     continue
                 method = _field(entry, "method")
                 name = _field(entry, "name")
-                if method in _METHOD_AGENT:
+                if method == _AGY_METHOD:
+                    plugin = _field(entry, "plugin") or name
+                    desired[self._item(user, _AGY_AGENT, "plugin", plugin)] = {
+                        "kind": "plugin", "user": user, "agent": _AGY_AGENT,
+                        "method": method, "plugin": plugin, "name": name,
+                        "source": _field(entry, "source"),
+                    }
+                elif method in _METHOD_AGENT:
                     agent = _METHOD_AGENT[method]
                     market = _field(entry, "marketplace") or {}
                     market_name = _field(market, "name")
@@ -217,6 +255,9 @@ class AiSkillsAction(AbstractAction):
                     items.add(item)
                     markets[item] = source
 
+            for plugin in antigravity_plugins(home):
+                items.add(self._item(user, _AGY_AGENT, "plugin", plugin))
+
             canonical, per_agent, _sources = skills_state(home)
             # Only the agents this user's entries name: a universal agent reads
             # the canonical directory, so every one of them "has" every skill
@@ -238,6 +279,12 @@ class AiSkillsAction(AbstractAction):
                     spec["name"], (spec["command"], []))
                 agents.append(spec["agent"])
         return tools
+
+    def _declared_agy_plugins(self, user: str) -> Dict[str, Tuple[str, str]]:
+        """``{plugin: (entry name, source)}`` for *user*'s antigravity plugins."""
+        return {spec["plugin"]: (spec["name"], spec["source"])
+                for spec in self._desired().values()
+                if spec.get("method") == _AGY_METHOD and spec["user"] == user}
 
     def _agents_of(self, user: str) -> set:
         """Agents some entry names for *user* (skills methods only)."""
@@ -442,6 +489,10 @@ class AiSkillsAction(AbstractAction):
                 # would keep pointing at the other repository.
                 return [remove, add]
             return [add]
+        if kind == "plugin" and agent == _AGY_AGENT:
+            if change.op is Op.DELETE:
+                return [('agy plugin uninstall "$1"', (spec["plugin"],))]
+            return [(_AGY_INSTALL, (self._clone_url(spec["source"]),))]
         if kind == "plugin":
             plugin_id = f"{spec['plugin']}@{spec['marketplace']}"
             if agent == "claude-code":
@@ -477,6 +528,13 @@ class AiSkillsAction(AbstractAction):
         return [('npx -y skills add "$1" --skill "$2" -g -a "$3" -y',
                  (spec["source"], spec["name"], agent))]
 
+    @staticmethod
+    def _clone_url(source: str) -> str:
+        """GitHub shorthand made into something `git clone` understands."""
+        if source.startswith("https://"):
+            return source
+        return f"https://github.com/{source}"
+
     def _removal_for_skill(self, spec: Dict[str, Any]
                            ) -> List[Tuple[str, Tuple[str, ...]]]:
         """How to remove a skill — decided by where it actually IS.
@@ -494,14 +552,62 @@ class AiSkillsAction(AbstractAction):
         # the one directory dasik owns removes exactly what it owns.
         user, agent, name = spec["user"], spec["agent"], spec["name"]
         home = self._abs(self._home_of(user, self._passwd()))
-        canonical, _per_agent, sources = skills_state(home)
+        canonical, per_agent, sources = skills_state(home)
         if name in canonical and name in sources:
+            if self._only_dasik_is_leaving(user, name, per_agent):
+                # Nobody in the config wants it any more. Per-agent removals
+                # never delete the canonical copy while some other UNIVERSAL
+                # agent is merely detected on the machine (FACT-AGY-6), which
+                # left the skill readable by every universal agent. The
+                # agent-less remove takes the copy, the links and the lock
+                # entry at once — so it runs once for the whole skill.
+                if (user, name) in self._removed_everywhere:
+                    return []
+                self._removed_everywhere.add((user, name))
+                return [('npx -y skills remove --skill "$1" --global --yes',
+                         (name,))]
             return [('npx -y skills remove --skill "$1" --agent "$2" '
                      '--global --yes', (name, agent))]
+        if agent in _SHARED_SKILL_DIR_AGENTS:
+            if self._still_wanted(user, name):
+                # Both Antigravity agents read the same directory: removing it
+                # for one would take the skill from the other.
+                return []
+            # Which of the two places the program wrote depends on its version
+            # (graphify ≤ 0.9.x wrote the canonical copy, 0.9.63 writes the
+            # gemini one), so remove whichever is there.
+            home = self._home_of(user, self._passwd()).rstrip("/")
+            commands: List[Tuple[str, Tuple[str, ...]]] = []
+            for relative in (AGENT_SKILL_DIRS[agent], CANONICAL_SKILL_DIR):
+                path = f"{home}/{relative}/{name}"
+                if path in self._removed_dirs or not os.path.isdir(self._abs(path)):
+                    continue
+                self._removed_dirs.add(path)
+                commands.append(('rm -rf -- "$1"', (path,)))
+            return commands
         directory = self._skill_dir_for(user, agent, name, self._passwd())
         if directory is None:
             return []
         return [('rm -rf -- "$1"', (directory,))]
+
+    def _only_dasik_is_leaving(self, user: str, name: str,
+                               per_agent: Dict[str, set]) -> bool:
+        """Whether the whole skill can go: nobody declares it any more, and
+        every agent with a copy or link of its own is one this apply deletes.
+
+        A link dasik does not own (made by hand, or by another tool) keeps the
+        skill in place — the agent-less remove would delete it too.
+        """
+        if self._still_wanted(user, name):
+            return False
+        return all((user, agent, name) in self._deleting
+                   for agent, names in per_agent.items() if name in names)
+
+    def _still_wanted(self, user: str, name: str) -> bool:
+        """Whether any agent of *user* still declares skill *name*."""
+        return any(spec["kind"] == "skill" and spec["user"] == user
+                   and spec.get("name") == name
+                   for spec in self._desired().values())
 
     def _skill_dir_for(self, user: str, agent: str, name: str,
                        homes: Dict[str, str]) -> Optional[str]:
@@ -519,15 +625,31 @@ class AiSkillsAction(AbstractAction):
         if self._target() is None:
             return
         desired = self._desired()
+        self._deleting = set()
+        for change in changes:
+            spec = desired.get(change.item) or self._spec_from_item(change.item)
+            if change.op is Op.DELETE and spec and spec.get("kind") == "skill":
+                self._deleting.add((spec["user"], spec["agent"], spec["name"]))
         # A DELETE is not in the config any more, so its spec comes from the
         # item itself: user, agent, kind and value are all the command needs.
         for change in changes:
             spec = desired.get(change.item) or self._spec_from_item(change.item)
             if spec is None:
                 continue
+            agy_plugin = spec["kind"] == "plugin" and spec["agent"] == _AGY_AGENT
+            if agy_plugin and not PLUGIN_NAME_RE.match(spec.get("plugin") or ""):
+                # The manifest is a file on disk: a DELETE rebuilt from it gets
+                # the same check as a declaration before anything runs.
+                self._fail(change.item, f"ai_skills: {change.item} refused: "
+                                        "not a plain plugin name")
+                continue
+            completed = True
             for script, args in self._command_for(change, spec):
                 if not self._run(spec["user"], script, args, change.item):
+                    completed = False
                     break
+            if completed and agy_plugin and change.op is not Op.DELETE:
+                self._check_agy_install(spec, change.item)
 
     @staticmethod
     def _spec_from_item(item: str) -> Optional[Dict[str, Any]]:
@@ -544,6 +666,26 @@ class AiSkillsAction(AbstractAction):
             spec.update(name=value, source=None)
         return spec
 
+    def _check_agy_install(self, spec: Dict[str, Any], item: str) -> None:
+        """agy names a plugin after its own marketplace.json, not after the
+        config. An install that succeeded under another name is not the
+        declared plugin — owning it would re-plan the same CREATE forever."""
+        home = self._abs(self._home_of(spec["user"], self._passwd()))
+        if spec["plugin"] in antigravity_plugins(home):
+            return
+        self._fail(item, (
+            f"ai_skills: {item}: `agy plugin install` succeeded but no plugin "
+            f"named '{spec['plugin']}' was registered. The repository's "
+            ".agents/plugins/marketplace.json names it differently: set "
+            "`plugin` to that name (`agy plugin list` shows it)."))
+
+    def _fail(self, item: str, message: str) -> None:
+        if self.failure_policy == "abort":
+            raise CommandExecutionError(message)
+        print(f"\033[31m{message}\033[0m")
+        if item not in self.failed_items:
+            self.failed_items.append(item)
+
     def _run(self, user: str, script: str, args: Tuple[str, ...],
              item: str) -> bool:
         """Run one installer command. False when it failed (and was tolerated)."""
@@ -557,13 +699,9 @@ class AiSkillsAction(AbstractAction):
         message = (f"ai_skills: {item} failed. Command: su - {user} -c "
                    f"{script!r} -- sh {' '.join(args)}"
                    + (f"\n{detail}" if detail else ""))
-        if self.failure_policy == "abort":
-            raise CommandExecutionError(message)
         # warn-and-continue: the rest of the apply is worth more than this one
         # artefact, and disowning the item makes the next plan ask again.
-        print(f"\033[31m{message}\033[0m")
-        if item not in self.failed_items:
-            self.failed_items.append(item)
+        self._fail(item, message)
         return False
 
     # -- sync ---------------------------------------------------------------- #
@@ -610,6 +748,17 @@ class AiSkillsAction(AbstractAction):
                     plugin_key: Tuple[Any, ...] = (method, plugin, market,
                                                    sources.get(market))
                     found.setdefault(plugin_key, set()).add(user)
+
+            declared_agy = self._declared_agy_plugins(user)
+            for plugin in sorted(antigravity_plugins(home)):
+                if plugin not in declared_agy:
+                    # agy records no source, and no other machine could
+                    # reproduce a plugin nobody says where it came from.
+                    skipped.append(f"{user}: antigravity plugin {plugin}")
+                    continue
+                agy_name, agy_source = declared_agy[plugin]
+                found.setdefault((_AGY_METHOD, agy_name, plugin, agy_source),
+                                 set()).add(user)
 
             canonical, per_agent, skill_sources = skills_state(home)
             present = installed_agents(home)
@@ -665,6 +814,10 @@ class AiSkillsAction(AbstractAction):
             elif key[0] == "skills":
                 entry = {"name": key[1], "method": "skills", "source": key[3],
                          "agents": list(key[2])}
+            elif key[0] == _AGY_METHOD:
+                entry = {"name": key[1], "method": _AGY_METHOD, "source": key[3]}
+                if key[2] != key[1]:
+                    entry["plugin"] = key[2]
             else:
                 marketplace: Dict[str, Any] = {"name": key[2]}
                 if key[3]:

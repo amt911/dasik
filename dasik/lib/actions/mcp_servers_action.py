@@ -24,14 +24,15 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from .abstract_action import AbstractAction
 from .config_access import field as _field
-from .mcp_servers_state import claude_mcp, codex_mcp
+from .mcp_servers_state import antigravity_mcp, claude_mcp, codex_mcp
 from ..command_worker.command_worker import Command
 from ..exceptions.exceptions import CommandExecutionError
 from ..state.change import Change, Op
 
 _DOMAIN = "mcp_servers"
 
-_READERS = {"claude-code": claude_mcp, "codex": codex_mcp}
+_READERS = {"claude-code": claude_mcp, "codex": codex_mcp,
+            "antigravity": antigravity_mcp}
 
 _ROOT = "root"
 
@@ -259,6 +260,37 @@ class McpServersAction(AbstractAction):
         """
         return ["-", user, "-c", script, "--", "sh", *args]
 
+    @staticmethod
+    def _agy_add_command(spec: Dict[str, Any]) -> Tuple[str, Tuple[str, ...]]:
+        """`agy mcp add` — every flag BEFORE the name (FACT-AGY-1: a flag after
+        it is rejected), then `--` so a command or argument starting with `-`
+        is never read as one of agy's own flags. The transport follows from
+        the URL, which agy detects by itself.
+        """
+        words = ["agy mcp add"]
+        args: List[str] = []
+        index = 1
+        if spec["transport"] == "http":
+            for key, value in sorted((spec.get("headers") or {}).items()):
+                words.append(f'-H "${index}"')
+                args.append(f"{key}: {value}")
+                index += 1
+            words.append(f'"${index}" "${index + 1}"')
+            args.extend([spec["name"], spec["url"]])
+            return " ".join(words), tuple(args)
+        for key, value in sorted((spec.get("env") or {}).items()):
+            words.append(f'--env "${index}"')
+            args.append(f"{key}={value}")
+            index += 1
+        words.append(f'"${index}" --')
+        args.append(spec["name"])
+        index += 1
+        for value in [spec["command"], *(spec.get("args") or [])]:
+            words.append(f'"${index}"')
+            args.append(value)
+            index += 1
+        return " ".join(words), tuple(args)
+
     def _add_command(self, spec: Dict[str, Any]) -> Tuple[str, Tuple[str, ...]]:
         """The registration command for one (agent, transport) pair.
 
@@ -266,6 +298,8 @@ class McpServersAction(AbstractAction):
         from — so `-s user` is what makes the registration belong to the machine
         rather than to whatever `su` happened to cd into.
         """
+        if spec["agent"] == "antigravity":
+            return self._agy_add_command(spec)
         claude = spec["agent"] == "claude-code"
         cli = "claude mcp add" if claude else "codex mcp add"
         scope = " -s user" if claude else ""
@@ -282,8 +316,8 @@ class McpServersAction(AbstractAction):
             args.append(spec["url"])
             index = 3
             for key, value in sorted((spec.get("headers") or {}).items()):
-                # Only claude-code takes headers; the model refuses them for any
-                # other agent, so no branch is needed here.
+                # Only claude-code takes headers here (antigravity has its own
+                # builder); the model refuses them for codex.
                 script += f' -H "${index}"'
                 args.append(f"{key}: {value}")
                 index += 1
@@ -311,6 +345,8 @@ class McpServersAction(AbstractAction):
     def _remove_command(self, spec: Dict[str, Any]) -> Tuple[str, Tuple[str, ...]]:
         if spec["agent"] == "claude-code":
             return 'claude mcp remove "$1" -s user', (spec["name"],)
+        if spec["agent"] == "antigravity":
+            return 'agy mcp remove "$1"', (spec["name"],)
         return 'codex mcp remove "$1"', (spec["name"],)
 
     def _command_for(self, change: Change, spec: Dict[str, Any]
@@ -319,6 +355,10 @@ class McpServersAction(AbstractAction):
         if change.op is Op.DELETE:
             return [self._remove_command(spec)]
         if change.op is Op.MODIFY:
+            if spec.get("agent") == "antigravity":
+                # `agy mcp add` REPLACES an existing name (FACT-AGY-1); a
+                # remove first would only open a window with no server at all.
+                return [self._add_command(spec)]
             # Re-register: `mcp add` on a name that already exists does not
             # rewrite it, so the old registration would survive untouched.
             return [self._remove_command(spec), self._add_command(spec)]

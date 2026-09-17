@@ -18,18 +18,36 @@ from typing import List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-# The four installers dasik knows how to drive. `skills` is the cross-agent one
+from ._url_validation import reject_control_chars
+
+# The installers dasik knows how to drive. `skills` is the cross-agent one
 # (npm `skills`, vercel-labs/skills): its agent ids are strings it defines, so a
 # new agent needs no code here. `tool` is for a skill shipped BY a program —
 # `graphify install --platform claude` writes the skill file that matches the
 # installed graphify, which a copy pinned to a git branch would not.
-Method = Literal["claude-plugin", "codex-plugin", "skills", "tool"]
+#
+# `antigravity-plugin` is `agy plugin install <directory>` (FACT-AGY-5): agy
+# accepts no repository and no marketplace reference, so dasik clones `source`
+# into a temporary directory, installs from it and throws the clone away.
+Method = Literal["claude-plugin", "codex-plugin", "antigravity-plugin", "skills",
+                 "tool"]
 
 # A `tool` command is executed, so it is a bare program name and nothing else.
 _COMMAND_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]*$")
 
 # Which agent a plugin method installs for. `skills` carries its own list.
-METHOD_AGENT = {"claude-plugin": "claude-code", "codex-plugin": "codex"}
+METHOD_AGENT = {"claude-plugin": "claude-code", "codex-plugin": "codex",
+                "antigravity-plugin": "antigravity"}
+
+# What `git clone` is handed for an `antigravity-plugin`: GitHub shorthand or an
+# https URL. Never a local path (it would name the machine running dasik, not the
+# target) and never anything git could read as one of its own options.
+_GIT_SHORTHAND_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+
+# An Antigravity plugin name reaches `agy plugin uninstall "$1"`, which resolves
+# it as a path under ~/.gemini/config/plugins — measured: `../../..` deleted the
+# home it pointed at. A plain name, never a path or an option.
+PLUGIN_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 
 class MarketplaceRef(BaseModel):
@@ -57,7 +75,8 @@ class AiSkillEntry(BaseModel):
 
     name: str = Field(..., min_length=1,
                       description="Skill or plugin name as the installer knows it")
-    method: Method = Field(..., description="claude-plugin | codex-plugin | skills")
+    method: Method = Field(..., description="claude-plugin | codex-plugin | "
+                                            "antigravity-plugin | skills | tool")
     plugin: Optional[str] = Field(
         None, description="Plugin name inside the marketplace, when it differs "
                           "from `name`. Defaults to `name`.")
@@ -65,7 +84,10 @@ class AiSkillEntry(BaseModel):
         None, description="Required by the plugin methods; rejected by `skills`.")
     source: Optional[str] = Field(
         None, description="Required by `skills`: owner/repo, git URL or path the "
-                          "`skills` CLI installs from.")
+                          "`skills` CLI installs from. Required by "
+                          "`antigravity-plugin`: owner/repo or https URL of the "
+                          "plugin repository dasik clones for `agy plugin "
+                          "install`.")
     agents: List[str] = Field(
         default_factory=list,
         description="`skills` and `tool` only: agent ids "
@@ -120,6 +142,34 @@ class AiSkillEntry(BaseModel):
             if self.marketplace is not None or self.source is not None:
                 raise ValueError("method 'tool' takes no `marketplace` or "
                                  "`source`: the program is the source")
+        elif self.method == "antigravity-plugin":
+            if not PLUGIN_NAME_RE.match(self.name):
+                raise ValueError(
+                    "method 'antigravity-plugin' needs `name` to be a plain name "
+                    f"(letters, digits, '.', '_', '-'), got {self.name!r}: agy "
+                    "resolves it as a path when uninstalling")
+            if self.plugin is not None and not PLUGIN_NAME_RE.match(self.plugin):
+                raise ValueError(
+                    "method 'antigravity-plugin' needs `plugin` to be a plain "
+                    f"name, got {self.plugin!r}: agy resolves it as a path when "
+                    "uninstalling")
+            if not self.source:
+                raise ValueError("method 'antigravity-plugin' requires `source` "
+                                 "(owner/repo or https URL of the plugin "
+                                 "repository)")
+            reject_control_chars(self.source, "antigravity-plugin source")
+            if not (self.source.startswith("https://")
+                    or _GIT_SHORTHAND_RE.match(self.source)):
+                raise ValueError(
+                    "method 'antigravity-plugin' needs `source` as owner/repo or "
+                    f"an https:// URL, got {self.source!r}: dasik clones it "
+                    "inside the target, where a local path means nothing")
+            if self.marketplace is not None:
+                raise ValueError("method 'antigravity-plugin' takes no "
+                                 "`marketplace`: agy installs from a clone")
+            if self.agents:
+                raise ValueError("method 'antigravity-plugin' takes no "
+                                 "`agents`: it installs for antigravity")
         elif self.method == "skills":
             if not self.source:
                 raise ValueError("method 'skills' requires `source` "

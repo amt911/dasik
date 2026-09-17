@@ -1108,6 +1108,10 @@ gone is not an installation. `agy` records no source, so `sync` captures an
 Antigravity plugin only when the config already declares it, and reports the
 rest as not captured.
 
+`graphify` (`tool`) installs for both Antigravity agents through its single
+`antigravity` platform, into the shared `~/.agents/skills/graphify`; dropping it
+removes that copy.
+
 Both Antigravity agents read skills from the shared `~/.agents/skills`, like
 codex: `npx skills add -g -a antigravity` writes nothing under
 `~/.gemini/antigravity/skills`, whatever the `skills` CLI's registry says.

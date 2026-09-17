@@ -224,3 +224,39 @@ def test_preflight_warns_without_agy_or_git():
     assert "ai_skills_without_installer" in _codes(config)
     config["packages"] = ["base", "antigravity-cli", "git"]
     assert "ai_skills_without_installer" not in _codes(config)
+
+
+# -- graphify (`tool`) for the antigravity agents --------------------------- #
+#
+# graphify's own `install --platform antigravity` copies the skill to
+# ~/.agents/skills/graphify/SKILL.md (graphify/__main__.py _PLATFORM_CONFIG);
+# it has no `antigravity-cli` platform, and both agents read that same copy.
+
+GRAPHIFY = {"name": "graphify", "method": "tool", "command": "graphify",
+            "agents": ["antigravity", "antigravity-cli"]}
+
+
+def test_graphify_is_installed_with_its_antigravity_platform_for_both_agents(tmp_path):
+    action = _action(tmp_path, [GRAPHIFY])
+    calls = _calls(action, action.plan(managed=[]))
+    assert [argv[4:] for _b, argv in calls] == [
+        ["--", "sh", "graphify", "antigravity"],
+        ["--", "sh", "graphify", "antigravity"]]
+
+
+def test_a_dropped_antigravity_graphify_removes_the_shared_copy_and_converges(tmp_path):
+    """No lock records a tool's skill, and neither antigravity agent has a
+    directory of its own: without naming the canonical copy the removal did
+    nothing and plan asked for the same DELETE forever."""
+    root = _root(tmp_path)
+    skill = root / "home/andres/.agents/skills/graphify"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text("---\nname: graphify\n---\n")
+    managed = ["andres:antigravity:skill:graphify",
+               "andres:antigravity-cli:skill:graphify"]
+    action = AiSkillsAction({"users": [{"username": "andres"}],
+                             "ai_skills": {"entries": []}},
+                            ActionContext(target=Target(root=str(root))))
+    calls = _calls(action, action.plan(managed=managed))
+    assert [argv[3:] for _b, argv in calls][0] == [
+        'rm -rf -- "$1"', "--", "sh", "/home/andres/.agents/skills/graphify"]

@@ -24,7 +24,8 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional, Tuple
 
 from .abstract_action import AbstractAction
-from .ai_skills_state import (AGENT_SKILL_DIRS, antigravity_plugins,
+from .ai_skills_state import (AGENT_SKILL_DIRS, CANONICAL_SKILL_DIR,
+                              antigravity_plugins,
                               carries_skill, claude_state, codex_state,
                               installed_agents, skills_state)
 from .config_access import field as _field
@@ -60,7 +61,14 @@ _KIND_ORDER = {"marketplace": 0, "plugin": 1, "skill": 2}
 # passed through: `codex`, `opencode` and `cursor` are already the names
 # graphify uses (graphify/install.py, _PLATFORM_CONFIG plus gemini and cursor),
 # and only Claude Code differs.
-_TOOL_PLATFORMS = {"claude-code": "claude"}
+#
+# graphify has one `antigravity` platform for both Antigravity agents: it writes
+# the shared ~/.agents/skills/graphify, which the IDE and `agy` both read.
+_TOOL_PLATFORMS = {"claude-code": "claude", "antigravity-cli": "antigravity"}
+
+# Agents with no skills directory of their own whose tool-installed skills land
+# in the shared canonical directory — so that is the directory a removal owns.
+_CANONICAL_TOOL_AGENTS = {"antigravity", "antigravity-cli"}
 
 _ROOT = "root"
 
@@ -552,6 +560,8 @@ class AiSkillsAction(AbstractAction):
         nothing than to guess a path and delete it.
         """
         relative = AGENT_SKILL_DIRS.get(agent)
+        if relative is None and agent in _CANONICAL_TOOL_AGENTS:
+            relative = CANONICAL_SKILL_DIR
         if relative is None:
             return None
         return f"{self._home_of(user, homes).rstrip('/')}/{relative}/{name}"

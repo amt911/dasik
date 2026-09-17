@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 import re
 import subprocess
-from .partition_utils import keydev_spec, mounts_root
+from .partition_utils import keydev_spec, mount_option_name, mounts_root
 from typing import Any, Dict, List, Optional
 from .abstract_action import AbstractAction
 from ..command_worker.command_worker import Command
@@ -37,6 +37,57 @@ _KEYFILE_TIMEOUT = "keyfile-timeout=10s"
 # (CpuAction) declare them. See import_state.
 _BLOCK_OWNED_PARAMS = ("amd_pstate", "intel_pstate", "sysrq_always_enabled",
                        "lsm", "audit", "audit_backlog_limit")
+
+# The kernel's own default compression LEVEL for a btrfs `compress`/
+# `compress-force` mount option declared without one — verified against
+# `Btrfs.html#MOUNT_OPTIONS` (arch-wiki) and findmnt on a real mount: a bare
+# `compress-force=zstd` is reported back as `compress-force=zstd:3`. lzo has
+# no level at all, so it is deliberately absent here (see docs/FACTS.md).
+_COMPRESS_DEFAULT_LEVEL = {"zstd": "3", "zlib": "3"}
+
+
+def _normalize_compress_value(value: str) -> str:
+    """`zstd` <-> `zstd:3` (the kernel's default level) for EQUIVALENCE only.
+
+    An explicit level is never touched — `zstd:1` stays `zstd:1`, so it is
+    never confused with the default `zstd:3`. lzo has no default to fill in.
+    """
+    if ":" in value:
+        return value
+    default = _COMPRESS_DEFAULT_LEVEL.get(value)
+    return f"{value}:{default}" if default else value
+
+
+def _rootflags_option_set(value: str) -> frozenset:
+    """The comma-separated options of a `rootflags=` VALUE (no `subvol=`/…
+    dropped — every option counts), as an order-insensitive, level-normalized
+    set. Reuses `mount_option_name` — the same name/value split
+    `DiskPartitionAction._subvol_mount_options` already does — rather than a
+    second copy of it."""
+    out = set()
+    for opt in value.split(","):
+        name = mount_option_name(opt)
+        if name in ("compress", "compress-force") and "=" in opt:
+            _, _, raw = opt.partition("=")
+            opt = f"{name}={_normalize_compress_value(raw)}"
+        out.add(opt)
+    return frozenset(out)
+
+
+def _rootflags_equivalent(a: str, b: str) -> bool:
+    """Whether two `rootflags=` VALUES describe the SAME mount.
+
+    Same options, order-insensitive, with the kernel's default compression
+    level filled in (`zstd` == `zstd:3`, `zlib` == `zlib:3`). An explicit
+    DIFFERENT level (`zstd:1` vs `zstd:3`) is never equivalent, and neither is
+    `compress` vs `compress-force` — different keys, never merged.
+
+    Root cause B (rootflags sync drift): `sync` captures the LIVE mount via
+    findmnt, which reports the resolved level; the boot entry's derived value
+    was written from the DECLARED (possibly bare) one. Without this the two
+    never string-match and `plan` announces a change nobody made.
+    """
+    return _rootflags_option_set(a) == _rootflags_option_set(b)
 
 
 class KernelCmdlineAction(AbstractAction):
@@ -413,18 +464,50 @@ class KernelCmdlineAction(AbstractAction):
     # whatever the entry already has.
     _ROOT_DEFINING = ("root", "rootflags", "rootfstype", "rw", "ro")
 
+    # The subset of `_ROOT_DEFINING` that is a `key=value` token whose VALUE
+    # may legitimately change (`rw`/`ro` are flags, handled separately as a
+    # mutually-exclusive pair in `_new_tokens`). Shared between `apply`'s
+    # replace-in-place logic and nothing else needing the distinction.
+    _ROOT_KEYED = ("root", "rootflags", "rootfstype")
+
+    @staticmethod
+    def _token_key(token: str) -> str:
+        return mount_option_name(token)
+
     @classmethod
     def _defines_root(cls, token: str) -> bool:
-        return (token.split("=")[0] if "=" in token else token) in cls._ROOT_DEFINING
+        return cls._token_key(token) in cls._ROOT_DEFINING
+
+    def _desired_tokens_for_diff(self, actual: "set") -> List[str]:
+        """`_desired_tokens()`, but a `rootflags=` describing the SAME mount as
+        the live one is compared as EQUIVALENT rather than as an exact string.
+
+        Root cause B (rootflags sync drift): `sync` captures the live mount via
+        findmnt, which reports the kernel's resolved compression level
+        (`compress-force=zstd` comes back `...zstd:3`); the boot entry's value
+        was written from the (possibly bare) declared one. The two describe the
+        same mount, so `plan` must stay silent — `apply` still writes the
+        DERIVED value verbatim; only this plan-time diff treats them as already
+        satisfied.
+        """
+        desired = self._desired_tokens()
+        d_tok = next((t for t in desired if t.startswith("rootflags=")), None)
+        a_tok = next((t for t in actual if t.startswith("rootflags=")), None)
+        if not d_tok or not a_tok or d_tok == a_tok:
+            return desired
+        if _rootflags_equivalent(d_tok[len("rootflags="):], a_tok[len("rootflags="):]):
+            return [a_tok if t == d_tok else t for t in desired]
+        return desired
 
     def plan(self, managed):
         from ..state.change import Op
         from ..state.set_math import compute_changes
+        actual = self.actual()
         changes, _drift = compute_changes(
             self._DOMAIN,
-            desired=self._desired_tokens(),
+            desired=self._desired_tokens_for_diff(actual),
             managed=managed,
-            actual=self.actual(),
+            actual=actual,
         )
         return [c for c in changes
                 if not (c.op is Op.REMOVE and self._defines_root(c.item))]
@@ -492,10 +575,38 @@ class KernelCmdlineAction(AbstractAction):
             kept.append(token)
         return {self._DOMAIN: kept, "sysrq": _SYSRQ_PARAM in live}
 
+    # rw/ro are mutually exclusive flags (no `=`): installing one replaces the
+    # other, the same way a changed `_ROOT_KEYED` value replaces its old one.
+    _RW_RO = ("rw", "ro")
+
     def _new_tokens(self, changes) -> List[str]:
+        """The entry's new token list: removes applied, installs added.
+
+        Root cause C (rootflags sync drift): `plan` never emits a REMOVE for a
+        root-defining token (`_defines_root`, above) — never make a machine
+        unbootable — so a changed `root=`/`rootflags=`/`rootfstype=` used to
+        arrive here as an INSTALL with no matching REMOVE, and got appended
+        NEXT TO the old one instead of replacing it. Two tokens with the same
+        key on one entry is not a merge; the kernel takes the last, silently
+        not what either line asked for. An install of a `_ROOT_KEYED` name (or
+        of `rw`/`ro`) therefore drops every existing token with that same key
+        (or, for `rw`/`ro`, the other one) before appending the new one — never
+        for any other token, which keeps today's behaviour unchanged.
+        """
         installs = [c.item for c in changes if c.op is Op.INSTALL]
         removes = {c.item for c in changes if c.op is Op.REMOVE}
         current = [t for t in self._current_cmdline().split() if t not in removes]
+
+        keyed_installs = {self._token_key(t) for t in installs
+                          if self._token_key(t) in self._ROOT_KEYED}
+        rw_ro_installed = any(t in self._RW_RO for t in installs)
+
+        def superseded(tok: str) -> bool:
+            if self._token_key(tok) in keyed_installs:
+                return True
+            return rw_ro_installed and tok in self._RW_RO
+
+        current = [t for t in current if not superseded(t)]
         for tok in installs:
             if tok not in current:
                 current.append(tok)

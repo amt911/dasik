@@ -39,6 +39,16 @@ def keydev_spec(value: str) -> str:
     return value if "=" in value or value.startswith("/dev/") else f"UUID={value}"
 
 
+def mount_option_name(option: str) -> str:
+    """The key half of a ``name`` or ``name=value`` mount option.
+
+    Shared so the btrfs subvolume-option merge (``DiskPartitionAction``) and
+    the kernel-cmdline ``rootflags=`` equivalence check (``KernelCmdlineAction``)
+    never grow two copies of the same one-line split.
+    """
+    return option.split("=", 1)[0]
+
+
 def mounts_root(part: Dict[str, Any]) -> bool:
     """True if this partition provides ``/``: either the partition itself mounts
     ``/``, or (btrfs) one of its subvolumes does. A synced btrfs root often has

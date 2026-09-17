@@ -18,7 +18,7 @@ from dasik.lib.command_worker.command_worker import Command
 from dasik.lib.exceptions.exceptions import CommandExecutionError
 from dasik.lib.logging import run_logger
 from dasik.lib.state.change import Change, Op
-from dasik.lib.actions.partition_utils import keydev_path
+from dasik.lib.actions.partition_utils import keydev_path, mount_option_name
 from dasik.lib.actions.luks_dump import read_dump
 from dasik.lib.actions.swap_encryption import KEY_SOURCE, LABEL_FS_SIZE, swap_names
 
@@ -580,12 +580,44 @@ class DiskPartitionAction(AbstractAction):
             s["mount_options"] = [o for o in s.get("mount_options", []) if o not in common]
         return sorted(common)
 
+    # btrfs mount options a user can actually DECLARE (besides `compress*`,
+    # handled separately since its value carries a level). Kept as a whitelist,
+    # never a blacklist: kernel bookkeeping and defaults (`rw`, `relatime`,
+    # `ssd`, `discard=async`, `space_cache*`, `subvolid=`, `subvol=`) simply
+    # never match here, so they need no explicit exclusion — and a future
+    # findmnt option this repo has not heard of is dropped by default, not
+    # captured by accident.
+    _DECLARABLE_BTRFS_FLAGS = frozenset({
+        "noatime", "nodiratime", "lazytime", "strictatime",
+        "autodefrag", "nodatacow", "nodatasum",
+    })
+
+    @classmethod
+    def _is_declarable_btrfs_option(cls, option: str) -> bool:
+        """Whether a findmnt-reported btrfs option is one a config can declare.
+
+        Root cause A (rootflags sync drift, issue: sync->plan not silent on
+        btrfs roots): only options starting with ``compress`` used to survive
+        capture here, so a REAL declared option like ``noatime`` was silently
+        dropped — a reinstall from the capture lost it. Shared by
+        ``_live_subvol_options`` (correcting a DECLARED config) and
+        ``_btrfs_subvols`` (discovery from an empty seed), so the two call
+        sites can never disagree about what a subvolume is allowed to carry.
+        """
+        if option.startswith("compress"):
+            return True
+        name = mount_option_name(option)
+        if name in cls._DECLARABLE_BTRFS_FLAGS:
+            return True
+        return name == "commit" and option != name
+
     def _live_subvol_options(self) -> "Dict[str, List[str]]":
         """subvolume name -> the mount options it is REALLY mounted with.
 
-        Only the ones dasik can express (compress*): the rest of what findmnt
-        prints is kernel bookkeeping (relatime, space_cache, subvolid) that no
-        config declares.
+        Only the ones dasik can express: `compress*` plus the handful of real,
+        user-declarable btrfs flags (see `_is_declarable_btrfs_option`) — the
+        rest of what findmnt prints is kernel bookkeeping (relatime,
+        space_cache, subvolid) that no config declares.
         """
         live: Dict[str, List[str]] = {}
         for _target, _src, opts in self._findmnt_btrfs_rows():
@@ -595,7 +627,8 @@ class DiskPartitionAction(AbstractAction):
                 continue
             name = subvol.rstrip("/").split("/")[-1]
             if name:
-                live[name] = [o for o in opts.split(",") if o.startswith("compress")]
+                live[name] = [o for o in opts.split(",")
+                              if self._is_declarable_btrfs_option(o)]
         return live
 
     @staticmethod
@@ -738,7 +771,7 @@ class DiskPartitionAction(AbstractAction):
             if not name or name in seen:
                 continue
             seen.add(name)
-            mopts = [o for o in opts.split(",") if o.startswith("compress")]
+            mopts = [o for o in opts.split(",") if self._is_declarable_btrfs_option(o)]
             subs.append({"name": name, "mountpoint": target,
                          "mount_options": mopts or ["compress-force=zstd"]})
         return subs

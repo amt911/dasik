@@ -79,6 +79,19 @@ def test_an_option_only_one_subvolume_really_has_is_captured():
     assert "compress=lzo" in home["mount_options"]
 
 
+def test_a_declared_noatime_option_is_captured_alongside_compress():
+    """Root cause A (rootflags sync drift): `_live_subvol_options` used to keep
+    only `compress*`, so a REAL declared option like `noatime` was silently
+    dropped from a synced config — a reinstall from the capture lost it."""
+    rows = list(_ROWS)
+    rows[0] = ("/", "/dev/mapper/cryptroot[/@]",
+               "rw,noatime,compress-force=zstd:3,space_cache=v2,subvolid=256,subvol=/@")
+    part = _root_partition(_captured(rows))
+
+    root = next(s for s in part["btrfs_subvolumes"] if s["name"] == "@")
+    assert root["mount_options"] == ["noatime"]   # compress-force is the partition base
+
+
 def test_an_unmounted_subvolume_keeps_what_the_config_declared():
     """Nothing to read means nothing to correct — capturing an empty list there
     would silently drop an option from a subvolume that simply is not mounted."""

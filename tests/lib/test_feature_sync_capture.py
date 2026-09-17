@@ -1268,3 +1268,74 @@ def test_the_captured_pacman_block_validates_and_re_plans_to_nothing(tmp_path):
     action = PacmanRepositoriesAction(captured, ActionContext(target=Target(root=str(tmp_path))))
     with _patched(secret_out=LIST_SECRET_KEYS, sigs_out=LIST_SIGS_LSIGNED):
         assert action.plan(managed=[]) == []
+
+
+# --- btrfs root: rootflags sync drift (noatime + compression-level norm) --- #
+#
+# A declared config (not a bootstrap seed — `dasik sync` refreshing an EXISTING
+# install, the realistic case per the bug report) whose root `@` subvolume
+# declares `mount_options: ["compress-force=zstd", "noatime"]` (the exact
+# shape `config/vm-btrfs.json` and the wizard recipes use). findmnt reports the
+# kernel's resolved truth: the compression LEVEL filled in and — before the
+# fix — only `compress*` survived capture, silently dropping `noatime`.
+
+_BTRFS_SEED = {
+    "bootloader": "sd-boot",
+    "disks": {"disks": [{
+        "device": "/dev/vda", "partition_table": "gpt", "wipe_disk": True,
+        "partitions": [
+            {"label": "esp", "size": "512MiB", "filesystem": "fat32",
+             "partition_type": "esp", "mountpoint": "/boot"},
+            {"label": "root", "size": "rest", "filesystem": "btrfs",
+             "partition_type": "linux", "mountpoint": "/",
+             "btrfs_subvolumes": [
+                 {"name": "@", "mountpoint": "/",
+                  "mount_options": ["compress-force=zstd", "noatime"]},
+             ]},
+        ]}]},
+}
+
+# The order deliberately does NOT match the declared config — findmnt's own
+# order plus the kernel-resolved level is exactly what makes the naive string
+# comparison fail (root causes A + B together).
+_BTRFS_ROWS = [
+    ("/", "/dev/vda2[/@]",
+     "rw,noatime,compress-force=zstd:3,ssd,discard=async,space_cache=v2,"
+     "subvolid=256,subvol=/@"),
+]
+
+
+def _synced_btrfs_root(tmp_path):
+    from dasik.lib.actions.disk_partition_action import DiskPartitionAction
+
+    machine = _machine(tmp_path, entry=(
+        "root=LABEL=root rw rootflags=compress-force=zstd,noatime,subvol=@ quiet"),
+        reflector=False, governor=False, sudoers=False, plymouth=False,
+        libvirt_autostart=False)
+    with patch.object(DiskPartitionAction, "_findmnt_btrfs_rows", return_value=_BTRFS_ROWS):
+        return _synced(machine, seed=_BTRFS_SEED)
+
+
+def test_sync_captures_noatime_on_a_declared_btrfs_root(tmp_path):
+    captured = _synced_btrfs_root(tmp_path)
+    root_part = captured["disks"]["disks"][0]["partitions"][1]
+    root_sv = next(s for s in root_part["btrfs_subvolumes"] if s["name"] == "@")
+
+    assert "noatime" in root_sv["mount_options"]
+
+
+def test_the_captured_btrfs_root_config_validates(tmp_path):
+    JsonModel.model_validate(_synced_btrfs_root(tmp_path))
+
+
+def test_the_captured_btrfs_root_replans_to_nothing(tmp_path):
+    """The invariant: `sync` -> `check` -> `plan` is silent. The boot entry
+    still carries the bare `zstd` dasik wrote at install; the captured config
+    now (correctly) carries the kernel-reported `zstd:3` — same mount, so the
+    plan-time comparison must treat the two as equivalent."""
+    captured = _synced_btrfs_root(tmp_path)
+
+    action = KernelCmdlineAction(expand_config(captured),
+                                 ActionContext(target=Target(root=str(tmp_path))))
+
+    assert action.plan(managed=["root=LABEL=root", "rw", "quiet"]) == []

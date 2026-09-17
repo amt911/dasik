@@ -236,6 +236,38 @@ def test_discovery_captures_btrfs_subvolumes():
     assert "compress-force=zstd" in root["mount_options"]
 
 
+def test_discovery_captures_declarable_btrfs_flags_besides_compress():
+    """Root cause A (rootflags sync drift): only `compress*` survived capture,
+    so a REAL declared option like `noatime` was silently dropped and a
+    reinstall from the capture lost it. `noatime`/`nodiratime`/`lazytime`/
+    `strictatime`/`autodefrag`/`nodatacow`/`nodatasum`/`commit=<n>` are real,
+    user-declarable btrfs options and must survive alongside `compress*`.
+
+    The findmnt row below packs every one into a single (unrealistic — some
+    are mutually exclusive, e.g. `noatime`/`strictatime`) mount just to drive
+    the predicate through each case in one assertion; kernel bookkeeping and
+    defaults (`rw`, `ssd`, `discard=async`, `space_cache=`, `subvolid=`,
+    `subvol=`) must still be dropped.
+    """
+    findmnt = [
+        ("/", "/dev/mapper/cryptroot[/@]",
+         "rw,noatime,nodiratime,lazytime,strictatime,autodefrag,nodatacow,"
+         "nodatasum,commit=30,compress-force=zstd,ssd,discard=async,"
+         "space_cache=v2,subvolid=256,subvol=/@"),
+    ]
+    frag = _discover(_tree(), findmnt=findmnt)
+    nvme = next(d for d in frag["disks"]["disks"] if d["device"] == "/dev/nvme0n1")
+    root = next(p for p in nvme["partitions"] if p.get("encrypt"))
+    opts = root["mount_options"]
+
+    for kept in ("noatime", "nodiratime", "lazytime", "strictatime", "autodefrag",
+                 "nodatacow", "nodatasum", "commit=30", "compress-force=zstd"):
+        assert kept in opts, opts
+    for dropped in ("rw", "ssd", "discard=async", "space_cache=v2",
+                    "subvolid=256", "subvol=/@"):
+        assert dropped not in opts, opts
+
+
 def test_discovery_omits_disk_with_no_representable_partitions():
     tree = [{"name": "sdb", "path": "/dev/sdb", "type": "disk", "pttype": "gpt",
              "children": [

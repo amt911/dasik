@@ -94,13 +94,17 @@ show_missing = true
 # tier-2 reconciler pass. See docs/mutation-testing.md.
 [tool.mutmut]
 source_paths = ["dasik"]
-# The two pure idempotency cores: the D/M/A/F set-math and the shared scalar
-# (single-value) reconcile. A flipped comparison in either breaks the
-# "re-run = no-op" contract for every domain that routes through them.
+# The pure idempotency cores: the D/M/A/F set-math, the shared scalar
+# (single-value) reconcile, and the pacman.conf/gpg-keyring reader-and-renderer
+# behind the `pacman.repositories`/`pacman.keys` domain. A flipped comparison
+# in any of them breaks the "re-run = no-op" contract for every domain that
+# routes through them (or, for pacman_repos_state.py, silently trusts an
+# untrusted key or rewrites the wrong pacman.conf section).
 only_mutate = [
     "dasik/lib/state/set_math.py",
     "dasik/lib/actions/scalar_action.py",
     "dasik/lib/actions/composite_action.py",
+    "dasik/lib/actions/pacman_repos_state.py",
 ]
 # Per-mutant test selection: the suites that actually exercise those cores
 # (set-math, reconciler, and the scalar/timezone/users idempotency tests).

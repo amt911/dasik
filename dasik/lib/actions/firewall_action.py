@@ -406,6 +406,23 @@ class FirewallAction(AbstractAction):
         lines.append("</zone>")
         return "\n".join(lines) + "\n"
 
+    @staticmethod
+    def _same_zone(current: "Optional[str]", desired: str) -> bool:
+        """Whether a zone file says the same thing as the declaration.
+
+        By CONTENT, never byte-for-byte: `sync` captures `rich_rules` in the
+        order firewalld lists them, which is not the order the config declared
+        them in, and a text comparison then proposed the same MODIFY on every
+        plan — sync -> plan was never silent on a machine with more than one
+        rich rule (measured in a guest). Services and rules are a set: two
+        files with the same lines in another order enforce the same zone.
+        """
+        if current is None:
+            return False
+        def lines(xml: str) -> set:
+            return {line.strip() for line in xml.splitlines() if line.strip()}
+        return lines(current) == lines(desired)
+
     def _current_xml(self, zone: str = "public"):
         try:
             with open(self._zone_file(zone), "r") as f:
@@ -469,7 +486,8 @@ class FirewallAction(AbstractAction):
         declared = self._declared_zones()
         changes = [Change(self._DOMAIN, Op.MODIFY, zone, reason="zone rules")
                    for zone in declared
-                   if self._current_xml(zone) != self._desired_xml(zone)]
+                   if not self._same_zone(self._current_xml(zone),
+                                          self._desired_xml(zone))]
         # A zone dasik wrote and the config no longer names keeps enforcing
         # rules nothing declares; its file goes with the declaration.
         for zone in sorted(set(managed) - set(declared)):

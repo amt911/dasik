@@ -423,3 +423,41 @@ def test_actual_with_a_recorded_backend_never_reports_the_other(tmp_path):
     with patch("dasik.lib.actions.firewall_action.Command.execute",
               return_value=SimpleNamespace(stdout=live_status, returncode=0)):
         assert a.actual() == {"allow 22/tcp"}
+
+
+# --- the zone file is compared by CONTENT, not by byte order --------------- #
+#
+# Measured in a guest (regression run of the author's own config): `sync`
+# captures `rich_rules` in firewalld's order, which is not the order the config
+# declared them in. The zone file was compared as text, so the captured config
+# proposed `modify public` on every plan, forever — sync -> plan was never
+# silent on a machine with more than one rich rule.
+
+_RICH_A = 'rule family="ipv4" source address="192.168.0.0/24" port port="3000" protocol="tcp" accept'
+_RICH_B = 'rule family="ipv4" source address="100.64.0.0/10" port port="3000" protocol="tcp" accept'
+
+
+def _zone_action(tmp_path, rich):
+    from types import SimpleNamespace
+    from dasik.lib.actions.firewall_action import FirewallAction
+    from dasik.lib.target.target import Target
+    action = FirewallAction({"enable": True, "allowed_services": ["mdns"],
+                             "rich_rules": rich},
+                            SimpleNamespace(target=Target(root=str(tmp_path))))
+    action._zone_file = lambda zone="public": str(tmp_path / f"{zone}.xml")
+    return action
+
+
+def test_the_same_rules_in_another_order_are_not_a_change(tmp_path):
+    written = _zone_action(tmp_path, [_RICH_A, _RICH_B])
+    (tmp_path / "public.xml").write_text(written._desired_xml("public"))
+    reordered = _zone_action(tmp_path, [_RICH_B, _RICH_A])
+    assert reordered.plan(managed=["public"]) == []
+
+
+def test_a_different_rule_is_still_a_change(tmp_path):
+    written = _zone_action(tmp_path, [_RICH_A, _RICH_B])
+    (tmp_path / "public.xml").write_text(written._desired_xml("public"))
+    changed = _zone_action(tmp_path, [_RICH_A])
+    assert [(c.op.name, c.item) for c in changed.plan(managed=["public"])] == [
+        ("MODIFY", "public")]

@@ -120,6 +120,37 @@ def test_an_unknown_field_is_rejected():
                                   "agents": ["codex"], "typo": 1}])
 
 
+# --- url: reaches `claude mcp add --transport http "$2"` / `codex mcp add
+# --url "$2"` as argv and is then stored verbatim in ~/.claude.json /
+# ~/.codex/config.toml — must be a real http(s) URL, not just a non-empty
+# string. See `_url_validation.reject_control_chars`. ---------------------
+
+@pytest.mark.parametrize("ctrl", ["\n", "\r", "\t", "\x7f"])
+def test_url_rejects_embedded_control_characters(ctrl):
+    with pytest.raises(ValidationError):
+        _model(url=f"https://good.example/mcp{ctrl}/more")
+
+
+@pytest.mark.parametrize("bad", [
+    "ftp://x/mcp",           # not http(s)
+    "mcp.figma.com/mcp",     # no scheme at all
+    "https:///mcp",          # scheme but empty host
+    "https://u:p@h/mcp",     # credentials embedded in the URL
+])
+def test_url_rejects_non_conforming_values(bad):
+    with pytest.raises(ValidationError):
+        _model(url=bad)
+
+
+@pytest.mark.parametrize("good", [
+    "https://mcp.figma.com/mcp",
+    "http://localhost:6006/mcp",   # a local dev server: http is legitimate here
+    "https://example.invalid/mcp",  # used throughout the test suite
+])
+def test_url_accepts_legitimate_values(good):
+    assert _model(url=good).entries[0].url == good
+
+
 def test_failure_policy_defaults_to_warn_and_continue():
     assert McpServersModel(entries=[]).failure_policy == "warn-and-continue"
 

@@ -24,6 +24,8 @@ from typing import List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from ._url_validation import reject_control_chars
+
 # A DNS label as the control plane will accept it, and as `tailscale set
 # --hostname` documents: letters, digits and hyphens, not starting or ending
 # with one.
@@ -154,6 +156,11 @@ class TailscaleModel(BaseModel):
     def _https_url(cls, v: Optional[str]) -> Optional[str]:
         if v is None:
             return v
+        # `str.split()` treats \t\r\n as whitespace and silently drops a
+        # LEADING/TRAILING one before counting tokens, so a value like
+        # "https://hs.example.net\n" passed both checks below unchanged —
+        # check the raw string first. See `_url_validation.reject_control_chars`.
+        reject_control_chars(v, "server_url")
         if not v.startswith(("https://", "http://")) or len(v.split()) != 1:
             raise ValueError("server_url must be a single http(s) URL")
         return v

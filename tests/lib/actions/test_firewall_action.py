@@ -106,6 +106,71 @@ def test_disabled_plans_nothing():
     assert FirewallAction({"enable": False}, context=SimpleNamespace(target=object())).plan([]) == []
 
 
+# --- removal: "firewall debe eliminar su config si desaparece" ------------- #
+#
+# firewalld backend: a zone file the manifest owns must be REMOVEd once the
+# block goes `enable: false` or absent — previously `plan()` short-circuited
+# at `if not self.enable: return []` before ever consulting `managed`.
+
+def test_disabled_with_an_owned_zone_plans_its_removal():
+    a = _fw(current="<zone></zone>", enable=False)
+    changes = a.plan(managed=["public"])
+    assert [(c.op, c.item) for c in changes] == [(Op.REMOVE, "public")]
+    assert changes[0].destructive is True
+
+
+def test_disabled_with_no_zone_file_plans_nothing():
+    a = _fw(current=None, enable=False)
+    assert a.plan(managed=["public"]) == []
+
+
+def test_disabled_does_not_touch_an_unowned_zone():
+    a = _fw(current="<zone></zone>", enable=False)
+    assert a.plan(managed=[]) == []
+
+
+# The block absent from the WHOLE config: the reconciler hands
+# `empty_config()` ({}), so `backend` defaults to "firewalld" even when the
+# machine's owned items are really ufw rule strings from a PAST generation
+# that declared `backend: ufw`. The shape of the managed items (a bare zone
+# name vs. an "<action> <target>" ufw rule) has to settle it, never a guess
+# that could delete the wrong kind of thing.
+
+def test_block_absent_with_zone_shaped_managed_items_removes_the_zone():
+    a = FirewallAction(FirewallAction.empty_config(), context=SimpleNamespace(target=object()))
+    a._current_xml = lambda zone="public": "<zone></zone>"
+    assert [(c.op, c.item) for c in a.plan(managed=["public"])] == [(Op.REMOVE, "public")]
+
+
+def test_block_absent_with_ufw_shaped_managed_items_removes_the_rule():
+    from unittest.mock import patch
+
+    a = FirewallAction(FirewallAction.empty_config(), context=SimpleNamespace(target=object()))
+    live_status = ("Status: active\n\nTo Action From\n-- ------ ----\n"
+                  "22/tcp ALLOW IN Anywhere\n")
+    with patch("dasik.lib.actions.firewall_action.Command.execute",
+               return_value=SimpleNamespace(stdout=live_status, returncode=0)):
+        changes = a.plan(managed=["allow 22/tcp"])
+    assert [(c.op, c.item) for c in changes] == [(Op.REMOVE, "allow 22/tcp")]
+
+
+def test_block_absent_never_guesses_when_managed_is_empty():
+    """Nothing owned -> nothing to clean up either way; no probe needed."""
+    a = FirewallAction(FirewallAction.empty_config(), context=SimpleNamespace(target=object()))
+    assert a.plan(managed=[]) == []
+
+
+def test_firewall_is_registered_before_packages():
+    """A ufw REMOVE needs the `ufw` binary, which PackagesAction may uninstall
+    in the SAME apply once the `firewall` toggle stops declaring it — so this
+    action must run first, exactly like SnapperAction (dasik#353 precedent)."""
+    from dasik.lib.actions.action_registry import get_default_registry
+    from dasik.lib.actions.actions_handler_v2 import setup_actions
+    setup_actions()
+    names = [m["class"].__name__ for m in get_default_registry().get_all_actions()]
+    assert names.index("FirewallAction") < names.index("PackagesAction")
+
+
 def test_apply_writes_zone_file(tmp_path):
     a = FirewallAction({"enable": True, "allowed_services": ["syncthing"]},
                        context=SimpleNamespace(target=None))

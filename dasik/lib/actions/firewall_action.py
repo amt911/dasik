@@ -210,9 +210,16 @@ class FirewallAction(AbstractAction):
         mentioned it and `sync` captured it back into the config as if it had
         been asked for. Removal is scoped to what dasik added (the manifest), so
         somebody else's rule is drift and stays.
+
+        ``desired`` is forced empty when the block is disabled — one of the
+        three ways "the firewall disappears" (the others: the whole block
+        gone, or a rule dropped from ``rules`` while ``enable`` stays true) —
+        even though ``self.rules``/``self.allowed`` are not themselves
+        enable-gated in ``__init__``. Only the REMOVE half still runs then, so
+        an owned rule still live on the machine goes, and nothing new installs.
         """
         live = set(self._live_ufw_rules())
-        desired = self._desired_ufw_rules()
+        desired = self._desired_ufw_rules() if self.enable else []
         changes = [Change(self._DOMAIN, Op.INSTALL, rule, reason="ufw rule")
                    for rule in desired if rule not in live]
         changes += [Change(self._DOMAIN, Op.REMOVE, rule, reason="no longer declared")
@@ -220,7 +227,45 @@ class FirewallAction(AbstractAction):
                     if rule in live]
         return changes
 
+    def _plan_firewalld_disabled(self, managed) -> List[Change]:
+        """The firewalld half of "disabled/absent -> REMOVE what is owned":
+        every managed zone that still has a file on disk goes."""
+        return [Change(self._DOMAIN, Op.REMOVE, zone, reason="firewall disabled")
+                for zone in sorted(set(managed or ()))
+                if self._current_xml(zone) is not None]
+
+    @staticmethod
+    def _looks_like_ufw_items(managed) -> bool:
+        """True when *managed* has the shape of ufw rule strings, not
+        firewalld zone names.
+
+        A ufw rule always has the "<action> <target>" shape ``_desired_ufw_rules``
+        / ``_parse_ufw_status`` produce (e.g. ``"allow ssh"``); a firewalld zone
+        name is a bare identifier with no spaces (``public``, ``home``, …). When
+        the `firewall` block is entirely absent, ``self.backend`` defaults to
+        "firewalld" and cannot be trusted to tell the two apart — so classify
+        from the manifest's own shape instead. Never guesses when there is
+        nothing to classify (empty ``managed``): with nothing owned there is
+        nothing to remove either way.
+        """
+        items = list(managed or ())
+        if not items:
+            return False
+        return all(" " in item and item.split()[0].lower() in _UFW_ACTIONS.values()
+                   for item in items)
+
     def _apply_ufw(self, changes) -> None:
+        # FirewallAction runs BEFORE PackagesAction (branch
+        # feat/snapper-firewall-removal, mirroring SnapperAction's own
+        # pre-Packages placement for the identical reason) precisely so this
+        # is safe on a REMOVE: when the whole
+        # `firewall` block goes undeclared, PackagesAction (which runs AFTER
+        # this action) is the one that uninstalls `ufw` — so the binary is
+        # still guaranteed to be here right now, whichever direction changes
+        # go. On a fresh INSTALL, `ufw` may not be installed yet either (this
+        # action now runs before Packages), so it installs its own
+        # prerequisite the same way SnapperAction does for `snapper`.
+        self._ensure_ufw_installed()
         for change in changes:
             # Split here, never in the shell: `ufw allow 22/tcp` is two
             # arguments, and this string comes from the config.
@@ -233,8 +278,23 @@ class FirewallAction(AbstractAction):
             # manifest claiming a rule the firewall still enforces.
             Command.execute("ufw", argv, target=self._target(), check=True)
         # Non-interactive: plain `ufw enable` asks for confirmation and would
-        # hang an unattended apply.
-        Command.execute("ufw", ["--force", "enable"], target=self._target(), check=True)
+        # hang an unattended apply. Only when something is actually being
+        # INSTALLed — a pure teardown (the block just went undeclared) has no
+        # business re-enabling the firewall it is decommissioning.
+        if any(c.op is Op.INSTALL for c in changes):
+            Command.execute("ufw", ["--force", "enable"], target=self._target(), check=True)
+
+    def _ensure_ufw_installed(self) -> None:
+        """Install ufw if it is not there yet — mirrors
+        ``SnapperAction._ensure_snapper_installed``. ``--needed`` makes it a
+        no-op once installed, so this costs nothing on the common path where
+        PackagesAction already put `ufw` there before this action runs."""
+        target = self._target()
+        probe = Command.execute("pacman", ["-Qq", "ufw"], target=target)
+        if getattr(probe, "returncode", 0) == 0:
+            return
+        Command.execute("pacman", ["--noconfirm", "--needed", "-S", "ufw"],
+                        target=target, check=True, stream=True)
 
     def _ufw_installed(self) -> bool:
         target = self._target()
@@ -303,17 +363,24 @@ class FirewallAction(AbstractAction):
                 if self._current_xml(z) is not None}
 
     def plan(self, managed):
+        managed = list(managed or ())
+        # `enable: False` is one of the three disappearance forms (see
+        # module docstring); the whole `firewall` block being absent is
+        # another, and the reconciler hands `empty_config()` ({}) for that
+        # one — `self.backend` then defaults to "firewalld" and cannot be
+        # trusted, so an absent-block ufw teardown is told apart from a
+        # firewalld one by the SHAPE of what the manifest owns.
+        if self._is_ufw() or (not self.enable and self._looks_like_ufw_items(managed)):
+            return self._plan_ufw(managed)
         if not self.enable:
-            return []
-        if self._is_ufw():
-            return self._plan_ufw(managed or ())
+            return self._plan_firewalld_disabled(managed)
         declared = self._declared_zones()
         changes = [Change(self._DOMAIN, Op.MODIFY, zone, reason="zone rules")
                    for zone in declared
                    if self._current_xml(zone) != self._desired_xml(zone)]
         # A zone dasik wrote and the config no longer names keeps enforcing
         # rules nothing declares; its file goes with the declaration.
-        for zone in sorted(set(managed or ()) - set(declared)):
+        for zone in sorted(set(managed) - set(declared)):
             if self._current_xml(zone) is not None:
                 changes.append(Change(self._DOMAIN, Op.REMOVE, zone,
                                       reason="no longer declared"))
@@ -322,7 +389,7 @@ class FirewallAction(AbstractAction):
     def apply(self, changes) -> None:
         if not changes:
             return
-        if self._is_ufw():
+        if self._is_ufw() or self._looks_like_ufw_items([c.item for c in changes]):
             self._apply_ufw(changes)
             return
         for change in changes:

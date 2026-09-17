@@ -89,3 +89,53 @@ def test_the_rules_are_never_handed_to_a_shell():
 
     for call in run.call_args_list:
         assert isinstance(call.args[1], list)
+
+
+def test_a_pure_removal_never_re_enables_ufw():
+    """Tearing down the whole block has no business flipping the firewall
+    back on -- `--force enable` only belongs to an apply with an INSTALL."""
+    action = _action(rules=[], live=["allow 22000/tcp"])
+    changes = action.plan(managed=["allow 22000/tcp"])
+
+    with patch("dasik.lib.actions.firewall_action.Command.execute") as run:
+        action.apply(changes)
+
+    calls = [c.args[1] for c in run.call_args_list if c.args[0] == "ufw"]
+    assert ["--force", "enable"] not in calls
+
+
+def test_apply_installs_ufw_before_removing_a_rule():
+    """FirewallAction now runs BEFORE PackagesAction (mirrors
+    SnapperAction._ensure_snapper_installed): a REMOVE must still work even
+    when `ufw` is not (yet, or any more) installed."""
+    action = _action(rules=[], live=["allow 22000/tcp"])
+    changes = action.plan(managed=["allow 22000/tcp"])
+    calls = []
+
+    def fake(cmd, args, **kw):
+        calls.append((cmd, tuple(args)))
+        rc = 1 if (cmd, tuple(args)) == ("pacman", ("-Qq", "ufw")) else 0
+        return SimpleNamespace(returncode=rc, stdout=b"")
+
+    with patch("dasik.lib.actions.firewall_action.Command.execute", side_effect=fake):
+        action.apply(changes)
+
+    cmds = [c for c, _ in calls]
+    assert cmds.index("pacman") < cmds.index("ufw")
+    install = next(args for cmd, args in calls if cmd == "pacman" and "-S" in args)
+    assert "ufw" in install
+
+
+def test_apply_skips_the_ufw_install_when_already_present():
+    action = _action(rules=[], live=["allow 22000/tcp"])
+    changes = action.plan(managed=["allow 22000/tcp"])
+    calls = []
+
+    def fake(cmd, args, **kw):
+        calls.append((cmd, tuple(args)))
+        return SimpleNamespace(returncode=0, stdout=b"")
+
+    with patch("dasik.lib.actions.firewall_action.Command.execute", side_effect=fake):
+        action.apply(changes)
+
+    assert not any(cmd == "pacman" and "-S" in args for cmd, args in calls)

@@ -15,6 +15,7 @@ from ..exceptions.exceptions import CommandExecutionError
 from ..state.change import Change, Op
 
 _CONFIGS_DIR = "/etc/snapper/configs"
+_CONF_D_SNAPPER = "/etc/conf.d/snapper"
 
 
 class SnapperAction(AbstractAction):
@@ -65,13 +66,32 @@ class SnapperAction(AbstractAction):
         return {c["name"] for c in self.configs if self._exists(c["name"])}
 
     def plan(self, managed):
-        if not self.enable:
-            return []
+        """CREATE for a declared config missing on disk, plus REMOVE for a
+        managed config that has disappeared from the declaration.
+
+        "Disappeared" covers all three forms the config disappears in: the
+        name dropped out of ``configs`` while ``enable`` stayed true,
+        ``enable`` flipped to false, or the whole ``snapper`` block is gone
+        (the reconciler then hands :meth:`empty_config`). ``declared`` is
+        empty in the latter two cases even if a stray ``configs`` list is
+        still sitting in a disabled block — a disabled/absent block converges
+        to nothing, full stop, the same rule ``managed_keys`` follows.
+
+        A REMOVE is destructive by construction (``Change.__post_init__``):
+        ``apply`` runs ``snapper delete-config``, which deletes every
+        snapshot the config owns, not just the config file.
+        """
+        declared = {c["name"] for c in self.configs} if self.enable else set()
         changes: List[Change] = []
-        for c in self.configs:
-            if not self._exists(c["name"]):
-                changes.append(Change(self._DOMAIN, Op.CREATE, c["name"],
-                                      reason="create-config"))
+        if self.enable:
+            for c in self.configs:
+                if not self._exists(c["name"]):
+                    changes.append(Change(self._DOMAIN, Op.CREATE, c["name"],
+                                          reason="create-config"))
+        for name in sorted(set(managed or ()) - declared):
+            if self._exists(name):
+                changes.append(Change(self._DOMAIN, Op.REMOVE, name,
+                                      reason="no longer declared"))
         return changes
 
     @staticmethod
@@ -91,6 +111,14 @@ class SnapperAction(AbstractAction):
             self._ensure_snapper_installed(target)
         by_name = {c["name"]: c["subvolume"] for c in self.configs}
         for change in changes:
+            if change.op is Op.REMOVE:
+                # The config is no longer declared, so it is not in
+                # `self.configs` any more — read its subvolume back from the
+                # (still present, about to be deleted) config file on disk,
+                # the same way `import_state` does.
+                removed_subvol = self._read_subvolume(self._config_path(change.item)) or "/"
+                self._delete_config(change.item, removed_subvol, target)
+                continue
             subvol = by_name.get(change.item)
             if subvol is None:
                 continue
@@ -145,7 +173,109 @@ class SnapperAction(AbstractAction):
             Command.execute("mkdir", ["-p", snap_dir], target=target)
             Command.execute("mount", [snap_dir], target=target)
 
+    def _numbered_snapshot_dirs(self, snap_dir: str, target) -> List[str]:
+        """The numbered snapshot directories directly under *snap_dir*
+        (each one a real record: ``<N>/info.xml`` + the ``<N>/snapshot``
+        btrfs subvolume). Read directly off disk — like ``import_state``
+        already does for the configs directory — rather than parsed out of
+        ``snapper -c <name> list``, so it works even with the config's own
+        metadata already gone (mid-removal) or the D-Bus daemon unavailable.
+        """
+        real = target.path(snap_dir) if target is not None else snap_dir
+        try:
+            return sorted((n for n in os.listdir(real) if n.isdigit()), key=int)
+        except OSError:
+            return []
+
+    def _delete_config(self, name: str, subvol: str, target) -> None:
+        """Delete a config's snapshots and its own registration.
+
+        MEASURED in a guest (docs/FACTS.md FACT-SFRM-*): plain
+        ``snapper --no-dbus -c <name> delete-config`` only works cleanly when
+        ``.snapshots`` is snapper's OWN nested subvolume (no separate mount) —
+        it deletes every snapshot plus the ``.snapshots`` subvolume itself,
+        clears the name from ``/etc/conf.d/snapper``'s ``SNAPPER_CONFIGS``,
+        rc=0. On dasik's OWN recommended layout — a SEPARATELY mounted
+        ``@.snapshots`` (the same one ``_create_config``'s wiki-dance defends
+        on the way in, config/vm-btrfs-snapper.json style with an explicit
+        ``@.snapshots`` subvolume) — the identical command instead deletes the
+        individual snapshots fine, then FAILS
+        (``btrfs_util_delete_subvolume_fd() errno:22``) trying to
+        delete/unmount the CONTAINER subvolume, because it is a live mount
+        boundary snapper cannot cross that way: rc=1, and it leaves
+        ``.snapshots`` unmounted with its ``/etc/fstab`` entry GONE while the
+        config file is still there — a half-broken machine reported as a
+        failure, worse off than before the call.
+
+        So this method never hands snapper that path at all: it does the
+        removal itself, the SAME way for both layouts — delete every numbered
+        snapshot subvolume under ``.snapshots`` directly (measured safe even
+        on the separate mount: that half of a real delete-config already
+        succeeds there), then drop the config's own bookkeeping (the file
+        under ``/etc/snapper/configs``, its name out of ``SNAPPER_CONFIGS``)
+        by hand — exactly what a successful delete-config itself leaves
+        behind. Only when ``.snapshots`` is NOT a separate mount does it also
+        delete the ``.snapshots`` container subvolume, matching what the
+        plain command does in that case; dasik's own provisioned
+        ``@.snapshots`` mount is never touched, so it stays mounted and
+        usable — the destructive half is scoped to exactly what dasik owns
+        (the snapshots and the config), never the disk layout underneath it.
+
+        Snapshot-deletion failures abort immediately, config metadata LAST:
+        an interrupted removal leaves the config still fully present (just
+        missing some snapshots) rather than a config gone with orphaned
+        snapshot subvolumes nothing can find by name any more — the next
+        `plan` still sees (and can retry) the REMOVE either way.
+        """
+        snap_dir = self._snapshots_dir(subvol)
+        preexist = self._is_snapshots_mount(snap_dir, target)
+        for n in self._numbered_snapshot_dirs(snap_dir, target):
+            snap_path = f"{snap_dir}/{n}/snapshot"
+            res = Command.execute("btrfs", ["subvolume", "delete", snap_path],
+                                  target=target)
+            if getattr(res, "returncode", 0) != 0:
+                raise CommandExecutionError(
+                    f"btrfs subvolume delete failed for '{snap_path}' "
+                    f"(rc={getattr(res, 'returncode', '?')})"
+                )
+            Command.execute("rm", ["-rf", f"{snap_dir}/{n}"], target=target)
+        if not preexist:
+            res = Command.execute("btrfs", ["subvolume", "delete", snap_dir],
+                                  target=target)
+            if getattr(res, "returncode", 0) != 0:
+                raise CommandExecutionError(
+                    f"btrfs subvolume delete failed for '{snap_dir}' "
+                    f"(rc={getattr(res, 'returncode', '?')})"
+                )
+        canonical = f"{_CONFIGS_DIR}/{name}"
+        Command.execute("rm", ["-f", canonical], target=target)
+        self._drop_from_snapper_configs_list(name, target)
+
+    def _drop_from_snapper_configs_list(self, name: str, target) -> None:
+        """Remove *name* from ``/etc/conf.d/snapper``'s ``SNAPPER_CONFIGS``
+        — plain text munging (no subvolume boundary involved), so a direct
+        read/write is safe and mirrors what a successful delete-config itself
+        does (measured: FACT-SFRM-*)."""
+        path = target.path(_CONF_D_SNAPPER) if target is not None else _CONF_D_SNAPPER
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+        except OSError:
+            return
+        out = []
+        for line in lines:
+            if line.strip().startswith("SNAPPER_CONFIGS="):
+                remaining = [n for n in line.split("=", 1)[1].strip().strip('"').split()
+                            if n != name]
+                out.append(f'SNAPPER_CONFIGS="{" ".join(remaining)}"\n')
+            else:
+                out.append(line)
+        with open(path, "w", encoding="utf-8") as f:
+            f.writelines(out)
+
     def managed_keys(self) -> dict:
+        if not self.enable:
+            return {self._DOMAIN: []}
         return {self._DOMAIN: [c["name"] for c in self.configs]}
 
     def import_state(self, managed=None) -> dict:

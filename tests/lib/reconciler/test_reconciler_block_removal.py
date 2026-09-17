@@ -18,9 +18,8 @@ that, both silent:
 * the new manifest (built only from VISITED actions in
   ``Reconciler._build_new_manifest``) drops the domain's ownership — which
   happens to look correct for the domains whose own ``managed_keys()`` is
-  already declaration-gated (disks/timezone/snapper/firewall all return ``[]``
-  for an empty config), but is a coincidence of never running, not a
-  contract.
+  already declaration-gated (disks/timezone return ``[]`` for an empty
+  config), but is a coincidence of never running, not a contract.
 
 Fixed probe: a REAL instance (``cls(cls.empty_config(), None)``), so
 ``managed_keys()`` sees the same derived attributes ``plan()``/``apply()``
@@ -31,12 +30,16 @@ Each test below drives ``Reconciler.build_plan()`` through the REAL registry
 (``setup_actions()``), for one action at a time, exactly the way
 ``test_feature_detectability.py``'s "block absent from the WHOLE config"
 section already does for ``PacmanRepositoriesAction``. What matters for a
-"silent" domain (disks/timezone/locales/pacman/snapper/firewall) is asserted
-twice: the plan proposes nothing for it, AND — the part the old probe broke —
-the action was actually VISITED (``results`` names it), which is what lets
+"silent" domain (disks/timezone/locales/pacman) is asserted twice: the plan
+proposes nothing for it, AND — the part the old probe broke — the action was
+actually VISITED (``results`` names it), which is what lets
 ``_build_new_manifest`` release ownership deliberately rather than by never
-running. ``systemd`` is the set-math domain where visiting the action changes
-the PLAN itself: a DISABLE of the unit the manifest still owns.
+running. ``systemd``, ``snapper`` and ``firewall`` are the domains where
+visiting the action changes the PLAN itself: systemd a DISABLE of the unit
+the manifest still owns; snapper/firewall a destructive REMOVE of the config
+the manifest still owns ("snapper y firewall deben eliminar su config si
+desaparece" — the removal semantics landed after this file's probe fix, so
+what was once asserted as "silent" for these two is now asserted as REMOVE).
 """
 import json
 from unittest.mock import MagicMock, patch
@@ -180,7 +183,11 @@ def test_disks_block_absent_plans_nothing_and_releases_ownership(tmp_path):
 
 # --- snapper ----------------------------------------------------------------- #
 
-def test_snapper_block_absent_plans_nothing_and_releases_ownership(tmp_path):
+def test_snapper_block_absent_plans_removal_and_releases_ownership(tmp_path):
+    """Product decision (superseding the comment this test used to carry):
+    "snapper... deben eliminar su config si desaparece" — a config the
+    manifest owns is REMOVEd (destructive: `snapper delete-config` also drops
+    its snapshots), not just silently disowned."""
     configs = tmp_path / "etc/snapper/configs"
     configs.mkdir(parents=True)
     (configs / "root").write_text('SUBVOLUME="/"\n')
@@ -188,7 +195,8 @@ def test_snapper_block_absent_plans_nothing_and_releases_ownership(tmp_path):
     manifest = {"managed": {"snapper": ["root"]}}
     reconciler, plan, results = _run({}, manifest, _meta_for(SnapperAction), tmp_path)
 
-    assert _domain_changes(plan, "snapper") == []
+    assert _domain_changes(plan, "snapper") == [("REMOVE", "root")]
+    assert plan.destructive() != []
     assert len(results) == 1, "SnapperAction must be VISITED, not skipped"
     assert isinstance(results[0].action, SnapperAction)
 
@@ -198,7 +206,10 @@ def test_snapper_block_absent_plans_nothing_and_releases_ownership(tmp_path):
 
 # --- firewall ---------------------------------------------------------------- #
 
-def test_firewall_block_absent_plans_nothing_and_releases_ownership(tmp_path):
+def test_firewall_block_absent_plans_removal_and_releases_ownership(tmp_path):
+    """Product decision (superseding the comment this test used to carry):
+    "firewall... debe eliminar su config si desaparece" — a zone the manifest
+    owns is REMOVEd, not just silently disowned."""
     zones = tmp_path / "etc/firewalld/zones"
     zones.mkdir(parents=True)
     (zones / "public.xml").write_text(
@@ -208,19 +219,13 @@ def test_firewall_block_absent_plans_nothing_and_releases_ownership(tmp_path):
     manifest = {"managed": {"firewall": ["public"]}}
     reconciler, plan, results = _run({}, manifest, _meta_for(FirewallAction), tmp_path)
 
-    assert _domain_changes(plan, "firewall") == []
+    assert _domain_changes(plan, "firewall") == [("REMOVE", "public")]
+    assert plan.destructive() != []
     assert len(results) == 1, "FirewallAction must be VISITED, not skipped"
     assert isinstance(results[0].action, FirewallAction)
 
     new_manifest = reconciler._build_new_manifest(results)
-    # Not a new REMOVE (that is a separate, deliberately unmade product
-    # decision — see the module docstring): `enable=False` short-circuits
-    # FirewallAction.plan() before it even looks at `managed`, so the zone
-    # file is left in place. What must still happen is that the MANIFEST
-    # stops claiming dasik owns it, which FirewallAction.managed_keys()
-    # already does correctly once the action is actually visited.
     assert not new_manifest.managed.get("firewall")
-    assert (zones / "public.xml").exists()
 
 
 # --- systemd (destructive: DISABLE of an owned-but-undeclared unit) -------- #

@@ -360,3 +360,65 @@ def test_ctrl_c_at_the_prompt_aborts_the_same_way():
     assert r.apply(plan, results, assume_yes=False, input_fn=interrupted) is None
     store.save.assert_not_called()
     assert a.last_applied == []
+
+
+# --- SF2-1: the manifest describes a successful apply even if a hook fails - #
+#
+# finalize_apply() is best-effort by contract. A hook raising after every
+# apply() succeeded used to skip _persist entirely: the machine converged
+# while the manifest (and `generations`) said nothing had changed.
+
+def _finalizing_action(exc):
+    class _Raising(AbstractAction):
+        @property
+        def name(self) -> str: return "raising"
+        def is_needed(self) -> bool: return False
+        def execute(self) -> None: pass
+        def plan(self, managed): return []
+        def apply(self, changes): pass
+        def managed_keys(self): return {"packages": ["git"]}
+        def finalize_apply(self): raise exc
+    return _Raising(config=[], context=None)
+
+
+def test_a_finalize_apply_that_raises_still_persists_the_full_manifest(monkeypatch):
+    logger = MagicMock()
+    monkeypatch.setattr("dasik.lib.reconciler.reconciler.run_logger.get", lambda: logger)
+    store = MagicMock()
+    gen = MagicMock()
+    r = _make_reconciler(store=store, gen_store=gen)
+    plan = Plan()
+    plan.add(Change("packages", Op.INSTALL, "git"))
+    after = MagicMock()
+    second = _finalizing_action(RuntimeError("reload blew up"))
+    third = _finalizing_action(RuntimeError("unused"))
+    third.finalize_apply = after
+    results = [ActionPlanResult(action=second, changes=[]),
+               ActionPlanResult(action=third, changes=[])]
+
+    manifest = r.apply(plan, results, assume_yes=True)
+
+    assert manifest is not None
+    assert manifest.partial is False
+    store.save.assert_called_once_with(manifest)
+    gen.new.assert_called_once()
+    after.assert_called_once_with()          # one hook failing never skips the next
+    assert logger.warning.called
+    assert "reload blew up" in str(logger.warning.call_args)
+
+
+def test_an_interrupt_inside_finalize_apply_persists_the_manifest_first():
+    store = MagicMock()
+    gen = MagicMock()
+    r = _make_reconciler(store=store, gen_store=gen)
+    plan = Plan()
+    plan.add(Change("packages", Op.INSTALL, "git"))
+    results = [ActionPlanResult(action=_finalizing_action(KeyboardInterrupt()), changes=[])]
+
+    with pytest.raises(KeyboardInterrupt):
+        r.apply(plan, results, assume_yes=True)
+
+    store.save.assert_called_once()
+    saved = store.save.call_args.args[0]
+    assert saved.partial is False
+    assert saved.managed == {"packages": ["git"]}

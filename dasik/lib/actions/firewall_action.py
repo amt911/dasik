@@ -554,10 +554,15 @@ class FirewallAction(AbstractAction):
             self._reload_pending = True
             return
         if getattr(result, "returncode", 1) != 0:
+            # SF2-2: NO retry here. firewalld refuses a reload over bad
+            # on-disk config BEFORE flushing, so the daemon keeps its
+            # last-good runtime; a restart would flush it (CleanupOnExit) and
+            # come back in the stock failsafe config. Only the exception
+            # branch above — the binary itself transiently missing — is worth
+            # retrying once the apply has settled.
             self._warn_reload_failed(
                 f"`firewall-cmd --reload` exited {result.returncode}"
             )
-            self._reload_pending = True
 
     def _warn_reload_failed(self, cause: str) -> None:
         run_logger.get().warning(
@@ -605,6 +610,8 @@ class FirewallAction(AbstractAction):
             self._warn_reload_failed(
                 f"`systemctl try-restart firewalld` exited {result.returncode}"
             )
+            return
+        self._reload_pending = False
 
     def managed_keys(self) -> dict:
         if self._is_ufw():

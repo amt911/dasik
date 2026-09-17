@@ -125,6 +125,13 @@ class ActionExecutor:
             print(f"Executing {action_name}...")
             action.execute()
             
+            # Post-apply hook (the reconciler calls it after the whole apply;
+            # this per-action executor has no "whole apply", so right after
+            # the action's own execute is the closest equivalent).
+            finalize = getattr(action, "finalize_apply", None)
+            if callable(finalize):
+                finalize()
+
             # Verify results
             if not action.verify():
                 raise RuntimeError("Verification failed after execution")

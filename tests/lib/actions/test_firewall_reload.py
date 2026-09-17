@@ -178,6 +178,9 @@ def test_a_reload_failure_rc_warns_with_remediation(tmp_path, monkeypatch):
     message = str(logger.warning.call_args)
     assert "firewalld" in message
     assert "systemctl restart firewalld" in message
+    # SF2-2: a REFUSED reload keeps firewalld's last-good runtime; restarting
+    # would flush it and start the stock failsafe config instead.
+    assert action._reload_pending is False
 
 
 # --- SF-3: finalize_apply() retries once the whole apply has settled ------ #
@@ -269,3 +272,15 @@ def test_finalize_apply_warns_when_the_retry_itself_fails(tmp_path, monkeypatch)
     message = str(logger.warning.call_args)
     assert "firewalld" in message
     assert "systemctl restart firewalld" in message
+
+
+def test_a_successful_retry_clears_the_pending_reload(tmp_path, monkeypatch):
+    """N2-3: the flag means "a reload is still owed"; once the retry worked,
+    a second finalize_apply() must not restart the daemon again."""
+    action = _fw("/", allowed_services=["syncthing"])
+    action._reload_pending = True
+    calls = _wired(action, tmp_path, monkeypatch)
+    action.finalize_apply()
+    action.finalize_apply()
+    assert calls.count(("systemctl", ["try-restart", "firewalld"])) == 1
+    assert action._reload_pending is False

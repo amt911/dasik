@@ -152,7 +152,11 @@ or dropping the whole thing all remove exactly what dasik owns:
 - **firewalld** — the zone file(s) it wrote (`/etc/firewalld/zones/<zone>.xml`).
   On a **live** target (`--target /`) the running daemon is also reloaded
   (`systemctl is-active firewalld` → `firewall-cmd --reload`), so the change
-  takes effect immediately rather than on the next restart; an install target
+  normally takes effect immediately. If the reload cannot run mid-apply (the
+  `firewalld` package is being reinstalled in the same run) it is retried with
+  `systemctl try-restart firewalld` once the whole apply has finished; if
+  firewalld refuses the reload, it keeps its previous runtime and dasik warns
+  you to run `systemctl restart firewalld`; an install target
   is skipped (no daemon runs under `/mnt`, and the first boot reads the fresh
   zone anyway).
 - **ufw** — `ufw --force delete <rule>` for each rule it added. Tearing down

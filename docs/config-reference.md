@@ -1509,7 +1509,11 @@ dasik's to clean up. The change is destructive (`Op.REMOVE`), so `apply` asks
 for confirmation and refuses without `--yes` on a non-interactive run. On a
 **live** target (`--target /`), a firewalld zone write or removal also reloads
 the running daemon (`systemctl is-active firewalld` → `firewall-cmd --reload`)
-so the change takes effect immediately, not just on disk; an install target is
+so the change normally takes effect immediately, not just on disk. A reload
+that cannot run mid-apply (the package is being reinstalled in the same run) is
+retried with `systemctl try-restart firewalld` once the whole apply finished; a
+reload firewalld refuses keeps its previous runtime and dasik warns you to run
+`systemctl restart firewalld`; an install target is
 skipped (there is no running firewalld under `/mnt`, and the first boot reads
 the fresh zone anyway).
 

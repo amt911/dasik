@@ -57,10 +57,7 @@ class SnapperAction(AbstractAction):
         canonical = f"{_CONFIGS_DIR}/{name}"
         if t is None:
             return "/mnt" + canonical
-        try:
-            return t.path(canonical)
-        except AttributeError:      # a target double with no path() (tests)
-            return "/mnt" + canonical
+        return t.path(canonical)
 
     def _exists(self, name: str) -> bool:
         return os.path.exists(self._config_path(name))

@@ -165,6 +165,7 @@ Every change runs against the **mounted install target at `/mnt`**, typically vi
 - `apply(changes) -> None` — carry out exactly what `plan()` returned.
 - `is_needed() -> bool` / `execute() -> None` — the pre-v3 pair, **inherited, never overridden**: the base class answers them as `bool(self.plan(managed=[]))` and `self.apply(self.plan(managed=[]))`. Writing your own is a second implementation, and `tests/lib/actions/test_executor_shims_delegate.py` fails if you do (issue #238).
 - `verify() -> bool` — optional post-check (default `True`).
+- `finalize_apply() -> None` — optional, best-effort step the reconciler runs once the WHOLE apply succeeded and its manifest is saved (default no-op). For an effect that depends on something a later-registered action provides — `FirewallAction` retries a daemon reload there once `PackagesAction` has reinstalled `firewalld`. A raise is logged as a warning, never a failed apply.
 
 `do_action()` and the `_before_check`/`after_check`/`KEY_NAME` members are **vestigial** shims (the legacy handler that used them is gone — PR #151); a couple of actions still carry them but nothing calls them. New code uses `plan()/apply()/import_state()`. `is_needed()/execute()` survive only as the base class's two-line delegation, so `ActionExecutor` and the older tests keep working without a second implementation behind them.
 

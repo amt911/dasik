@@ -18,6 +18,11 @@ from dasik.lib.state.change import Change, Op
 from dasik.lib.target.target import Target
 
 
+
+# A target whose root does not exist: plan() reads nothing from the host
+# (a bare object() used to fall back to the real /mnt).
+_NO_ROOT = Target(root="/nonexistent-dasik-test-root")
+
 def _ctx(root):
     return ActionContext(target=Target(root=str(root)))
 
@@ -39,13 +44,13 @@ def _fake_exec(mountpoint_rc=1, create_rc=0):
 
 def _snap(existing=(), **cfg):
     cfg.setdefault("enable", True)
-    a = SnapperAction(cfg, context=SimpleNamespace(target=object()))
+    a = SnapperAction(cfg, context=SimpleNamespace(target=_NO_ROOT))
     a._exists = lambda name: name in existing
     return a
 
 
 def test_disabled_plans_nothing():
-    assert SnapperAction({"enable": False}, context=SimpleNamespace(target=object())).plan([]) == []
+    assert SnapperAction({"enable": False}, context=SimpleNamespace(target=_NO_ROOT)).plan([]) == []
 
 
 def test_default_config_is_root_on_slash():
@@ -222,7 +227,7 @@ def test_apply_skips_the_install_when_snapper_is_present(tmp_path):
 # never owned -> left alone (drift, not dasik's).
 
 def test_disabled_with_an_owned_config_plans_its_removal():
-    a = SnapperAction({"enable": False}, context=SimpleNamespace(target=object()))
+    a = SnapperAction({"enable": False}, context=SimpleNamespace(target=_NO_ROOT))
     a._exists = lambda name: name == "root"
     changes = a.plan(managed=["root"])
     assert [(c.op, c.item) for c in changes] == [(Op.REMOVE, "root")]
@@ -232,7 +237,7 @@ def test_disabled_with_an_owned_config_plans_its_removal():
 def test_block_absent_with_an_owned_config_plans_its_removal():
     """The reconciler hands `empty_config()` ({}) when a previous generation
     owns the domain and the block itself is gone from the config."""
-    a = SnapperAction(SnapperAction.empty_config(), context=SimpleNamespace(target=object()))
+    a = SnapperAction(SnapperAction.empty_config(), context=SimpleNamespace(target=_NO_ROOT))
     a._exists = lambda name: name == "root"
     assert [(c.op, c.item) for c in a.plan(managed=["root"])] == [(Op.REMOVE, "root")]
 
@@ -245,20 +250,20 @@ def test_a_config_dropped_from_the_list_while_still_enabled_is_removed():
 
 
 def test_a_config_already_gone_is_not_planned_again():
-    a = SnapperAction({"enable": False}, context=SimpleNamespace(target=object()))
+    a = SnapperAction({"enable": False}, context=SimpleNamespace(target=_NO_ROOT))
     a._exists = lambda name: False
     assert a.plan(managed=["root"]) == []
 
 
 def test_an_unowned_config_is_left_alone():
     """A config dasik never created is somebody else's, not dasik's to remove."""
-    a = SnapperAction({"enable": False}, context=SimpleNamespace(target=object()))
+    a = SnapperAction({"enable": False}, context=SimpleNamespace(target=_NO_ROOT))
     a._exists = lambda name: name == "root"
     assert a.plan(managed=[]) == []
 
 
 def test_removal_order_is_deterministic():
-    a = SnapperAction({"enable": False}, context=SimpleNamespace(target=object()))
+    a = SnapperAction({"enable": False}, context=SimpleNamespace(target=_NO_ROOT))
     a._exists = lambda name: True
     assert [c.item for c in a.plan(managed=["b", "a"])] == ["a", "b"]
 
@@ -268,7 +273,7 @@ def test_managed_keys_is_empty_when_disabled():
     bug this domain had: `managed_keys()` returned the (ignored) `configs`
     list even with `enable: false`."""
     a = SnapperAction({"enable": False, "configs": [{"name": "root", "subvolume": "/"}]},
-                      context=SimpleNamespace(target=object()))
+                      context=SimpleNamespace(target=_NO_ROOT))
     assert a.managed_keys() == {"snapper": []}
 
 

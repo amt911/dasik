@@ -1,7 +1,22 @@
 """Shared pytest fixtures for the dasik test suite."""
+import os
+
 import pytest
 
 from dasik.lib.target.target import Target
+
+
+@pytest.fixture(autouse=True)
+def _no_git_environment(monkeypatch):
+    """Drop every inherited GIT_* variable before each test.
+
+    git exports GIT_DIR and friends to hooks (from a worktree GIT_DIR is
+    <repo>/.git/worktrees/<name>), and the tests that drive `git` in temporary
+    repositories would otherwise act on the real one — see
+    tests/test_git_environment_isolation.py for what that did on 2026-09-17.
+    """
+    for name in [k for k in os.environ if k.startswith("GIT_")]:
+        monkeypatch.delenv(name, raising=False)
 
 
 @pytest.fixture(autouse=True)

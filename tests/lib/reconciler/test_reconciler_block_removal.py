@@ -293,11 +293,23 @@ def test_firewalld_sync_while_disabled_keeps_ownership_for_the_next_removal(tmp_
     config = {"firewall": {"enable": False}}
     metas = _meta_for(FirewallAction)
 
-    _, _, new_manifest = _sync(config, manifest, metas, tmp_path)
-    assert new_manifest is not None
-    assert new_manifest.managed.get("firewall") == ["public"]
+    # N-9: `import_state` -> `_fw_query` -> `Command.execute("firewall-offline-cmd",
+    # ..., target=Target(tmp_path))` -> `_locate_chroot()`. On THIS host
+    # `arch-chroot` is absent so `subprocess.run` is never reached, but on any
+    # host with `arch-install-scripts` (the ISO, a dev box) it would exec
+    # `arch-chroot <tmp_path> firewall-offline-cmd ...` as root, bind-mounting
+    # `/proc`/`/sys`/`/dev` into a pytest tmp dir -- mocked here like the ufw
+    # siblings already are, so this test can never touch the host regardless
+    # of what is installed.
+    def fake(cmd, args=None, **kw):
+        return MagicMock(stdout=b"", returncode=1)      # firewall-offline-cmd: unavailable
 
-    _, plan, _results = _run(config, new_manifest.to_dict(), metas, tmp_path)
+    with patch("dasik.lib.actions.firewall_action.Command.execute", side_effect=fake):
+        _, _, new_manifest = _sync(config, manifest, metas, tmp_path)
+        assert new_manifest is not None
+        assert new_manifest.managed.get("firewall") == ["public"]
+
+        _, plan, _results = _run(config, new_manifest.to_dict(), metas, tmp_path)
     assert _domain_changes(plan, "firewall") == [("REMOVE", "public")]
 
 
@@ -311,11 +323,17 @@ def test_firewalld_sync_with_the_block_absent_keeps_ownership_for_the_next_remov
     manifest = {"managed": {"firewall": ["public"]}}
     metas = _meta_for(FirewallAction)
 
-    _, _, new_manifest = _sync({}, manifest, metas, tmp_path)
-    assert new_manifest is not None
-    assert new_manifest.managed.get("firewall") == ["public"]
+    # N-9: see the sibling test above -- mocked so this can never exec a real
+    # `arch-chroot` regardless of what is installed on the host running pytest.
+    def fake(cmd, args=None, **kw):
+        return MagicMock(stdout=b"", returncode=1)
 
-    _, plan, _results = _run({}, new_manifest.to_dict(), metas, tmp_path)
+    with patch("dasik.lib.actions.firewall_action.Command.execute", side_effect=fake):
+        _, _, new_manifest = _sync({}, manifest, metas, tmp_path)
+        assert new_manifest is not None
+        assert new_manifest.managed.get("firewall") == ["public"]
+
+        _, plan, _results = _run({}, new_manifest.to_dict(), metas, tmp_path)
     assert _domain_changes(plan, "firewall") == [("REMOVE", "public")]
 
 
@@ -350,6 +368,34 @@ def test_ufw_sync_with_the_block_absent_keeps_ownership_for_the_next_removal(tmp
     nonexistent) firewalld zones directory and lose ufw ownership."""
     manifest = {"managed": {"firewall": ["allow 22/tcp"]},
                "action_state": {"firewall": {"backend": "ufw"}}}
+    metas = _meta_for(FirewallAction)
+    live_status = ("Status: active\n\nTo Action From\n-- ------ ----\n"
+                  "22/tcp ALLOW IN Anywhere\n")
+
+    def fake(cmd, args=None, **kw):
+        if cmd == "ufw" and args and args[0] == "status":
+            return MagicMock(stdout=live_status, returncode=0)
+        return MagicMock(stdout=b"", returncode=1)      # firewall-offline-cmd: unavailable
+
+    with patch("dasik.lib.actions.firewall_action.Command.execute", side_effect=fake):
+        _, _, new_manifest = _sync({}, manifest, metas, tmp_path)
+        assert new_manifest is not None
+        assert new_manifest.managed.get("firewall") == ["allow 22/tcp"]
+
+        _, plan, _results = _run({}, new_manifest.to_dict(), metas, tmp_path)
+    assert _domain_changes(plan, "firewall") == [("REMOVE", "allow 22/tcp")]
+
+
+def test_ufw_sync_with_the_block_absent_and_no_recorded_backend_keeps_ownership(tmp_path):
+    """SF-4: the S2 fix's own residual (PROBE-3c) -- a manifest that predates
+    S3 (or one from a converged apply, which never persists a decision)
+    records NO backend at all. `_resolved_backend(())`'s shape heuristic
+    cannot classify an empty tuple and always falls back to "firewalld",
+    which used to mean `actual()` probed an empty/nonexistent
+    `/etc/firewalld/zones` and dispossessed the manifest of a live ufw rule
+    it still owns -- exactly the S2 bug, reopened for the one case S2's own
+    fix could not cover: no recorded backend at all."""
+    manifest = {"managed": {"firewall": ["allow 22/tcp"]}}     # no action_state
     metas = _meta_for(FirewallAction)
     live_status = ("Status: active\n\nTo Action From\n-- ------ ----\n"
                   "22/tcp ALLOW IN Anywhere\n")

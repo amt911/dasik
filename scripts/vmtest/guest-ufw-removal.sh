@@ -125,6 +125,43 @@ $D rollback --target / --yes $L > /tmp/rollback-final.txt 2>&1; rc UFWRM-FINAL-R
 $D plan "$C" --target / $L > /tmp/plan-final.txt 2>&1; rc UFWRM-FINAL-PLAN
 silent /tmp/plan-final.txt; rc UFWRM-FINAL-SILENT
 
+# ===================== SF-4 (fix round 2): no recorded backend at all ====== #
+#
+# `_resolved_backend(())`'s shape heuristic cannot classify an EMPTY tuple
+# (`actual()` never sees `managed`), so a manifest that predates the
+# recorded-backend field entirely (dasik <= 0.18.0), or one from a converged
+# apply that never persisted a decision, used to make `actual()` probe ONLY
+# firewalld and dispossess a live ufw rule on `sync`. Reproduced by stripping
+# `action_state` from the live manifest BY HAND (`/var/lib/dasik/state.json`,
+# what `plan`/`sync` actually read via StateStore -- not a
+# `generations/<N>/state.json` snapshot, which neither reads) before syncing.
+
+echo "UFWRM-I: SF-4 -- strip the recorded backend from the live manifest"
+cp /var/lib/dasik/state.json /tmp/ufwrm-state-backup.json
+python - <<'PY'
+import json
+path = "/var/lib/dasik/state.json"
+state = json.load(open(path))
+state.pop("action_state", None)
+json.dump(state, open(path, "w"), indent=2)
+PY
+rc UFWRM-SF4-STRIP-ACTION-STATE
+python -c "import json,sys; sys.exit(0 if json.load(open('/var/lib/dasik/state.json')).get('action_state', {}) == {} else 1)"; rc UFWRM-SF4-ACTION-STATE-GONE
+
+echo "UFWRM-J: sync (scratch, block ABSENT) must still keep ufw ownership"
+cp /tmp/no-firewall.json /tmp/ufwrm-sf4-scratch.json
+$D sync /tmp/ufwrm-sf4-scratch.json --target / $L > /tmp/ufwrm-sf4-sync.txt 2>&1; rc UFWRM-SF4-SYNC
+cat /tmp/ufwrm-sf4-sync.txt
+$D plan /tmp/no-firewall.json --target / $L > /tmp/ufwrm-sf4-plan.txt 2>&1; rc UFWRM-SF4-PLAN
+cat /tmp/ufwrm-sf4-plan.txt
+present /tmp/ufwrm-sf4-plan.txt 'remove allow 22000/tcp'; rc UFWRM-SF4-REMOVE-PLANNED
+
+echo "UFWRM-K: restore the manifest -- no real apply/rollback needed, nothing on the machine itself changed (only the manifest was hand-edited and re-synced)"
+cp /tmp/ufwrm-state-backup.json /var/lib/dasik/state.json
+ufw status | grep -q '22000'; rc UFWRM-SF4-22000-STILL-THERE
+$D plan "$C" --target / $L > /tmp/ufwrm-sf4-plan-final.txt 2>&1; rc UFWRM-SF4-PLAN-FINAL
+silent /tmp/ufwrm-sf4-plan-final.txt; rc UFWRM-SF4-FINAL-SILENT
+
 echo "UFWRM-DONE rc=$FAILS"
 sync
 [ -n "$DASIK_VM_NOPOWEROFF" ] || poweroff -f

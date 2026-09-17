@@ -1268,3 +1268,108 @@ def test_the_captured_pacman_block_validates_and_re_plans_to_nothing(tmp_path):
     action = PacmanRepositoriesAction(captured, ActionContext(target=Target(root=str(tmp_path))))
     with _patched(secret_out=LIST_SECRET_KEYS, sigs_out=LIST_SIGS_LSIGNED):
         assert action.plan(managed=[]) == []
+
+
+# --- btrfs root: rootflags sync drift (noatime + compression-level norm) --- #
+#
+# A declared config (not a bootstrap seed — `dasik sync` refreshing an EXISTING
+# install, the realistic case per the bug report) whose root `@` subvolume
+# declares `mount_options: ["compress-force=zstd", "noatime"]` (the exact
+# shape `config/vm-btrfs.json` and the wizard recipes use). findmnt reports the
+# kernel's resolved truth: the compression LEVEL filled in and — before the
+# fix — only `compress*` survived capture, silently dropping `noatime`.
+
+_BTRFS_SEED = {
+    "bootloader": "sd-boot",
+    "disks": {"disks": [{
+        "device": "/dev/vda", "partition_table": "gpt", "wipe_disk": True,
+        "partitions": [
+            {"label": "esp", "size": "512MiB", "filesystem": "fat32",
+             "partition_type": "esp", "mountpoint": "/boot"},
+            {"label": "root", "size": "rest", "filesystem": "btrfs",
+             "partition_type": "linux", "mountpoint": "/",
+             "btrfs_subvolumes": [
+                 {"name": "@", "mountpoint": "/",
+                  "mount_options": ["compress-force=zstd", "noatime"]},
+             ]},
+        ]}]},
+}
+
+# The order deliberately does NOT match the declared config — findmnt's own
+# order plus the kernel-resolved level is exactly what makes the naive string
+# comparison fail (root causes A + B together).
+_BTRFS_ROWS = [
+    ("/", "/dev/vda2[/@]",
+     "rw,noatime,compress-force=zstd:3,ssd,discard=async,space_cache=v2,"
+     "subvolid=256,subvol=/@"),
+]
+
+
+def _synced_btrfs_root(tmp_path):
+    from dasik.lib.actions.disk_partition_action import DiskPartitionAction
+
+    machine = _machine(tmp_path, entry=(
+        "root=LABEL=root rw rootflags=compress-force=zstd,noatime,subvol=@ quiet"),
+        reflector=False, governor=False, sudoers=False, plymouth=False,
+        libvirt_autostart=False)
+    with patch.object(DiskPartitionAction, "_findmnt_btrfs_rows", return_value=_BTRFS_ROWS):
+        return _synced(machine, seed=_BTRFS_SEED)
+
+
+def test_sync_captures_noatime_on_a_declared_btrfs_root(tmp_path):
+    """N6 (review of fix/rootflags-sync-drift): assert on partition ∪
+    subvolume options, not the subvolume alone — if the correction path ever
+    starts hoisting an option shared by every subvolume (as discovery already
+    does), this must not go red for the WRONG reason."""
+    captured = _synced_btrfs_root(tmp_path)
+    root_part = captured["disks"]["disks"][0]["partitions"][1]
+    root_sv = next(s for s in root_part["btrfs_subvolumes"] if s["name"] == "@")
+
+    everywhere = set(root_part.get("mount_options", [])) | set(root_sv["mount_options"])
+    assert "noatime" in everywhere
+
+
+def test_the_captured_btrfs_root_config_validates(tmp_path):
+    JsonModel.model_validate(_synced_btrfs_root(tmp_path))
+
+
+# The managed set a REAL install of `_BTRFS_SEED` (the bare, undeclared-level
+# config) actually writes to the manifest for `kernel_cmdline`: at install
+# time the entry does not exist yet, so there is nothing to substitute and
+# `managed_keys()` records the literal bare token — this is what
+# `test_the_captured_btrfs_root_replans_to_nothing` must diff against, not an
+# install manifest with no `rootflags=` at all (S6 review finding: no real
+# install manifest ever omits the token it owns).
+_INSTALL_MANAGED = ["root=LABEL=root", "rw",
+                    "rootflags=compress-force=zstd,noatime,subvol=@", "quiet"]
+
+
+def test_the_captured_btrfs_root_replans_to_nothing(tmp_path):
+    """The invariant: `sync` -> `check` -> `plan` is silent. The boot entry
+    still carries the bare `zstd` dasik wrote at install; the captured config
+    now (correctly) carries the kernel-reported `zstd:3` — same mount, so the
+    plan-time comparison must treat the two as equivalent."""
+    captured = _synced_btrfs_root(tmp_path)
+
+    action = KernelCmdlineAction(expand_config(captured),
+                                 ActionContext(target=Target(root=str(tmp_path))))
+
+    assert action.plan(managed=_INSTALL_MANAGED) == []
+
+
+def test_the_manifest_after_a_silent_plan_still_agrees_with_the_entry(tmp_path):
+    """S3 (review of fix/rootflags-sync-drift): `managed_keys()` must record
+    the token that is REALLY on the entry (the bare `zstd`), not the literal
+    captured `zstd:3` the config derives — otherwise a manifest rebuilt after
+    this silent plan would own a `rootflags=` the entry does not carry, and
+    the next `sync` could find neither the literal nor the live bare token
+    among "owned ∪ declared", silently losing ownership of `rootflags=`."""
+    captured = _synced_btrfs_root(tmp_path)
+    action = KernelCmdlineAction(expand_config(captured),
+                                 ActionContext(target=Target(root=str(tmp_path))))
+    assert action.plan(managed=_INSTALL_MANAGED) == []   # sanity: still silent
+
+    managed = action.managed_keys()["kernel_cmdline"]
+
+    assert "rootflags=compress-force=zstd,noatime,subvol=@" in managed
+    assert "rootflags=compress-force=zstd:3,noatime,subvol=@" not in managed

@@ -72,7 +72,11 @@ def test_derive_finds_subvol_mounted_encrypted_root():
     from dasik.lib.actions.luks_uuid import luks_uuid
     derived = _subvol_root_action()._derive_from_disks()
     assert f"rd.luks.name={luks_uuid('cryptroot')}=cryptroot" in derived
-    assert "root=/dev/mapper/cryptroot rw" in derived
+    # Two separate params, not one "root=... rw" string (B2, review of
+    # fix/rootflags-sync-drift) — see kernel_cmdline_action.py's comment on
+    # the encrypted branch of `_derive_from_disks`.
+    assert "root=/dev/mapper/cryptroot" in derived
+    assert "rw" in derived
 
 
 def test_derive_subvol_root_rootflags_include_partition_options():

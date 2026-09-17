@@ -499,6 +499,21 @@ for making a captured layout portable.
 | `mountpoint` | string | — | e.g. `/`, `/home`. |
 | `mount_options` | list[str] | `["compress-force=zstd"]` | |
 
+`sync` captures the btrfs options you can declare and the kernel does not add by
+itself — `compress*`, `noatime`, `nodiratime`, `lazytime`, `autodefrag`,
+`nodatacow`, `nodatasum`, `commit=<n>` — and never the kernel's own bookkeeping
+(`relatime`, `ssd`, `discard=async`, `space_cache`, `subvolid=`). `strictatime`
+cannot be captured: the kernel never reports it.
+
+The root subvolume's options become `rootflags=` on the boot entry, compared by
+meaning rather than spelling: the kernel reports `zstd` as `zstd:3`, and the
+measured clamps `zstd:0`→`zstd:3`, `zstd:16`→`zstd:15`, `zlib:0`→`zlib:3`,
+`zlib:12`→`zlib:9` and a bare `compress`/`compress-force`→`zlib:3` all count as
+the same value. Any other out-of-range level (`zstd:17`, `zlib:10`, a negative
+zstd level, `lzo:<n>`) and `compress=no` are unsupported spellings: write the
+value the kernel reports, or the first `sync` after an install proposes one
+boot-entry rewrite.
+
 ### Unlocking from a keyfile (a pendrive)  *(sync ✓)*
 
 ```json

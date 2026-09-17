@@ -258,9 +258,23 @@ class Reconciler:
             # behaviour — lost every trace of where it stopped and of what dasik
             # now owns. Persist what actually completed, flagged `partial`, then
             # let the failure propagate: this is a record of progress, never a
-            # claim of convergence.
+            # claim of convergence. finalize_apply() (SF-3) is deliberately
+            # NOT called here — it is the successful apply's own end-of-run
+            # step, not a recovery hook.
             self._persist(self._build_new_manifest(completed, partial=True))
             raise
+
+        # SF-3: an optional per-action post-apply step, run once every action
+        # has applied successfully — for a domain whose own effect depends on
+        # infrastructure a LATER-registered action provides (FirewallAction
+        # runs before Packages/Systemd, so its own daemon reload can retry
+        # here once they have run). Duck-typed (not every action double in
+        # the suite subclasses AbstractAction), and deliberately not a general
+        # hook registry: one optional method, called unconditionally, in order.
+        for result in completed:
+            finalize = getattr(result.action, "finalize_apply", None)
+            if callable(finalize):
+                finalize()
 
         new_manifest = self._build_new_manifest(results)
         self._persist(new_manifest)

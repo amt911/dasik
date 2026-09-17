@@ -69,7 +69,27 @@ class AbstractAction(ABC):
             True if verification passed, False otherwise
         """
         return True
-    
+
+    def finalize_apply(self) -> None:
+        """Optional post-apply step (SF-3), run once by the v3
+        ``Reconciler.apply()`` after EVERY action in this apply has
+        completed successfully — for a domain whose own effect (e.g. a
+        running daemon actually reloading) depends on infrastructure a
+        LATER-registered action provides (a package `apply()` reinstalls,
+        a unit `apply()` enables). ``FirewallAction`` is the first user:
+        it runs before ``PackagesAction``/``SystemdAction`` (so a ufw
+        REMOVE can still shell out to `ufw` while the binary is there),
+        which means an immediate reload attempted from inside its own
+        `apply()` can hit a transiently-missing `firewalld` package —
+        this hook is where it retries once the whole apply has settled.
+
+        Most actions never need this; the default does nothing. This is
+        deliberately NOT a general "plugin" mechanism (no registration,
+        no ordering, no config) — just one optional method the reconciler
+        calls if an action defines it, the same shape as :meth:`verify`.
+        """
+        return None
+
     def do_action(self) -> None:
         """Legacy method for backward compatibility.
         

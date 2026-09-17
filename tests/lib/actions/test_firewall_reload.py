@@ -178,3 +178,94 @@ def test_a_reload_failure_rc_warns_with_remediation(tmp_path, monkeypatch):
     message = str(logger.warning.call_args)
     assert "firewalld" in message
     assert "systemctl restart firewalld" in message
+
+
+# --- SF-3: finalize_apply() retries once the whole apply has settled ------ #
+#
+# MEASURED live (fix round 2 VM re-drive): a `drop firewall block -> rollback`
+# leaves the RUNNING daemon serving the stale (default) zone even though the
+# file is restored and the plan goes silent -- FirewallAction runs BEFORE
+# PackagesAction/SystemdAction, so its immediate reload attempt hits a
+# transiently-missing `firewalld` binary (FileNotFoundError) precisely when
+# the SAME apply also needs to reinstall the package. finalize_apply() is
+# called by the reconciler once every action in the apply has completed
+# successfully, so `firewalld` and its unit are guaranteed present by then.
+
+def test_finalize_apply_retries_via_try_restart_after_a_missing_binary(tmp_path, monkeypatch):
+    action = _fw("/", allowed_services=["syncthing"])
+    action._zone_file = lambda zone="public": str(tmp_path / f"{zone}.xml")
+    logger = _mock_logger(monkeypatch)
+
+    def fake_during_apply(cmd, args=None, **kw):
+        if cmd == "systemctl":
+            return MagicMock(returncode=0, stdout=b"")     # stale "active" state
+        if cmd == "firewall-cmd":
+            raise FileNotFoundError(2, "No such file or directory", "firewall-cmd")
+        return MagicMock(returncode=0, stdout=b"")
+
+    monkeypatch.setattr("dasik.lib.actions.firewall_action.Command.execute",
+                        fake_during_apply)
+    action.apply(action.plan([]))
+    assert action._reload_pending is True
+
+    calls = []
+
+    def fake_finalize(cmd, args=None, **kw):
+        calls.append((cmd, list(args or [])))
+        return MagicMock(returncode=0, stdout=b"")
+
+    monkeypatch.setattr("dasik.lib.actions.firewall_action.Command.execute",
+                        fake_finalize)
+    action.finalize_apply()
+    assert ("systemctl", ["try-restart", "firewalld"]) in calls
+
+
+def test_finalize_apply_does_nothing_when_the_immediate_reload_succeeded(tmp_path, monkeypatch):
+    action = _fw("/", allowed_services=["syncthing"])
+    calls = _wired(action, tmp_path, monkeypatch)
+    action.apply(action.plan([]))
+    assert action._reload_pending is False
+    calls.clear()
+    action.finalize_apply()
+    assert calls == []
+
+
+def test_finalize_apply_does_nothing_when_nothing_was_ever_applied():
+    """A fresh instance (plan() never ran, or apply() had no changes) has
+    nothing pending -- finalize_apply() must be a safe no-op."""
+    action = _fw("/", allowed_services=["syncthing"])
+    action.finalize_apply()   # must not raise
+
+
+def test_finalize_apply_respects_the_install_target_gate(tmp_path):
+    """Defensive: even if `_reload_pending` were somehow set on an install
+    target, finalize_apply() must never touch it -- no daemon runs under
+    `/mnt` to retry against."""
+    action = _fw("/mnt", allowed_services=["syncthing"])
+    action._reload_pending = True
+    calls = []
+
+    def fake(cmd, args=None, **kw):
+        calls.append((cmd, list(args or [])))
+        return MagicMock(returncode=0, stdout=b"")
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr("dasik.lib.actions.firewall_action.Command.execute", fake)
+        action.finalize_apply()
+    assert calls == []
+
+
+def test_finalize_apply_warns_when_the_retry_itself_fails(tmp_path, monkeypatch):
+    action = _fw("/", allowed_services=["syncthing"])
+    action._reload_pending = True
+    logger = _mock_logger(monkeypatch)
+
+    def fake(cmd, args=None, **kw):
+        return MagicMock(returncode=1, stdout=b"", stderr=b"Unit firewalld.service not found.")
+
+    monkeypatch.setattr("dasik.lib.actions.firewall_action.Command.execute", fake)
+    action.finalize_apply()   # must not raise
+    assert logger.warning.called
+    message = str(logger.warning.call_args)
+    assert "firewalld" in message
+    assert "systemctl restart firewalld" in message

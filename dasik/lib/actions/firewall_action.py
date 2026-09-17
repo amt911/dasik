@@ -136,6 +136,12 @@ class FirewallAction(AbstractAction):
         # state_metadata() so a later disabled/absent plan can read back
         # what was actually applied rather than guessing.
         self._teardown_backend: Optional[str] = None
+        # SF-3: set by `_reload_firewalld` when the immediate reload attempted
+        # from inside `apply()` failed (typically because the SAME apply also
+        # needs to (re)install `firewalld` -- this action runs before
+        # PackagesAction/SystemdAction). `finalize_apply()` retries once the
+        # whole apply has settled, when the package/unit are guaranteed there.
+        self._reload_pending: bool = False
 
     @property
     def name(self) -> str:
@@ -541,11 +547,17 @@ class FirewallAction(AbstractAction):
             result = Command.execute("firewall-cmd", ["--reload"], target=target)
         except Exception as exc:      # nosec B110 - best-effort reload, see docstring
             self._warn_reload_failed(f"running `firewall-cmd --reload` raised {exc!r}")
+            # SF-3: MEASURED live -- this is exactly the transient-package
+            # window (a `drop block -> rollback` reinstalling `firewalld` in
+            # the SAME apply): retry once everything has settled, via
+            # `finalize_apply()`.
+            self._reload_pending = True
             return
         if getattr(result, "returncode", 1) != 0:
             self._warn_reload_failed(
                 f"`firewall-cmd --reload` exited {result.returncode}"
             )
+            self._reload_pending = True
 
     def _warn_reload_failed(self, cause: str) -> None:
         run_logger.get().warning(
@@ -554,6 +566,45 @@ class FirewallAction(AbstractAction):
             detail="the daemon keeps enforcing the previous zone until it is "
                    "restarted by hand: run `systemctl restart firewalld`.",
         )
+
+    def finalize_apply(self) -> None:
+        """SF-3: retry a reload that failed during `apply()` itself, once
+        every action in this apply has run — called by the reconciler after
+        the whole apply succeeds (never on a failed/partial one). MEASURED
+        live: a `drop firewall block -> rollback` writes the zone and
+        attempts a reload from `apply()` BEFORE `PackagesAction` reinstalls
+        `firewalld` (this action runs first, same registry order that keeps
+        a ufw REMOVE working while `ufw` is still installed) and
+        `SystemdAction` only `enable`s the unit (never `--now`) — so the
+        immediate reload hits a transiently-missing binary, and nothing
+        after ever tells the resident daemon to reload; it keeps enforcing
+        the previous (often default) zone indefinitely.
+
+        `systemctl try-restart` rather than `is-active` + `--reload`: by now
+        the package and unit are guaranteed present (Packages/Systemd have
+        already run), and `try-restart` only restarts a unit that is
+        ALREADY active — a no-op on a fresh install where nothing runs the
+        daemon yet, and a real restart (picking up both the new binary and
+        the already-written zone file) for exactly this stale-daemon case.
+        Still best-effort, with the SAME SF-2 warning on failure.
+        """
+        if not self._reload_pending:
+            return
+        target = self._target()
+        if target is None or getattr(target, "is_chroot", True):
+            return
+        try:
+            result = Command.execute("systemctl", ["try-restart", "firewalld"],
+                                     target=target)
+        except Exception as exc:      # nosec B110 - best-effort retry, see docstring
+            self._warn_reload_failed(
+                f"retrying via `systemctl try-restart firewalld` raised {exc!r}"
+            )
+            return
+        if getattr(result, "returncode", 1) != 0:
+            self._warn_reload_failed(
+                f"`systemctl try-restart firewalld` exited {result.returncode}"
+            )
 
     def managed_keys(self) -> dict:
         if self._is_ufw():

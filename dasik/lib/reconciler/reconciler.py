@@ -152,20 +152,37 @@ class Reconciler:
         return list(managed_all.get(domain, []))
 
     @staticmethod
-    def _any_managed_for(action_cls: type, managed_all: dict[str, Any]) -> bool:
-        """Probe (via a no-config instance) whether the class owns any manifest keys.
+    def _any_managed_for(
+        action_cls: type[AbstractAction], managed_all: dict[str, Any]
+    ) -> bool:
+        """Probe whether the class owns any manifest keys, with no real config.
 
-        Broad ``except`` is intentional: the probe object has no real config or
-        context, so ``managed_keys()`` may raise. We treat any error as
-        "can't determine ownership → skip safely."
+        Prefers a REAL instance built the normal way
+        (``action_cls(action_cls.empty_config(), None)``), so ``managed_keys()``
+        sees the same attributes ``__init__`` derives from the config that
+        ``plan()``/``apply()`` would — a bare ``cls.__new__`` (no ``__init__``
+        run) left most actions' ``managed_keys()`` reading an attribute that was
+        never set (``AttributeError``), which the broad ``except`` below turned
+        into "owns nothing" and made ``build_plan`` skip the action outright.
+
+        Falls back to that old no-``__init__`` probe if construction itself
+        raises (a constructor that wants more than an empty config / no
+        context), and to "can't determine ownership → skip safely" if that
+        ALSO raises. Both ``except`` clauses are intentional broad catches —
+        this is a probe with no real config or context, run purely to decide
+        whether the action is worth constructing for real.
         """
         try:
-            probe = action_cls.__new__(action_cls)  # type: ignore[call-overload]
-            probe.config = None
-            probe.context = None
+            probe = action_cls(action_cls.empty_config(), None)
             keys = probe.managed_keys()
         except Exception:
-            return False
+            try:
+                probe = action_cls.__new__(action_cls)  # type: ignore[call-overload]
+                probe.config = None  # type: ignore[assignment]
+                probe.context = None
+                keys = probe.managed_keys()
+            except Exception:
+                return False
         if not isinstance(keys, dict):
             return False
         return any(managed_all.get(k) for k in keys)

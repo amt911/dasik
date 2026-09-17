@@ -141,6 +141,21 @@ class PacmanAction(CompositeV3Action):
         """
         return super().plan(managed) if self._declared else []
 
+    def managed_keys(self) -> dict:
+        """Nothing declared owns nothing, not dasik's defaults.
+
+        ``CompositeV3Action.managed_keys()`` (inherited from ``ScalarV3Action``)
+        serializes ``_desired_state()`` unconditionally, and every field there
+        defaults rather than raising, so an undeclared config still serializes
+        to a truthy JSON blob (``Parallel: true, Color: true, ...``) — reported
+        as owned, that fake item survived every sync/apply for a domain nobody
+        declared. Gate on the same ``_declared`` flag ``plan()`` already uses:
+        undeclared releases the domain instead of inventing it.
+        """
+        if not self._declared:
+            return {self._DOMAIN: []}
+        return super().managed_keys()
+
     def _import_fragment(self, value) -> dict:
         # Report the machine: no /etc/pacman.conf is an unbuilt target, not a
         # machine whose options happen to be dasik's defaults.

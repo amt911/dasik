@@ -928,6 +928,7 @@ _AI_SKILL_PROVIDERS = {
     "claude-plugin": ("claude-code", "claude"),
     "codex-plugin": ("codex", "openai-codex"),
     "skills": ("nodejs", "npm"),
+    "antigravity-plugin": ("antigravity-cli",),
 }
 
 
@@ -963,6 +964,9 @@ def _check_ai_skills(config: Dict[str, Any], packages: Set[str]) -> List[Issue]:
         providers = _AI_SKILL_PROVIDERS.get(method, ())
         if providers and not (packages & set(providers)):
             missing[method] = " or ".join(providers)
+        if method == "antigravity-plugin" and "git" not in packages:
+            # agy installs from a directory, which dasik makes with git clone.
+            missing[f"{method} (git)"] = "git"
         for agent in entry.get("agents") or []:
             if agent not in known_agents:
                 issues.append(Issue(

@@ -118,3 +118,9 @@ def test_a_tool_entry_provided_by_a_uv_tool_is_quiet():
                         "ai_skills": {"entries": [_TOOL]}},
                        efi_boot=True, environment=False)
     assert not any(i.code == "ai_skills_without_installer" for i in issues)
+
+
+def test_the_antigravity_agents_are_known():
+    entry = {**_SKILL, "agents": ["antigravity", "antigravity-cli"]}
+    assert "ai_skills_unknown_agent" not in _codes(
+        _cfg([entry], ["base", "nodejs", "npm"]))

@@ -1,11 +1,13 @@
 """Read what each AI agent says about its own skills and plugins.
 
-Three programs, three formats, none of them dasik's:
+Four programs, four formats, none of them dasik's:
 
 * Claude Code keeps ``~/.claude/plugins/installed_plugins.json`` (keys are
   ``plugin@marketplace``) and ``known_marketplaces.json``.
 * Codex keeps TOML sections ``[plugins."<plugin>@<marketplace>"]`` in
   ``~/.codex/config.toml``.
+* Antigravity's ``agy`` keeps ``~/.gemini/config/import_manifest.json`` and a
+  copy of each plugin under ``~/.gemini/config/plugins/``.
 * The cross-agent ``skills`` CLI (npm ``skills``) installs a canonical copy in
   ``~/.agents/skills/<name>`` and links it from each agent's own skills
   directory, recording provenance in ``~/.agents/.skill-lock.json``.
@@ -32,7 +34,7 @@ from .toml_reader import load_toml
 #   an agent whose `skillsDir` is `.agents/skills` is UNIVERSAL — it reads the
 #   canonical directory directly and gets NO directory of its own,
 #
-# which is true of codex, cursor and opencode. Only claude-code among the agents
+# which is true of codex, cursor, opencode, antigravity and antigravity-cli. Only claude-code among the agents
 # dasik knows has a directory of its own. Reading `~/.codex/skills` for codex is
 # how the first version of this domain never converged: `npx skills add -a codex`
 # reported success, wrote only `~/.agents/skills/<n>`, and the next plan asked
@@ -40,7 +42,11 @@ from .toml_reader import load_toml
 CANONICAL_SKILL_DIR = ".agents/skills"
 LOCK_REL = ".agents/.skill-lock.json"
 
-UNIVERSAL_AGENTS = frozenset({"codex", "cursor", "opencode"})
+# antigravity / antigravity-cli: measured with skills 1.7.0 (FACT-AGY-4) — a
+# global install writes only the canonical copy, never the
+# ~/.gemini/antigravity{,-cli}/skills their registry entry names.
+UNIVERSAL_AGENTS = frozenset({"codex", "cursor", "opencode",
+                              "antigravity", "antigravity-cli"})
 
 # Agent id -> the skills directory that agent reads on its own. A universal
 # agent reads the canonical directory AS WELL, which is where `npx skills add`
@@ -63,6 +69,8 @@ AGENT_HOME_MARKERS: Dict[str, str] = {
     "codex": ".codex",
     "cursor": ".cursor",
     "opencode": ".config/opencode",
+    "antigravity": ".gemini/antigravity",
+    "antigravity-cli": ".gemini/antigravity-cli",
 }
 
 # Codex ships these preinstalled under ~/.codex/skills/.system. Nobody installed
@@ -262,3 +270,29 @@ def carries_skill(agent: str, name: str, canonical: Set[str],
     # warns about it separately.
     universal = agent in UNIVERSAL_AGENTS or agent not in AGENT_SKILL_DIRS
     return universal and name in canonical
+
+
+_AGY_CONFIG = ".gemini/config"
+
+
+def antigravity_plugins(home: str) -> Set[str]:
+    """Plugin names ``agy plugin install`` recorded, whose files are still there.
+
+    ``agy`` keeps ``{"imports": [{"name": ...}]}`` in
+    ``~/.gemini/config/import_manifest.json`` and copies the plugin to
+    ``~/.gemini/config/plugins/<name>/`` (FACT-AGY-5). The manifest is small
+    and gets backed up; the copy usually does not — the same ghost a restored
+    ``$HOME`` leaves in Claude Code's registry — so a name without its
+    directory is not installed.
+    """
+    manifest = _read_json(os.path.join(home, _AGY_CONFIG, "import_manifest.json"))
+    imports = manifest.get("imports") if isinstance(manifest, dict) else None
+    if not isinstance(imports, list):
+        return set()
+    names: Set[str] = set()
+    for record in imports:
+        name = record.get("name") if isinstance(record, dict) else None
+        if isinstance(name, str) and name and "/" not in name and name not in (".", "..") \
+                and os.path.isdir(os.path.join(home, _AGY_CONFIG, "plugins", name)):
+            names.add(name)
+    return names

@@ -244,18 +244,19 @@ so the two never fight over alternating applies.
 
 Each entry names the artefact **and the official installer for that pair**,
 because there is no single one: `claude-plugin` and `codex-plugin` drive each
-agent's plugin CLI, `skills` drives the cross-agent `npx skills`, and `tool` is
-for a skill a program ships itself (`graphify install --platform claude`).
+agent's plugin CLI, `antigravity-plugin` clones a repository and runs `agy plugin
+install` on it, `skills` drives the cross-agent `npx skills`, and `tool` is for a
+skill a program ships itself (`graphify install --platform claude`).
 
 | Key | Type | Default | Notes |
 | --- | --- | --- | --- |
 | `users` | list of strings | every declared user except root | these live in `$HOME` |
 | `failure_policy` | `warn-and-continue` \| `abort` | `warn-and-continue` | a skill that will not download must not abort an install |
-| `entries[].method` | one of the four | — | which installer to drive |
+| `entries[].method` | one of the five | — | which installer to drive |
 | `entries[].marketplace` | `{name, source?}` | — | plugin methods; `name` is the one the marketplace's manifest declares (`obra/superpowers` registers as `superpowers-dev`) |
-| `entries[].source` | string | — | `skills`: what `npx skills add` installs from |
+| `entries[].source` | string | — | `skills`: what `npx skills add` installs from; `antigravity-plugin`: `owner/repo` or `https://` URL dasik clones (needs `antigravity-cli` and `git`) |
 | `entries[].command` | string | — | `tool`: the program, run as `<command> install --platform <agent>` |
-| `entries[].agents` | list of strings | — | `skills`/`tool`: `claude-code`, `codex`, `opencode`, `cursor` |
+| `entries[].agents` | list of strings | — | `skills`/`tool`: `claude-code`, `codex`, `opencode`, `cursor`, `antigravity`, `antigravity-cli` |
 
 **No `version` field, deliberately.** The block declares presence, like
 `packages` declares names: the official CLI owns the version, so `claude plugin
@@ -275,18 +276,18 @@ origin nothing records, since no other machine could reproduce it.
 ```
 
 Registered with each agent's own CLI (`claude mcp add -s user`, `codex mcp
-add`), never by writing the files: `~/.claude.json` and `~/.codex/config.toml`
-are the programs' own state — account material, per-project history, hook
+add`, `agy mcp add`), never by writing the files: `~/.claude.json`,
+`~/.codex/config.toml` and `~/.gemini/config/mcp_config.json` are the programs' own state — account material, per-project history, hook
 hashes — and owning them as files would delete it.
 
 | Key | Type | Default | Notes |
 | --- | --- | --- | --- |
 | `users` | list of strings | every declared user except root | the registration lives in `$HOME` |
 | `failure_policy` | `warn-and-continue` \| `abort` | `warn-and-continue` | an agent that is not installed must not abort an install |
-| `entries[].agents` | list of strings | — | `claude-code`, `codex` |
+| `entries[].agents` | list of strings | — | `claude-code`, `codex`, `antigravity` |
 | `entries[].command` + `args` + `env` | string, list, object | — | stdio transport |
 | `entries[].url` | string | — | http transport; excludes `command` |
-| `entries[].headers` | object | `{}` | `url` + claude-code only |
+| `entries[].headers` | object | `{}` | `url` + claude-code / antigravity only |
 | `entries[].bearer_token_env_var` | string | — | `url` + codex only |
 
 An option only one CLI understands must name that agent alone — otherwise the

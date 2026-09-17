@@ -194,8 +194,29 @@ def test_the_agent_layout_matches_the_skills_cli(tmp_path):
     # '.agents/skills' are universal (codex, cursor, opencode), so `npx skills
     # add` serves them with the canonical copy alone. They keep a directory of
     # their own all the same — other installers write there.
-    assert UNIVERSAL_AGENTS == {"codex", "cursor", "opencode"}
+    assert UNIVERSAL_AGENTS == {"codex", "cursor", "opencode",
+                                "antigravity", "antigravity-cli"}
     assert "claude-code" not in UNIVERSAL_AGENTS
+
+
+def test_antigravity_agents_are_universal_with_no_directory_of_their_own(tmp_path):
+    """Measured with skills 1.7.0 (FACT-AGY-4): `npx skills add -g -a
+    antigravity antigravity-cli` writes ONLY ~/.agents/skills/<n>; the
+    `~/.gemini/antigravity{,-cli}/skills` the CLI's registry names is never
+    created for a global install. A directory entry here would make plan look
+    somewhere nothing is ever written — and ask for the skill forever."""
+    assert "antigravity" not in AGENT_SKILL_DIRS
+    assert "antigravity-cli" not in AGENT_SKILL_DIRS
+    canonical = {"frontend-design"}
+    assert carries_skill("antigravity", "frontend-design", canonical, {})
+    assert carries_skill("antigravity-cli", "frontend-design", canonical, {})
+
+
+def test_installed_agents_detects_antigravity_by_its_gemini_directories(tmp_path):
+    (tmp_path / ".gemini/antigravity").mkdir(parents=True)
+    assert installed_agents(str(tmp_path)) == {"antigravity"}
+    (tmp_path / ".gemini/antigravity-cli").mkdir(parents=True)
+    assert installed_agents(str(tmp_path)) == {"antigravity", "antigravity-cli"}
 
 
 def test_a_universal_agent_without_the_skill_anywhere_does_not_carry_it(tmp_path):

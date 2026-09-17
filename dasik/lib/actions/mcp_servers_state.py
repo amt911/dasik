@@ -1,6 +1,6 @@
 """Read which MCP servers each agent is registered against.
 
-Two programs, two formats, neither of them dasik's:
+Three programs, three formats, none of them dasik's:
 
 * Claude Code keeps the user-scope servers in ``~/.claude.json`` under the ROOT
   key ``mcpServers``. The same file also holds ``projects.<path>.mcpServers`` —
@@ -8,13 +8,15 @@ Two programs, two formats, neither of them dasik's:
   machine — and dasik ignores it: declaring a machine cannot mean registering
   somebody's repository config system-wide.
 * Codex keeps ``[mcp_servers.<name>]`` in ``~/.codex/config.toml``.
+* Antigravity keeps ``mcpServers`` in ``~/.gemini/config/mcp_config.json``, the
+  user-level file its IDE and its CLI (``agy``) share.
 
-dasik reads these and writes neither: ``claude mcp add`` / ``codex mcp add``
-stay the only writers, because both files are the programs' own mutable state
+dasik reads these and writes none: ``claude mcp add`` / ``codex mcp add`` /
+``agy mcp add`` stay the only writers, because these files are the programs' own mutable state
 (account material, per-project history, hook hashes) and owning them as files
 would delete it.
 
-Both readers normalize to the same dict::
+All readers normalize to the same dict::
 
     {"transport": "stdio" | "http",
      "command": str | None, "args": [str], "env": {str: str}, "url": str | None,
@@ -36,6 +38,7 @@ from .toml_reader import load_toml
 
 _CLAUDE_REL = ".claude.json"
 _CODEX_REL = ".codex/config.toml"
+_ANTIGRAVITY_REL = ".gemini/config/mcp_config.json"
 
 
 def _spec(command: Any, args: Any, env: Any, url: Any,
@@ -109,4 +112,34 @@ def codex_mcp(home: str) -> Dict[str, Dict[str, Any]]:
         found[str(name)] = _spec(entry.get("command"), entry.get("args"),
                                  entry.get("env"), entry.get("url"),
                                  bearer=entry.get("bearer_token_env_var"))
+    return found
+
+
+def antigravity_mcp(home: str) -> Dict[str, Dict[str, Any]]:
+    """``{name: spec}`` for Antigravity (``agy``) under *home*.
+
+    ``agy mcp add`` writes ``~/.gemini/config/mcp_config.json``: stdio servers
+    as ``command``/``args``/``env``, http ones as ``serverUrl``/``headers``,
+    each with a ``disabled`` flag (FACT-AGY-1). A disabled server is reported as
+    absent: the agent does not use it, so a declaration asking for it is not
+    converged — and ``agy mcp add`` re-enables it, since a re-add replaces the
+    whole registration.
+    """
+    text = _read_text(os.path.join(home, _ANTIGRAVITY_REL))
+    if not text:
+        return {}
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return {}
+    servers = data.get("mcpServers") if isinstance(data, dict) else None
+    if not isinstance(servers, dict):
+        return {}
+    found: Dict[str, Dict[str, Any]] = {}
+    for name, entry in servers.items():
+        if not isinstance(entry, dict) or entry.get("disabled") is True:
+            continue
+        found[str(name)] = _spec(entry.get("command"), entry.get("args"),
+                                 entry.get("env"), entry.get("serverUrl"),
+                                 headers=entry.get("headers"))
     return found

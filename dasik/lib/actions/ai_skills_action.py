@@ -16,6 +16,7 @@ Item grammar::
 
     <user>:<agent>:marketplace:<name>
     <user>:<agent>:plugin:<plugin>@<marketplace>
+    <user>:antigravity:plugin:<plugin>
     <user>:<agent>:skill:<name>
 """
 from __future__ import annotations
@@ -23,8 +24,9 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional, Tuple
 
 from .abstract_action import AbstractAction
-from .ai_skills_state import (AGENT_SKILL_DIRS, carries_skill, claude_state,
-                              codex_state, installed_agents, skills_state)
+from .ai_skills_state import (AGENT_SKILL_DIRS, antigravity_plugins,
+                              carries_skill, claude_state, codex_state,
+                              installed_agents, skills_state)
 from .config_access import field as _field
 from ..command_worker.command_worker import Command
 from ..exceptions.exceptions import CommandExecutionError
@@ -33,8 +35,20 @@ from ..state.change import Change, Op
 
 _DOMAIN = "ai_skills"
 
-# Which agent each plugin method installs for.
+# Which agent each marketplace plugin method installs for.
 _METHOD_AGENT = {"claude-plugin": "claude-code", "codex-plugin": "codex"}
+
+_AGY_METHOD = "antigravity-plugin"
+_AGY_AGENT = "antigravity"
+
+# `agy plugin install` takes a directory and nothing else (FACT-AGY-5), so the
+# repository is cloned into a throwaway directory first. `--` stops git reading
+# the URL as an option; the clone is removed whatever happened, and the exit
+# status is the installer's.
+_AGY_INSTALL = ('dir=$(mktemp -d) || exit 1; '
+                'git clone --depth 1 --quiet -- "$1" "$dir/plugin" '
+                '&& agy plugin install "$dir/plugin"; rc=$?; '
+                'rm -rf -- "$dir"; exit $rc')
 
 # A marketplace has to exist before a plugin can be installed from it, and a
 # plugin has to be gone before its marketplace can be removed — so creates run
@@ -161,7 +175,14 @@ class AiSkillsAction(AbstractAction):
                     continue
                 method = _field(entry, "method")
                 name = _field(entry, "name")
-                if method in _METHOD_AGENT:
+                if method == _AGY_METHOD:
+                    plugin = _field(entry, "plugin") or name
+                    desired[self._item(user, _AGY_AGENT, "plugin", plugin)] = {
+                        "kind": "plugin", "user": user, "agent": _AGY_AGENT,
+                        "method": method, "plugin": plugin, "name": name,
+                        "source": _field(entry, "source"),
+                    }
+                elif method in _METHOD_AGENT:
                     agent = _METHOD_AGENT[method]
                     market = _field(entry, "marketplace") or {}
                     market_name = _field(market, "name")
@@ -217,6 +238,9 @@ class AiSkillsAction(AbstractAction):
                     items.add(item)
                     markets[item] = source
 
+            for plugin in antigravity_plugins(home):
+                items.add(self._item(user, _AGY_AGENT, "plugin", plugin))
+
             canonical, per_agent, _sources = skills_state(home)
             # Only the agents this user's entries name: a universal agent reads
             # the canonical directory, so every one of them "has" every skill
@@ -238,6 +262,12 @@ class AiSkillsAction(AbstractAction):
                     spec["name"], (spec["command"], []))
                 agents.append(spec["agent"])
         return tools
+
+    def _declared_agy_plugins(self, user: str) -> Dict[str, Tuple[str, str]]:
+        """``{plugin: (entry name, source)}`` for *user*'s antigravity plugins."""
+        return {spec["plugin"]: (spec["name"], spec["source"])
+                for spec in self._desired().values()
+                if spec.get("method") == _AGY_METHOD and spec["user"] == user}
 
     def _agents_of(self, user: str) -> set:
         """Agents some entry names for *user* (skills methods only)."""
@@ -442,6 +472,10 @@ class AiSkillsAction(AbstractAction):
                 # would keep pointing at the other repository.
                 return [remove, add]
             return [add]
+        if kind == "plugin" and agent == _AGY_AGENT:
+            if change.op is Op.DELETE:
+                return [('agy plugin uninstall "$1"', (spec["plugin"],))]
+            return [(_AGY_INSTALL, (self._clone_url(spec["source"]),))]
         if kind == "plugin":
             plugin_id = f"{spec['plugin']}@{spec['marketplace']}"
             if agent == "claude-code":
@@ -476,6 +510,13 @@ class AiSkillsAction(AbstractAction):
         # `--agent a name` would be ambiguous.
         return [('npx -y skills add "$1" --skill "$2" -g -a "$3" -y',
                  (spec["source"], spec["name"], agent))]
+
+    @staticmethod
+    def _clone_url(source: str) -> str:
+        """GitHub shorthand made into something `git clone` understands."""
+        if source.startswith("https://"):
+            return source
+        return f"https://github.com/{source}"
 
     def _removal_for_skill(self, spec: Dict[str, Any]
                            ) -> List[Tuple[str, Tuple[str, ...]]]:
@@ -611,6 +652,17 @@ class AiSkillsAction(AbstractAction):
                                                    sources.get(market))
                     found.setdefault(plugin_key, set()).add(user)
 
+            declared_agy = self._declared_agy_plugins(user)
+            for plugin in sorted(antigravity_plugins(home)):
+                if plugin not in declared_agy:
+                    # agy records no source, and no other machine could
+                    # reproduce a plugin nobody says where it came from.
+                    skipped.append(f"{user}: antigravity plugin {plugin}")
+                    continue
+                agy_name, agy_source = declared_agy[plugin]
+                found.setdefault((_AGY_METHOD, agy_name, plugin, agy_source),
+                                 set()).add(user)
+
             canonical, per_agent, skill_sources = skills_state(home)
             present = installed_agents(home)
             declared = self._agents_of(user)
@@ -665,6 +717,10 @@ class AiSkillsAction(AbstractAction):
             elif key[0] == "skills":
                 entry = {"name": key[1], "method": "skills", "source": key[3],
                          "agents": list(key[2])}
+            elif key[0] == _AGY_METHOD:
+                entry = {"name": key[1], "method": _AGY_METHOD, "source": key[3]}
+                if key[2] != key[1]:
+                    entry["plugin"] = key[2]
             else:
                 marketplace: Dict[str, Any] = {"name": key[2]}
                 if key[3]:

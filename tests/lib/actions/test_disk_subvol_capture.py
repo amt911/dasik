@@ -181,6 +181,41 @@ def test_a_foreign_filesystem_at_the_declared_path_is_not_read_as_the_subvolume(
     assert "nodatacow" not in root_sv["mount_options"]
 
 
+def test_a_plain_partition_mounted_from_a_non_config_numbered_device_is_still_corrected():
+    """Re-review round 3, SHOULD-FIX #1: for an UNENCRYPTED partition the
+    source can only be guessed from config order (`<device><index+1>`), and
+    that guess is wrong on a disk dasik did not number itself — wipe_disk
+    false next to another system, a subset of partitions declared, a
+    /dev/disk/by-id device. A wrong guess used to skip the correction and
+    lose what the machine really mounts (`nodatacow` on /home). Only an
+    exact source (the LUKS mapper) may veto a mountpoint match."""
+    declared = {"disks": [{
+        "device": "/dev/nvme0n1", "partition_table": "gpt", "wipe_disk": False,
+        "partitions": [
+            {"label": "root", "size": "rest", "filesystem": "btrfs",
+             "partition_type": "linux", "mountpoint": None,
+             "mount_options": ["compress-force=zstd:3"],
+             "btrfs_subvolumes": [{"name": "@", "mountpoint": "/"},
+                                  {"name": "@home", "mountpoint": "/home"}]},
+        ]}]}
+    # config position 0 would guess /dev/nvme0n1p1; Windows owns p1-p4 here.
+    rows = [
+        ("/", "/dev/nvme0n1p5[/@]",
+         "rw,relatime,compress-force=zstd:3,space_cache=v2,subvolid=256,subvol=/@"),
+        ("/home", "/dev/nvme0n1p5[/@home]",
+         "rw,relatime,nodatacow,compress-force=zstd:3,space_cache=v2,"
+         "subvolid=257,subvol=/@home"),
+    ]
+    action = DiskPartitionAction(declared, ActionContext(target=Target(root="/")))
+    with patch.object(DiskPartitionAction, "_findmnt_btrfs_rows", return_value=rows), \
+         patch("dasik.lib.actions.disk_partition_action.Command.execute",
+               side_effect=FileNotFoundError("no lsblk here")):
+        captured = action.import_state(managed=[])
+    part = _root_partition(captured)
+    home = next(s for s in part["btrfs_subvolumes"] if s["name"] == "@home")
+    assert home["mount_options"] == ["nodatacow"]
+
+
 def test_a_clamped_spelling_stays_declared_and_recaptures_silently():
     """SF-2 (re-review round 2): a declared `zstd:16` and a live (clamped)
     `zstd:15` are the SAME setting -- the capture must keep the user's own

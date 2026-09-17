@@ -535,7 +535,7 @@ class DiskPartitionAction(AbstractAction):
                 p.pop("luks_password", None)
                 self._correct_subvol_options(
                     p, live_subvol_options,
-                    source=self._resolve_partition_source(d.get("device"), idx, p))
+                    source=self._resolve_partition_source(p))
                 if p.get("encrypt") and p.get("luks_name"):
                     uuid = self._read_luks_uuid(p["luks_name"])
                     if uuid:
@@ -660,24 +660,24 @@ class DiskPartitionAction(AbstractAction):
             )
         return live
 
-    def _resolve_partition_source(self, device: "Optional[str]", index: int,
-                                  partition: dict) -> "Optional[str]":
+    @staticmethod
+    def _resolve_partition_source(partition: dict) -> "Optional[str]":
         """Best-effort device path for a DECLARED partition, or ``None`` when
         it cannot be resolved (NIT-5, re-review round 2).
 
         Encrypted: the mapping name is declared directly (`luks_name`), so the
-        open mapping's path is exact. Plain: dasik creates partitions in
-        config order (`_process_disks`'s own numbering), so the partition's
-        position + 1 is the same partition number a fresh install would give
-        it — the same assumption `_get_partition_device`'s other caller
-        already makes; ``None`` (never a guess) when there is no `device` to
-        build it from, which keeps the lookup falling back to target-only.
+        open mapping's path is exact. Plain: ``None``. Config order is only the
+        partition number on a disk dasik numbered itself; next to another
+        system (`wipe_disk: false`), with a subset declared or with a
+        `/dev/disk/by-id` device the guess is wrong, and a wrong source vetoes
+        a correct mountpoint match — the capture then kept the model default
+        and lost options the machine really mounts (re-review round 3). A
+        mountpoint is unique on a running machine, so target-only is the
+        right fallback.
         """
         if partition.get("encrypt") and partition.get("luks_name"):
             return f"/dev/mapper/{partition['luks_name']}"
-        if not device:
-            return None
-        return self._get_partition_device(device, index + 1)
+        return None
 
     @staticmethod
     def _correct_subvol_options(partition: dict, live: "Dict[str, Tuple[str, List[str]]]",

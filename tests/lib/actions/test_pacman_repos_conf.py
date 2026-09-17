@@ -5,7 +5,7 @@ from hypothesis import given, strategies as st
 
 from dasik.lib.actions.pacman_repos_state import (RepoSection, parse_sections, third_party,
                                                    below_core, render, options_block,
-                                                   section_of, _is_blank, _field)
+                                                   section_of, _is_blank, _field, _body_end)
 
 STOCK = Path("tests/fixtures/pacman_repos/pacman.conf.stock").read_text()
 AMT = RepoSection("amt911", "Required", ("https://amt911.github.io/arch-packages/$arch",), None)
@@ -280,3 +280,40 @@ def test_hand_written_section_with_a_blank_line_between_directives_keeps_both():
     remainder_lines = lines[:block_index] + lines[block_index + 3:]
     assert "SigLevel = Required" not in remainder_lines
     assert f"Server = {AMT_SERVER}" not in remainder_lines
+
+
+# --- mutation-testing round 2: killers for _body_end's rewrite (round 1's
+# interior-comment fix) — 1:1 with mutmut diffs confirmed via
+# `mutmut show <name>` after a `scripts/mutation.sh` run. ---
+
+
+def test_body_end_boundary_search_checks_the_line_right_after_the_header():
+    # Kills: `range(header_index + 1, total)` -> `range(header_index + 2, total)`
+    # in the boundary-finding loop. Two ADJACENT headers (the first with no
+    # body at all) means the boundary for the first header IS the very next
+    # line; skipping that line (the mutant) makes the search miss it and run
+    # on to a LATER header instead, letting the first section's last-key scan
+    # wrongly absorb the second section's own Server line.
+    text = "[options]\n\n[a]\n[b]\nServer = https://b\n\n[core]\nInclude = /x\n"
+    sections = {s.name: s for s in third_party(parse_sections(text))}
+    assert sections["a"].servers == ()
+    assert sections["a"].sig_level is None
+    assert sections["b"].servers == ("https://b",)
+
+
+def test_body_end_direct_last_key_search_never_looks_before_the_header():
+    # Kills: `range(header_index + 1, boundary)` -> `range(boundary)` (starts
+    # at 0) in the last-key search. A key-looking line BEFORE the header,
+    # with the header's own body genuinely empty, must never be picked up as
+    # that header's last key line.
+    lines = ["Server = should-not-count", "filler", "[mine]", "", "[core]"]
+    assert _body_end(lines, header_index=2) == 3
+
+
+def test_body_end_direct_last_key_search_never_starts_before_the_header_plus_one():
+    # Kills: `range(header_index + 1, boundary)` -> `range(header_index - 1, boundary)`
+    # (starts one line early, at the header's own predecessor). A key-looking
+    # line immediately ABOVE the header — the previous section's own last
+    # directive — must never be picked up as this header's last key line.
+    lines = ["[options]", "Server = should-not-count", "[mine]", "", "[core]"]
+    assert _body_end(lines, header_index=2) == 3

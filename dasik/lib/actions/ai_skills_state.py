@@ -53,8 +53,15 @@ UNIVERSAL_AGENTS = frozenset({"codex", "cursor", "opencode",
 # puts things — but not the only place: codex's own skill-installer and
 # `graphify install --platform codex` write ~/.codex/skills/<n>, and codex reads
 # that too. Checking only one of the two misses half the installers.
+# The Antigravity pair share ~/.gemini/config/skills: graphify 0.9.63's
+# `install --platform antigravity` writes there (measured in a guest,
+# FACT-AGY-7), and the IDE and its CLI read the same user-level config dir the
+# MCP registry lives in. They are STILL universal — `npx skills add` serves
+# them with the canonical copy — so both places are checked.
 AGENT_SKILL_DIRS: Dict[str, str] = {
     "claude-code": ".claude/skills",
+    "antigravity": ".gemini/config/skills",
+    "antigravity-cli": ".gemini/config/skills",
     "codex": ".codex/skills",
     "cursor": ".cursor/skills",
     "opencode": ".config/opencode/skills",

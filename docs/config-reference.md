@@ -1109,8 +1109,11 @@ Antigravity plugin only when the config already declares it, and reports the
 rest as not captured.
 
 `graphify` (`tool`) installs for both Antigravity agents through its single
-`antigravity` platform, into the shared `~/.agents/skills/graphify`; dropping it
-removes that copy.
+`antigravity` platform. Where it lands depends on the graphify version —
+`~/.gemini/config/skills/graphify` since 0.9.63, `~/.agents/skills/graphify`
+before it — so dasik reads both, and dropping the entry removes whichever is
+there. The two Antigravity agents share that directory, so a skill is only
+removed once no agent of that user declares it.
 
 Both Antigravity agents read skills from the shared `~/.agents/skills`, like
 codex: `npx skills add -g -a antigravity` writes nothing under

@@ -199,14 +199,14 @@ def test_the_agent_layout_matches_the_skills_cli(tmp_path):
     assert "claude-code" not in UNIVERSAL_AGENTS
 
 
-def test_antigravity_agents_are_universal_with_no_directory_of_their_own(tmp_path):
+def test_antigravity_agents_are_universal_and_share_the_gemini_directory(tmp_path):
     """Measured with skills 1.7.0 (FACT-AGY-4): `npx skills add -g -a
-    antigravity antigravity-cli` writes ONLY ~/.agents/skills/<n>; the
+    antigravity antigravity-cli` writes ONLY ~/.agents/skills/<n> — the
     `~/.gemini/antigravity{,-cli}/skills` the CLI's registry names is never
-    created for a global install. A directory entry here would make plan look
-    somewhere nothing is ever written — and ask for the skill forever."""
-    assert "antigravity" not in AGENT_SKILL_DIRS
-    assert "antigravity-cli" not in AGENT_SKILL_DIRS
+    created. They are universal, and their OWN directory is the one graphify
+    0.9.63 writes (FACT-AGY-7): ~/.gemini/config/skills, shared by both."""
+    assert AGENT_SKILL_DIRS["antigravity"] == ".gemini/config/skills"
+    assert AGENT_SKILL_DIRS["antigravity-cli"] == ".gemini/config/skills"
     canonical = {"frontend-design"}
     assert carries_skill("antigravity", "frontend-design", canonical, {})
     assert carries_skill("antigravity-cli", "frontend-design", canonical, {})

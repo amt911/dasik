@@ -21,6 +21,7 @@ Item grammar::
 """
 from __future__ import annotations
 
+import os
 from typing import Any, Dict, List, Optional, Tuple
 
 from .abstract_action import AbstractAction
@@ -67,9 +68,9 @@ _KIND_ORDER = {"marketplace": 0, "plugin": 1, "skill": 2}
 # the shared ~/.agents/skills/graphify, which the IDE and `agy` both read.
 _TOOL_PLATFORMS = {"claude-code": "claude", "antigravity-cli": "antigravity"}
 
-# Agents with no skills directory of their own whose tool-installed skills land
-# in the shared canonical directory — so that is the directory a removal owns.
-_CANONICAL_TOOL_AGENTS = {"antigravity", "antigravity-cli"}
+# Agents that SHARE one skills directory: whatever is removed for one is removed
+# for the other, so a removal waits until no agent of the user declares it.
+_SHARED_SKILL_DIR_AGENTS = {"antigravity", "antigravity-cli"}
 
 _ROOT = "root"
 
@@ -91,6 +92,9 @@ class AiSkillsAction(AbstractAction):
         self._removed_everywhere: set = set()
         # (user, agent, skill) triples this apply is deleting.
         self._deleting: set = set()
+        # Directories already removed in this apply (the Antigravity agents
+        # share one, so the second DELETE would repeat the same rm).
+        self._removed_dirs: set = set()
 
     @classmethod
     def empty_config(cls) -> Any:
@@ -564,10 +568,23 @@ class AiSkillsAction(AbstractAction):
                          (name,))]
             return [('npx -y skills remove --skill "$1" --agent "$2" '
                      '--global --yes', (name, agent))]
-        if agent in _CANONICAL_TOOL_AGENTS and self._still_wanted(user, name):
-            # The shared copy is this agent's only copy, and another agent
-            # still declares the skill: removing it would take it from them.
-            return []
+        if agent in _SHARED_SKILL_DIR_AGENTS:
+            if self._still_wanted(user, name):
+                # Both Antigravity agents read the same directory: removing it
+                # for one would take the skill from the other.
+                return []
+            # Which of the two places the program wrote depends on its version
+            # (graphify ≤ 0.9.x wrote the canonical copy, 0.9.63 writes the
+            # gemini one), so remove whichever is there.
+            home = self._home_of(user, self._passwd()).rstrip("/")
+            commands: List[Tuple[str, Tuple[str, ...]]] = []
+            for relative in (AGENT_SKILL_DIRS[agent], CANONICAL_SKILL_DIR):
+                path = f"{home}/{relative}/{name}"
+                if path in self._removed_dirs or not os.path.isdir(self._abs(path)):
+                    continue
+                self._removed_dirs.add(path)
+                commands.append(('rm -rf -- "$1"', (path,)))
+            return commands
         directory = self._skill_dir_for(user, agent, name, self._passwd())
         if directory is None:
             return []
@@ -600,8 +617,6 @@ class AiSkillsAction(AbstractAction):
         nothing than to guess a path and delete it.
         """
         relative = AGENT_SKILL_DIRS.get(agent)
-        if relative is None and agent in _CANONICAL_TOOL_AGENTS:
-            relative = CANONICAL_SKILL_DIR
         if relative is None:
             return None
         return f"{self._home_of(user, homes).rstrip('/')}/{relative}/{name}"

@@ -349,3 +349,45 @@ def test_s3_an_unowned_agent_link_keeps_the_skill_in_place(tmp_path):
         Change("ai_skills", Op.DELETE, "andres:codex:skill:impeccable")])
     assert [argv[3] for _b, argv in calls] == [
         'npx -y skills remove --skill "$1" --agent "$2" --global --yes']
+
+
+def test_graphify_0_9_63_writes_the_gemini_config_skills_dir(tmp_path):
+    """Measured in a guest (FACT-AGY-7): graphify 0.9.63's `install --platform
+    antigravity` writes ~/.gemini/config/skills/<n>/SKILL.md, not the
+    ~/.agents/skills its own table names (an older release did). dasik checked
+    only the shared copy, so the skill was installed and planned again forever.
+    Both dirs count: the CLI's copy and graphify's own."""
+    from dasik.lib.actions.ai_skills_state import AGENT_SKILL_DIRS, skills_state
+    assert AGENT_SKILL_DIRS["antigravity"] == ".gemini/config/skills"
+    assert AGENT_SKILL_DIRS["antigravity-cli"] == ".gemini/config/skills"
+    home = tmp_path / "home/andres"
+    skill = home / ".gemini/config/skills/graphify"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text("---\nname: graphify\n---\n")
+    canonical, per_agent, _sources = skills_state(str(home))
+    assert canonical == set()
+    assert per_agent["antigravity"] == {"graphify"}
+
+
+def test_a_graphify_skill_in_the_gemini_dir_plans_nothing(tmp_path):
+    root = _root(tmp_path)
+    skill = root / "home/andres/.gemini/config/skills/graphify"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text("---\nname: graphify\n---\n")
+    action = _action(tmp_path, [dict(GRAPHIFY, agents=["antigravity"])])
+    assert _plan(action) == []
+
+
+def test_removing_graphify_from_both_agents_removes_the_gemini_copy(tmp_path):
+    root = _root(tmp_path)
+    skill = root / "home/andres/.gemini/config/skills/graphify"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text("---\nname: graphify\n---\n")
+    action = AiSkillsAction({"users": [{"username": "andres"}],
+                             "ai_skills": {"entries": []}},
+                            ActionContext(target=Target(root=str(root))))
+    calls = _calls(action, action.plan(managed=[
+        "andres:antigravity:skill:graphify",
+        "andres:antigravity-cli:skill:graphify"]))
+    assert [argv[4:] for _b, argv in calls] == [
+        ["--", "sh", "/home/andres/.gemini/config/skills/graphify"]]

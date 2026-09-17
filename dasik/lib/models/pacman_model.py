@@ -12,6 +12,8 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from ._url_validation import reject_control_chars
+
 # dasik does not own these sections: the official repos are Arch's, `options`
 # is pacman.conf's own global section, and `multilib` already has its own
 # dedicated boolean field on PacmanModel. A declared repository naming one of
@@ -33,24 +35,15 @@ _SIG_LEVEL_TOKEN = re.compile(r"(Package|Database)?(Never|Optional|Required|Trus
 
 _SHA1_FINGERPRINT = re.compile(r"[0-9A-Fa-f]{40}")
 
-# ASCII control characters (0x00-0x1F, plus DEL 0x7F). `urlsplit` strips
-# \t\r\n from its *internal* parsing copy but the validators below return the
-# original string unchanged — so a value like
+# `urlsplit` strips \t\r\n from its *internal* parsing copy but the
+# validators below return the original string unchanged — so a value like
 # "https://good.example/$arch\nSigLevel = Never\n[evil]\nServer = ..." parsed
 # fine and was written to pacman.conf verbatim, injecting an extra directive
 # or a whole extra section. Every value that ends up in a config file dasik
 # writes must be checked against the raw string, not just the parsed URL.
-_CONTROL_CHAR = re.compile(r"[\x00-\x1f\x7f]")
-
-
-def _reject_control_chars(value: str, what: str) -> None:
-    if _CONTROL_CHAR.search(value):
-        raise ValueError(
-            f"{what} must not contain control characters, got {value!r}; "
-            "dasik writes this value verbatim into a config file"
-        )
-
-
+# See `_url_validation.reject_control_chars` (shared with the other models
+# that validate a URL or git source, e.g. `package_model.py`,
+# `config_saver_model.py`, `tailscale_model.py`).
 def _validate_https_url(value: str, what: str) -> None:
     """Shared ``https://`` URL check: scheme, non-empty host, no credentials,
     no control characters.
@@ -61,7 +54,7 @@ def _validate_https_url(value: str, what: str) -> None:
     accepted a hostless URL (``"https://"``, ``"https:///k.gpg"``) that the
     servers check would have refused.
     """
-    _reject_control_chars(value, what)
+    reject_control_chars(value, what)
     parts = urlsplit(value)
     if parts.scheme != "https":
         raise ValueError(f"{what} must be https://, got {value!r}")
@@ -80,7 +73,7 @@ def _validate_server_url(value: str) -> None:
     The https branch delegates to ``_validate_https_url`` (shared with
     ``PacmanKeyModel.url``); ``file://`` keeps its own path-only check.
     """
-    _reject_control_chars(value, "pacman repository server")
+    reject_control_chars(value, "pacman repository server")
     parts = urlsplit(value)
     if parts.scheme not in ("https", "file"):
         raise ValueError(
@@ -145,7 +138,7 @@ class PacmanRepositoryModel(BaseModel):
     def _validate_include(cls, value: Optional[str]) -> Optional[str]:
         if value is None:
             return value
-        _reject_control_chars(value, "pacman repository include")
+        reject_control_chars(value, "pacman repository include")
         if not value.startswith("/"):
             raise ValueError(
                 f"pacman repository include must be an absolute path, got {value!r}"

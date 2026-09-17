@@ -223,3 +223,47 @@ def test_json_model_rejects_bad_source_key_grammar():
                 }
             },
         )
+
+
+# --- control-character injection (urlsplit strips \t\r\n internally but the
+# validators used to return the ORIGINAL string unchanged) ----------------
+
+_CONTROL_CHARS = ["\n", "\r", "\t", "\x7f"]
+
+
+@pytest.mark.parametrize("ctrl", _CONTROL_CHARS)
+def test_git_source_url_rejects_control_chars(ctrl):
+    # Reproduces the reported payload verbatim: urlsplit() silently drops
+    # \t\r\n from its internal copy, so a naive `startswith`/`endswith`/
+    # urlsplit-based check on an otherwise well-formed URL let it through.
+    with pytest.raises(ValidationError):
+        _src(url=f"https://github.com/a{ctrl}/b.git")
+
+
+@pytest.mark.parametrize("ctrl", _CONTROL_CHARS)
+def test_git_source_url_rejects_control_chars_before_git_suffix(ctrl):
+    with pytest.raises(ValidationError):
+        _src(url=f"https://github.com/a/b{ctrl}.git")
+
+
+@pytest.mark.parametrize("ctrl", _CONTROL_CHARS)
+def test_git_source_ref_rejects_control_chars(ctrl):
+    # The 40-char hex `fullmatch` already refuses any non-hex byte, so this
+    # is a regression guard rather than evidence of a new fix.
+    bad_ref = ("a" * 39) + ctrl
+    with pytest.raises(ValidationError):
+        _src(ref=bad_ref)
+
+
+@pytest.mark.parametrize("ctrl", _CONTROL_CHARS)
+def test_git_source_subdir_rejects_control_chars(ctrl):
+    with pytest.raises(ValidationError):
+        _src(subdir=f"pkg{ctrl}sub")
+
+
+def test_git_source_valid_examples_still_validate():
+    # The currently-valid examples used elsewhere in this file must keep
+    # validating after the control-character guard is added.
+    assert _src().url == "https://github.com/amt911/config-saver-aur.git"
+    assert _src(subdir="pkg/sub").subdir == "pkg/sub"
+    assert _src(url="https://git.example.org:8443/pkgbuilds/config-saver.git").ref == _SHA

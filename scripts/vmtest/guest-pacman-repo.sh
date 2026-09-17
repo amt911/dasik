@@ -241,6 +241,29 @@ key_trusted "$FPR"; rc PACREPO-ROLLBACK-KEY-TRUSTED
 $D plan "$C" --target / $L > /tmp/planJ.txt 2>&1; rc PACREPO-REPLANJ
 absent /tmp/planJ.txt '\[pacman_repositories\]'; rc PACREPO-REPLANJ-QUIET
 
+echo "PACREPO-K: the pacman key ABSENT from the WHOLE config (not just its repositories/keys sub-fields, as PACREPO-I already covers) -> still DELETE what the manifest owns. This is finding 1's fix: Reconciler._any_managed_for probes an optional action whose config slice is absent via cls.__new__(cls) (no __init__); PacmanRepositoriesAction used to raise AttributeError there (self._repos/self._keys never set), got swallowed, and the whole domain was skipped instead of planning the DELETE."
+python3 - <<'PY'
+import json
+cfg = json.load(open("/tmp/repo.json"))
+del cfg["pacman"]
+json.dump(cfg, open("/tmp/nopacman.json", "w"), indent=2)
+PY
+rc PACREPO-NOPACMAN-BUILD
+$D plan /tmp/nopacman.json --target / $L > /tmp/planK.txt 2>&1; rc PACREPO-PLANK
+grep '\[pacman_repositories\]' /tmp/planK.txt
+present /tmp/planK.txt "delete key:$FPR"; rc PACREPO-PLANK-DELKEY
+present /tmp/planK.txt 'delete repo:amt911'; rc PACREPO-PLANK-DELREPO
+$D apply /tmp/nopacman.json --target / --yes $L; rc PACREPO-APPLYK
+grep -q '^\[amt911\]$' /etc/pacman.conf
+amt911_section_rc=$?
+[ "$amt911_section_rc" -ne 0 ]; rc PACREPO-K-SECTION-GONE
+gpg --homedir "$GNUPGHOME" --list-keys "$FPR" > /tmp/keygoneK.txt 2>&1
+keygoneK_rc=$?
+cat /tmp/keygoneK.txt
+[ "$keygoneK_rc" -ne 0 ]; rc PACREPO-K-KEY-GONE
+$D plan /tmp/nopacman.json --target / $L > /tmp/planK2.txt 2>&1; rc PACREPO-REPLANK
+absent /tmp/planK2.txt '\[pacman_repositories\]'; rc PACREPO-REPLANK-QUIET
+
 echo "PACREPO: END with $FAILS failure(s)"
 echo "PACREPO-DONE rc=$FAILS"
 sync

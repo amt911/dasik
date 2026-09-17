@@ -69,25 +69,75 @@ def token_name(token: str) -> str:
 _COMPRESS_DEFAULT_LEVEL = {"zstd": "3", "zlib": "3"}
 _COMPRESS_NAMES = ("compress", "compress-force")
 
+# The kernel CLAMPS an out-of-range explicit level to the nearest valid one
+# (SF-2, re-review round 2 of fix/rootflags-sync-drift) — measured on a real
+# loopback btrfs image with the guest's own kernel (FACT-RFD-3), nothing
+# guessed: `zstd:0`/`zlib:0` clamp UP to the algorithm's own default level
+# (indistinguishable from not naming a level at all), `zstd:16` clamps DOWN
+# to 15, `zlib:12` clamps down to 9. Exactly these four are in the table —
+# an unmeasured level (`zstd:17+`, `zlib:10`/`11`/`13+`, a negative zstd
+# level, `lzo:N`) is deliberately left alone rather than normalized on a
+# guess ("nothing more" than what was measured).
+_COMPRESS_LEVEL_CLAMPS = {
+    ("zstd", "0"): "3", ("zstd", "16"): "15",
+    ("zlib", "0"): "3", ("zlib", "12"): "9",
+}
+
+# A bare `compress`/`compress-force` (no algorithm at all) resolves to the
+# kernel's OWN default algorithm, which is zlib, not zstd (FACT-RFD-3,
+# measured) — the level is zlib's own default (3).
+_COMPRESS_BARE_DEFAULT = "zlib:3"
+
 
 def normalize_compress_value(value: str) -> str:
     """``zstd`` <-> ``zstd:3`` (the kernel's default level) for EQUIVALENCE
-    only. An explicit level is never touched — ``zstd:1`` stays ``zstd:1``, so
-    it is never confused with the default ``zstd:3``. lzo has no default to
-    fill in."""
+    only. An explicit level is never touched EXCEPT for the four measured
+    clamped spellings (SF-2, `_COMPRESS_LEVEL_CLAMPS`) — ``zstd:1`` stays
+    ``zstd:1``, so it is never confused with the default ``zstd:3``. lzo has
+    no default to fill in."""
     if ":" in value:
-        return value
+        algo, _, level = value.partition(":")
+        clamped = _COMPRESS_LEVEL_CLAMPS.get((algo, level))
+        return f"{algo}:{clamped}" if clamped else value
     default = _COMPRESS_DEFAULT_LEVEL.get(value)
     return f"{value}:{default}" if default else value
+
+
+def normalize_compress_option(opt: str) -> str:
+    """A full ``compress``/``compress-force`` OPTION token — bare, or
+    ``name=value`` — normalized to a canonical ``name=value`` form for
+    EQUIVALENCE only (never written back). Anything whose name is not one of
+    ``_COMPRESS_NAMES`` is returned unchanged.
+
+    SF-2 (re-review round 2): a bare name (no ``=`` at all, e.g. declaring
+    just ``compress-force``) needs its own branch — it is not the same case
+    as an explicit value, and the kernel resolves it to its OWN default
+    algorithm+level (``zlib:3``, not the algorithm-specific
+    ``normalize_compress_value`` table, which only fills in a LEVEL for an
+    algorithm the option already names).
+
+    Feeds both ``_rootflags_option_set`` (``KernelCmdlineAction``, the
+    plan-time equivalence) and ``option_equivalent`` (the capture
+    subtraction) — one table, not two copies of the same clamp/bare rule.
+    """
+    name = token_name(opt)
+    if name not in _COMPRESS_NAMES:
+        return opt
+    if "=" in opt:
+        _, _, raw = opt.partition("=")
+        return f"{name}={normalize_compress_value(raw)}"
+    return f"{name}={_COMPRESS_BARE_DEFAULT}"
 
 
 def option_equivalent(a: str, b: str) -> bool:
     """Whether two individual mount options describe the SAME setting.
 
     Same NAME (``token_name``), and for ``compress``/``compress-force`` the
-    kernel's default level filled in, so a bare ``compress-force=zstd``
-    matches a kernel-reported ``compress-force=zstd:3``. Everything else
-    compares as an exact token.
+    kernel's default level filled in (and the measured clamps applied, SF-2),
+    so a bare ``compress-force=zstd`` matches a kernel-reported
+    ``compress-force=zstd:3``, and a bare ``compress-force`` (no algorithm at
+    all) matches ``compress-force=zlib:3``. Everything else compares as an
+    exact token.
 
     Shared by the rootflags= equivalence check (``KernelCmdlineAction``) and
     ``DiskPartitionAction._correct_subvol_options`` (S4, review of
@@ -99,10 +149,8 @@ def option_equivalent(a: str, b: str) -> bool:
     name_a, name_b = token_name(a), token_name(b)
     if name_a != name_b:
         return False
-    if name_a in _COMPRESS_NAMES and "=" in a and "=" in b:
-        _, _, va = a.partition("=")
-        _, _, vb = b.partition("=")
-        return normalize_compress_value(va) == normalize_compress_value(vb)
+    if name_a in _COMPRESS_NAMES:
+        return normalize_compress_option(a) == normalize_compress_option(b)
     return a == b
 
 

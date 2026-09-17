@@ -84,6 +84,49 @@ def test_lzo_has_no_default_level_to_fill_in():
     assert not _rootflags_equivalent("compress=lzo,subvol=@", "compress=lzo:1,subvol=@")
 
 
+# --- SF-2 (re-review round 2): the measured clamp/bare-name table ------------- #
+# Exactly the six spellings FACT-RFD-3 measured, nothing more (an unmeasured
+# level like zstd:17 or a negative level is deliberately left unequal below).
+
+def test_zstd_0_is_equivalent_to_zstd_3():
+    assert _rootflags_equivalent("compress-force=zstd:0,subvol=@",
+                                 "compress-force=zstd:3,subvol=@")
+
+
+def test_zstd_16_is_equivalent_to_the_clamped_zstd_15():
+    assert _rootflags_equivalent("compress-force=zstd:16,subvol=@",
+                                 "compress-force=zstd:15,subvol=@")
+
+
+def test_zlib_0_is_equivalent_to_zlib_3():
+    assert _rootflags_equivalent("compress=zlib:0,subvol=@",
+                                 "compress=zlib:3,subvol=@")
+
+
+def test_zlib_12_is_equivalent_to_the_clamped_zlib_9():
+    assert _rootflags_equivalent("compress=zlib:12,subvol=@",
+                                 "compress=zlib:9,subvol=@")
+
+
+def test_bare_compress_is_equivalent_to_the_kernels_own_default_algorithm():
+    """Bare `compress`/`compress-force` (no algorithm at all) resolves to
+    `zlib:3` on this kernel (FACT-RFD-3) -- zlib, not zstd, is the default
+    algorithm when none is named."""
+    assert _rootflags_equivalent("compress,subvol=@", "compress=zlib:3,subvol=@")
+
+
+def test_bare_compress_force_is_equivalent_to_the_kernels_own_default_algorithm():
+    assert _rootflags_equivalent("compress-force,subvol=@",
+                                 "compress-force=zlib:3,subvol=@")
+
+
+def test_an_explicit_level_one_is_still_never_equivalent_to_the_default():
+    """The clamp table must not swallow genuinely different explicit levels --
+    only the six measured clamped/bare spellings normalize."""
+    assert not _rootflags_equivalent("compress-force=zstd:1,subvol=@",
+                                     "compress-force=zstd:3,subvol=@")
+
+
 def test_a_genuinely_different_mount_is_not_equivalent():
     assert not _rootflags_equivalent("compress-force=zstd:3,subvol=@",
                                      "compress-force=zstd:3,subvol=@home")
@@ -236,21 +279,102 @@ def test_two_live_rootflags_tokens_never_read_as_converged(tmp_path):
     assert ("INSTALL", "rootflags=compress-force=zstd:3,noatime,subvol=@") in planned
 
 
-def test_two_live_rootflags_tokens_is_deterministic_across_hash_seeds(tmp_path):
-    """Directly exercises the helper the plan-time diff uses, with the two live
-    tokens as `actual()` naturally produces them — a `set`. The fix counts
-    matches instead of taking `next()` from it, which is a pure cardinality
-    check and therefore order-independent even over a `set`; no seed loop is
-    needed to prove it, but the brief asks the integration case above to be
-    re-run under PYTHONHASHSEED=0..7 too (see the fix report). Never
-    substituted: the literal desired `zstd:3` token comes back UNCHANGED, not
-    swapped for either duplicate on the entry."""
+def test_two_live_rootflags_tokens_never_substitutes_the_literal(tmp_path):
+    """NIT-2 (re-review round 2): renamed from
+    `..._is_deterministic_across_hash_seeds`, which the body never actually
+    swept — the seed sweep was only ever run manually outside pytest (see the
+    fix report); this name says what the body checks. Directly exercises the
+    helper the plan-time diff uses, with the two live tokens as `actual()`
+    naturally produces them — a `set`. The fix counts matches instead of
+    taking `next()` from it, which is a pure cardinality check and therefore
+    order-independent even over a `set`, with no seed loop needed to prove it.
+    Never substituted: the literal desired `zstd:3` token comes back
+    UNCHANGED, not swapped for either duplicate on the entry."""
     _entry(tmp_path, _TWO_ROOTFLAGS_ENTRY)
     action = KernelCmdlineAction(_CAPTURED, ActionContext(target=Target(root=str(tmp_path))))
 
     desired = action._desired_tokens_for_diff(action.actual())
 
     assert "rootflags=compress-force=zstd:3,noatime,subvol=@" in desired
+
+
+# --- SF-1 (re-review round 2, B1 residual): a duplicate that ALREADY
+# contains the literal must still be planned as an INSTALL, so `apply`
+# collapses it down to exactly one token -- returning the literal unchanged
+# from `_desired_tokens_for_diff` is not the same as `compute_changes`
+# actually planning it once the literal is already an element of `actual`.
+
+def _shape_a_entry():
+    """Shape A: one live token is bare `zstd` (equivalent to the desired
+    `zstd:3`), the OTHER is already the literal `zstd:3` itself -- exactly
+    the state pre-round-0 duplication left on any machine where a synced
+    btrfs config had been applied on main."""
+    return (
+        "root=LABEL=root rw "
+        "rootflags=compress-force=zstd,noatime,subvol=@ "
+        "rootflags=compress-force=zstd:3,noatime,subvol=@ quiet"
+    )
+
+
+def _shape_b_entry():
+    """Shape B: the kernel honours the TRAILING token (`zstd:1`); the FIRST
+    happens to already be the desired literal `zstd:3`."""
+    return (
+        "root=LABEL=root rw "
+        "rootflags=compress-force=zstd:3,noatime,subvol=@ "
+        "rootflags=compress-force=zstd:1,noatime,subvol=@ quiet"
+    )
+
+
+def test_shape_a_duplicate_already_containing_the_literal_still_installs(tmp_path):
+    _entry(tmp_path, _shape_a_entry())
+
+    planned = _plan(tmp_path, _CAPTURED, managed=["root=LABEL=root", "rw", "quiet"])
+
+    assert ("INSTALL", "rootflags=compress-force=zstd:3,noatime,subvol=@") in planned
+
+
+def test_shape_b_duplicate_already_containing_the_literal_still_installs(tmp_path):
+    _entry(tmp_path, _shape_b_entry())
+
+    planned = _plan(tmp_path, _CAPTURED, managed=["root=LABEL=root", "rw", "quiet"])
+
+    assert ("INSTALL", "rootflags=compress-force=zstd:3,noatime,subvol=@") in planned
+
+
+def test_shape_a_apply_collapses_to_exactly_one_token_then_plan_is_silent(tmp_path):
+    _entry(tmp_path, _shape_a_entry())
+    action = KernelCmdlineAction(_CAPTURED, ActionContext(target=Target(root=str(tmp_path))))
+
+    first = action.plan(managed=["root=LABEL=root", "rw", "quiet"])
+    action.apply(first)
+
+    tokens = _current_options(tmp_path)
+    assert [t for t in tokens if t.startswith("rootflags=")] == \
+        ["rootflags=compress-force=zstd:3,noatime,subvol=@"]
+
+    managed = action.managed_keys()["kernel_cmdline"]
+    second = action.plan(managed=managed)
+    assert second == []
+    # managed_keys() agrees with what is really on the entry after the apply.
+    assert "rootflags=compress-force=zstd:3,noatime,subvol=@" in managed
+
+
+def test_shape_b_apply_collapses_to_exactly_one_token_then_plan_is_silent(tmp_path):
+    _entry(tmp_path, _shape_b_entry())
+    action = KernelCmdlineAction(_CAPTURED, ActionContext(target=Target(root=str(tmp_path))))
+
+    first = action.plan(managed=["root=LABEL=root", "rw", "quiet"])
+    action.apply(first)
+
+    tokens = _current_options(tmp_path)
+    assert [t for t in tokens if t.startswith("rootflags=")] == \
+        ["rootflags=compress-force=zstd:3,noatime,subvol=@"]
+
+    managed = action.managed_keys()["kernel_cmdline"]
+    second = action.plan(managed=managed)
+    assert second == []
+    assert "rootflags=compress-force=zstd:3,noatime,subvol=@" in managed
 
 
 def test_apply_collapses_two_live_rootflags_into_one(tmp_path):
@@ -291,8 +415,10 @@ def test_explicit_ro_converges_after_one_apply(tmp_path):
 
     managed: list = []
     first = action.plan(managed=managed)
-    assert first == [("kernel_cmdline", "ro")] or \
-        [(c.op.name, c.item) for c in first] == [("INSTALL", "ro")]
+    # NIT-1 (re-review round 2): `Change` is a frozen dataclass, so
+    # `[Change(...)] == [("kernel_cmdline", "ro")]` is always False -- the
+    # dead disjunct this used to have is gone; this is the real shape.
+    assert [(c.op.name, c.item) for c in first] == [("INSTALL", "ro")]
     action.apply(first)
     managed = action.managed_keys()["kernel_cmdline"]
 
@@ -325,3 +451,15 @@ def test_subvol_leading_slash_is_normalized_for_equivalence():
 
 def test_subvolid_is_left_alone_and_not_equivalent_to_a_different_one():
     assert not _rootflags_equivalent("subvolid=256", "subvolid=257")
+
+
+def test_subvol_top_level_slash_is_not_mangled_into_an_empty_value():
+    """NIT-6 (re-review round 2): `subvol=/` (the top-level subvolume) must
+    not normalize into `subvol=` -- the leading-slash strip added for N1
+    (`subvol=/@` -> `subvol=@`) would turn the bare `/` into an empty value,
+    which is a different (nonsensical) token, not the same subvolume spelled
+    without a leading slash."""
+    assert _rootflags_equivalent("compress-force=zstd,subvol=/",
+                                 "compress-force=zstd,subvol=/")
+    assert not _rootflags_equivalent("compress-force=zstd,subvol=/",
+                                     "compress-force=zstd,subvol=")

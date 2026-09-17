@@ -530,10 +530,12 @@ class DiskPartitionAction(AbstractAction):
         for disk in self.disks:
             d = disk.model_dump(mode="json")
             d["wipe_disk"] = False
-            for p in d.get("partitions", []):
+            for idx, p in enumerate(d.get("partitions", [])):
                 p["format"] = False
                 p.pop("luks_password", None)
-                self._correct_subvol_options(p, live_subvol_options)
+                self._correct_subvol_options(
+                    p, live_subvol_options,
+                    source=self._resolve_partition_source(d.get("device"), idx, p))
                 if p.get("encrypt") and p.get("luks_name"):
                     uuid = self._read_luks_uuid(p["luks_name"])
                     if uuid:
@@ -624,12 +626,13 @@ class DiskPartitionAction(AbstractAction):
             return True
         return name == "commit" and option != name
 
-    def _live_subvol_options(self) -> "Dict[str, List[str]]":
-        """mountpoint -> the mount options that subvolume is REALLY mounted
-        with. Only the ones dasik can express: `compress*` plus the handful of
-        real, user-declarable btrfs flags (see `_is_declarable_btrfs_option`)
-        — the rest of what findmnt prints is kernel bookkeeping (relatime,
-        space_cache, subvolid) that no config declares.
+    def _live_subvol_options(self) -> "Dict[str, Tuple[str, List[str]]]":
+        """mountpoint -> (source device, the mount options that subvolume is
+        REALLY mounted with). Only the ones dasik can express: `compress*`
+        plus the handful of real, user-declarable btrfs flags (see
+        `_is_declarable_btrfs_option`) — the rest of what findmnt prints is
+        kernel bookkeeping (relatime, space_cache, subvolid) that no config
+        declares.
 
         Keyed by MOUNTPOINT, not subvolume NAME (S1, review of
         fix/rootflags-sync-drift): two different btrfs filesystems can
@@ -642,15 +645,43 @@ class DiskPartitionAction(AbstractAction):
         needs no extra device-resolution call — the same identity
         `_partition_from_node`/`_btrfs_subvols` already use for a subvolume's
         `mountpoint` field.
+
+        The SOURCE (findmnt's device column, bracket suffix stripped) is kept
+        alongside the options — NIT-5, re-review round 2 — so
+        `_correct_subvol_options` can refuse a target-only match when the
+        caller can resolve what device the DECLARED partition should be
+        mounted from and it disagrees with what is actually there.
         """
-        live: Dict[str, List[str]] = {}
-        for target, _src, opts in self._findmnt_btrfs_rows():
-            live[target] = [o for o in opts.split(",")
-                            if self._is_declarable_btrfs_option(o)]
+        live: Dict[str, Tuple[str, List[str]]] = {}
+        for target, src, opts in self._findmnt_btrfs_rows():
+            live[target] = (
+                src.split("[")[0],
+                [o for o in opts.split(",") if self._is_declarable_btrfs_option(o)],
+            )
         return live
 
+    def _resolve_partition_source(self, device: "Optional[str]", index: int,
+                                  partition: dict) -> "Optional[str]":
+        """Best-effort device path for a DECLARED partition, or ``None`` when
+        it cannot be resolved (NIT-5, re-review round 2).
+
+        Encrypted: the mapping name is declared directly (`luks_name`), so the
+        open mapping's path is exact. Plain: dasik creates partitions in
+        config order (`_process_disks`'s own numbering), so the partition's
+        position + 1 is the same partition number a fresh install would give
+        it — the same assumption `_get_partition_device`'s other caller
+        already makes; ``None`` (never a guess) when there is no `device` to
+        build it from, which keeps the lookup falling back to target-only.
+        """
+        if partition.get("encrypt") and partition.get("luks_name"):
+            return f"/dev/mapper/{partition['luks_name']}"
+        if not device:
+            return None
+        return self._get_partition_device(device, index + 1)
+
     @staticmethod
-    def _correct_subvol_options(partition: dict, live: "Dict[str, List[str]]") -> None:
+    def _correct_subvol_options(partition: dict, live: "Dict[str, Tuple[str, List[str]]]",
+                                source: "Optional[str]" = None) -> None:
         """Replace declared subvolume options with the mounted truth (in place).
 
         `model_dump()` materializes defaults, so a config that declares a
@@ -659,9 +690,22 @@ class DiskPartitionAction(AbstractAction):
         derived rootflags then carried that value NEXT TO the partition's real
         one. Reporting the machine is the whole contract of `sync`.
 
-        Looked up by the subvolume's own MOUNTPOINT (S1) — `live` is now keyed
-        that way, so a data disk's subvolume of the same NAME can never answer
-        this partition's lookup.
+        Looked up by the subvolume's own MOUNTPOINT (S1), normalized with
+        `os.path.normpath` (NIT-4, re-review round 2) so a human-written
+        trailing slash (`"/home/"`) still finds findmnt's `/home` row — the
+        model has no validator for this field, and skipping the correction
+        over a spelling difference would silently leave the model-default
+        `compress-force=zstd` in the capture instead of the machine's real
+        options. `live` is keyed by mountpoint, so a data disk's subvolume of
+        the same NAME can never answer this partition's lookup.
+
+        NIT-5 (re-review round 2): a shared mountpoint is not proof of shared
+        identity — when *source* is resolvable (the caller's best-effort
+        device path for this DECLARED partition), it must agree with what
+        findmnt actually reports mounted there, or the correction is skipped:
+        a foreign filesystem some other layer happens to mount at the same
+        path is never read as this partition's subvolume. ``source=None``
+        (irresolvable) keeps the previous target-only behaviour.
 
         What the partition already carries is subtracted by NAME AND
         EQUIVALENCE (S4, review of fix/rootflags-sync-drift), not by whole
@@ -677,8 +721,14 @@ class DiskPartitionAction(AbstractAction):
             return
         base = partition.get("mount_options") or []
         for subvol in partition.get("btrfs_subvolumes") or []:
-            mounted = live.get(subvol.get("mountpoint"))
-            if mounted is None:
+            mountpoint = subvol.get("mountpoint")
+            if not mountpoint:
+                continue
+            entry = live.get(os.path.normpath(mountpoint))
+            if entry is None:
+                continue
+            live_source, mounted = entry
+            if source is not None and live_source != source:
                 continue
             subvol["mount_options"] = [
                 o for o in mounted if not any(option_equivalent(o, b) for b in base)

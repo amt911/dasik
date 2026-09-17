@@ -128,6 +128,98 @@ def test_a_data_disks_subvolume_of_the_same_name_never_leaks_into_root():
     assert "nodatacow" not in root_sv["mount_options"]
 
 
+def test_a_trailing_slash_on_the_declared_mountpoint_does_not_skip_correction():
+    """NIT-4 (re-review round 2): `BtrfsSubvolume.mountpoint` has no validator,
+    so a human-written `"/home/"` (trailing slash) must still find the
+    findmnt row for `/home` -- the declaration is a spelling choice, not a
+    different mountpoint, and skipping the correction would silently leave
+    the model-default `compress-force=zstd` in the capture instead of what
+    the machine actually reports."""
+    declared = {
+        "disks": [{
+            **_DECLARED["disks"][0],
+            "partitions": [
+                _DECLARED["disks"][0]["partitions"][0],
+                {**_DECLARED["disks"][0]["partitions"][1],
+                 "btrfs_subvolumes": [
+                     {"name": "@", "mountpoint": "/"},
+                     {"name": "@home", "mountpoint": "/home/"},
+                 ]},
+            ],
+        }]}
+    action = DiskPartitionAction(declared, ActionContext(target=Target(root="/")))
+    with patch.object(DiskPartitionAction, "_findmnt_btrfs_rows", return_value=_ROWS), \
+         patch("dasik.lib.actions.disk_partition_action.Command.execute",
+               side_effect=FileNotFoundError("no cryptsetup here")):
+        captured = action.import_state(managed=[])
+
+    part = _root_partition(captured)
+    home = next(s for s in part["btrfs_subvolumes"] if s["name"] == "@home")
+    assert home["mount_options"] == []   # compress-force is the partition base
+
+
+def test_a_foreign_filesystem_at_the_declared_path_is_not_read_as_the_subvolume():
+    """NIT-5 (re-review round 2): the correction is keyed by TARGET only (S1);
+    it must not also trust that whatever is mounted there IS the declared
+    partition's subvolume. If the SOURCE resolvable from the declaration (the
+    LUKS mapper name here) disagrees with what findmnt reports at that path,
+    the declaration stands -- nothing is invented from a filesystem that
+    happens to share the mountpoint."""
+    rows = list(_ROWS)
+    # Same target ("/"), but mounted from a DIFFERENT device than the
+    # declared LUKS mapping (cryptroot) -- e.g. a foreign fs bind-mounted at
+    # the same path.
+    rows[0] = ("/", "/dev/mapper/some-other-luks[/@]",
+               "rw,relatime,nodatacow,space_cache=v2,subvolid=256,subvol=/@")
+    part = _root_partition(_captured(rows))
+
+    root_sv = next(s for s in part["btrfs_subvolumes"] if s["name"] == "@")
+    # Unchanged: the declaration stands (here, the model's own default —
+    # nothing was corrected because the source at "/" does not match this
+    # partition's LUKS mapping).
+    assert root_sv["mount_options"] == ["compress-force=zstd"]
+    assert "nodatacow" not in root_sv["mount_options"]
+
+
+def test_a_clamped_spelling_stays_declared_and_recaptures_silently():
+    """SF-2 (re-review round 2): a declared `zstd:16` and a live (clamped)
+    `zstd:15` are the SAME setting -- the capture must keep the user's own
+    spelling (`zstd:16`), not overwrite it with what findmnt reports, and the
+    subvolume's own list must stay empty (nothing "new" to capture)."""
+    declared = {
+        "disks": [{
+            **_DECLARED["disks"][0],
+            "partitions": [
+                _DECLARED["disks"][0]["partitions"][0],
+                {**_DECLARED["disks"][0]["partitions"][1],
+                 "mount_options": ["compress-force=zstd:16"]},
+            ],
+        }]}
+    rows = [
+        ("/", "/dev/mapper/cryptroot[/@]",
+         "rw,relatime,compress-force=zstd:15,space_cache=v2,subvolid=256,subvol=/@"),
+        ("/home", "/dev/mapper/cryptroot[/@home]",
+         "rw,relatime,compress-force=zstd:15,space_cache=v2,subvolid=257,subvol=/@home"),
+    ]
+    action = DiskPartitionAction(declared, ActionContext(target=Target(root="/")))
+    with patch.object(DiskPartitionAction, "_findmnt_btrfs_rows", return_value=rows), \
+         patch("dasik.lib.actions.disk_partition_action.Command.execute",
+               side_effect=FileNotFoundError("no cryptsetup here")):
+        captured = action.import_state(managed=[])
+
+    part = _root_partition(captured)
+    assert part["mount_options"] == ["compress-force=zstd:16"]   # user's own spelling kept
+    root_sv = next(s for s in part["btrfs_subvolumes"] if s["name"] == "@")
+    assert root_sv["mount_options"] == []   # nothing new to capture -- same setting
+
+    # And the captured config re-derives the SAME rootflags= literal it was
+    # captured with -- a `plan` off this capture would compare that literal
+    # against the same live token again and stay silent (no apply needed).
+    derived = KernelCmdlineAction(captured, None)._derived()
+    rootflags = [t for t in derived if t.startswith("rootflags=")]
+    assert rootflags == ["rootflags=compress-force=zstd:16,subvol=@"]
+
+
 def test_an_unmounted_subvolume_keeps_what_the_config_declared():
     """Nothing to read means nothing to correct — capturing an empty list there
     would silently drop an option from a subvolume that simply is not mounted."""

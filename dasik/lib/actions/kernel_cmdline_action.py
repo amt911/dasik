@@ -14,10 +14,10 @@ from .partition_utils import (
     keydev_spec,
     merge_mount_options_by_name,
     mounts_root,
-    normalize_compress_value,
+    normalize_compress_option,
     token_name,
 )
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 from .abstract_action import AbstractAction
 from ..command_worker.command_worker import Command
 from ..models.disk_model import fido2_count
@@ -63,14 +63,22 @@ def _rootflags_option_set(value: str) -> frozenset:
     by_name: Dict[str, str] = {}
     for opt in value.split(","):
         name = token_name(opt)
-        if name in ("compress", "compress-force") and "=" in opt:
-            _, _, raw = opt.partition("=")
-            opt = f"{name}={normalize_compress_value(raw)}"
+        if name in ("compress", "compress-force"):
+            # SF-2 (re-review round 2): a bare name (no `=` at all) and the
+            # four measured clamp spellings (zstd:0/16, zlib:0/12) are BOTH
+            # handled by the shared helper — one table, not a second copy of
+            # it here.
+            opt = normalize_compress_option(opt)
         elif name == "subvol" and "=" in opt:
             # N1: `subvol=/@` and `subvol=@` name the same subvolume — only
             # `subvolid=` (an unrelated, numeric identity) is left alone.
+            # NIT-6 (re-review round 2): the bare top-level `subvol=/` must
+            # NOT become `subvol=` (an empty, different-looking value) — only
+            # strip the leading slash when something real follows it.
             _, _, raw = opt.partition("=")
-            opt = f"subvol={raw[1:] if raw.startswith('/') else raw}"
+            if raw.startswith("/") and raw != "/":
+                raw = raw[1:]
+            opt = f"subvol={raw}"
         by_name[name] = opt
     return frozenset(by_name.values())
 
@@ -517,7 +525,7 @@ class KernelCmdlineAction(AbstractAction):
     def _defines_root(cls, token: str) -> bool:
         return cls._token_key(token) in cls._ROOT_DEFINING
 
-    def _desired_tokens_for_diff(self, actual) -> List[str]:
+    def _desired_tokens_for_diff(self, actual: Iterable[str]) -> List[str]:
         """`_desired_tokens()`, but a `rootflags=` describing the SAME mount as
         the live one is compared as EQUIVALENT rather than as an exact string.
 
@@ -563,6 +571,32 @@ class KernelCmdlineAction(AbstractAction):
             return [a_tok if t == d_tok else t for t in desired]
         return desired
 
+    def _actual_for_diff(self, actual: Iterable[str]) -> set:
+        """`actual`, but with every live `rootflags=` token dropped when there
+        is more than one (SF-1, re-review round 2 of fix/rootflags-sync-
+        drift).
+
+        B1 residual: `_desired_tokens_for_diff` already refuses to SUBSTITUTE
+        one of two live tokens for the literal — but returning the literal
+        unchanged is not the same as `compute_changes` actually PLANNING it.
+        `INSTALL = D \\ A`: when the literal desired token happens to already
+        be ONE of the duplicates, it is still an element of `A` (the real
+        `actual()`), so the diff found it "already there" and stayed silent
+        forever about a genuinely divergent entry — exactly the state the
+        pre-round-0 duplication bug (root cause C) leaves on disk. Removing
+        every live `rootflags=` from the set compute_changes diffs against
+        (never from what `_new_tokens` reads to build the new entry, which
+        re-reads the file directly) makes the literal read as absent, so an
+        INSTALL is always emitted with more than one live token — and
+        `_new_tokens` already collapses every existing `rootflags=` into the
+        one new one.
+        """
+        actual_set = set(actual)
+        live_rootflags = [t for t in actual_set if t.startswith("rootflags=")]
+        if len(live_rootflags) > 1:
+            return actual_set - set(live_rootflags)
+        return actual_set
+
     def plan(self, managed):
         from ..state.change import Op
         from ..state.set_math import compute_changes
@@ -571,7 +605,7 @@ class KernelCmdlineAction(AbstractAction):
             self._DOMAIN,
             desired=self._desired_tokens_for_diff(actual),
             managed=managed,
-            actual=actual,
+            actual=self._actual_for_diff(actual),
         )
         return [c for c in changes
                 if not (c.op is Op.REMOVE and self._defines_root(c.item))]

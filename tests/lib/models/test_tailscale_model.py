@@ -129,3 +129,14 @@ def test_server_url_must_be_a_url():
     assert TailscaleModel(server_url="https://hs.example.net").server_url
     with pytest.raises(ValidationError):
         TailscaleModel(server_url="hs.example.net")
+
+
+# --- control-character injection: `v.split()` treats \t\r\n as whitespace
+# and strips a TRAILING one before counting tokens, so
+# "https://hs.example.net\n" passed both the startswith and the
+# single-token checks and came back unchanged. ------------------------
+
+@pytest.mark.parametrize("ctrl", ["\n", "\r", "\t", "\x7f"])
+def test_server_url_rejects_trailing_control_char(ctrl):
+    with pytest.raises(ValidationError):
+        TailscaleModel(server_url=f"https://hs.example.net{ctrl}")

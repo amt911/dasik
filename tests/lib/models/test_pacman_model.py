@@ -149,3 +149,12 @@ def test_key_url_newline_injection_refused():
 def test_hostless_key_url_refused(url):
     with pytest.raises(ValidationError):
         PacmanModel(keys=[{"fingerprint": FPR, "url": url}])
+
+
+@pytest.mark.parametrize("sig", ["Required\nTrustedOnly", "Required\rNever", "Required\tOptional",
+                                 "Required\x7f"])
+def test_sig_level_with_a_control_character_is_refused(sig):
+    # `str.split()` would tokenize these into valid keywords while the original
+    # value — written verbatim as `SigLevel = …` — spans two pacman.conf lines.
+    with pytest.raises(ValidationError):
+        PacmanModel(repositories=[{"name": "x", "servers": [SRV], "sig_level": sig}])

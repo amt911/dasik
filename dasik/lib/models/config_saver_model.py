@@ -73,6 +73,7 @@ class ConfigSaverRestore(BaseModel):
     @field_validator("archive")
     @classmethod
     def _absolute(cls, v: str) -> str:
+        reject_control_chars(v, "config_saver restore archive")
         if not v.startswith("/") or ".." in v.split("/"):
             raise ValueError(
                 f"config_saver.restore.archive must be an absolute path on the "

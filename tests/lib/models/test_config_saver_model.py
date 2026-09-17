@@ -9,7 +9,7 @@ with.
 import pytest
 from pydantic import ValidationError
 
-from dasik.lib.models.config_saver_model import ConfigSaverSource
+from dasik.lib.models.config_saver_model import ConfigSaverRestore, ConfigSaverSource
 
 _SHA = "a520605367e13ec25db4c3c7e1c4bf46175ba8cd"
 _CONTROL_CHARS = ["\n", "\r", "\t", "\x7f"]
@@ -77,3 +77,14 @@ def test_source_ref_rejects_control_chars(ctrl):
 def test_source_subdir_rejects_control_chars(ctrl):
     with pytest.raises(ValidationError):
         _source(subdir=f"pkg{ctrl}sub")
+
+
+@pytest.mark.parametrize("archive", ["/mnt/usb/backup.tar.gz\n", "/mnt/usb/back\rup.tar.gz",
+                                     "/mnt/usb/\tbackup.tar.gz", "/mnt/usb/backup\x7f.tar.gz"])
+def test_restore_archive_with_a_control_character_is_refused(archive):
+    with pytest.raises(ValidationError):
+        ConfigSaverRestore(user="andres", archive=archive)
+
+
+def test_restore_archive_plain_absolute_path_still_validates():
+    assert ConfigSaverRestore(user="andres", archive="/mnt/usb/backup.tar.gz").archive == "/mnt/usb/backup.tar.gz"

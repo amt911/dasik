@@ -96,6 +96,21 @@ class LocaleAction(CompositeV3Action):
         """
         return super().plan(managed) if self._declared else []
 
+    def managed_keys(self) -> dict:
+        """Nothing declared owns nothing, not the empty state.
+
+        ``CompositeV3Action.managed_keys()`` (inherited from ``ScalarV3Action``)
+        serializes ``_desired_state()`` unconditionally, and that serialization
+        is never empty — even undeclared, it is the JSON of
+        ``{"selected_locales": [], "desired_locale": "", "desired_tty_layout":
+        ""}``. Reported as owned, that fake item survived every sync/apply for
+        a domain nobody declared. Gate on the same ``_declared`` flag ``plan()``
+        already uses: undeclared releases the domain instead of inventing it.
+        """
+        if not self._declared:
+            return {self._DOMAIN: []}
+        return super().managed_keys()
+
     def _import_fragment(self, value) -> dict:
         # Report the machine. Falling back to the desired state captured
         # `{"selected_locales": [], "desired_locale": ""}` from a target whose

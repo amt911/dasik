@@ -4,6 +4,7 @@ Plans a `snapper create-config` only for a config that does not already exist
 under /etc/snapper/configs, so a converged system re-plans to nothing. The
 package + timers come from the expand toggle; this action does the create-config.
 """
+import stat
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -500,8 +501,12 @@ def test_apply_remove_refuses_when_subvolume_is_unreadable(tmp_path):
     a = SnapperAction({}, _ctx(tmp_path))
     fake, calls = _fake_btrfs_rm(mountpoint_rc=1)
     with patch("dasik.lib.actions.snapper_action.Command.execute", side_effect=fake):
-        with pytest.raises(CommandExecutionError, match="home"):
+        with pytest.raises(CommandExecutionError, match="home") as excinfo:
             a.apply([Change("snapper", Op.REMOVE, "home")])
+    # N-12: name the remediation, not just the symptom.
+    message = str(excinfo.value)
+    assert "/etc/snapper/configs/home" in message
+    assert "SUBVOLUME=" in message
 
     # zero destructive calls issued -- only the (harmless, read-only)
     # `pacman -Qq snapper` install-check runs before any change is applied.
@@ -527,6 +532,37 @@ def test_apply_remove_refuses_when_the_config_file_is_entirely_missing(tmp_path)
             a.apply([Change("snapper", Op.REMOVE, "home")])
 
     assert [c for c in calls if c[0] in ("btrfs", "rm", "mountpoint")] == []
+
+
+# --- N-12: plan() must pre-check what apply() will refuse ------------------ #
+#
+# Before this, `plan()` announced a REMOVE for `home` with no idea its
+# SUBVOLUME was unreadable -- the user confirmed a destructive plan, THEN got
+# the refusal, and every later `plan` re-announced the same doomed REMOVE.
+
+def test_plan_flags_a_remove_whose_subvolume_is_unreadable(tmp_path):
+    _snapper_configs_dir(tmp_path)
+    (tmp_path / "etc/snapper/configs/home").write_text("TIMELINE_CREATE=\"yes\"\n")
+
+    a = SnapperAction({}, _ctx(tmp_path))
+    changes = a.plan(managed=["home"])
+
+    assert [(c.op, c.item) for c in changes] == [(Op.REMOVE, "home")]
+    assert "SUBVOLUME" in changes[0].reason
+    assert "apply will refuse" in changes[0].reason
+
+
+def test_plan_does_not_flag_a_remove_with_a_readable_subvolume(tmp_path):
+    """The pre-check must not turn every REMOVE's reason into noise -- only
+    the doomed ones."""
+    _snapper_configs_dir(tmp_path)
+    (tmp_path / "etc/snapper/configs/home").write_text('SUBVOLUME="/home"\n')
+
+    a = SnapperAction({}, _ctx(tmp_path))
+    changes = a.plan(managed=["home"])
+
+    assert [(c.op, c.item) for c in changes] == [(Op.REMOVE, "home")]
+    assert "SUBVOLUME" not in changes[0].reason
 
 
 # --- S1: `_delete_config` must be retry-safe after an interruption -------- #
@@ -606,6 +642,47 @@ def test_apply_remove_never_hands_btrfs_a_plain_directory(tmp_path):
     assert not (tmp_path / "etc/snapper/configs/root").exists()
 
 
+def test_apply_remove_raises_when_the_leftover_directory_cannot_be_removed(tmp_path):
+    """N-10: `_rmtree_on_target(..., ignore_errors=True)` used to swallow a
+    failure to remove the leftover `<N>/` bookkeeping directory (permissions,
+    a stray open file, ...) and carry straight on to deleting the config's OWN
+    metadata -- leaving an ORPHAN `<N>/` under `.snapshots` that no later
+    `plan` will ever revisit (the config that owned it is gone). "config
+    metadata LAST" (the class docstring's own contract) means a failure here
+    must raise, keeping the config fully present so the REMOVE is re-planned
+    and retried, exactly like a failed `btrfs subvolume delete` already does
+    two lines above this one.
+
+    A REAL permission failure, not a mock of `shutil.rmtree` itself: mocking
+    the function directly would raise regardless of `ignore_errors`, which is
+    exactly the argument this test needs to discriminate -- `ignore_errors`
+    only changes what the REAL implementation does with an error it
+    encounters while walking. Stripping write on the containing `.snapshots`
+    directory (running as a non-root user) makes the unlink of `1/` inside it
+    a genuine `OSError` the real `shutil.rmtree` has to decide whether to
+    swallow."""
+    _snapper_configs_dir(tmp_path)
+    (tmp_path / "etc/snapper/configs/root").write_text('SUBVOLUME="/"\n')
+    _confd_snapper(tmp_path, "root")
+    _numbered_snapshots(tmp_path, "/", 1)
+
+    snapshots_dir = tmp_path / ".snapshots"
+    snapshots_dir.chmod(0o555)      # r-xr-xr-x: cannot unlink entries within it
+    try:
+        a = SnapperAction({}, _ctx(tmp_path))
+        fake, calls = _fake_btrfs_rm(mountpoint_rc=1)
+        with patch("dasik.lib.actions.snapper_action.Command.execute", side_effect=fake):
+            with pytest.raises(OSError):
+                a.apply([Change("snapper", Op.REMOVE, "root")])
+    finally:
+        snapshots_dir.chmod(0o755)  # restore so tmp_path's own cleanup can remove it
+
+    # config metadata LAST: still fully present, so the REMOVE gets re-planned.
+    assert (tmp_path / "etc/snapper/configs/root").exists()
+    conf = (tmp_path / "etc/conf.d/snapper").read_text()
+    assert 'SNAPPER_CONFIGS="root"' in conf
+
+
 def test_drop_from_snapper_configs_list_keeps_other_names(tmp_path):
     _confd_snapper(tmp_path, "root home")
     a = SnapperAction({}, _ctx(tmp_path))
@@ -636,6 +713,40 @@ def test_drop_from_snapper_configs_list_is_atomic(tmp_path):
             a._drop_from_snapper_configs_list("root", a._target())
 
     assert 'SNAPPER_CONFIGS="root home"' in conf_path.read_text()
+
+
+def test_drop_from_snapper_configs_list_cleans_up_the_temp_file_on_failure(tmp_path):
+    """N-11: an exception between `open(tmp_path, "w")` and `os.replace` must
+    not leave `/etc/conf.d/snapper.dasik-tmp` behind -- the SAME `os.replace`
+    failure the atomicity test above already exercises, but asserting the
+    temp file itself, not just the original's content."""
+    _confd_snapper(tmp_path, "root home")
+    a = SnapperAction({}, _ctx(tmp_path))
+    conf_path = tmp_path / "etc/conf.d/snapper"
+    tmp_leftover = tmp_path / "etc/conf.d/snapper.dasik-tmp"
+
+    with patch("dasik.lib.actions.snapper_action.os.replace",
+              side_effect=OSError("simulated crash before the atomic swap")):
+        with pytest.raises(OSError):
+            a._drop_from_snapper_configs_list("root", a._target())
+
+    assert not tmp_leftover.exists()
+    assert 'SNAPPER_CONFIGS="root home"' in conf_path.read_text()
+
+
+def test_drop_from_snapper_configs_list_preserves_the_original_mode(tmp_path):
+    """N-11: the temp file used to be created through the umask default
+    (typically 0644) rather than copying the ORIGINAL file's mode -- cosmetic
+    while `/etc/conf.d/snapper` happens to be 0644, but wrong for an admin
+    who deliberately tightened it (e.g. 0600)."""
+    _confd_snapper(tmp_path, "root home")
+    a = SnapperAction({}, _ctx(tmp_path))
+    conf_path = tmp_path / "etc/conf.d/snapper"
+    conf_path.chmod(0o600)
+
+    a._drop_from_snapper_configs_list("root", a._target())
+
+    assert stat.S_IMODE(conf_path.stat().st_mode) == 0o600
 
 
 def test_apply_remove_ensures_snapper_installed_first(tmp_path):

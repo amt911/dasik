@@ -8,6 +8,7 @@ exist under /etc/snapper/configs, so a converged system re-plans to nothing.
 """
 import os
 import shutil
+import stat
 from typing import Any, List
 
 from .abstract_action import AbstractAction
@@ -54,7 +55,12 @@ class SnapperAction(AbstractAction):
     def _config_path(self, name: str) -> str:
         t = self._target()
         canonical = f"{_CONFIGS_DIR}/{name}"
-        return t.path(canonical) if t is not None else "/mnt" + canonical
+        if t is None:
+            return "/mnt" + canonical
+        try:
+            return t.path(canonical)
+        except AttributeError:      # a target double with no path() (tests)
+            return "/mnt" + canonical
 
     def _exists(self, name: str) -> bool:
         return os.path.exists(self._config_path(name))
@@ -113,8 +119,14 @@ class SnapperAction(AbstractAction):
                                           reason="create-config"))
         for name in sorted(set(managed or ()) - declared):
             if self._exists(name):
-                changes.append(Change(self._DOMAIN, Op.REMOVE, name,
-                                      reason="no longer declared"))
+                reason = "no longer declared"
+                # N-12: pre-check what `apply()` will refuse (B1) so the plan
+                # never announces a destructive REMOVE it cannot carry out —
+                # confirming it, then hitting the refusal, then re-announcing
+                # the same doomed REMOVE on every later plan.
+                if self._read_subvolume(self._config_path(name)) is None:
+                    reason += ("; SUBVOLUME unreadable — apply will refuse")
+                changes.append(Change(self._DOMAIN, Op.REMOVE, name, reason=reason))
         return changes
 
     @staticmethod
@@ -149,7 +161,9 @@ class SnapperAction(AbstractAction):
                     # refuse just as hard, before any destructive call.
                     raise CommandExecutionError(
                         f"snapper config '{change.item}': cannot read "
-                        "SUBVOLUME, refusing to delete snapshots"
+                        "SUBVOLUME, refusing to delete snapshots. Restore "
+                        f"SUBVOLUME= in {self._config_path(change.item)} or "
+                        "remove that file by hand, then re-run."
                     )
                 self._delete_config(change.item, removed_subvol, target)
                 continue
@@ -337,8 +351,21 @@ class SnapperAction(AbstractAction):
     def _rmtree_on_target(self, path: str, target) -> None:
         """Recursively delete a leftover bookkeeping directory -- never a
         subvolume itself (those go through ``btrfs subvolume delete``
-        above)."""
-        shutil.rmtree(self._resolve_on_target(path, target), ignore_errors=True)
+        above).
+
+        N-10: ``ignore_errors=True`` used to swallow a failure here (a
+        permission error, a stray open file) and carry straight on to
+        deleting the config's own metadata (``_remove_on_target`` /
+        ``_drop_from_snapper_configs_list`` below), leaving an ORPHAN ``<N>/``
+        under ``.snapshots`` that no later ``plan`` can ever revisit -- the
+        config that owned it is already gone. "Snapshot-deletion failures
+        abort immediately, config metadata LAST" (this class's own contract,
+        stated above for the ``btrfs subvolume delete`` calls) applies here
+        too: propagate, so the config stays fully present and the REMOVE is
+        re-planned and retried, the same way a failed ``btrfs`` call already
+        does.
+        """
+        shutil.rmtree(self._resolve_on_target(path, target))
 
     def _drop_from_snapper_configs_list(self, name: str, target) -> None:
         """Remove *name* from ``/etc/conf.d/snapper``'s ``SNAPPER_CONFIGS``
@@ -346,9 +373,18 @@ class SnapperAction(AbstractAction):
         read/write is safe and mirrors what a successful delete-config itself
         does (measured: FACT-SFRM-*). Written atomically (N6): a temp file in
         the same directory, then ``os.replace`` — a crash mid-write leaves the
-        ORIGINAL file untouched rather than a truncated SNAPPER_CONFIGS."""
+        ORIGINAL file untouched rather than a truncated SNAPPER_CONFIGS.
+
+        N-11: the temp file copies the ORIGINAL's mode (``os.chmod``) instead
+        of relying on the process umask — cosmetic while this file happens to
+        be 0644, wrong for an admin who tightened it. An exception between
+        creating the temp file and the ``os.replace`` swap (including a
+        failure raised by ``os.replace`` itself) removes the temp file rather
+        than leaving ``snapper.dasik-tmp`` behind.
+        """
         path = target.path(_CONF_D_SNAPPER) if target is not None else _CONF_D_SNAPPER
         try:
+            st = os.stat(path)
             with open(path, "r", encoding="utf-8") as f:
                 lines = f.readlines()
         except OSError:
@@ -362,9 +398,17 @@ class SnapperAction(AbstractAction):
             else:
                 out.append(line)
         tmp_path = f"{path}.dasik-tmp"
-        with open(tmp_path, "w", encoding="utf-8") as f:
-            f.writelines(out)
-        os.replace(tmp_path, path)
+        try:
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                f.writelines(out)
+            os.chmod(tmp_path, stat.S_IMODE(st.st_mode))
+            os.replace(tmp_path, path)
+        except BaseException:
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+            raise
 
     def managed_keys(self) -> dict:
         if not self.enable:

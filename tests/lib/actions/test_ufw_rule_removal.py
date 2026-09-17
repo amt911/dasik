@@ -93,15 +93,29 @@ def test_the_rules_are_never_handed_to_a_shell():
 
 def test_a_pure_removal_never_re_enables_ufw():
     """Tearing down the whole block has no business flipping the firewall
-    back on -- `--force enable` only belongs to an apply with an INSTALL."""
+    back on -- `--force enable` only belongs to an apply with an INSTALL.
+
+    N2: a bare `MagicMock` return value makes `_ensure_ufw_installed`'s
+    `getattr(probe, "returncode", 0) == 0` check False (a MagicMock attribute
+    is never `== 0`), so the negative assertion below was accidentally also
+    exercising the INSTALL-ufw branch rather than the pure-removal path it
+    claims to test. A `SimpleNamespace(returncode=0)`, like every sibling
+    test in this file already uses, reports ufw as already present.
+    """
     action = _action(rules=[], live=["allow 22000/tcp"])
     changes = action.plan(managed=["allow 22000/tcp"])
 
-    with patch("dasik.lib.actions.firewall_action.Command.execute") as run:
+    def fake(cmd, args=None, **kw):
+        return SimpleNamespace(returncode=0, stdout=b"")
+
+    with patch("dasik.lib.actions.firewall_action.Command.execute",
+              side_effect=fake) as run:
         action.apply(changes)
 
     calls = [c.args[1] for c in run.call_args_list if c.args[0] == "ufw"]
     assert ["--force", "enable"] not in calls
+    assert not any(cmd == "pacman" and "-S" in args
+                  for cmd, args in (c.args for c in run.call_args_list))
 
 
 def test_apply_installs_ufw_before_removing_a_rule():

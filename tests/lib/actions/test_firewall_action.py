@@ -6,12 +6,13 @@ default-service quirk where `--remove-service=ssh` re-fired every apply. Verifie
 with tests (pure file generation), no firewalld/QEMU needed.
 """
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
 from dasik.lib.actions.firewall_action import FirewallAction, _rich_rule_to_xml
 from dasik.lib.exceptions.exceptions import ConfigValidationError
-from dasik.lib.state.change import Op
+from dasik.lib.state.change import Change, Op
 
 
 def _fw(current=None, **cfg):
@@ -19,6 +20,13 @@ def _fw(current=None, **cfg):
     a = FirewallAction(cfg, context=SimpleNamespace(target=object()))
     a._current_xml = lambda zone='public': current
     return a
+
+
+def _ctx_with_backend(backend):
+    """A context carrying a manifest that recorded which backend dasik
+    actually applied last time (S3, ``state_metadata()`` -> action_state)."""
+    return SimpleNamespace(target=object(),
+                           manifest={"action_state": {"firewall": {"backend": backend}}})
 
 
 # --- rich-rule converter -------------------------------------------------- #
@@ -160,6 +168,73 @@ def test_block_absent_never_guesses_when_managed_is_empty():
     assert a.plan(managed=[]) == []
 
 
+# --- S3: one backend decision, recorded and reused, never re-guessed ------- #
+#
+# The shape heuristic (`_looks_like_ufw_items`) is only a fallback for a
+# manifest written before this field existed (dasik <= 0.18.0). Once a plan
+# has recorded which backend it actually applied (`state_metadata()` ->
+# `Manifest.action_state["firewall"]["backend"]`), that recording settles an
+# absent-block teardown INSTEAD of guessing from the shape of `managed` --
+# the heuristic can guess wrong (e.g. a stray `public.xml` left on a machine
+# that is really running ufw).
+
+def test_block_absent_prefers_the_recorded_backend_over_the_shape_heuristic():
+    a = FirewallAction(FirewallAction.empty_config(), context=_ctx_with_backend("ufw"))
+    a._current_xml = lambda zone="public": "<zone></zone>"   # a stray zone file
+    with patch("dasik.lib.actions.firewall_action.Command.execute",
+              return_value=SimpleNamespace(stdout="Status: inactive\n", returncode=0)):
+        changes = a.plan(managed=["public"])
+    # recorded backend says ufw: "public" is not a live ufw rule, so nothing
+    # is removed -- and, crucially, the firewalld zone file is left alone
+    # even though it exists on disk (the OLD shape-only heuristic guessed
+    # firewalld here and planned a REMOVE for it).
+    assert changes == []
+
+
+def test_block_absent_falls_back_to_the_shape_heuristic_without_a_recorded_backend():
+    """A manifest written by dasik <= 0.18.0 has no recorded backend -- the
+    shape heuristic is the only fallback available, and must still work."""
+    a = FirewallAction(FirewallAction.empty_config(), context=SimpleNamespace(target=object()))
+    a._current_xml = lambda zone="public": "<zone></zone>"
+    assert [(c.op, c.item) for c in a.plan(managed=["public"])] == [(Op.REMOVE, "public")]
+
+
+def test_state_metadata_persists_the_firewalld_backend():
+    a = _fw(current="<zone></zone>", allowed_services=["syncthing"])
+    a.plan([])
+    assert a.state_metadata() == {"firewall": {"backend": "firewalld"}}
+
+
+def test_state_metadata_persists_the_ufw_backend():
+    action = FirewallAction({"enable": True, "backend": "ufw", "rules": ["allow 22/tcp"]},
+                            context=SimpleNamespace(target=object()))
+    with patch("dasik.lib.actions.firewall_action.Command.execute",
+              return_value=SimpleNamespace(stdout="Status: inactive\n", returncode=0)):
+        action.plan(managed=[])
+    assert action.state_metadata() == {"firewall": {"backend": "ufw"}}
+
+
+def test_state_metadata_is_empty_before_any_plan():
+    """Nothing to persist until plan() has actually decided something."""
+    a = FirewallAction({"enable": True}, context=SimpleNamespace(target=object()))
+    assert a.state_metadata() == {}
+
+
+def test_apply_reuses_plans_decision_never_re_derives_from_the_change_shape(tmp_path):
+    """apply() must reuse plan()'s decision (S3) rather than re-deriving one
+    from the shape of the CHANGES it is handed -- the mismatch that let plan
+    announce one backend while apply drove another (PROBE-4)."""
+    a = FirewallAction({"enable": True, "allowed_services": ["syncthing"]},
+                       context=SimpleNamespace(target=None))
+    a._zone_file = lambda zone="public": str(tmp_path / f"{zone}.xml")
+    a.plan([])                      # decides + stores "firewalld"
+    with patch("dasik.lib.actions.firewall_action.Command.execute") as run:
+        # an item shaped like a ufw rule must NOT flip apply() to the ufw
+        # backend -- the decision was already made, once, in plan().
+        a.apply([Change("firewall", Op.REMOVE, "allow ssh")])
+    assert not run.called    # no ufw CLI (`_ensure_ufw_installed`) invoked
+
+
 def test_firewall_is_registered_before_packages():
     """A ufw REMOVE needs the `ufw` binary, which PackagesAction may uninstall
     in the SAME apply once the `firewall` toggle stops declaring it — so this
@@ -246,3 +321,48 @@ def test_import_state_roundtrips_to_noop():
     assert '<service name="samba"/>' in xml
     assert '<service name="dhcpv6-client"/>' in xml
     assert '<service name="ssh"/>' not in xml
+
+
+# --- actual() must report reality regardless of `enable` (S2) -------------- #
+#
+# `actual()` used to return `set()` whenever `enable` was false — so a `sync`
+# run while the block was disabled/absent computed
+# `actual ∩ (claimable ∪ declared)` with actual=set(), dispossessing the
+# manifest of a zone/rule it still owned. `actual()` must be the "A = all"
+# convention `SystemdAction.actual()` already follows: report every
+# customised zone / every live ufw rule, and let the reconciler's
+# intersection with claimable/declared scope it.
+
+from dasik.lib.target.target import Target
+from dasik.lib.actions.action_context import ActionContext
+
+
+def test_actual_reports_zones_even_when_disabled(tmp_path):
+    zones = tmp_path / "etc/firewalld/zones"
+    zones.mkdir(parents=True)
+    (zones / "public.xml").write_text("<zone></zone>\n")
+    a = FirewallAction({"enable": False}, ActionContext(target=Target(root=str(tmp_path))))
+    assert a.actual() == {"public"}
+
+
+def test_actual_reports_zones_when_the_block_is_absent(tmp_path):
+    zones = tmp_path / "etc/firewalld/zones"
+    zones.mkdir(parents=True)
+    (zones / "public.xml").write_text("<zone></zone>\n")
+    a = FirewallAction(FirewallAction.empty_config(),
+                       ActionContext(target=Target(root=str(tmp_path))))
+    assert a.actual() == {"public"}
+
+
+def test_actual_ufw_reports_every_live_rule_even_when_disabled():
+    """ufw's `actual()` is now "every live rule", not "every DECLARED rule
+    that happens to be live" -- the same widening the reconciler's own
+    intersection with claimable/declared already scopes for every other
+    domain (systemd, snapper)."""
+    cfg = {"enable": False, "backend": "ufw", "rules": ["allow 22/tcp"]}
+    live_status = ("Status: active\n\nTo Action From\n-- ------ ----\n"
+                  "22/tcp ALLOW IN Anywhere\n9999/tcp ALLOW IN Anywhere\n")
+    a = FirewallAction(cfg, context=SimpleNamespace(target=object()))
+    with patch("dasik.lib.actions.firewall_action.Command.execute",
+              return_value=SimpleNamespace(stdout=live_status, returncode=0)):
+        assert a.actual() == {"allow 22/tcp", "allow 9999/tcp"}

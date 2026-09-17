@@ -16,6 +16,11 @@ _UFW_RULE_RE = re.compile(
 # /etc/services — those are the ones ufw rewrites.
 _SERVICE_NAME_TRAP = {"ssh", "http", "https", "ftp", "smtp", "dns", "domain",
                       "telnet", "imap", "pop3", "ntp", "snmp", "ldap", "smb"}
+# firewalld's own zone name limit (firewalld-zone(5): 1-17 chars of
+# [A-Za-z0-9_-]) -- also interpolated straight into a filename
+# (`FirewallAction._zone_file`) and firewall-cmd argv, so an illegal name is
+# worth catching at the config boundary (S3).
+_ZONE_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,17}$")
 
 
 class FirewallZoneModel(BaseModel):
@@ -73,6 +78,18 @@ class FirewallModel(BaseModel):
                     "zone; this is for a machine that also customises `home`, "
                     "`work`, `internal`…"
     )
+
+    @field_validator("zones")
+    @classmethod
+    def _validate_zone_names(cls, v: Dict[str, FirewallZoneModel]) -> Dict[str, FirewallZoneModel]:
+        for name in v:
+            if not _ZONE_NAME_RE.fullmatch(name):
+                raise ValueError(
+                    f"Invalid firewalld zone name {name!r}: must match "
+                    f"{_ZONE_NAME_RE.pattern!r} (firewalld's own 1-17 "
+                    "character limit)."
+                )
+        return v
 
     @field_validator("rules")
     @classmethod

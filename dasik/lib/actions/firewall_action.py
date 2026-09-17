@@ -129,6 +129,12 @@ class FirewallAction(AbstractAction):
         self.remove: List[str] = cfg.get("remove_services", [])
         self.backend: str = cfg.get("backend", "firewalld")
         self.rules: List[str] = cfg.get("rules", [])
+        # S3: which backend plan() decided teardown/removal targets, so
+        # apply() reuses that SAME decision instead of re-deriving one from
+        # the shape of the changes it is handed. Set by plan(); persisted by
+        # state_metadata() so a later disabled/absent plan can read back
+        # what was actually applied rather than guessing.
+        self._teardown_backend: Optional[str] = None
 
     @property
     def name(self) -> str:
@@ -254,6 +260,45 @@ class FirewallAction(AbstractAction):
         return all(" " in item and item.split()[0].lower() in _UFW_ACTIONS.values()
                    for item in items)
 
+    def _action_state(self) -> dict:
+        """Per-action state the last apply recorded (mirrors
+        ``PackagesAction._action_state``): ``manifest.action_state["firewall"]``."""
+        manifest = getattr(self.context, "manifest", None) if self.context else None
+        if not isinstance(manifest, dict):
+            return {}
+        state = manifest.get("action_state", {}).get(self._DOMAIN, {})
+        return state if isinstance(state, dict) else {}
+
+    def _recorded_backend(self) -> "Optional[str]":
+        backend = self._action_state().get("backend")
+        return backend if backend in ("ufw", "firewalld") else None
+
+    def _resolved_backend(self, managed) -> str:
+        """Which backend teardown/removal-planning targets, decided ONCE and
+        reused by both ``plan()`` and ``apply()`` (S3) -- never re-derived
+        independently, which is exactly the mismatch that let ``plan()``
+        announce firewalld while ``apply()`` drove ufw (PROBE-4).
+
+        While the block is enabled, ``self.backend`` is the current,
+        trustworthy declaration. While it is disabled or the whole block is
+        absent, the parsed config's own ``backend`` field defaults to
+        "firewalld" (a ``FirewallModel`` default, not a fact about history)
+        and cannot be trusted, so: an EXPLICIT ``backend: ufw`` while merely
+        disabled is still honored; failing that, the backend dasik actually
+        applied last time, recorded in the manifest's ``action_state``
+        (``state_metadata()``); failing THAT (a manifest written by dasik
+        <= 0.18.0, before this field existed), fall back to classifying the
+        managed items by shape.
+        """
+        if self.enable:
+            return self.backend
+        if self._is_ufw():
+            return "ufw"
+        recorded = self._recorded_backend()
+        if recorded is not None:
+            return recorded
+        return "ufw" if self._looks_like_ufw_items(managed) else "firewalld"
+
     def _apply_ufw(self, changes) -> None:
         # FirewallAction runs BEFORE PackagesAction (branch
         # feat/snapper-firewall-removal, mirroring SnapperAction's own
@@ -354,23 +399,32 @@ class FirewallAction(AbstractAction):
     # --- v3 contract -------------------------------------------------- #
 
     def actual(self) -> set:
-        if self._is_ufw():
-            live = set(self._live_ufw_rules())
-            return {r for r in self._desired_ufw_rules() if r in live}
-        if not self.enable:
-            return set()
-        return {z for z in self._declared_zones()
-                if self._current_xml(z) is not None}
+        """Every rule/zone this backend reports right now, REGARDLESS of
+        `enable` -- the "A = all" convention `SystemdAction.actual()`
+        already follows. Gating this on `enable` (as it did before) meant a
+        `sync` run while the block was disabled/absent computed
+        `actual ∩ (claimable ∪ declared)` with actual=set(), dispossessing
+        the manifest of a rule/zone it still owned (S2). The reconciler's
+        own intersection with claimable/declared still scopes this: a live
+        rule/zone dasik never touched is never falsely claimed.
+
+        Which backend to READ is the same question `plan()`/`apply()` answer
+        via `_resolved_backend()` (S3): while the block is absent, `backend`
+        defaults to "firewalld" and cannot be trusted on its own, so a
+        manifest recording which backend was actually applied settles it
+        here too -- otherwise a `sync` on a ufw-only machine whose `firewall`
+        block just got fully deleted would probe an empty
+        `/etc/firewalld/zones` and lose ownership the same way the `enable`
+        gate did.
+        """
+        if self._resolved_backend(()) == "ufw":
+            return set(self._live_ufw_rules())
+        return set(self._customised_zones())
 
     def plan(self, managed):
         managed = list(managed or ())
-        # `enable: False` is one of the three disappearance forms (see
-        # module docstring); the whole `firewall` block being absent is
-        # another, and the reconciler hands `empty_config()` ({}) for that
-        # one — `self.backend` then defaults to "firewalld" and cannot be
-        # trusted, so an absent-block ufw teardown is told apart from a
-        # firewalld one by the SHAPE of what the manifest owns.
-        if self._is_ufw() or (not self.enable and self._looks_like_ufw_items(managed)):
+        self._teardown_backend = self._resolved_backend(managed)
+        if self._teardown_backend == "ufw":
             return self._plan_ufw(managed)
         if not self.enable:
             return self._plan_firewalld_disabled(managed)
@@ -389,25 +443,63 @@ class FirewallAction(AbstractAction):
     def apply(self, changes) -> None:
         if not changes:
             return
-        if self._is_ufw() or self._looks_like_ufw_items([c.item for c in changes]):
+        # S3: reuse the SAME decision plan() made — never re-derive one from
+        # the shape of these changes (that mismatch is exactly what let plan
+        # announce one backend while apply drove another). `_teardown_backend`
+        # is only ever None here when apply() is called without a preceding
+        # plan(), which no real path does; the fallback keeps that defensive.
+        backend = self._teardown_backend
+        if backend is None:
+            backend = self._resolved_backend([c.item for c in changes])
+        if backend == "ufw":
             self._apply_ufw(changes)
             return
+        touched = False
         for change in changes:
             path = self._zone_file(change.item)
             if change.op is Op.REMOVE:
                 try:
                     os.remove(path)
+                    touched = True
                 except FileNotFoundError:
                     pass
                 continue
             os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(path, "w") as f:
                 f.write(self._desired_xml(change.item))
+            touched = True
+        if touched:
+            self._reload_firewalld()
+
+    def _reload_firewalld(self) -> None:
+        """A zone file on disk is not what firewalld enforces until the
+        running daemon re-reads it -- on a LIVE target only (N4, mirrors
+        ``DropFilesAction._reload_systemd`` / issue #300's same lesson):
+        there is no running firewalld under an install target at ``/mnt`` to
+        reload, and its first boot reads the zone fresh."""
+        target = self._target()
+        if target is None or getattr(target, "is_chroot", True):
+            return
+        probe = Command.execute("systemctl", ["is-active", "firewalld"], target=target)
+        if getattr(probe, "returncode", 1) != 0:
+            return
+        Command.execute("firewall-cmd", ["--reload"], target=target)
 
     def managed_keys(self) -> dict:
         if self._is_ufw():
             return {self._DOMAIN: self._desired_ufw_rules() if self.enable else []}
         return {self._DOMAIN: self._declared_zones() if self.enable else []}
+
+    def state_metadata(self) -> dict:
+        """Persist which backend dasik actually applied (S3), so a later
+        plan on a disabled/absent block — whose own ``backend`` field
+        defaults to "firewalld" and cannot be trusted — can read back the
+        true history via ``_recorded_backend()`` instead of guessing from
+        the shape of ``managed`` (kept only as the fallback for a manifest
+        written before this field existed, dasik <= 0.18.0)."""
+        if self._teardown_backend not in ("ufw", "firewalld"):
+            return {}
+        return {self._DOMAIN: {"backend": self._teardown_backend}}
 
     @staticmethod
     def _decode(out) -> str:

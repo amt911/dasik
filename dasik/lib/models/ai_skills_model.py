@@ -44,6 +44,11 @@ METHOD_AGENT = {"claude-plugin": "claude-code", "codex-plugin": "codex",
 # target) and never anything git could read as one of its own options.
 _GIT_SHORTHAND_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 
+# An Antigravity plugin name reaches `agy plugin uninstall "$1"`, which resolves
+# it as a path under ~/.gemini/config/plugins — measured: `../../..` deleted the
+# home it pointed at. A plain name, never a path or an option.
+PLUGIN_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
 
 class MarketplaceRef(BaseModel):
     """A plugin marketplace: its registered name, and where it came from.
@@ -138,6 +143,16 @@ class AiSkillEntry(BaseModel):
                 raise ValueError("method 'tool' takes no `marketplace` or "
                                  "`source`: the program is the source")
         elif self.method == "antigravity-plugin":
+            if not PLUGIN_NAME_RE.match(self.name):
+                raise ValueError(
+                    "method 'antigravity-plugin' needs `name` to be a plain name "
+                    f"(letters, digits, '.', '_', '-'), got {self.name!r}: agy "
+                    "resolves it as a path when uninstalling")
+            if self.plugin is not None and not PLUGIN_NAME_RE.match(self.plugin):
+                raise ValueError(
+                    "method 'antigravity-plugin' needs `plugin` to be a plain "
+                    f"name, got {self.plugin!r}: agy resolves it as a path when "
+                    "uninstalling")
             if not self.source:
                 raise ValueError("method 'antigravity-plugin' requires `source` "
                                  "(owner/repo or https URL of the plugin "

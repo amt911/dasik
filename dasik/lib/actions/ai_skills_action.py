@@ -32,6 +32,7 @@ from .config_access import field as _field
 from ..command_worker.command_worker import Command
 from ..exceptions.exceptions import CommandExecutionError
 from ..logging import run_logger
+from ..models.ai_skills_model import PLUGIN_NAME_RE
 from ..state.change import Change, Op
 
 _DOMAIN = "ai_skills"
@@ -88,6 +89,8 @@ class AiSkillsAction(AbstractAction):
         self.failed_items: List[str] = []
         # (user, skill) pairs already removed for every agent in this apply.
         self._removed_everywhere: set = set()
+        # (user, agent, skill) triples this apply is deleting.
+        self._deleting: set = set()
 
     @classmethod
     def empty_config(cls) -> Any:
@@ -545,9 +548,9 @@ class AiSkillsAction(AbstractAction):
         # the one directory dasik owns removes exactly what it owns.
         user, agent, name = spec["user"], spec["agent"], spec["name"]
         home = self._abs(self._home_of(user, self._passwd()))
-        canonical, _per_agent, sources = skills_state(home)
+        canonical, per_agent, sources = skills_state(home)
         if name in canonical and name in sources:
-            if not self._still_wanted(user, name):
+            if self._only_dasik_is_leaving(user, name, per_agent):
                 # Nobody in the config wants it any more. Per-agent removals
                 # never delete the canonical copy while some other UNIVERSAL
                 # agent is merely detected on the machine (FACT-AGY-6), which
@@ -561,10 +564,27 @@ class AiSkillsAction(AbstractAction):
                          (name,))]
             return [('npx -y skills remove --skill "$1" --agent "$2" '
                      '--global --yes', (name, agent))]
+        if agent in _CANONICAL_TOOL_AGENTS and self._still_wanted(user, name):
+            # The shared copy is this agent's only copy, and another agent
+            # still declares the skill: removing it would take it from them.
+            return []
         directory = self._skill_dir_for(user, agent, name, self._passwd())
         if directory is None:
             return []
         return [('rm -rf -- "$1"', (directory,))]
+
+    def _only_dasik_is_leaving(self, user: str, name: str,
+                               per_agent: Dict[str, set]) -> bool:
+        """Whether the whole skill can go: nobody declares it any more, and
+        every agent with a copy or link of its own is one this apply deletes.
+
+        A link dasik does not own (made by hand, or by another tool) keeps the
+        skill in place — the agent-less remove would delete it too.
+        """
+        if self._still_wanted(user, name):
+            return False
+        return all((user, agent, name) in self._deleting
+                   for agent, names in per_agent.items() if name in names)
 
     def _still_wanted(self, user: str, name: str) -> bool:
         """Whether any agent of *user* still declares skill *name*."""
@@ -590,15 +610,31 @@ class AiSkillsAction(AbstractAction):
         if self._target() is None:
             return
         desired = self._desired()
+        self._deleting = set()
+        for change in changes:
+            spec = desired.get(change.item) or self._spec_from_item(change.item)
+            if change.op is Op.DELETE and spec and spec.get("kind") == "skill":
+                self._deleting.add((spec["user"], spec["agent"], spec["name"]))
         # A DELETE is not in the config any more, so its spec comes from the
         # item itself: user, agent, kind and value are all the command needs.
         for change in changes:
             spec = desired.get(change.item) or self._spec_from_item(change.item)
             if spec is None:
                 continue
+            agy_plugin = spec["kind"] == "plugin" and spec["agent"] == _AGY_AGENT
+            if agy_plugin and not PLUGIN_NAME_RE.match(spec.get("plugin") or ""):
+                # The manifest is a file on disk: a DELETE rebuilt from it gets
+                # the same check as a declaration before anything runs.
+                self._fail(change.item, f"ai_skills: {change.item} refused: "
+                                        "not a plain plugin name")
+                continue
+            completed = True
             for script, args in self._command_for(change, spec):
                 if not self._run(spec["user"], script, args, change.item):
+                    completed = False
                     break
+            if completed and agy_plugin and change.op is not Op.DELETE:
+                self._check_agy_install(spec, change.item)
 
     @staticmethod
     def _spec_from_item(item: str) -> Optional[Dict[str, Any]]:
@@ -615,6 +651,26 @@ class AiSkillsAction(AbstractAction):
             spec.update(name=value, source=None)
         return spec
 
+    def _check_agy_install(self, spec: Dict[str, Any], item: str) -> None:
+        """agy names a plugin after its own marketplace.json, not after the
+        config. An install that succeeded under another name is not the
+        declared plugin — owning it would re-plan the same CREATE forever."""
+        home = self._abs(self._home_of(spec["user"], self._passwd()))
+        if spec["plugin"] in antigravity_plugins(home):
+            return
+        self._fail(item, (
+            f"ai_skills: {item}: `agy plugin install` succeeded but no plugin "
+            f"named '{spec['plugin']}' was registered. The repository's "
+            ".agents/plugins/marketplace.json names it differently: set "
+            "`plugin` to that name (`agy plugin list` shows it)."))
+
+    def _fail(self, item: str, message: str) -> None:
+        if self.failure_policy == "abort":
+            raise CommandExecutionError(message)
+        print(f"\033[31m{message}\033[0m")
+        if item not in self.failed_items:
+            self.failed_items.append(item)
+
     def _run(self, user: str, script: str, args: Tuple[str, ...],
              item: str) -> bool:
         """Run one installer command. False when it failed (and was tolerated)."""
@@ -628,13 +684,9 @@ class AiSkillsAction(AbstractAction):
         message = (f"ai_skills: {item} failed. Command: su - {user} -c "
                    f"{script!r} -- sh {' '.join(args)}"
                    + (f"\n{detail}" if detail else ""))
-        if self.failure_policy == "abort":
-            raise CommandExecutionError(message)
         # warn-and-continue: the rest of the apply is worth more than this one
         # artefact, and disowning the item makes the next plan ask again.
-        print(f"\033[31m{message}\033[0m")
-        if item not in self.failed_items:
-            self.failed_items.append(item)
+        self._fail(item, message)
         return False
 
     # -- sync ---------------------------------------------------------------- #

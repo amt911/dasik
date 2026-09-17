@@ -83,8 +83,6 @@ for p in superpowers 21st; do
     present /tmp/plugins.json "\"name\": \"$p\""; rc "AGY-PLUGIN-LISTED-$p"
     test -d "$PLUGINS/$p"; rc "AGY-PLUGIN-PAYLOAD-$p"
 done
-# the throwaway clone must be gone (mktemp -d under /tmp, clone at <dir>/plugin)
-! ls -d /tmp/tmp.*/plugin 2>/dev/null; rc AGY-NO-CLONE-LEFT
 absent $MCP 'magic'; rc AGY-21ST-KEY-NEVER-IN-MCP-CONFIG
 
 echo "AGY-B: check, plan, apply, plan — converged and silent"
@@ -114,6 +112,9 @@ $D apply "$C" --target / --yes $L > /tmp/apply-drift.txt 2>&1; rc AGY-C-APPLY
 tail -20 /tmp/apply-drift.txt
 python /tmp/expect_agy.py $MCP; rc AGY-C-SERVERS-REPAIRED
 test -d "$PLUGINS/21st"; rc AGY-C3-PAYLOAD-BACK
+# 21st was just reinstalled ON THE LIVE HOST (the install ran in a chroot, whose
+# /tmp is private): the throwaway clone (mktemp -d, clone at <dir>/plugin) is gone.
+! ls -d /tmp/tmp.*/plugin 2>/dev/null; rc AGY-NO-CLONE-LEFT
 $D plan "$C" --target / $L > /tmp/plan-after-drift.txt 2>&1
 quiet /tmp/plan-after-drift.txt; rc AGY-C-REPLAN-QUIET
 

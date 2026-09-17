@@ -260,3 +260,92 @@ def test_a_dropped_antigravity_graphify_removes_the_shared_copy_and_converges(tm
     calls = _calls(action, action.plan(managed=managed))
     assert [argv[3:] for _b, argv in calls][0] == [
         'rm -rf -- "$1"', "--", "sh", "/home/andres/.agents/skills/graphify"]
+
+
+# -- review round 1 --------------------------------------------------------- #
+
+@pytest.mark.parametrize("bad", ["../../..", "..", "a/b", "-rf", ".hidden", "x y"])
+def test_b1_a_plugin_name_that_is_not_a_plain_name_is_refused(bad):
+    """Measured: `agy plugin uninstall ../../..` deletes the directory tree it
+    resolves to. Both fields reach agy (plugin) or the item (name)."""
+    with pytest.raises(ValidationError, match="plugin"):
+        AiSkillsModel(entries=[dict(SUPERPOWERS, plugin=bad)])
+    with pytest.raises(ValidationError, match="name"):
+        AiSkillsModel(entries=[dict(SUPERPOWERS, name=bad)])
+
+
+def test_b1_a_manifest_item_with_an_unsafe_name_never_reaches_agy(tmp_path):
+    """A DELETE is rebuilt from the manifest, which is a file on disk — it gets
+    the same check as a declaration before anything runs."""
+    action = _action(tmp_path, [])
+    calls = _calls(action, [
+        Change("ai_skills", Op.DELETE, "andres:antigravity:plugin:../../..")])
+    assert calls == []
+    assert action.failed_items == ["andres:antigravity:plugin:../../.."]
+
+
+def test_s1_an_install_that_registers_another_name_is_a_failure(tmp_path):
+    """agy names the plugin after its marketplace.json, not after the config.
+    A success exit that installed something else must not be owned, or the
+    next plan asks for it again forever."""
+    action = _action(tmp_path, [dict(SUPERPOWERS, plugin="superpowers-dev")])
+    _calls(action, [Change("ai_skills", Op.CREATE,
+                           "andres:antigravity:plugin:superpowers-dev")])
+    assert action.failed_items == ["andres:antigravity:plugin:superpowers-dev"]
+    assert action.managed_keys() == {"ai_skills": []}
+
+
+def test_s1_an_install_that_registers_the_declared_name_is_owned(tmp_path):
+    root = _root(tmp_path)
+    action = AiSkillsAction({"users": [{"username": "andres"}],
+                             "ai_skills": {"entries": [SUPERPOWERS]}},
+                            ActionContext(target=Target(root=str(root))))
+    home = root / "home/andres"
+
+    def installed(*_a, **_k):
+        _registry(home, ["superpowers"])
+        return MagicMock(returncode=0, stdout="", stderr="")
+
+    with patch("dasik.lib.actions.ai_skills_action.Command.execute",
+               side_effect=installed):
+        action.apply([Change("ai_skills", Op.CREATE,
+                             "andres:antigravity:plugin:superpowers")])
+    assert action.failed_items == []
+
+
+def _canonical_skill(root, name="graphify"):
+    skill = root / "home/andres/.agents/skills" / name
+    skill.mkdir(parents=True, exist_ok=True)
+    (skill / "SKILL.md").write_text(f"---\nname: {name}\n---\n")
+
+
+def test_s2_dropping_one_antigravity_agent_keeps_the_copy_the_others_use(tmp_path):
+    root = _root(tmp_path)
+    _canonical_skill(root)
+    action = AiSkillsAction({"users": [{"username": "andres"}], "ai_skills": {
+        "entries": [dict(GRAPHIFY, agents=["codex", "antigravity-cli"])]}},
+        ActionContext(target=Target(root=str(root))))
+    calls = _calls(action, [
+        Change("ai_skills", Op.DELETE, "andres:antigravity:skill:graphify")])
+    assert calls == []
+    assert action.failed_items == []
+
+
+def test_s3_an_unowned_agent_link_keeps_the_skill_in_place(tmp_path):
+    """A claude-code link dasik does not own (made by hand, or by another
+    config) must survive: the agent-less remove would delete it. Fall back to
+    removing only what this apply is deleting."""
+    root = _root(tmp_path)
+    home = root / "home/andres"
+    _canonical_skill(root, "impeccable")
+    (home / ".claude/skills").mkdir(parents=True)
+    (home / ".claude/skills/impeccable").symlink_to(home / ".agents/skills/impeccable")
+    (home / ".agents/.skill-lock.json").write_text(json.dumps(
+        {"version": 3, "skills": {"impeccable": {"source": "pbakaus/impeccable"}}}))
+    action = AiSkillsAction({"users": [{"username": "andres"}],
+                             "ai_skills": {"entries": []}},
+                            ActionContext(target=Target(root=str(root))))
+    calls = _calls(action, [
+        Change("ai_skills", Op.DELETE, "andres:codex:skill:impeccable")])
+    assert [argv[3] for _b, argv in calls] == [
+        'npx -y skills remove --skill "$1" --agent "$2" --global --yes']

@@ -349,3 +349,101 @@ def test_pacman_block_absent_from_the_whole_config_deletes_what_the_manifest_own
               if c.domain == "pacman_repositories"]
     assert ("DELETE", CREATE_KEY) in changes
     assert ("DELETE", CREATE_REPO) in changes
+
+
+# --- finding 7: narrowed `_run_gpg` except + one-time keyring-unreadable warn -
+#
+# `_run_gpg` used to catch bare `Exception`, which (a) hid genuine bugs in
+# dasik's own code behind a silent "nothing trusted" result and (b) meant an
+# unreadable/uninitialized pacman keyring (wrong permissions — it needs root,
+# or `pacman-key --init` never ran) looked EXACTLY like "no keys declared
+# yet", with no signal to the operator. Narrowed to the specific exceptions a
+# real `Command.execute` can raise (`CommandNotFoundException`,
+# `CommandExecutionError`, `OSError`); anything else propagates. A warning is
+# printed once per action instance (not once per `_trusted_keys()` call, and
+# `plan()`/`captured()` each call it) when the keyring can't be read AT ALL
+# (non-zero rc or one of those exceptions) or has no master key, but only
+# when there is a `pacman.conf` to converge in the first place — an unbuilt
+# target with no pacman.conf yet is not a keyring problem.
+import pytest as _pytest
+
+from dasik.lib.logging import run_logger as _run_logger
+
+
+@_pytest.fixture
+def _fresh_run_logger():
+    """`RunLogger` is a process-wide singleton that captures `sys.stderr` at
+    construction time; resetting before AND after lets `capsys` see a
+    freshly-built one bound to ITS redirected stream, and stops a
+    capsys-bound instance leaking into a later test."""
+    _run_logger.reset()
+    yield
+    _run_logger.reset()
+
+
+def test_unreadable_keyring_warns_once_per_instance_not_per_call(tmp_path, capsys, _fresh_run_logger):
+    from dasik.lib.exceptions.exceptions import CommandNotFoundException
+
+    _write_conf(tmp_path, STOCK)
+    action = _action(tmp_path, {"keys": [AMT_KEY_CFG]})
+
+    def raise_not_found(cmd, args, **kwargs):
+        raise CommandNotFoundException("gpg not found")
+
+    with patch("dasik.lib.actions.pacman_repositories_action.Command.execute",
+              side_effect=raise_not_found):
+        action.plan(managed=[])   # calls _trusted_keys() once
+        action.plan(managed=[])   # and again — still ONE warning total
+
+    err = capsys.readouterr().err
+    assert err.count("key trust") == 1
+    assert "root" in err.lower()
+
+
+def test_narrowed_except_does_not_swallow_an_unrelated_bug(tmp_path):
+    _write_conf(tmp_path, STOCK)
+    action = _action(tmp_path, {"keys": [AMT_KEY_CFG]})
+
+    def boom(cmd, args, **kwargs):
+        raise RuntimeError("not a Command.execute failure mode at all")
+
+    with patch("dasik.lib.actions.pacman_repositories_action.Command.execute",
+              side_effect=boom):
+        with _pytest.raises(RuntimeError):
+            action.plan(managed=[])
+
+
+def test_no_warning_when_there_is_no_pacman_conf_to_converge(tmp_path, capsys, _fresh_run_logger):
+    from dasik.lib.exceptions.exceptions import CommandNotFoundException
+
+    # No _write_conf(tmp_path, ...) at all: an unbuilt target.
+    action = _action(tmp_path, {"keys": [AMT_KEY_CFG]})
+
+    def raise_not_found(cmd, args, **kwargs):
+        raise CommandNotFoundException("gpg not found")
+
+    with patch("dasik.lib.actions.pacman_repositories_action.Command.execute",
+              side_effect=raise_not_found):
+        action.plan(managed=[])   # still plans the declared key as CREATE
+
+    assert capsys.readouterr().err == ""
+
+
+def test_master_key_present_but_nothing_lsigned_yet_does_not_warn(tmp_path, capsys, _fresh_run_logger):
+    """Master key exists, nothing is trusted yet — the ordinary "declared key
+    not lsigned yet" state, not a broken keyring. Must stay silent."""
+    _write_conf(tmp_path, STOCK)
+    action = _action(tmp_path, {"keys": [AMT_KEY_CFG]})
+    with _patched(secret_out=LIST_SECRET_KEYS, sigs_out=""):
+        action.plan(managed=[])
+    assert capsys.readouterr().err == ""
+
+
+def test_no_master_key_at_all_with_pacman_conf_present_warns(tmp_path, capsys, _fresh_run_logger):
+    _write_conf(tmp_path, STOCK)
+    action = _action(tmp_path, {"keys": [AMT_KEY_CFG]})
+    with _patched(secret_out="", sigs_out=""):
+        action.plan(managed=[])
+    err = capsys.readouterr().err
+    assert "key trust" in err
+    assert "root" in err.lower()

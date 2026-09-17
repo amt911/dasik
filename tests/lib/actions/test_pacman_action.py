@@ -2,6 +2,7 @@ from dasik.lib.actions.pacman_action import PacmanAction
 from dasik.lib.actions.action_context import ActionContext
 from dasik.lib.target.target import Target
 from dasik.lib.state.change import Op
+from tests.lib.actions.test_pacman_repositories_plan import _patched
 
 _COMMENTED = """\
 #ParallelDownloads = 5
@@ -209,7 +210,15 @@ def test_set_value_idempotent(tmp_path):
 def test_import_fragment_shape(tmp_path):
     _write_conf(tmp_path, _ACTIVE)
     a = PacmanAction(_cfg(), _ctx(tmp_path))
-    frag = a.import_state(managed=[])
+    # `_import_fragment` folds in `PacmanRepositoriesAction.captured()`, which
+    # reads the target's pacman keyring via `gpg`. Unpatched, this used to
+    # reach the real `Command.execute` — `arch-chroot`/`gpg` if installed on
+    # the machine running the suite, a `CommandNotFoundException` silently
+    # swallowed by `_run_gpg` if not — instead of a deterministic mock; `_patched`
+    # (shared with test_pacman_repositories_plan.py) also asserts no OTHER
+    # command sneaks through.
+    with _patched():
+        frag = a.import_state(managed=[])
     # repositories/keys: task 7, PacmanAction._import_fragment folds in
     # PacmanRepositoriesAction.captured() — always present, empty here since
     # `_ACTIVE` declares no third-party section and no gpg keyring to trust.
@@ -251,7 +260,12 @@ def test_an_undeclared_pacman_section_plans_nothing(tmp_path):
 def test_an_undeclared_pacman_section_captures_the_machine(tmp_path):
     action = PacmanAction(PacmanAction.empty_config(), _ctx(str(_conf(tmp_path))))
 
-    assert action.import_state(managed=[]) == {"pacman": {
+    # See test_import_fragment_shape: same real-Command.execute boundary,
+    # same deterministic-mock fix.
+    with _patched():
+        captured = action.import_state(managed=[])
+
+    assert captured == {"pacman": {
         "options": {"Parallel": True, "Color": True, "VerbosePkgLists": False},
         "multilib": True,
         "repositories": [],

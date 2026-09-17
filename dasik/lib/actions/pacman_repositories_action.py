@@ -59,7 +59,12 @@ from .pacman_repos_state import (
     trusted_fingerprints,
 )
 from ..command_worker.command_worker import Command
-from ..exceptions.exceptions import PacmanKeyMismatchError
+from ..exceptions.exceptions import (
+    CommandExecutionError,
+    CommandNotFoundException,
+    PacmanKeyMismatchError,
+)
+from ..logging import run_logger
 from ..state.change import Change, Op
 from ..state.set_math import compute_changes
 
@@ -128,6 +133,7 @@ class PacmanRepositoriesAction(AbstractAction):
     # list/dict across probes is safe.
     _repos: List[RepoSection] = []
     _keys: Dict[str, Optional[str]] = {}
+    _keyring_warn_shown: bool = False
 
     def __init__(self, config: Any, context: Any = None):
         super().__init__(config, context)
@@ -138,6 +144,10 @@ class PacmanRepositoriesAction(AbstractAction):
             str(_field(k, "fingerprint")).upper(): _field(k, "url")
             for k in keys_raw
         }
+        # One warning per ACTION INSTANCE (never per `_trusted_keys()` call —
+        # `plan()`, `actual()` and `captured()` can each trigger one) when the
+        # keyring's trust state can't be established. See `_warn_keyring_unreadable`.
+        self._keyring_warn_shown = False
 
     @classmethod
     def empty_config(cls) -> Any:
@@ -183,18 +193,40 @@ class PacmanRepositoriesAction(AbstractAction):
     def _run_gpg(self, args: List[str]) -> Optional[str]:
         """One ``gpg`` call against the target's pacman keyring.
 
-        Returns ``None`` (never raises) on a missing binary/keyring or a
-        non-zero exit — the controller ruling's "no trusted keys, never an
-        exception" contract.
+        Returns ``None`` on a missing binary/keyring or a non-zero exit — the
+        controller ruling's "no trusted keys, never an exception" contract —
+        by catching only the exceptions a real ``Command.execute`` can
+        actually raise for this call (``CommandNotFoundException`` — no
+        ``gpg``/``arch-chroot`` binary; ``CommandExecutionError`` — the
+        ``check=True`` failure shape, defensive here since this call passes
+        ``check=False``; ``OSError`` — e.g. a permission error opening the
+        keyring). Anything else is a bug in dasik's own code and must
+        propagate, not disappear as "nothing trusted".
         """
         try:
             result = Command.execute("gpg", args, target=self._target(),
                                       check=False)
-        except Exception:
+        except (CommandNotFoundException, CommandExecutionError, OSError):
             return None
         if getattr(result, "returncode", 1) != 0:
             return None
         return _decode(getattr(result, "stdout", ""))
+
+    def _warn_keyring_unreadable(self) -> None:
+        """One warning per action instance — never per ``_trusted_keys()``
+        call — when the target's pacman keyring trust state can't be
+        established: unreadable (wrong permissions; it needs root) or never
+        initialized (no master key at all). Silent on a target with no
+        ``pacman.conf`` yet (nothing to converge, so nothing to warn about)."""
+        if self._keyring_warn_shown:
+            return
+        self._keyring_warn_shown = True
+        run_logger.get().warning(
+            "pacman_repositories: could not read the pacman keyring's key "
+            f"trust state ({_GNUPG_HOMEDIR}) — run dasik as root.",
+            detail="A declared repository's SigLevel may then reject its "
+                   "own database until this is fixed and dasik re-run.",
+        )
 
     def _keyring_trusted_texts(self) -> List[str]:
         """Every ``*-trusted`` file a keyring package shipped under the target."""
@@ -211,19 +243,31 @@ class PacmanRepositoriesAction(AbstractAction):
     def _trusted_keys(self) -> Set[str]:
         """Fingerprints locally signed by the keyring's own master key, minus
         anything a keyring package already ships as trusted (controller
-        ruling; FACT-PR-1/FACT-PR-2/FACT-PR-5, docs/FACTS.md)."""
+        ruling; FACT-PR-1/FACT-PR-2/FACT-PR-5, docs/FACTS.md).
+
+        Warns once (see ``_warn_keyring_unreadable``) when the keyring can't
+        be read at all, or has no master key, PROVIDED ``pacman.conf``
+        exists — an unbuilt target is not a keyring problem worth reporting.
+        """
         if self._target() is None:
             return set()
+        conf_present = self._conf_text() is not None
         secret_out = self._run_gpg(
             ["--homedir", _GNUPG_HOMEDIR, "--with-colons", "--list-secret-keys"])
         if secret_out is None:
+            if conf_present:
+                self._warn_keyring_unreadable()
             return set()
         master_keyids = secret_keyids(secret_out)
         if not master_keyids:
+            if conf_present:
+                self._warn_keyring_unreadable()
             return set()
         sigs_out = self._run_gpg(
             ["--homedir", _GNUPG_HOMEDIR, "--with-colons", "--list-sigs"])
         if sigs_out is None:
+            if conf_present:
+                self._warn_keyring_unreadable()
             return set()
         trusted = trusted_fingerprints(sigs_out, master_keyids)
         if not trusted:

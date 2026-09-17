@@ -114,6 +114,8 @@ def test_create_key_with_url_downloads_verifies_adds_and_lsigns(tmp_path):
     assert curl_args[1] == AMT_KEY_URL
     key_path = curl_args[curl_args.index("-o") + 1]
     assert key_path.startswith("/var/tmp/dasik-key-")
+    # a key server/CDN that hangs must not hang `dasik apply` forever
+    assert curl_args[curl_args.index("--max-time") + 1] == "120"
 
     assert calls[1].args[1] == ["--show-keys", "--with-colons", key_path]
     assert calls[2].args[1] == ["--add", key_path]

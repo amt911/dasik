@@ -439,8 +439,11 @@ class PacmanRepositoriesAction(AbstractAction):
         key_target_path = _key_download_path(fingerprint)
         key_host_path = self._path(key_target_path)
         try:
-            Command.execute("curl", ["-fsSL", url, "-o", key_target_path],
-                            target=target, check=True)
+            # --max-time: an unresponsive key server/CDN must not hang
+            # `dasik apply` forever.
+            Command.execute(
+                "curl", ["-fsSL", url, "-o", key_target_path, "--max-time", "120"],
+                target=target, check=True)
             result = Command.execute(
                 "gpg", ["--show-keys", "--with-colons", key_target_path],
                 target=target, check=True)
@@ -519,9 +522,12 @@ class PacmanRepositoriesAction(AbstractAction):
             name = change.item[len(_REPO_PREFIX):]
             self._apply_repo_sync(name, new_conf_text)
 
-        # 4. keys no longer declared, last — never strand a repo that still
-        # needs one (a DELETE key alongside a surviving repo would be a
-        # config the model already refuses, but ordering costs nothing).
+        # 4. keys no longer declared, last — the model does NOT tie a key to
+        # any particular repo (PacmanKeyModel/PacmanRepositoryModel are
+        # independent), so a DELETE key alongside a surviving repo IS a
+        # config the model accepts; running deletes last still costs
+        # nothing and keeps a key available for the repo sync above in the
+        # same batch, in case something one day comes to depend on it.
         for change in key_deletes:
             fingerprint = change.item[len(_KEY_PREFIX):]
             Command.execute("pacman-key", ["--delete", fingerprint],

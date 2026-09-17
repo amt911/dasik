@@ -70,3 +70,84 @@ def test_an_unreachable_aur_is_not_evidence_of_absence():
     p.name for p in (REPO_ROOT / "config").glob("*.json")))
 def test_every_sample_config_still_parses(path):
     json.loads((REPO_ROOT / "config" / path).read_text())
+
+
+# --- third-party repositories declared by a sample config ------------------ #
+
+def _fake_repo_db(packages):
+    """A pacman sync DB (gzip tar): one `<name>-<ver>-<rel>/desc` per package."""
+    import io
+    import tarfile
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        for name, version in packages:
+            desc = f"%FILENAME%\n{name}-{version}-any.pkg.tar.zst\n\n%NAME%\n{name}\n\n".encode()
+            info = tarfile.TarInfo(f"{name}-{version}/desc")
+            info.size = len(desc)
+            tar.addfile(info, io.BytesIO(desc))
+    return buf.getvalue()
+
+
+class _Response:
+    def __init__(self, body):
+        self._body = body
+
+    def read(self):
+        return self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def test_declared_repositories_are_read_from_the_pacman_block():
+    repos = checker.declared_repositories()
+
+    assert [r["name"] for r in repos["vm-pacman-repo.json"]] == ["amt911"]
+    assert "install-megamix.json" not in repos
+
+
+def test_a_declared_repository_database_lists_its_package_names():
+    seen = []
+
+    def fake_urlopen(url, timeout=None):
+        seen.append(url)
+        return _Response(_fake_repo_db([("config-saver", "3.4.0-1"), ("dasik", "0.17.0-1")]))
+
+    repo = {"name": "amt911", "servers": ["https://amt911.github.io/arch-packages/$arch"]}
+    with patch.object(checker.urllib.request, "urlopen", side_effect=fake_urlopen):
+        names, reachable = checker.repository_package_names(repo)
+
+    assert names == {"config-saver", "dasik"}
+    assert reachable is True
+    assert seen == ["https://amt911.github.io/arch-packages/x86_64/amt911.db"]
+
+
+def test_an_unreachable_declared_repository_is_not_evidence_of_absence():
+    repo = {"name": "amt911", "servers": ["https://amt911.github.io/arch-packages/$arch"]}
+    with patch.object(checker.urllib.request, "urlopen",
+                      side_effect=checker.urllib.error.URLError("no dns")):
+        names, reachable = checker.repository_package_names(repo)
+
+    assert names == set()
+    assert reachable is False
+
+
+def test_an_unreadable_database_is_not_evidence_of_absence():
+    repo = {"name": "amt911", "servers": ["https://amt911.github.io/arch-packages/$arch"]}
+    with patch.object(checker.urllib.request, "urlopen", return_value=_Response(b"not a tar")):
+        names, reachable = checker.repository_package_names(repo)
+
+    assert names == set()
+    assert reachable is False
+
+
+def test_a_package_from_a_declared_repository_is_not_reported_missing():
+    gone = checker.missing_names(
+        names={"config-saver", "gone-for-real"}, sources=set(),
+        unknown={"config-saver", "gone-for-real"}, in_aur=set(),
+        from_repositories={"config-saver"})
+
+    assert gone == ["gone-for-real"]

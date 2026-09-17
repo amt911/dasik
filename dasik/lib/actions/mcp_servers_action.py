@@ -35,6 +35,13 @@ _READERS = {"claude-code": claude_mcp, "codex": codex_mcp}
 
 _ROOT = "root"
 
+# How long a `codex mcp add --url` may run. The registration is written within a
+# second; what follows it, for a server that supports OAuth, is a browser login
+# that waits 300 s for a callback no unattended install can deliver (measured:
+# codex-cli 0.154.0 against https://mcp.figma.com/mcp). Discovery before the
+# write is the only part that needs time, and a minute covers a slow network.
+_CODEX_HTTP_ADD_BOUND_SECS = 60
+
 
 def _spec_of(entry: Any) -> Dict[str, Any]:
     """A declaration in the same normalized shape the state readers produce.
@@ -268,7 +275,10 @@ class McpServersAction(AbstractAction):
             if claude:
                 script += ' --transport http "$2"'
             else:
-                script += ' --url "$2"'
+                # See _CODEX_HTTP_ADD_BOUND_SECS: codex logs in right after it
+                # writes, and that login cannot finish without a browser.
+                script = (f"timeout {_CODEX_HTTP_ADD_BOUND_SECS} {script}"
+                          ' --url "$2"')
             args.append(spec["url"])
             index = 3
             for key, value in sorted((spec.get("headers") or {}).items()):
@@ -332,17 +342,47 @@ class McpServersAction(AbstractAction):
             if spec is None:
                 continue
             for script, args in self._command_for(change, spec):
-                if not self._run(spec["user"], script, args, change.item):
+                if not self._run(spec["user"], script, args, change.item,
+                                 declared=self._login_follows_add(spec, script)):
                     break
 
+    @staticmethod
+    def _login_follows_add(spec: Dict[str, Any],
+                           script: str) -> Optional[Dict[str, Any]]:
+        """The declaration to read back when *script* is a codex http add.
+
+        That is the one command whose exit status says nothing about the
+        registration: codex writes it and THEN runs an OAuth login, whose
+        timeout (ours or its own) makes the command fail after the work is done.
+        """
+        if (spec.get("agent") == "codex" and spec.get("transport") == "http"
+                and script.startswith("timeout ")):
+            return spec
+        return None
+
+    def _registered_as_declared(self, item: str,
+                                declared: Dict[str, Any]) -> bool:
+        registered = self._scan().get(item)
+        return registered is not None and self._same_registration(declared,
+                                                                  registered)
+
     def _run(self, user: str, script: str, args: Tuple[str, ...],
-             item: str) -> bool:
-        """Run one CLI command. False when it failed (and was tolerated)."""
+             item: str, declared: Optional[Dict[str, Any]] = None) -> bool:
+        """Run one CLI command. False when it failed (and was tolerated).
+
+        With *declared*, success is the registration reading back as declared,
+        whatever the exit status — see ``_login_follows_add``.
+        """
         result = Command.execute(
             "su", self._su_argv(user, script, *args),
             target=self._target(), check=False, stream=True,
             label=f"mcp_servers: {item}")
         if getattr(result, "returncode", 1) == 0:
+            return True
+        if declared is not None and self._registered_as_declared(item, declared):
+            print(f"mcp_servers: {item} is registered, but codex could not "
+                  "finish its OAuth login without a browser. Sign in once "
+                  f"as {user}: codex mcp login {declared['name']}")
             return True
         detail = (getattr(result, "stderr", "") or "").strip()
         message = (f"mcp_servers: {item} failed. Command: su - {user} -c "

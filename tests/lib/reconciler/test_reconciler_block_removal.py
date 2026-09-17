@@ -18,9 +18,8 @@ that, both silent:
 * the new manifest (built only from VISITED actions in
   ``Reconciler._build_new_manifest``) drops the domain's ownership — which
   happens to look correct for the domains whose own ``managed_keys()`` is
-  already declaration-gated (disks/timezone/snapper/firewall all return ``[]``
-  for an empty config), but is a coincidence of never running, not a
-  contract.
+  already declaration-gated (disks/timezone return ``[]`` for an empty
+  config), but is a coincidence of never running, not a contract.
 
 Fixed probe: a REAL instance (``cls(cls.empty_config(), None)``), so
 ``managed_keys()`` sees the same derived attributes ``plan()``/``apply()``
@@ -31,12 +30,16 @@ Each test below drives ``Reconciler.build_plan()`` through the REAL registry
 (``setup_actions()``), for one action at a time, exactly the way
 ``test_feature_detectability.py``'s "block absent from the WHOLE config"
 section already does for ``PacmanRepositoriesAction``. What matters for a
-"silent" domain (disks/timezone/locales/pacman/snapper/firewall) is asserted
-twice: the plan proposes nothing for it, AND — the part the old probe broke —
-the action was actually VISITED (``results`` names it), which is what lets
+"silent" domain (disks/timezone/locales/pacman) is asserted twice: the plan
+proposes nothing for it, AND — the part the old probe broke — the action was
+actually VISITED (``results`` names it), which is what lets
 ``_build_new_manifest`` release ownership deliberately rather than by never
-running. ``systemd`` is the set-math domain where visiting the action changes
-the PLAN itself: a DISABLE of the unit the manifest still owns.
+running. ``systemd``, ``snapper`` and ``firewall`` are the domains where
+visiting the action changes the PLAN itself: systemd a DISABLE of the unit
+the manifest still owns; snapper/firewall a destructive REMOVE of the config
+the manifest still owns ("snapper y firewall deben eliminar su config si
+desaparece" — the removal semantics landed after this file's probe fix, so
+what was once asserted as "silent" for these two is now asserted as REMOVE).
 """
 import json
 from unittest.mock import MagicMock, patch
@@ -180,7 +183,12 @@ def test_disks_block_absent_plans_nothing_and_releases_ownership(tmp_path):
 
 # --- snapper ----------------------------------------------------------------- #
 
-def test_snapper_block_absent_plans_nothing_and_releases_ownership(tmp_path):
+def test_snapper_block_absent_plans_removal_and_releases_ownership(tmp_path):
+    """Product decision (superseding the comment this test used to carry):
+    "snapper... deben eliminar su config si desaparece" — a config the
+    manifest owns is REMOVEd (destructive: apply deletes every snapshot the
+    config owns itself, never via `snapper delete-config` — see
+    `SnapperAction._delete_config`), not just silently disowned."""
     configs = tmp_path / "etc/snapper/configs"
     configs.mkdir(parents=True)
     (configs / "root").write_text('SUBVOLUME="/"\n')
@@ -188,7 +196,8 @@ def test_snapper_block_absent_plans_nothing_and_releases_ownership(tmp_path):
     manifest = {"managed": {"snapper": ["root"]}}
     reconciler, plan, results = _run({}, manifest, _meta_for(SnapperAction), tmp_path)
 
-    assert _domain_changes(plan, "snapper") == []
+    assert _domain_changes(plan, "snapper") == [("REMOVE", "root")]
+    assert plan.destructive() != []
     assert len(results) == 1, "SnapperAction must be VISITED, not skipped"
     assert isinstance(results[0].action, SnapperAction)
 
@@ -198,7 +207,11 @@ def test_snapper_block_absent_plans_nothing_and_releases_ownership(tmp_path):
 
 # --- firewall ---------------------------------------------------------------- #
 
-def test_firewall_block_absent_plans_nothing_and_releases_ownership(tmp_path):
+def test_firewall_block_absent_plans_removal_and_releases_ownership(tmp_path):
+    """Product decision (superseding the comment this test used to carry):
+    "firewall... debe eliminar su config si desaparece" — a zone the manifest
+    owns is REMOVEd (destructive: apply removes the zone file dasik owns),
+    not just silently disowned."""
     zones = tmp_path / "etc/firewalld/zones"
     zones.mkdir(parents=True)
     (zones / "public.xml").write_text(
@@ -208,19 +221,197 @@ def test_firewall_block_absent_plans_nothing_and_releases_ownership(tmp_path):
     manifest = {"managed": {"firewall": ["public"]}}
     reconciler, plan, results = _run({}, manifest, _meta_for(FirewallAction), tmp_path)
 
-    assert _domain_changes(plan, "firewall") == []
+    assert _domain_changes(plan, "firewall") == [("REMOVE", "public")]
+    assert plan.destructive() != []
     assert len(results) == 1, "FirewallAction must be VISITED, not skipped"
     assert isinstance(results[0].action, FirewallAction)
 
     new_manifest = reconciler._build_new_manifest(results)
-    # Not a new REMOVE (that is a separate, deliberately unmade product
-    # decision — see the module docstring): `enable=False` short-circuits
-    # FirewallAction.plan() before it even looks at `managed`, so the zone
-    # file is left in place. What must still happen is that the MANIFEST
-    # stops claiming dasik owns it, which FirewallAction.managed_keys()
-    # already does correctly once the action is actually visited.
     assert not new_manifest.managed.get("firewall")
-    assert (zones / "public.xml").exists()
+
+
+# --- S2: a `sync` while the block is disabled/absent must not dispossess -- #
+#
+# `sync` computes `managed <- actual ∩ (claimable ∪ declared)`
+# (`_owned_after_sync`). Before S2, both actions' `actual()` returned
+# `set()` whenever `enable` was false, so a `sync` run BEFORE the next
+# `apply` (for any reason -- config-check, curiosity, an unrelated field)
+# wiped the manifest's ownership; the following `plan` against the SAME
+# still-disabled/absent config then saw nothing owned and proposed no
+# REMOVE at all, silently reverting the removal semantics this whole branch
+# adds. Round-trip: manifest owns X -> sync() while disabled/absent -> the
+# NEW manifest still owns X -> build_plan() against it still yields REMOVE.
+
+def _sync(config, manifest, metas, target_root):
+    reconciler = Reconciler(config=config, target=Target(root=str(target_root)),
+                            manifest=manifest, action_metas=metas)
+    new_config, new_manifest = reconciler.sync()
+    return reconciler, new_config, new_manifest
+
+
+def test_snapper_sync_while_disabled_keeps_ownership_for_the_next_removal(tmp_path):
+    configs = tmp_path / "etc/snapper/configs"
+    configs.mkdir(parents=True)
+    (configs / "root").write_text('SUBVOLUME="/"\n')
+
+    manifest = {"managed": {"snapper": ["root"]}}
+    config = {"snapper": {"enable": False}}
+    metas = _meta_for(SnapperAction)
+
+    _, _, new_manifest = _sync(config, manifest, metas, tmp_path)
+    assert new_manifest is not None
+    assert new_manifest.managed.get("snapper") == ["root"]
+
+    _, plan, _results = _run(config, new_manifest.to_dict(), metas, tmp_path)
+    assert _domain_changes(plan, "snapper") == [("REMOVE", "root")]
+
+
+def test_snapper_sync_with_the_block_absent_keeps_ownership_for_the_next_removal(tmp_path):
+    configs = tmp_path / "etc/snapper/configs"
+    configs.mkdir(parents=True)
+    (configs / "root").write_text('SUBVOLUME="/"\n')
+
+    manifest = {"managed": {"snapper": ["root"]}}
+    metas = _meta_for(SnapperAction)
+
+    _, _, new_manifest = _sync({}, manifest, metas, tmp_path)
+    assert new_manifest is not None
+    assert new_manifest.managed.get("snapper") == ["root"]
+
+    _, plan, _results = _run({}, new_manifest.to_dict(), metas, tmp_path)
+    assert _domain_changes(plan, "snapper") == [("REMOVE", "root")]
+
+
+def test_firewalld_sync_while_disabled_keeps_ownership_for_the_next_removal(tmp_path):
+    zones = tmp_path / "etc/firewalld/zones"
+    zones.mkdir(parents=True)
+    (zones / "public.xml").write_text(
+        '<?xml version="1.0" encoding="utf-8"?>\n<zone>\n  <short>Public</short>\n'
+        '  <service name="dhcpv6-client"/>\n  <service name="ssh"/>\n</zone>\n')
+
+    manifest = {"managed": {"firewall": ["public"]}}
+    config = {"firewall": {"enable": False}}
+    metas = _meta_for(FirewallAction)
+
+    # N-9: `import_state` -> `_fw_query` -> `Command.execute("firewall-offline-cmd",
+    # ..., target=Target(tmp_path))` -> `_locate_chroot()`. On THIS host
+    # `arch-chroot` is absent so `subprocess.run` is never reached, but on any
+    # host with `arch-install-scripts` (the ISO, a dev box) it would exec
+    # `arch-chroot <tmp_path> firewall-offline-cmd ...` as root, bind-mounting
+    # `/proc`/`/sys`/`/dev` into a pytest tmp dir -- mocked here like the ufw
+    # siblings already are, so this test can never touch the host regardless
+    # of what is installed.
+    def fake(cmd, args=None, **kw):
+        return MagicMock(stdout=b"", returncode=1)      # firewall-offline-cmd: unavailable
+
+    with patch("dasik.lib.actions.firewall_action.Command.execute", side_effect=fake):
+        _, _, new_manifest = _sync(config, manifest, metas, tmp_path)
+        assert new_manifest is not None
+        assert new_manifest.managed.get("firewall") == ["public"]
+
+        _, plan, _results = _run(config, new_manifest.to_dict(), metas, tmp_path)
+    assert _domain_changes(plan, "firewall") == [("REMOVE", "public")]
+
+
+def test_firewalld_sync_with_the_block_absent_keeps_ownership_for_the_next_removal(tmp_path):
+    zones = tmp_path / "etc/firewalld/zones"
+    zones.mkdir(parents=True)
+    (zones / "public.xml").write_text(
+        '<?xml version="1.0" encoding="utf-8"?>\n<zone>\n  <short>Public</short>\n'
+        '  <service name="dhcpv6-client"/>\n  <service name="ssh"/>\n</zone>\n')
+
+    manifest = {"managed": {"firewall": ["public"]}}
+    metas = _meta_for(FirewallAction)
+
+    # N-9: see the sibling test above -- mocked so this can never exec a real
+    # `arch-chroot` regardless of what is installed on the host running pytest.
+    def fake(cmd, args=None, **kw):
+        return MagicMock(stdout=b"", returncode=1)
+
+    with patch("dasik.lib.actions.firewall_action.Command.execute", side_effect=fake):
+        _, _, new_manifest = _sync({}, manifest, metas, tmp_path)
+        assert new_manifest is not None
+        assert new_manifest.managed.get("firewall") == ["public"]
+
+        _, plan, _results = _run({}, new_manifest.to_dict(), metas, tmp_path)
+    assert _domain_changes(plan, "firewall") == [("REMOVE", "public")]
+
+
+def test_ufw_sync_while_disabled_keeps_ownership_for_the_next_removal(tmp_path):
+    """ufw's state lives on the live system (`ufw status`), not a file --
+    Command.execute is mocked throughout both the sync and the later plan."""
+    manifest = {"managed": {"firewall": ["allow 22/tcp"]}}
+    config = {"firewall": {"enable": False, "backend": "ufw", "rules": ["allow 22/tcp"]}}
+    metas = _meta_for(FirewallAction)
+    live_status = ("Status: active\n\nTo Action From\n-- ------ ----\n"
+                  "22/tcp ALLOW IN Anywhere\n")
+
+    def fake(cmd, args=None, **kw):
+        if cmd == "ufw" and args and args[0] == "status":
+            return MagicMock(stdout=live_status, returncode=0)
+        return MagicMock(stdout=b"", returncode=1)      # firewall-offline-cmd: unavailable
+
+    with patch("dasik.lib.actions.firewall_action.Command.execute", side_effect=fake):
+        _, _, new_manifest = _sync(config, manifest, metas, tmp_path)
+        assert new_manifest is not None
+        assert new_manifest.managed.get("firewall") == ["allow 22/tcp"]
+
+        _, plan, _results = _run(config, new_manifest.to_dict(), metas, tmp_path)
+    assert _domain_changes(plan, "firewall") == [("REMOVE", "allow 22/tcp")]
+
+
+def test_ufw_sync_with_the_block_absent_keeps_ownership_for_the_next_removal(tmp_path):
+    """With the WHOLE block gone, `backend` defaults to "firewalld" and
+    cannot say which reality to read (S3's exact ambiguity) -- the manifest's
+    OWN recorded backend (a previous apply's `state_metadata()`) must settle
+    it for `actual()` too, or a `sync` here would probe an (empty, possibly
+    nonexistent) firewalld zones directory and lose ufw ownership."""
+    manifest = {"managed": {"firewall": ["allow 22/tcp"]},
+               "action_state": {"firewall": {"backend": "ufw"}}}
+    metas = _meta_for(FirewallAction)
+    live_status = ("Status: active\n\nTo Action From\n-- ------ ----\n"
+                  "22/tcp ALLOW IN Anywhere\n")
+
+    def fake(cmd, args=None, **kw):
+        if cmd == "ufw" and args and args[0] == "status":
+            return MagicMock(stdout=live_status, returncode=0)
+        return MagicMock(stdout=b"", returncode=1)      # firewall-offline-cmd: unavailable
+
+    with patch("dasik.lib.actions.firewall_action.Command.execute", side_effect=fake):
+        _, _, new_manifest = _sync({}, manifest, metas, tmp_path)
+        assert new_manifest is not None
+        assert new_manifest.managed.get("firewall") == ["allow 22/tcp"]
+
+        _, plan, _results = _run({}, new_manifest.to_dict(), metas, tmp_path)
+    assert _domain_changes(plan, "firewall") == [("REMOVE", "allow 22/tcp")]
+
+
+def test_ufw_sync_with_the_block_absent_and_no_recorded_backend_keeps_ownership(tmp_path):
+    """SF-4: the S2 fix's own residual (PROBE-3c) -- a manifest that predates
+    S3 (or one from a converged apply, which never persists a decision)
+    records NO backend at all. `_resolved_backend(())`'s shape heuristic
+    cannot classify an empty tuple and always falls back to "firewalld",
+    which used to mean `actual()` probed an empty/nonexistent
+    `/etc/firewalld/zones` and dispossessed the manifest of a live ufw rule
+    it still owns -- exactly the S2 bug, reopened for the one case S2's own
+    fix could not cover: no recorded backend at all."""
+    manifest = {"managed": {"firewall": ["allow 22/tcp"]}}     # no action_state
+    metas = _meta_for(FirewallAction)
+    live_status = ("Status: active\n\nTo Action From\n-- ------ ----\n"
+                  "22/tcp ALLOW IN Anywhere\n")
+
+    def fake(cmd, args=None, **kw):
+        if cmd == "ufw" and args and args[0] == "status":
+            return MagicMock(stdout=live_status, returncode=0)
+        return MagicMock(stdout=b"", returncode=1)      # firewall-offline-cmd: unavailable
+
+    with patch("dasik.lib.actions.firewall_action.Command.execute", side_effect=fake):
+        _, _, new_manifest = _sync({}, manifest, metas, tmp_path)
+        assert new_manifest is not None
+        assert new_manifest.managed.get("firewall") == ["allow 22/tcp"]
+
+        _, plan, _results = _run({}, new_manifest.to_dict(), metas, tmp_path)
+    assert _domain_changes(plan, "firewall") == [("REMOVE", "allow 22/tcp")]
 
 
 # --- systemd (destructive: DISABLE of an owned-but-undeclared unit) -------- #

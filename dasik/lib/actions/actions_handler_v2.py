@@ -174,6 +174,23 @@ def setup_actions() -> None:
         config_key='snapper',
         is_optional=True,
     )
+    # Firewalld install+enable / ufw install is handled by the `firewall`
+    # expand toggle (packages + systemd); this applies the RULES firewalld's
+    # toggle can't express (offline-cmd) and, for ufw, drives the CLI.
+    # Registered here — before PackagesAction — for the SAME reason as
+    # SnapperAction just above: a REMOVE (the whole block undeclared) must run
+    # while `ufw` is still installed, because PackagesAction is what uninstalls
+    # it once the toggle stops contributing the package, and that happens in
+    # THIS apply, not the next one. The firewalld half of apply() only ever
+    # writes/deletes a file, so it never depended on package order; the ufw
+    # half installs its own prerequisite when missing (`_ensure_ufw_installed`,
+    # mirroring `SnapperAction._ensure_snapper_installed`) so a fresh INSTALL
+    # still works even though Packages hasn't put `ufw` there yet.
+    register_action(
+        action_class=FirewallAction,
+        config_key='firewall',
+        is_optional=True,
+    )
     register_action(
         action_class=PackagesAction,
         # __root__: reads the packages list plus the sibling package_sources /
@@ -223,14 +240,6 @@ def setup_actions() -> None:
     register_action(
         action_class=SystemdAction,
         config_key='systemd',
-        is_optional=True,
-    )
-    # Firewalld install+enable is handled by the `firewall` expand toggle
-    # (packages + systemd); this applies the zone RULES (offline-cmd). Runs after
-    # packages installed firewalld.
-    register_action(
-        action_class=FirewallAction,
-        config_key='firewall',
         is_optional=True,
     )
     register_action(

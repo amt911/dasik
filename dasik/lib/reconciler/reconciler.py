@@ -24,6 +24,7 @@ from typing import Any, Callable, Iterable, Optional
 
 from ..actions.abstract_action import AbstractAction
 from ..actions.action_context import ActionContext
+from ..logging import run_logger
 from ..state.change import Change, Plan
 from ..state.config_writer import ConfigWriter
 from ..state.state_store import Manifest
@@ -258,12 +259,41 @@ class Reconciler:
             # behaviour — lost every trace of where it stopped and of what dasik
             # now owns. Persist what actually completed, flagged `partial`, then
             # let the failure propagate: this is a record of progress, never a
-            # claim of convergence.
+            # claim of convergence. finalize_apply() (SF-3) is deliberately
+            # NOT called here — it is the successful apply's own end-of-run
+            # step, not a recovery hook.
             self._persist(self._build_new_manifest(completed, partial=True))
             raise
 
+        # The apply succeeded, so the manifest describes it — persisted BEFORE
+        # the post-apply hooks, which are best-effort by contract. A hook that
+        # raised (or a Ctrl-C during one) used to skip this line and leave a
+        # converged machine with a manifest saying nothing had changed.
         new_manifest = self._build_new_manifest(results)
         self._persist(new_manifest)
+
+        # SF-3: an optional per-action post-apply step, run once every action
+        # has applied successfully — for a domain whose own effect depends on
+        # infrastructure a LATER-registered action provides (FirewallAction
+        # runs before Packages/Systemd, so its own daemon reload can retry
+        # here once they have run). Duck-typed (not every action double in
+        # the suite subclasses AbstractAction), and deliberately not a general
+        # hook registry: one optional method, called unconditionally, in order.
+        # A failing hook is a warning, never a failed apply, and never skips
+        # the hooks after it; an interrupt still propagates (the manifest is
+        # already safe).
+        for result in completed:
+            finalize = getattr(result.action, "finalize_apply", None)
+            if not callable(finalize):
+                continue
+            try:
+                finalize()
+            except Exception as exc:
+                run_logger.get().warning(
+                    f"{result.action.name}: post-apply step failed ({exc!r}).",
+                    detail="the changes were applied and recorded; only this "
+                           "follow-up step did not complete.",
+                )
         return new_manifest
 
     def _persist(self, manifest: Manifest) -> None:

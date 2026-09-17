@@ -31,6 +31,31 @@
 #   S1/S2/S4 (capture correctness) and N2 (this script's own gaps) are
 #       exercised by the tightened assertions throughout.
 #
+# Re-review round 2 (scratchpad/rereview-rootflags-findings.md) added:
+#
+#   SF-1 (B1 residual). A duplicate that already contains the config's own
+#       literal read as converged forever -- sections O2-R2 below reproduce
+#       that exact shape (the captured literal itself as the duplicate, not
+#       an unrelated zstd:1) and drive plan -> apply -> plan across it.
+#   SF-4. Applying a SYNCED config takes ownership, BY DECLARATION, of every
+#       enabled unit sync captured as drift (getty@.service and friends,
+#       enabled by systemd's own presets, never declared by
+#       config/vm-rootflags-drift.json) -- planning an undeclared config then
+#       proposes disabling them by the documented "owned but no longer
+#       declared -> REMOVE" rule. That is correct, INTENDED behaviour, not
+#       "_build_new_manifest widening ownership on apply" as an earlier draft
+#       of this comment claimed (re-review item 4: no such widening exists --
+#       SystemdAction.managed_keys() is the DECLARED set, never actual()).
+#       It is simply orthogonal to what THIS script tests, so every derived
+#       config from RFD-C onward now strips the captured "systemd" block
+#       (RFD-STRIP-SYSTEMD-DRIFT) before use: no generation in this run ever
+#       DECLARES those units, so none of them is ever enabled or disabled for
+#       real by this script, and the whole-plan "No changes" assertions hold
+#       at RFD-N and RFD-W (not just a [kernel_cmdline]-scoped one). RFD-BASELINE-*
+#       /RFD-FINAL-* independently prove it: getty@.service and
+#       systemd-networkd.socket are read right after install and compared
+#       byte-for-byte against their state at the very end of the run.
+#
 # This drives `check`/`plan`/`sync`/`apply`/`generations`/`rollback` for real
 # against the guest's own /dev/vda, installed from config/vm-rootflags-drift.json
 # (btrfs `@` + `@home`, both declaring `compress-force=zstd,noatime`).
@@ -83,6 +108,15 @@ echo "RFD-A: the entry as installed"
 grep options "$ENTRY"
 [ -f "$FALLBACK" ] && grep options "$FALLBACK"
 one_rootflags_everywhere; rc RFD-INSTALL-SINGLE-ROOTFLAGS
+
+# SF-4 (re-review round 2): baseline preset-unit state, right after install,
+# before sync ever captures anything as drift. Compared byte-for-byte
+# against RFD-FINAL-* at the very end -- the invariant this run is supposed
+# to hold end to end is that NEITHER preset unit is ever toggled for real,
+# because no config used below ever declares them (see RFD-STRIP-SYSTEMD-DRIFT).
+GETTY_BASELINE=$(systemctl is-enabled getty@.service 2>&1)
+NETWORKD_BASELINE=$(systemctl is-enabled systemd-networkd.socket 2>&1)
+echo "RFD-BASELINE-GETTY=$GETTY_BASELINE RFD-BASELINE-NETWORKD=$NETWORKD_BASELINE"
 
 # --------------------------------------------------------------------- #
 # S2/S6 measurement: btrfs compression-level + atime-flag normalization,
@@ -143,6 +177,21 @@ GEN_BEFORE=$(grep -c '^Generation ' /tmp/gen-before.txt)
 echo "RFD-C: sync -> captured.json"
 cp "$C" /tmp/captured.json
 $D sync /tmp/captured.json --target / $L; rc RFD-SYNC
+
+echo "RFD-STRIP-SYSTEMD-DRIFT: SF-4 (re-review round 2) -- drop the captured"
+echo "  'systemd' block so no generation in this run ever DECLARES the preset"
+echo "  units sync captured as drift (getty@.service and friends); applying a"
+echo "  config that declares them takes ownership of them, and this script's"
+echo "  job is kernel_cmdline/rootflags, not systemd preset toggling."
+python - <<'PY'
+import json
+path = "/tmp/captured.json"
+c = json.load(open(path))
+had = c.pop("systemd", None)
+json.dump(c, open(path, "w"), indent=2)
+print("RFD-STRIPPED-SYSTEMD-KEYS:", sorted(had) if had else None)
+PY
+rc RFD-STRIP-SYSTEMD-DRIFT
 
 echo "RFD-D: the capture validates"
 $D check /tmp/captured.json $L; rc RFD-CAPTURE-CHECK
@@ -286,13 +335,59 @@ cat /tmp/plan-b1-after.txt
 present /tmp/plan-b1-after.txt 'No changes'; rc RFD-PLAN-B1-AFTER-SILENT
 
 # --------------------------------------------------------------------- #
+# SF-1 (re-review round 2, B1 residual): a duplicate where one of the two
+# live tokens IS ALREADY the config's own literal must still be planned as
+# an INSTALL -- returning the literal unchanged from the plan-time diff is
+# not the same as `compute_changes` actually planning it once that literal
+# is already an element of `actual()`. Shape A from the unit tests: a bare
+# `zstd` variant standing next to the already-correct literal.
+# --------------------------------------------------------------------- #
+echo "RFD-O2: SF-1 -- hand-write a duplicate where one token IS the captured literal (shape A)"
+python - <<'PY'
+import re
+path = "/boot/loader/entries/arch.conf"
+text = open(path).read()
+m = re.search(r'rootflags=\S+', text)
+assert m, text
+literal = m.group(0)
+bare = re.sub(r'compress-force=zstd:\d+', 'compress-force=zstd', literal)
+assert bare != literal, f"could not build a distinct bare duplicate from {literal!r}"
+text = text.replace(literal, bare + " " + literal, 1)
+open(path, "w").write(text)
+print("RFD-O2-ENTRY-OPTIONS:", [l for l in text.splitlines() if l.startswith("options")])
+PY
+rc RFD-O2-BUILD-DUPLICATE
+grep options "$ENTRY"
+
+echo "RFD-P2: SF-1 -- plan still INSTALLs even though the literal is already ONE of the duplicates"
+$D plan /tmp/captured.json --target / $L > /tmp/plan-o2.txt 2>&1; rc RFD-PLAN-O2
+cat /tmp/plan-o2.txt
+absent /tmp/plan-o2.txt 'No changes'; rc RFD-PLAN-O2-NOT-SILENT
+present /tmp/plan-o2.txt 'rootflags='; rc RFD-PLAN-O2-HAS-ROOTFLAGS
+
+echo "RFD-Q2: SF-1 -- apply --yes collapses the shape-A duplicate to exactly one rootflags="
+$D apply /tmp/captured.json --target / --yes $L > /tmp/apply-o2.txt 2>&1; rc RFD-APPLY-O2
+cat /tmp/apply-o2.txt
+grep options "$ENTRY"
+one_rootflags_everywhere; rc RFD-APPLY-O2-SINGLE-ROOTFLAGS
+
+echo "RFD-R2: SF-1 -- plan is now silent"
+$D plan /tmp/captured.json --target / $L > /tmp/plan-o2-after.txt 2>&1; rc RFD-PLAN-O2-AFTER
+cat /tmp/plan-o2-after.txt
+present /tmp/plan-o2-after.txt 'No changes'; rc RFD-PLAN-O2-AFTER-SILENT
+
+# --------------------------------------------------------------------- #
 # B2 (blocker, review round 1): an explicit `ro` must converge (plan once,
 # apply, plan silent), not flip-flop with the always-derived `rw` forever.
 # --------------------------------------------------------------------- #
 echo "RFD-S: B2 -- config copy declaring explicit kernel_cmdline ro"
-python - <<PY
+# SF-4 (re-review round 2): derived from the (systemd-stripped) captured.json
+# lineage, not bare $C -- every config applied from RFD-C onward now agrees
+# on declaring NOTHING for systemd, so the presets are never enabled or
+# disabled for real anywhere in this run (see RFD-STRIP-SYSTEMD-DRIFT).
+python - <<'PY'
 import json
-c = json.load(open("$C"))
+c = json.load(open("/tmp/captured.json"))
 c["kernel_cmdline"] = ["console=ttyS0,115200", "ro"]
 json.dump(c, open("/tmp/ro.json", "w"), indent=2)
 PY
@@ -340,20 +435,26 @@ PY
 rc RFD-ROLLBACK-RO-RESTORED-RW
 $D plan "$C" --target / $L > /tmp/plan-after-rollback-ro.txt 2>&1; rc RFD-PLAN-AFTER-ROLLBACK-RO
 cat /tmp/plan-after-rollback-ro.txt
-# Scoped to [kernel_cmdline] (what B2 tests), not the whole plan: by this
-# point in the script TWO real applies have run back-to-back with no
-# intervening rollback-to-a-clean-generation (RFD-Q then RFD-U), and
-# `Reconciler._build_new_manifest` records EVERY action's `managed_keys()`
-# on every apply with no "actual ∩ (claimable ∪ declared)" narrowing the way
-# `sync`'s `_owned_after_sync` has -- so SystemdAction ends up owning
-# whatever units happen to be enabled (getty@.service and friends, enabled by
-# systemd's own presets, never declared by this config) and the next plan
-# against a config that doesn't declare them proposes disabling them. That is
-# a real, pre-existing, ORTHOGONAL gap in the apply-manifest path (out of
-# scope for this fix -- flagged in the report), not a rootflags/kernel_cmdline
-# regression; asserting the whole plan is silent here would fail for a
-# reason this fix does not own.
-absent /tmp/plan-after-rollback-ro.txt '\[kernel_cmdline\]'; rc RFD-PLAN-AFTER-ROLLBACK-RO-SILENT
+# SF-4 (re-review round 2): the WHOLE plan is asserted silent here, not just
+# `[kernel_cmdline]` -- by this point TWO real applies have run back-to-back
+# with no intervening rollback-to-a-clean-generation (RFD-Q then RFD-U), but
+# every config used since RFD-STRIP-SYSTEMD-DRIFT (zstd1.json, the B1
+# collapse's captured.json, ro.json) agrees on declaring NOTHING for
+# systemd, so `SystemdAction`'s managed set never grows to include the
+# preset-enabled units in the first place -- there is nothing here for the
+# documented "owned but no longer declared -> REMOVE" rule to catch, so the
+# whole plan, including systemd, is genuinely silent.
+present /tmp/plan-after-rollback-ro.txt 'No changes'; rc RFD-PLAN-AFTER-ROLLBACK-RO-SILENT
+
+# SF-4: the stronger, direct proof -- neither preset unit was ever toggled
+# for real anywhere in this run, not just that the FINAL plan is quiet about
+# them. Compared byte-for-byte against RFD-BASELINE-* (captured right after
+# install, before sync ever ran).
+GETTY_FINAL=$(systemctl is-enabled getty@.service 2>&1)
+NETWORKD_FINAL=$(systemctl is-enabled systemd-networkd.socket 2>&1)
+echo "RFD-FINAL-GETTY=$GETTY_FINAL RFD-FINAL-NETWORKD=$NETWORKD_FINAL"
+[ "$GETTY_FINAL" = "$GETTY_BASELINE" ]; rc RFD-PRESET-GETTY-NEVER-TOGGLED
+[ "$NETWORKD_FINAL" = "$NETWORKD_BASELINE" ]; rc RFD-PRESET-NETWORKD-NEVER-TOGGLED
 
 echo "RFD-DONE rc=$FAILS"
 sync

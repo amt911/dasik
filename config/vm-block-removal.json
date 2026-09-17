@@ -1,0 +1,87 @@
+{
+  "metadata": {
+    "note": "Exercises the Reconciler._any_managed_for fix: dropping timezone/locales/pacman/systemd from the config after they were applied must (a) plan silently for the first three and release their manifest ownership, (b) plan a DISABLE for the systemd unit the manifest still owns, and (c) survive a rollback back to the full config. Drive with scripts/vmtest/guest-block-removal.sh.",
+    "systemd_unit": "systemd-timesyncd.service is enabled here specifically because dasik would not otherwise enable it (no expand toggle derives it), so its enablement can only come from this declared `systemd` block — the guest script's DISABLE assertion is unambiguous."
+  },
+  "disks": {
+    "disks": [
+      {
+        "device": "/dev/vda",
+        "partition_table": "gpt",
+        "wipe_disk": false,
+        "partitions": [
+          {
+            "label": "ESP",
+            "size": "512MiB",
+            "filesystem": "fat32",
+            "partition_type": "esp",
+            "mountpoint": "/boot",
+            "format": true
+          },
+          {
+            "label": "ROOT",
+            "size": "rest",
+            "filesystem": "ext4",
+            "partition_type": "linux",
+            "mountpoint": "/",
+            "format": true
+          }
+        ]
+      }
+    ]
+  },
+  "enable_microcode": false,
+  "packages": [
+    "base",
+    "linux",
+    "linux-firmware",
+    "sudo",
+    "python",
+    "python-pydantic",
+    "python-colorama"
+  ],
+  "bootloader": "sd-boot",
+  "hostname": "dasik-blockrm",
+  "kernel_cmdline": [
+    "console=ttyS0,115200"
+  ],
+  "timezone": {
+    "region": "Europe",
+    "city": "Madrid"
+  },
+  "locales": {
+    "selected_locales": [
+      "en_US.UTF-8 UTF-8"
+    ],
+    "desired_locale": "en_US.UTF-8",
+    "desired_tty_layout": "us"
+  },
+  "network": {
+    "type": "systemd-networkd"
+  },
+  "pacman": {
+    "options": {
+      "Color": true
+    }
+  },
+  "systemd": {
+    "enable_units": [
+      "systemd-timesyncd.service"
+    ]
+  },
+  "users": [
+    {
+      "username": "test",
+      "hashed_password": "$6$dasikvmtest$pfoSKqgh8yWKbmkwBpNuvQuJ4/kLeJmwCPCezBolW4pKbtJbtvMGQCM5f7W/hkbF/FmtCMZMYr/NLwDO4OJm7.",
+      "groups": [
+        "wheel"
+      ]
+    }
+  ],
+  "files": [
+    {
+      "path": "/etc/systemd/system/serial-getty@ttyS0.service.d/autologin.conf",
+      "content": "[Service]\nExecStart=\nExecStart=-/sbin/agetty --autologin root --noclear --keep-baud 115200,38400,9600 %I $TERM\n"
+    }
+  ]
+}

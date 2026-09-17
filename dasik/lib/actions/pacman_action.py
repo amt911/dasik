@@ -159,16 +159,27 @@ class PacmanAction(CompositeV3Action):
         # overwrite each other — this is the one that wins.
         from .pacman_repositories_action import PacmanRepositoriesAction
         captured = PacmanRepositoriesAction(self.config, self.context).captured()
-        return {self._DOMAIN: {
+        fragment: Dict[str, Any] = {
             "options": {
                 "Parallel": st["Parallel"],
                 "Color": st["Color"],
                 "VerbosePkgLists": st["VerbosePkgLists"],
             },
             "multilib": st["multilib"],
-            "repositories": captured["repositories"],
-            "keys": captured["keys"],
-        }}
+        }
+        # An empty repositories/keys list is only worth writing back when the
+        # SEED itself declared that key — otherwise it is noise added to a
+        # config that never mentioned repositories/keys at all. When the seed
+        # DID declare it, keep clearing it to `[]`: sync reports reality, not
+        # the seed. `_cmd_sync`'s own "drop newly-added empty keys" pass only
+        # looks at TOP-LEVEL config keys (dasik/__main__.py), so it can never
+        # reach this deep inside the "pacman" fragment — this has to do it.
+        seed = self.config if isinstance(self.config, dict) else {}
+        if captured["repositories"] or "repositories" in seed:
+            fragment["repositories"] = captured["repositories"]
+        if captured["keys"] or "keys" in seed:
+            fragment["keys"] = captured["keys"]
+        return {self._DOMAIN: fragment}
 
     def _set_value(self) -> None:
         text = self._read() or ""

@@ -219,15 +219,50 @@ def test_import_fragment_shape(tmp_path):
     # command sneaks through.
     with _patched():
         frag = a.import_state(managed=[])
-    # repositories/keys: task 7, PacmanAction._import_fragment folds in
-    # PacmanRepositoriesAction.captured() — always present, empty here since
-    # `_ACTIVE` declares no third-party section and no gpg keyring to trust.
+    # repositories/keys: PacmanAction._import_fragment folds in
+    # PacmanRepositoriesAction.captured(), but OMITS an empty list when the
+    # seed (`_cfg()`, here) never declared that key at all — `_ACTIVE` has no
+    # third-party section and no gpg keyring to trust, so there is nothing to
+    # report AND nothing was declared, so neither key is added as noise. See
+    # test_import_fragment_omits_undeclared_empty_repositories_and_keys and
+    # test_sync_invents_no_repository_or_key_on_a_machine_without_either
+    # (test_feature_sync_capture.py, the "declared but empty" companion case).
     assert frag == {"pacman": {
         "options": {"Parallel": True, "Color": True, "VerbosePkgLists": True},
         "multilib": True,
-        "repositories": [],
-        "keys": [],
     }}
+
+
+def test_import_fragment_omits_undeclared_empty_repositories_and_keys(tmp_path):
+    """`_cfg()` declares neither `repositories` nor `keys`; the machine has
+    neither either — the fragment must OMIT both, not add `"repositories":
+    []`/`"keys": []` noise to a config that never mentioned them."""
+    _write_conf(tmp_path, _ACTIVE)
+    a = PacmanAction(_cfg(), _ctx(tmp_path))
+    with _patched():
+        frag = a.import_state(managed=[])
+    assert "repositories" not in frag["pacman"]
+    assert "keys" not in frag["pacman"]
+
+
+def test_import_fragment_still_reports_undeclared_repositories_and_keys_the_machine_has(tmp_path):
+    """The OMIT rule only applies when the machine has nothing to report —
+    an UNDECLARED seed whose machine nonetheless carries a hand-added repo
+    and a trusted key must still surface both (sync reports reality; a
+    config saying nothing about a domain is not a promise the domain is
+    empty)."""
+    from dasik.lib.actions.pacman_repos_state import render
+    from tests.lib.actions.test_pacman_repositories_plan import (
+        AMT911_FPR, AMT_SECTION, AMT_SERVER, LIST_SECRET_KEYS, LIST_SIGS_LSIGNED,
+    )
+
+    _write_conf(tmp_path, render(_ACTIVE, [AMT_SECTION], remove=[]))
+    a = PacmanAction({}, _ctx(tmp_path))   # pacman block entirely undeclared
+    with _patched(secret_out=LIST_SECRET_KEYS, sigs_out=LIST_SIGS_LSIGNED):
+        frag = a.import_state(managed=[])
+    assert frag["pacman"]["repositories"] == [
+        {"name": "amt911", "servers": [AMT_SERVER], "sig_level": "Required"}]
+    assert frag["pacman"]["keys"] == [{"fingerprint": AMT911_FPR}]
 
 
 def test_name_and_optional():
@@ -261,15 +296,17 @@ def test_an_undeclared_pacman_section_captures_the_machine(tmp_path):
     action = PacmanAction(PacmanAction.empty_config(), _ctx(str(_conf(tmp_path))))
 
     # See test_import_fragment_shape: same real-Command.execute boundary,
-    # same deterministic-mock fix.
+    # same deterministic-mock fix. `empty_config()` ({}) declares neither
+    # repositories nor keys, and the machine (mocked gpg, no third-party
+    # section in `_conf`'s stock text) has neither either — both are
+    # OMITTED, not added as `[]` noise (see
+    # test_import_fragment_omits_undeclared_empty_repositories_and_keys).
     with _patched():
         captured = action.import_state(managed=[])
 
     assert captured == {"pacman": {
         "options": {"Parallel": True, "Color": True, "VerbosePkgLists": False},
         "multilib": True,
-        "repositories": [],
-        "keys": [],
     }}
 
 

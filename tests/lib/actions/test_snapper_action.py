@@ -216,8 +216,9 @@ def test_apply_skips_the_install_when_snapper_is_present(tmp_path):
 # from `configs` while `enable` stays true, `enable` flips to false, or the
 # whole `snapper` block is gone (the reconciler then hands `empty_config()`,
 # see dasik#353). Every case: a managed config still on disk -> Op.REMOVE
-# (destructive — `snapper delete-config` also drops its snapshots); already
-# gone -> nothing; never owned -> left alone (drift, not dasik's).
+# (destructive — apply deletes every snapshot the config owns itself, never
+# via `snapper delete-config`, see `_delete_config`); already gone -> nothing;
+# never owned -> left alone (drift, not dasik's).
 
 def test_disabled_with_an_owned_config_plans_its_removal():
     a = SnapperAction({"enable": False}, context=SimpleNamespace(target=object()))
@@ -268,6 +269,47 @@ def test_managed_keys_is_empty_when_disabled():
     a = SnapperAction({"enable": False, "configs": [{"name": "root", "subvolume": "/"}]},
                       context=SimpleNamespace(target=object()))
     assert a.managed_keys() == {"snapper": []}
+
+
+# --- actual() must report reality regardless of `enable` (S2) -------------- #
+#
+# `actual()` used to return `set()` whenever `enable` was false — so a `sync`
+# run while the block was disabled/absent computed
+# `actual ∩ (claimable ∪ declared)` with actual=set(), dispossessing the
+# manifest of ownership it still needed for the next plan's REMOVE to fire.
+# `actual()` must be the "A = all" convention `SystemdAction.actual()` already
+# follows: report every config file on disk, and let the reconciler's
+# intersection with claimable/declared scope it.
+
+def test_actual_reports_configs_even_when_disabled(tmp_path):
+    configs = tmp_path / "etc/snapper/configs"
+    configs.mkdir(parents=True)
+    (configs / "root").write_text('SUBVOLUME="/"\n')
+    a = SnapperAction({"enable": False}, _ctx(tmp_path))
+    assert a.actual() == {"root"}
+
+
+def test_actual_reports_configs_when_the_block_is_absent(tmp_path):
+    configs = tmp_path / "etc/snapper/configs"
+    configs.mkdir(parents=True)
+    (configs / "root").write_text('SUBVOLUME="/"\n')
+    a = SnapperAction(SnapperAction.empty_config(), _ctx(tmp_path))
+    assert a.actual() == {"root"}
+
+
+def test_actual_is_empty_with_no_configs_dir(tmp_path):
+    a = SnapperAction({"enable": False}, _ctx(tmp_path))
+    assert a.actual() == set()
+
+
+def test_actual_still_reports_configs_when_enabled(tmp_path):
+    configs = tmp_path / "etc/snapper/configs"
+    configs.mkdir(parents=True)
+    (configs / "root").write_text('SUBVOLUME="/"\n')
+    (configs / "home").write_text('SUBVOLUME="/home"\n')
+    a = SnapperAction({"enable": True, "configs": [{"name": "root", "subvolume": "/"}]},
+                      _ctx(tmp_path))
+    assert a.actual() == {"root", "home"}
 
 
 # --- apply(REMOVE): delete-config, MEASURED (docs/FACTS.md FACT-SFRM-*) ---- #
@@ -339,12 +381,15 @@ def test_apply_remove_nested_deletes_snapshots_and_the_container(tmp_path):
 
     assert ("btrfs", ("subvolume", "delete", "/.snapshots/1/snapshot")) in calls
     assert ("btrfs", ("subvolume", "delete", "/.snapshots/2/snapshot")) in calls
-    assert ("rm", ("-rf", "/.snapshots/1")) in calls
-    assert ("rm", ("-rf", "/.snapshots/2")) in calls
+    # the leftover bookkeeping directories and the config file are removed
+    # through Python (os.remove/shutil.rmtree), not shelled out (N6) --
+    # assert the filesystem outcome, not a "rm" Command.execute call.
+    assert not (tmp_path / ".snapshots/1").exists()
+    assert not (tmp_path / ".snapshots/2").exists()
     # nested -> the .snapshots container itself goes too (matches a
     # successful plain delete-config's own measured end state).
     assert ("btrfs", ("subvolume", "delete", "/.snapshots")) in calls
-    assert ("rm", ("-f", "/etc/snapper/configs/root")) in calls
+    assert not (tmp_path / "etc/snapper/configs/root").exists()
 
     conf = (tmp_path / "etc/conf.d/snapper").read_text()
     assert 'SNAPPER_CONFIGS=""' in conf
@@ -367,7 +412,7 @@ def test_apply_remove_separate_mount_never_deletes_the_container(tmp_path):
     assert ("btrfs", ("subvolume", "delete", "/.snapshots/1/snapshot")) in calls
     assert ("btrfs", ("subvolume", "delete", "/.snapshots/2/snapshot")) in calls
     assert ("btrfs", ("subvolume", "delete", "/.snapshots")) not in calls
-    assert ("rm", ("-f", "/etc/snapper/configs/root")) in calls
+    assert not (tmp_path / "etc/snapper/configs/root").exists()
 
 
 def test_apply_remove_reads_the_subvolume_from_the_existing_config(tmp_path):
@@ -412,8 +457,10 @@ def test_apply_remove_stops_on_a_failed_snapshot_delete(tmp_path):
         with pytest.raises(CommandExecutionError):
             a.apply([Change("snapper", Op.REMOVE, "root")])
 
-    assert ("rm", ("-f", "/etc/snapper/configs/root")) not in calls
+    # the config's own metadata is never reached once a snapshot delete fails
     assert (tmp_path / "etc/snapper/configs/root").exists()
+    conf = (tmp_path / "etc/conf.d/snapper").read_text()
+    assert 'SNAPPER_CONFIGS="root"' in conf
 
 
 def test_apply_remove_with_no_snapshots_still_drops_the_config(tmp_path):
@@ -429,8 +476,134 @@ def test_apply_remove_with_no_snapshots_still_drops_the_config(tmp_path):
     with patch("dasik.lib.actions.snapper_action.Command.execute", side_effect=fake):
         a.apply([Change("snapper", Op.REMOVE, "root")])
 
-    assert ("rm", ("-f", "/etc/snapper/configs/root")) in calls
+    assert not (tmp_path / "etc/snapper/configs/root").exists()
     assert ("btrfs", ("subvolume", "delete", "/.snapshots")) in calls
+
+
+# --- B1 (blocker): an unreadable SUBVOLUME must never fall back to "/" ----- #
+#
+# `_read_subvolume(...) or "/"` guessed the ROOT subvolume whenever a config's
+# own SUBVOLUME= line could not be read (missing file, truncated, hand-edited
+# typo) -- so removing `home` (whose config file lost its SUBVOLUME= line)
+# deleted every snapshot of `root` instead, a config that is still DECLARED.
+# `import_state` already treats an unreadable SUBVOLUME as "skip this config";
+# apply must refuse just as hard, before any destructive call.
+
+def test_apply_remove_refuses_when_subvolume_is_unreadable(tmp_path):
+    _snapper_configs_dir(tmp_path)
+    # 'home' exists but its SUBVOLUME= line is gone (truncated/corrupted).
+    (tmp_path / "etc/snapper/configs/home").write_text("TIMELINE_CREATE=\"yes\"\n")
+    _confd_snapper(tmp_path, "root home")
+    # root's OWN snapshots must never be touched by a botched removal of home.
+    _numbered_snapshots(tmp_path, "/", 1, 2)
+
+    a = SnapperAction({}, _ctx(tmp_path))
+    fake, calls = _fake_btrfs_rm(mountpoint_rc=1)
+    with patch("dasik.lib.actions.snapper_action.Command.execute", side_effect=fake):
+        with pytest.raises(CommandExecutionError, match="home"):
+            a.apply([Change("snapper", Op.REMOVE, "home")])
+
+    # zero destructive calls issued -- only the (harmless, read-only)
+    # `pacman -Qq snapper` install-check runs before any change is applied.
+    assert [c for c in calls if c[0] in ("btrfs", "rm", "mountpoint")] == []
+    assert (tmp_path / "etc/snapper/configs/home").exists()
+    assert (tmp_path / "etc/snapper/configs").exists()
+    # root -- still declared -- is completely untouched
+    assert (tmp_path / ".snapshots/1/snapshot").exists()
+    assert (tmp_path / ".snapshots/2/snapshot").exists()
+    conf = (tmp_path / "etc/conf.d/snapper").read_text()
+    assert 'SNAPPER_CONFIGS="root home"' in conf
+
+
+def test_apply_remove_refuses_when_the_config_file_is_entirely_missing(tmp_path):
+    """The config file vanished between plan and apply -- `_read_subvolume`
+    cannot even open it. Same refusal, same zero-calls guarantee."""
+    _snapper_configs_dir(tmp_path)         # the directory exists, the file doesn't
+    _confd_snapper(tmp_path, "home")
+    a = SnapperAction({}, _ctx(tmp_path))
+    fake, calls = _fake_btrfs_rm(mountpoint_rc=1)
+    with patch("dasik.lib.actions.snapper_action.Command.execute", side_effect=fake):
+        with pytest.raises(CommandExecutionError):
+            a.apply([Change("snapper", Op.REMOVE, "home")])
+
+    assert [c for c in calls if c[0] in ("btrfs", "rm", "mountpoint")] == []
+
+
+# --- S1: `_delete_config` must be retry-safe after an interruption -------- #
+#
+# Killed between a successful `btrfs subvolume delete <N>/snapshot` and its
+# `rm -rf <N>` (or the `.snapshots` container already gone from an earlier
+# partial run): a retry must not hand `btrfs` a path that no longer exists --
+# it must treat "already gone" as done and keep converging, not raise forever.
+
+def test_apply_remove_retries_past_an_already_deleted_snapshot_subvolume(tmp_path):
+    """`1/snapshot` was already deleted by btrfs on a previous, interrupted
+    run, but `rm -rf 1/` never ran -- only `1/info.xml` is left. A retry must
+    skip the btrfs call for it (nothing to delete) and still clean up `1/`,
+    then finish the removal instead of raising forever."""
+    _snapper_configs_dir(tmp_path)
+    (tmp_path / "etc/snapper/configs/root").write_text('SUBVOLUME="/"\n')
+    _confd_snapper(tmp_path, "root")
+    leftover = tmp_path / ".snapshots/1"
+    leftover.mkdir(parents=True)
+    (leftover / "info.xml").write_text("<snapshot/>")
+    # NOTE: no "snapshot" subdirectory under 1/ -- already deleted.
+
+    a = SnapperAction({}, _ctx(tmp_path))
+    fake, calls = _fake_btrfs_rm(mountpoint_rc=1)
+    with patch("dasik.lib.actions.snapper_action.Command.execute", side_effect=fake):
+        a.apply([Change("snapper", Op.REMOVE, "root")])       # must not raise
+
+    assert ("btrfs", ("subvolume", "delete", "/.snapshots/1/snapshot")) not in calls
+    assert not leftover.exists()                     # the leftover dir is gone
+    assert not (tmp_path / "etc/snapper/configs/root").exists()
+
+
+def test_apply_remove_when_the_snapshots_container_is_already_gone(tmp_path):
+    """`.snapshots` itself was already removed by an earlier partial run (or
+    never mounted on a day-2 `--target /mnt` pass): no numbered dirs, no
+    container to delete -- the config's own removal must still converge."""
+    _snapper_configs_dir(tmp_path)
+    (tmp_path / "etc/snapper/configs/root").write_text('SUBVOLUME="/"\n')
+    _confd_snapper(tmp_path, "root")
+    # deliberately no tmp_path/.snapshots at all
+
+    a = SnapperAction({}, _ctx(tmp_path))
+    fake, calls = _fake_btrfs_rm(mountpoint_rc=1)
+    with patch("dasik.lib.actions.snapper_action.Command.execute", side_effect=fake):
+        a.apply([Change("snapper", Op.REMOVE, "root")])       # must not raise
+
+    assert ("btrfs", ("subvolume", "delete", "/.snapshots")) not in calls
+    assert not (tmp_path / "etc/snapper/configs/root").exists()
+
+
+def test_apply_remove_never_hands_btrfs_a_plain_directory(tmp_path):
+    """`.snapshots` exists as a bare, empty directory that is NOT a real btrfs
+    subvolume (e.g. a day-2 `--target /mnt` pass that only mounted `@`) --
+    `btrfs subvolume show` says no, so the container is never handed to
+    `btrfs subvolume delete` (which would fail on a plain directory and get
+    the removal stuck the same way an already-deleted one would)."""
+    _snapper_configs_dir(tmp_path)
+    (tmp_path / "etc/snapper/configs/root").write_text('SUBVOLUME="/"\n')
+    _confd_snapper(tmp_path, "root")
+    (tmp_path / ".snapshots").mkdir()          # plain dir, not a subvolume
+
+    calls = []
+
+    def fake(cmd, args, *aa, **kw):
+        calls.append((cmd, tuple(args)))
+        if cmd == "mountpoint":
+            return SimpleNamespace(returncode=1, stdout=b"")     # not a mount
+        if cmd == "btrfs" and tuple(args[:2]) == ("subvolume", "show"):
+            return SimpleNamespace(returncode=1, stdout=b"")     # not a subvolume
+        return SimpleNamespace(returncode=0, stdout=b"")
+
+    a = SnapperAction({}, _ctx(tmp_path))
+    with patch("dasik.lib.actions.snapper_action.Command.execute", side_effect=fake):
+        a.apply([Change("snapper", Op.REMOVE, "root")])          # must not raise
+
+    assert ("btrfs", ("subvolume", "delete", "/.snapshots")) not in calls
+    assert not (tmp_path / "etc/snapper/configs/root").exists()
 
 
 def test_drop_from_snapper_configs_list_keeps_other_names(tmp_path):
@@ -444,6 +617,25 @@ def test_drop_from_snapper_configs_list_keeps_other_names(tmp_path):
 def test_drop_from_snapper_configs_list_missing_file_is_a_noop(tmp_path):
     a = SnapperAction({}, _ctx(tmp_path))
     a._drop_from_snapper_configs_list("root", a._target())  # no raise
+
+
+def test_drop_from_snapper_configs_list_is_atomic(tmp_path):
+    """Writes to a temp file + `os.replace`, never truncates the real file in
+    place (N6) -- a crash between them must leave the ORIGINAL untouched
+    rather than a half-written SNAPPER_CONFIGS. The old truncate-in-place
+    implementation never called `os.replace` at all, so this distinguishes
+    the two: with it mocked to fail, the old code still "succeeds" (nothing
+    it does can raise), the new one raises with the original preserved."""
+    _confd_snapper(tmp_path, "root home")
+    a = SnapperAction({}, _ctx(tmp_path))
+    conf_path = tmp_path / "etc/conf.d/snapper"
+
+    with patch("dasik.lib.actions.snapper_action.os.replace",
+              side_effect=OSError("simulated crash before the atomic swap")):
+        with pytest.raises(OSError):
+            a._drop_from_snapper_configs_list("root", a._target())
+
+    assert 'SNAPPER_CONFIGS="root home"' in conf_path.read_text()
 
 
 def test_apply_remove_ensures_snapper_installed_first(tmp_path):

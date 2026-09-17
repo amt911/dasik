@@ -195,6 +195,16 @@ it did on 2026-07-19.
 Needs a btrfs root. Give `/.snapshots` its own subvolume
 ([Disks](Disks.md#btrfs-subvolumes)).
 
+**Removal.** Dropping a config from `configs`, setting `enable: false`, or
+dropping the whole block deletes the config it owns AND every snapshot of
+it (the numbered subvolumes under its `.snapshots` directory) — never via
+`snapper delete-config`, which is measured to corrupt this recommended
+layout (a separately-mounted `@.snapshots`); dasik removes the snapshot
+subvolumes and the config's own bookkeeping itself instead. The
+separately-mounted `.snapshots` subvolume and its `/etc/fstab` line are kept.
+An unowned config is left alone, and the change is destructive — `apply`
+asks first, `--yes` for a non-interactive run.
+
 ### hardware_acceleration
 
 ```json

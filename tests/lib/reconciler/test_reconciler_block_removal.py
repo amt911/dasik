@@ -186,8 +186,9 @@ def test_disks_block_absent_plans_nothing_and_releases_ownership(tmp_path):
 def test_snapper_block_absent_plans_removal_and_releases_ownership(tmp_path):
     """Product decision (superseding the comment this test used to carry):
     "snapper... deben eliminar su config si desaparece" — a config the
-    manifest owns is REMOVEd (destructive: `snapper delete-config` also drops
-    its snapshots), not just silently disowned."""
+    manifest owns is REMOVEd (destructive: apply deletes every snapshot the
+    config owns itself, never via `snapper delete-config` — see
+    `SnapperAction._delete_config`), not just silently disowned."""
     configs = tmp_path / "etc/snapper/configs"
     configs.mkdir(parents=True)
     (configs / "root").write_text('SUBVOLUME="/"\n')
@@ -209,7 +210,8 @@ def test_snapper_block_absent_plans_removal_and_releases_ownership(tmp_path):
 def test_firewall_block_absent_plans_removal_and_releases_ownership(tmp_path):
     """Product decision (superseding the comment this test used to carry):
     "firewall... debe eliminar su config si desaparece" — a zone the manifest
-    owns is REMOVEd, not just silently disowned."""
+    owns is REMOVEd (destructive: apply removes the zone file dasik owns),
+    not just silently disowned."""
     zones = tmp_path / "etc/firewalld/zones"
     zones.mkdir(parents=True)
     (zones / "public.xml").write_text(
@@ -226,6 +228,144 @@ def test_firewall_block_absent_plans_removal_and_releases_ownership(tmp_path):
 
     new_manifest = reconciler._build_new_manifest(results)
     assert not new_manifest.managed.get("firewall")
+
+
+# --- S2: a `sync` while the block is disabled/absent must not dispossess -- #
+#
+# `sync` computes `managed <- actual ∩ (claimable ∪ declared)`
+# (`_owned_after_sync`). Before S2, both actions' `actual()` returned
+# `set()` whenever `enable` was false, so a `sync` run BEFORE the next
+# `apply` (for any reason -- config-check, curiosity, an unrelated field)
+# wiped the manifest's ownership; the following `plan` against the SAME
+# still-disabled/absent config then saw nothing owned and proposed no
+# REMOVE at all, silently reverting the removal semantics this whole branch
+# adds. Round-trip: manifest owns X -> sync() while disabled/absent -> the
+# NEW manifest still owns X -> build_plan() against it still yields REMOVE.
+
+def _sync(config, manifest, metas, target_root):
+    reconciler = Reconciler(config=config, target=Target(root=str(target_root)),
+                            manifest=manifest, action_metas=metas)
+    new_config, new_manifest = reconciler.sync()
+    return reconciler, new_config, new_manifest
+
+
+def test_snapper_sync_while_disabled_keeps_ownership_for_the_next_removal(tmp_path):
+    configs = tmp_path / "etc/snapper/configs"
+    configs.mkdir(parents=True)
+    (configs / "root").write_text('SUBVOLUME="/"\n')
+
+    manifest = {"managed": {"snapper": ["root"]}}
+    config = {"snapper": {"enable": False}}
+    metas = _meta_for(SnapperAction)
+
+    _, _, new_manifest = _sync(config, manifest, metas, tmp_path)
+    assert new_manifest is not None
+    assert new_manifest.managed.get("snapper") == ["root"]
+
+    _, plan, _results = _run(config, new_manifest.to_dict(), metas, tmp_path)
+    assert _domain_changes(plan, "snapper") == [("REMOVE", "root")]
+
+
+def test_snapper_sync_with_the_block_absent_keeps_ownership_for_the_next_removal(tmp_path):
+    configs = tmp_path / "etc/snapper/configs"
+    configs.mkdir(parents=True)
+    (configs / "root").write_text('SUBVOLUME="/"\n')
+
+    manifest = {"managed": {"snapper": ["root"]}}
+    metas = _meta_for(SnapperAction)
+
+    _, _, new_manifest = _sync({}, manifest, metas, tmp_path)
+    assert new_manifest is not None
+    assert new_manifest.managed.get("snapper") == ["root"]
+
+    _, plan, _results = _run({}, new_manifest.to_dict(), metas, tmp_path)
+    assert _domain_changes(plan, "snapper") == [("REMOVE", "root")]
+
+
+def test_firewalld_sync_while_disabled_keeps_ownership_for_the_next_removal(tmp_path):
+    zones = tmp_path / "etc/firewalld/zones"
+    zones.mkdir(parents=True)
+    (zones / "public.xml").write_text(
+        '<?xml version="1.0" encoding="utf-8"?>\n<zone>\n  <short>Public</short>\n'
+        '  <service name="dhcpv6-client"/>\n  <service name="ssh"/>\n</zone>\n')
+
+    manifest = {"managed": {"firewall": ["public"]}}
+    config = {"firewall": {"enable": False}}
+    metas = _meta_for(FirewallAction)
+
+    _, _, new_manifest = _sync(config, manifest, metas, tmp_path)
+    assert new_manifest is not None
+    assert new_manifest.managed.get("firewall") == ["public"]
+
+    _, plan, _results = _run(config, new_manifest.to_dict(), metas, tmp_path)
+    assert _domain_changes(plan, "firewall") == [("REMOVE", "public")]
+
+
+def test_firewalld_sync_with_the_block_absent_keeps_ownership_for_the_next_removal(tmp_path):
+    zones = tmp_path / "etc/firewalld/zones"
+    zones.mkdir(parents=True)
+    (zones / "public.xml").write_text(
+        '<?xml version="1.0" encoding="utf-8"?>\n<zone>\n  <short>Public</short>\n'
+        '  <service name="dhcpv6-client"/>\n  <service name="ssh"/>\n</zone>\n')
+
+    manifest = {"managed": {"firewall": ["public"]}}
+    metas = _meta_for(FirewallAction)
+
+    _, _, new_manifest = _sync({}, manifest, metas, tmp_path)
+    assert new_manifest is not None
+    assert new_manifest.managed.get("firewall") == ["public"]
+
+    _, plan, _results = _run({}, new_manifest.to_dict(), metas, tmp_path)
+    assert _domain_changes(plan, "firewall") == [("REMOVE", "public")]
+
+
+def test_ufw_sync_while_disabled_keeps_ownership_for_the_next_removal(tmp_path):
+    """ufw's state lives on the live system (`ufw status`), not a file --
+    Command.execute is mocked throughout both the sync and the later plan."""
+    manifest = {"managed": {"firewall": ["allow 22/tcp"]}}
+    config = {"firewall": {"enable": False, "backend": "ufw", "rules": ["allow 22/tcp"]}}
+    metas = _meta_for(FirewallAction)
+    live_status = ("Status: active\n\nTo Action From\n-- ------ ----\n"
+                  "22/tcp ALLOW IN Anywhere\n")
+
+    def fake(cmd, args=None, **kw):
+        if cmd == "ufw" and args and args[0] == "status":
+            return MagicMock(stdout=live_status, returncode=0)
+        return MagicMock(stdout=b"", returncode=1)      # firewall-offline-cmd: unavailable
+
+    with patch("dasik.lib.actions.firewall_action.Command.execute", side_effect=fake):
+        _, _, new_manifest = _sync(config, manifest, metas, tmp_path)
+        assert new_manifest is not None
+        assert new_manifest.managed.get("firewall") == ["allow 22/tcp"]
+
+        _, plan, _results = _run(config, new_manifest.to_dict(), metas, tmp_path)
+    assert _domain_changes(plan, "firewall") == [("REMOVE", "allow 22/tcp")]
+
+
+def test_ufw_sync_with_the_block_absent_keeps_ownership_for_the_next_removal(tmp_path):
+    """With the WHOLE block gone, `backend` defaults to "firewalld" and
+    cannot say which reality to read (S3's exact ambiguity) -- the manifest's
+    OWN recorded backend (a previous apply's `state_metadata()`) must settle
+    it for `actual()` too, or a `sync` here would probe an (empty, possibly
+    nonexistent) firewalld zones directory and lose ufw ownership."""
+    manifest = {"managed": {"firewall": ["allow 22/tcp"]},
+               "action_state": {"firewall": {"backend": "ufw"}}}
+    metas = _meta_for(FirewallAction)
+    live_status = ("Status: active\n\nTo Action From\n-- ------ ----\n"
+                  "22/tcp ALLOW IN Anywhere\n")
+
+    def fake(cmd, args=None, **kw):
+        if cmd == "ufw" and args and args[0] == "status":
+            return MagicMock(stdout=live_status, returncode=0)
+        return MagicMock(stdout=b"", returncode=1)      # firewall-offline-cmd: unavailable
+
+    with patch("dasik.lib.actions.firewall_action.Command.execute", side_effect=fake):
+        _, _, new_manifest = _sync({}, manifest, metas, tmp_path)
+        assert new_manifest is not None
+        assert new_manifest.managed.get("firewall") == ["allow 22/tcp"]
+
+        _, plan, _results = _run({}, new_manifest.to_dict(), metas, tmp_path)
+    assert _domain_changes(plan, "firewall") == [("REMOVE", "allow 22/tcp")]
 
 
 # --- systemd (destructive: DISABLE of an owned-but-undeclared unit) -------- #

@@ -7,6 +7,7 @@ idempotent — a create-config is planned only for a config that does not alread
 exist under /etc/snapper/configs, so a converged system re-plans to nothing.
 """
 import os
+import shutil
 from typing import Any, List
 
 from .abstract_action import AbstractAction
@@ -58,12 +59,30 @@ class SnapperAction(AbstractAction):
     def _exists(self, name: str) -> bool:
         return os.path.exists(self._config_path(name))
 
+    def _configs_dir(self) -> str:
+        t = self._target()
+        return t.path(_CONFIGS_DIR) if t is not None else "/mnt" + _CONFIGS_DIR
+
     # --- v3 contract -------------------------------------------------- #
 
     def actual(self) -> set:
-        if not self.enable:
+        """Every config file under /etc/snapper/configs, REGARDLESS of
+        `enable` -- the "A = all" convention `SystemdAction.actual()` already
+        follows. Gating this on `enable` (as it did before) meant a `sync`
+        run while the block was disabled/absent computed
+        `actual ∩ (claimable ∪ declared)` with actual=set(), so the
+        reconciler dispossessed the manifest of a config it still owned —
+        the next plan/apply with the block still disabled/absent then saw
+        nothing to remove (S2). The reconciler's own intersection with
+        claimable/declared still scopes this: a config dasik never created
+        is never falsely claimed just because its file happens to exist.
+        """
+        try:
+            names = os.listdir(self._configs_dir())
+        except OSError:
             return set()
-        return {c["name"] for c in self.configs if self._exists(c["name"])}
+        base = self._configs_dir()
+        return {n for n in names if os.path.isfile(os.path.join(base, n))}
 
     def plan(self, managed):
         """CREATE for a declared config missing on disk, plus REMOVE for a
@@ -78,8 +97,12 @@ class SnapperAction(AbstractAction):
         to nothing, full stop, the same rule ``managed_keys`` follows.
 
         A REMOVE is destructive by construction (``Change.__post_init__``):
-        ``apply`` runs ``snapper delete-config``, which deletes every
-        snapshot the config owns, not just the config file.
+        ``apply`` deletes every snapshot the config owns (see
+        ``_delete_config``) plus the config's own registration. It never
+        calls ``snapper delete-config`` — that command is MEASURED
+        (docs/FACTS.md FACT-SFRM-3) to corrupt dasik's own recommended
+        layout (a separately-mounted ``@.snapshots``), so ``_delete_config``
+        reimplements the removal itself instead.
         """
         declared = {c["name"] for c in self.configs} if self.enable else set()
         changes: List[Change] = []
@@ -116,7 +139,18 @@ class SnapperAction(AbstractAction):
                 # `self.configs` any more — read its subvolume back from the
                 # (still present, about to be deleted) config file on disk,
                 # the same way `import_state` does.
-                removed_subvol = self._read_subvolume(self._config_path(change.item)) or "/"
+                removed_subvol = self._read_subvolume(self._config_path(change.item))
+                if removed_subvol is None:
+                    # B1: a truncated/hand-edited/vanished config file must
+                    # never fall back to "/" — that guessed ROOT's own
+                    # subvolume and deleted every snapshot of a config that
+                    # is still DECLARED. `import_state` already treats an
+                    # unreadable SUBVOLUME as "skip this config"; apply must
+                    # refuse just as hard, before any destructive call.
+                    raise CommandExecutionError(
+                        f"snapper config '{change.item}': cannot read "
+                        "SUBVOLUME, refusing to delete snapshots"
+                    )
                 self._delete_config(change.item, removed_subvol, target)
                 continue
             subvol = by_name.get(change.item)
@@ -226,20 +260,45 @@ class SnapperAction(AbstractAction):
         missing some snapshots) rather than a config gone with orphaned
         snapshot subvolumes nothing can find by name any more — the next
         `plan` still sees (and can retry) the REMOVE either way.
+
+        Retry-safe (S1): every btrfs delete is preceded by an existence check,
+        so a run resumed after an interruption never hands `btrfs` a path that
+        is already gone — the numbered `<N>/snapshot` (killed between the
+        subvolume delete and its `rm -rf <N>`) and the `.snapshots` container
+        itself (already removed by an earlier partial run, or a day-2
+        `--target /mnt` pass that only mounted `@`, leaving `.snapshots` a
+        plain, empty directory) both converge instead of raising forever. The
+        container additionally goes through `btrfs subvolume show` — a plain
+        directory is never handed to `subvolume delete`, which would fail on
+        it exactly the same way an already-deleted path does.
+
+        The leftover bookkeeping directory (`<N>/`, just `info.xml` once its
+        `snapshot` subvolume is gone) and the config's own file are removed
+        through Python (`shutil.rmtree`/`os.remove`) on the target's
+        host-visible path, the same idiom `FirewallAction` already uses for
+        its zone file — there is no chroot boundary to cross for a path
+        already resolved via `target.path()`, so there is no reason to shell
+        out for a plain file/directory delete (N6). Only the real btrfs
+        subvolume operations still go through `Command.execute`.
         """
         snap_dir = self._snapshots_dir(subvol)
         preexist = self._is_snapshots_mount(snap_dir, target)
         for n in self._numbered_snapshot_dirs(snap_dir, target):
             snap_path = f"{snap_dir}/{n}/snapshot"
-            res = Command.execute("btrfs", ["subvolume", "delete", snap_path],
-                                  target=target)
-            if getattr(res, "returncode", 0) != 0:
-                raise CommandExecutionError(
-                    f"btrfs subvolume delete failed for '{snap_path}' "
-                    f"(rc={getattr(res, 'returncode', '?')})"
-                )
-            Command.execute("rm", ["-rf", f"{snap_dir}/{n}"], target=target)
-        if not preexist:
+            if self._exists_on_target(snap_path, target):
+                res = Command.execute("btrfs", ["subvolume", "delete", snap_path],
+                                      target=target)
+                if getattr(res, "returncode", 0) != 0:
+                    raise CommandExecutionError(
+                        f"btrfs subvolume delete failed for '{snap_path}' "
+                        f"(rc={getattr(res, 'returncode', '?')})"
+                    )
+            # else: an interrupted previous run already deleted the
+            # subvolume but never got to remove the leftover `<N>/`
+            # bookkeeping directory below -- nothing to delete, still
+            # retry-safe.
+            self._rmtree_on_target(f"{snap_dir}/{n}", target)
+        if not preexist and self._is_subvolume(snap_dir, target):
             res = Command.execute("btrfs", ["subvolume", "delete", snap_dir],
                                   target=target)
             if getattr(res, "returncode", 0) != 0:
@@ -247,15 +306,47 @@ class SnapperAction(AbstractAction):
                     f"btrfs subvolume delete failed for '{snap_dir}' "
                     f"(rc={getattr(res, 'returncode', '?')})"
                 )
-        canonical = f"{_CONFIGS_DIR}/{name}"
-        Command.execute("rm", ["-f", canonical], target=target)
+        self._remove_on_target(self._config_path(name))
         self._drop_from_snapper_configs_list(name, target)
+
+    def _resolve_on_target(self, path: str, target) -> str:
+        return target.path(path) if target is not None else path
+
+    def _exists_on_target(self, path: str, target) -> bool:
+        return os.path.exists(self._resolve_on_target(path, target))
+
+    def _is_subvolume(self, path: str, target) -> bool:
+        """True when *path* is itself a btrfs subvolume, not merely an
+        existing directory -- guards ``_delete_config`` against handing
+        ``btrfs subvolume delete`` a plain directory (S1), which fails and
+        would leave the removal stuck the same way an already-deleted path
+        does."""
+        if not self._exists_on_target(path, target):
+            return False
+        res = Command.execute("btrfs", ["subvolume", "show", path], target=target)
+        return getattr(res, "returncode", 1) == 0
+
+    @staticmethod
+    def _remove_on_target(path: str) -> None:
+        """Delete a plain file at its already-resolved, host-visible path."""
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            pass
+
+    def _rmtree_on_target(self, path: str, target) -> None:
+        """Recursively delete a leftover bookkeeping directory -- never a
+        subvolume itself (those go through ``btrfs subvolume delete``
+        above)."""
+        shutil.rmtree(self._resolve_on_target(path, target), ignore_errors=True)
 
     def _drop_from_snapper_configs_list(self, name: str, target) -> None:
         """Remove *name* from ``/etc/conf.d/snapper``'s ``SNAPPER_CONFIGS``
         — plain text munging (no subvolume boundary involved), so a direct
         read/write is safe and mirrors what a successful delete-config itself
-        does (measured: FACT-SFRM-*)."""
+        does (measured: FACT-SFRM-*). Written atomically (N6): a temp file in
+        the same directory, then ``os.replace`` — a crash mid-write leaves the
+        ORIGINAL file untouched rather than a truncated SNAPPER_CONFIGS."""
         path = target.path(_CONF_D_SNAPPER) if target is not None else _CONF_D_SNAPPER
         try:
             with open(path, "r", encoding="utf-8") as f:
@@ -270,8 +361,10 @@ class SnapperAction(AbstractAction):
                 out.append(f'SNAPPER_CONFIGS="{" ".join(remaining)}"\n')
             else:
                 out.append(line)
-        with open(path, "w", encoding="utf-8") as f:
+        tmp_path = f"{path}.dasik-tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
             f.writelines(out)
+        os.replace(tmp_path, path)
 
     def managed_keys(self) -> dict:
         if not self.enable:
@@ -286,9 +379,7 @@ class SnapperAction(AbstractAction):
         behaviour) meant a host with real snapshots round-tripped into a config
         with no `snapper` section at all — the action was then skipped as absent.
         """
-        target = self._target()
-        configs_dir = target.path(_CONFIGS_DIR) if target is not None \
-            else "/mnt" + _CONFIGS_DIR
+        configs_dir = self._configs_dir()
         try:
             names = sorted(os.listdir(configs_dir))
         except OSError:

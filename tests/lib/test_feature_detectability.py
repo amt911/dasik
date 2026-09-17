@@ -601,7 +601,8 @@ def test_the_firewalld_backend_still_installs_firewalld():
 # disappearance forms: dropped from the declaration while the rest of the
 # block stays, `enable: false`, or the whole block absent (reconciler hands
 # `empty_config()`, dasik#353). Snapper's REMOVE is destructive by
-# construction — `delete-config` also drops every snapshot.
+# construction — apply deletes every snapshot the config owns itself, never
+# via `snapper delete-config` (see `SnapperAction._delete_config`).
 
 def _snapper_plan(tmp_path, config, managed=(), existing=("root",)):
     from dasik.lib.actions.snapper_action import SnapperAction

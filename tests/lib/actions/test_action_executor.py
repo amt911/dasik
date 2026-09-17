@@ -116,3 +116,21 @@ def test_get_partition_delegates_to_context():
     ex.context.set_partition("root", "/dev/sda2")
     assert ex.get_partition("root") == "/dev/sda2"
     assert ex.get_partition("missing") is None
+
+
+class _FinalizeRaises(_FakeAction):
+    def finalize_apply(self):
+        raise RuntimeError("reload blew up")
+
+
+def test_a_raising_finalize_apply_is_a_warning_not_a_failed_action(monkeypatch):
+    """Same contract as the reconciler: the post-apply step is best-effort."""
+    from unittest.mock import MagicMock
+    logger = MagicMock()
+    monkeypatch.setattr("dasik.lib.actions.action_executor.run_logger.get",
+                        lambda: logger)
+    _make(_FinalizeRaises, needed=True)
+    ex = ActionExecutor({"fake": {"a": 1}}, _registry(_FinalizeRaises))
+    ex.execute_all()
+    assert ex.results[0].status == "success"
+    assert "reload blew up" in str(logger.warning.call_args)

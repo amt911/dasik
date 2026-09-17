@@ -2,6 +2,7 @@ from typing import Dict, Any, List
 from colorama import Fore, Style, init  # type: ignore
 from .action_context import ActionContext
 from .action_registry import ActionRegistry, get_default_registry
+from ..logging import run_logger
 
 
 class ActionResult:
@@ -130,7 +131,12 @@ class ActionExecutor:
             # the action's own execute is the closest equivalent).
             finalize = getattr(action, "finalize_apply", None)
             if callable(finalize):
-                finalize()
+                try:
+                    finalize()
+                except Exception as exc:
+                    # Best-effort, as in the reconciler: the action applied.
+                    run_logger.get().warning(
+                        f"{action_name}: post-apply step failed ({exc!r}).")
 
             # Verify results
             if not action.verify():

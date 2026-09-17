@@ -594,6 +594,68 @@ def test_the_firewalld_backend_still_installs_firewalld():
     assert "ufw" not in expanded["packages"]
 
 
+# --- snapper / firewall removal: "deben eliminar su config si desaparece" -- #
+#
+# Both domains previously went SILENT when the block disappeared — a config or
+# zone the manifest owned just stayed. The rule now applies in all three
+# disappearance forms: dropped from the declaration while the rest of the
+# block stays, `enable: false`, or the whole block absent (reconciler hands
+# `empty_config()`, dasik#353). Snapper's REMOVE is destructive by
+# construction — apply deletes every snapshot the config owns itself, never
+# via `snapper delete-config` (see `SnapperAction._delete_config`).
+
+def _snapper_plan(tmp_path, config, managed=(), existing=("root",)):
+    from dasik.lib.actions.snapper_action import SnapperAction
+
+    configs_dir = tmp_path / "etc/snapper/configs"
+    configs_dir.mkdir(parents=True, exist_ok=True)
+    for name in existing:
+        (configs_dir / name).write_text('SUBVOLUME="/"\n')
+    action = SnapperAction(config, _ctx(tmp_path))
+    return [(c.op.name, c.item) for c in action.plan(managed=list(managed))]
+
+
+def test_dropping_the_snapper_block_removes_the_config_it_owns(tmp_path):
+    assert _snapper_plan(tmp_path, {}, managed=["root"]) == [("REMOVE", "root")]
+
+
+def test_snapper_enable_false_also_removes_the_config_it_owns(tmp_path):
+    assert _snapper_plan(tmp_path, {"enable": False}, managed=["root"]) == \
+        [("REMOVE", "root")]
+
+
+def test_a_snapper_config_dropped_from_the_list_is_removed_even_enabled(tmp_path):
+    cfg = {"enable": True, "configs": [{"name": "home", "subvolume": "/home"}]}
+    changes = _snapper_plan(tmp_path, cfg, managed=["root", "home"],
+                            existing=("root", "home"))
+    assert ("REMOVE", "root") in changes
+    assert ("CREATE", "root") not in changes
+
+
+def test_a_snapper_config_dasik_never_created_is_left_alone(tmp_path):
+    assert _snapper_plan(tmp_path, {}, managed=[], existing=("root",)) == []
+
+
+def test_a_snapper_config_already_gone_is_not_planned_again(tmp_path):
+    assert _snapper_plan(tmp_path, {}, managed=["root"], existing=()) == []
+
+
+def test_dropping_the_firewall_block_removes_the_zone_it_owns(tmp_path):
+    from dasik.lib.actions.firewall_action import FirewallAction
+
+    zones = tmp_path / "etc/firewalld/zones"
+    zones.mkdir(parents=True)
+    (zones / "public.xml").write_text("<zone></zone>\n")
+    action = FirewallAction({}, _ctx(tmp_path))
+    assert [(c.op.name, c.item) for c in action.plan(managed=["public"])] == \
+        [("REMOVE", "public")]
+
+
+def test_firewall_enable_false_also_removes_the_ufw_rule_it_owns():
+    assert _ufw_plan(["22/tcp"], {"enable": False, "backend": "ufw"},
+                     managed=["allow 22/tcp"]) == [("REMOVE", "allow 22/tcp")]
+
+
 # --- zram takes its file back (round E) ------------------------------------- #
 
 def test_dropping_the_zram_block_removes_its_file(tmp_path):

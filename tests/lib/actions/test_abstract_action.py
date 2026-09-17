@@ -77,6 +77,16 @@ def test_legacy_action_default_managed_keys_is_empty_dict():
     assert a.managed_keys() == {}
 
 
+def test_default_finalize_apply_is_a_noop():
+    """SF-3: an optional post-apply step, run once by the reconciler after
+    EVERY action in an apply has completed successfully -- for a domain
+    whose own effect (a daemon reload) depends on infrastructure a LATER-
+    registered action provides. Most actions never need this; the default
+    must not raise and do nothing."""
+    a = _LegacyAction(config={})
+    assert a.finalize_apply() is None
+
+
 def test_legacy_action_is_v3_false():
     """Legacy actions don't override plan → is_v3 is False."""
     assert _LegacyAction.is_v3() is False

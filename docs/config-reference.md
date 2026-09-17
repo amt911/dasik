@@ -499,6 +499,21 @@ for making a captured layout portable.
 | `mountpoint` | string | — | e.g. `/`, `/home`. |
 | `mount_options` | list[str] | `["compress-force=zstd"]` | |
 
+`sync` captures the btrfs options you can declare and the kernel does not add by
+itself — `compress*`, `noatime`, `nodiratime`, `lazytime`, `autodefrag`,
+`nodatacow`, `nodatasum`, `commit=<n>` — and never the kernel's own bookkeeping
+(`relatime`, `ssd`, `discard=async`, `space_cache`, `subvolid=`). `strictatime`
+cannot be captured: the kernel never reports it.
+
+The root subvolume's options become `rootflags=` on the boot entry, compared by
+meaning rather than spelling: the kernel reports `zstd` as `zstd:3`, and the
+measured clamps `zstd:0`→`zstd:3`, `zstd:16`→`zstd:15`, `zlib:0`→`zlib:3`,
+`zlib:12`→`zlib:9` and a bare `compress`/`compress-force`→`zlib:3` all count as
+the same value. Any other out-of-range level (`zstd:17`, `zlib:10`, a negative
+zstd level, `lzo:<n>`) and `compress=no` are unsupported spellings: write the
+value the kernel reports, or the first `sync` after an install proposes one
+boot-entry rewrite.
+
 ### Unlocking from a keyfile (a pendrive)  *(sync ✓)*
 
 ```json
@@ -1534,6 +1549,23 @@ port+protocol, protocol value, the action (`accept`/`reject`/`drop`) and its rat
 dropping a clause of an access rule (e.g. `accept limit value="2/m"`) would
 silently widen it.
 
+**Removal.** Dropping the block, setting `enable: false`, or dropping a single
+`zones` entry all remove exactly what dasik owns and nothing else: the
+firewalld zone file(s) it wrote (`/etc/firewalld/zones/<zone>.xml`), or the ufw
+rules it added (`ufw --force delete <rule>`) for the `ufw` backend. An unowned
+zone/rule — one dasik never created — is left alone; this is drift, not
+dasik's to clean up. The change is destructive (`Op.REMOVE`), so `apply` asks
+for confirmation and refuses without `--yes` on a non-interactive run. On a
+**live** target (`--target /`), a firewalld zone write or removal also reloads
+the running daemon (`systemctl is-active firewalld` → `firewall-cmd --reload`)
+so the change normally takes effect immediately, not just on disk. A reload
+that cannot run mid-apply (the package is being reinstalled in the same run) is
+retried with `systemctl try-restart firewalld` once the whole apply finished; a
+reload firewalld refuses keeps its previous runtime and dasik warns you to run
+`systemctl restart firewalld`; an install target is
+skipped (there is no running firewalld under `/mnt`, and the first boot reads
+the fresh zone anyway).
+
 ### `wireguard`  *(a LIST of tunnels; sync ✓ as its own block)*
 
 Each tunnel names a file **next to the config**, in the format its backend
@@ -1564,6 +1596,21 @@ The action runs **before** the package transaction (snap-pac's pacman hooks
 snapshot each transaction, so the config must already exist) and installs
 `snapper`/`snap-pac` itself if they are not on the target yet. `sync` captures
 every config found under `/etc/snapper/configs`.
+
+**Removal.** Dropping a config from `configs`, setting `enable: false`, or
+dropping the whole block all delete exactly what dasik owns: the config it
+created (`/etc/snapper/configs/<name>`, its name out of `/etc/conf.d/snapper`'s
+`SNAPPER_CONFIGS`) **and every snapshot the config owns** (the numbered
+subvolumes under its `.snapshots` directory). dasik never runs `snapper
+delete-config` for this — measured to corrupt its own recommended layout (a
+separately-mounted `@.snapshots`) — it deletes the snapshot subvolumes and the
+config's bookkeeping itself instead. The separately-mounted `.snapshots`
+subvolume and its `/etc/fstab` line are **kept** (only its own nested
+`.snapshots`, when `.snapshots` is not a separate mount, goes with it) — the
+destructive half is scoped to what dasik owns (the snapshots and the config),
+never the disk layout underneath it. An unowned config — one dasik never
+created — is left alone. The change is destructive (`Op.REMOVE`), so `apply`
+asks for confirmation and refuses without `--yes` on a non-interactive run.
 
 ### Simple bool toggles
 

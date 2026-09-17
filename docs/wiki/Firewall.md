@@ -144,6 +144,36 @@ when it is installed **and** reports live rules — on a machine carrying both
 packages, the one with rules is the one describing reality. Otherwise the
 firewalld zone is read as before.
 
+## Removal
+
+Dropping the block, setting `enable: false`, dropping one `rules`/zone entry,
+or dropping the whole thing all remove exactly what dasik owns:
+
+- **firewalld** — the zone file(s) it wrote (`/etc/firewalld/zones/<zone>.xml`).
+  On a **live** target (`--target /`) the running daemon is also reloaded
+  (`systemctl is-active firewalld` → `firewall-cmd --reload`), so the change
+  normally takes effect immediately. If the reload cannot run mid-apply (the
+  `firewalld` package is being reinstalled in the same run) it is retried with
+  `systemctl try-restart firewalld` once the whole apply has finished; if
+  firewalld refuses the reload, it keeps its previous runtime and dasik warns
+  you to run `systemctl restart firewalld`; an install target
+  is skipped (no daemon runs under `/mnt`, and the first boot reads the fresh
+  zone anyway).
+- **ufw** — `ufw --force delete <rule>` for each rule it added. Tearing down
+  the whole block never re-enables ufw (`--force enable` only fires alongside
+  an `Op.INSTALL`) and never installs the package just to remove something
+  from it.
+
+An unowned zone/rule — one dasik never created — is left alone (drift, not
+dasik's). The change is destructive, so `apply` asks for confirmation and
+refuses without `--yes` on a non-interactive run — same as any other REMOVE.
+
+When the whole `firewall` block is absent, its own `backend` field cannot say
+which one to tear down (it defaults to `firewalld`), so dasik reads back the
+backend the last `apply` actually recorded; only a manifest written before
+that existed (dasik ≤ 0.18.0) falls back to guessing from the shape of what
+is owned (a bare zone name vs. an `"<action> <target>"` ufw rule).
+
 ## Related
 
 - [Feature blocks](Features.md) — every optional block

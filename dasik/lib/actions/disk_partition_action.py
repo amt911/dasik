@@ -18,7 +18,12 @@ from dasik.lib.command_worker.command_worker import Command
 from dasik.lib.exceptions.exceptions import CommandExecutionError
 from dasik.lib.logging import run_logger
 from dasik.lib.state.change import Change, Op
-from dasik.lib.actions.partition_utils import keydev_path
+from dasik.lib.actions.partition_utils import (
+    keydev_path,
+    merge_mount_options_by_name,
+    option_equivalent,
+    token_name,
+)
 from dasik.lib.actions.luks_dump import read_dump
 from dasik.lib.actions.swap_encryption import KEY_SOURCE, LABEL_FS_SIZE, swap_names
 
@@ -525,10 +530,12 @@ class DiskPartitionAction(AbstractAction):
         for disk in self.disks:
             d = disk.model_dump(mode="json")
             d["wipe_disk"] = False
-            for p in d.get("partitions", []):
+            for idx, p in enumerate(d.get("partitions", [])):
                 p["format"] = False
                 p.pop("luks_password", None)
-                self._correct_subvol_options(p, live_subvol_options)
+                self._correct_subvol_options(
+                    p, live_subvol_options,
+                    source=self._resolve_partition_source(p))
                 if p.get("encrypt") and p.get("luks_name"):
                     uuid = self._read_luks_uuid(p["luks_name"])
                     if uuid:
@@ -580,26 +587,101 @@ class DiskPartitionAction(AbstractAction):
             s["mount_options"] = [o for o in s.get("mount_options", []) if o not in common]
         return sorted(common)
 
-    def _live_subvol_options(self) -> "Dict[str, List[str]]":
-        """subvolume name -> the mount options it is REALLY mounted with.
+    # btrfs mount options a user can actually DECLARE (besides `compress*`,
+    # handled separately since its value carries a level). Kept as a whitelist,
+    # never a blacklist: kernel bookkeeping and defaults (`rw`, `relatime`,
+    # `ssd`, `discard=async`, `space_cache*`, `subvolid=`, `subvol=`) simply
+    # never match here, so they need no explicit exclusion — and a future
+    # findmnt option this repo has not heard of is dropped by default, not
+    # captured by accident.
+    #
+    # `strictatime` is deliberately ABSENT (S2, review of fix/rootflags-sync-
+    # drift) — measured (reviewer, `unshare -Urm` + tmpfs; re-measured here in
+    # the vmtest guest, see docs/FACTS.md): `-o strictatime` reports back with
+    # NO atime word at all. It is the ABSENCE of `relatime`/`noatime`, never a
+    # string findmnt prints, so it could never be captured back and the
+    # whitelist entry was dead code that also made a test pack an
+    # unreachable row.
+    _DECLARABLE_BTRFS_FLAGS = frozenset({
+        "noatime", "nodiratime", "lazytime",
+        "autodefrag", "nodatacow", "nodatasum",
+    })
 
-        Only the ones dasik can express (compress*): the rest of what findmnt
-        prints is kernel bookkeeping (relatime, space_cache, subvolid) that no
-        config declares.
+    @classmethod
+    def _is_declarable_btrfs_option(cls, option: str) -> bool:
+        """Whether a findmnt-reported btrfs option is one a config can declare.
+
+        Root cause A (rootflags sync drift, issue: sync->plan not silent on
+        btrfs roots): only options starting with ``compress`` used to survive
+        capture here, so a REAL declared option like ``noatime`` was silently
+        dropped — a reinstall from the capture lost it. Shared by
+        ``_live_subvol_options`` (correcting a DECLARED config) and
+        ``_btrfs_subvols`` (discovery from an empty seed), so the two call
+        sites can never disagree about what a subvolume is allowed to carry.
         """
-        live: Dict[str, List[str]] = {}
-        for _target, _src, opts in self._findmnt_btrfs_rows():
-            subvol = next((o.split("=", 1)[1] for o in opts.split(",")
-                           if o.startswith("subvol=")), None)
-            if not subvol:
-                continue
-            name = subvol.rstrip("/").split("/")[-1]
-            if name:
-                live[name] = [o for o in opts.split(",") if o.startswith("compress")]
+        if option.startswith("compress"):
+            return True
+        name = token_name(option)
+        if name in cls._DECLARABLE_BTRFS_FLAGS:
+            return True
+        return name == "commit" and option != name
+
+    def _live_subvol_options(self) -> "Dict[str, Tuple[str, List[str]]]":
+        """mountpoint -> (source device, the mount options that subvolume is
+        REALLY mounted with). Only the ones dasik can express: `compress*`
+        plus the handful of real, user-declarable btrfs flags (see
+        `_is_declarable_btrfs_option`) — the rest of what findmnt prints is
+        kernel bookkeeping (relatime, space_cache, subvolid) that no config
+        declares.
+
+        Keyed by MOUNTPOINT, not subvolume NAME (S1, review of
+        fix/rootflags-sync-drift): two different btrfs filesystems can
+        perfectly legally share a subvolume name like `@` (e.g. the root disk
+        and a data disk of VM images) — keying by name let the LAST findmnt
+        row for that name win regardless of which device it came from, so a
+        data disk's `nodatacow` was transplanted onto the ROOT subvolume's
+        capture. A mountpoint is unique on a running machine (you cannot mount
+        two things at the same path), so it is a collision-free identity that
+        needs no extra device-resolution call — the same identity
+        `_partition_from_node`/`_btrfs_subvols` already use for a subvolume's
+        `mountpoint` field.
+
+        The SOURCE (findmnt's device column, bracket suffix stripped) is kept
+        alongside the options — NIT-5, re-review round 2 — so
+        `_correct_subvol_options` can refuse a target-only match when the
+        caller can resolve what device the DECLARED partition should be
+        mounted from and it disagrees with what is actually there.
+        """
+        live: Dict[str, Tuple[str, List[str]]] = {}
+        for target, src, opts in self._findmnt_btrfs_rows():
+            live[target] = (
+                src.split("[")[0],
+                [o for o in opts.split(",") if self._is_declarable_btrfs_option(o)],
+            )
         return live
 
     @staticmethod
-    def _correct_subvol_options(partition: dict, live: "Dict[str, List[str]]") -> None:
+    def _resolve_partition_source(partition: dict) -> "Optional[str]":
+        """Best-effort device path for a DECLARED partition, or ``None`` when
+        it cannot be resolved (NIT-5, re-review round 2).
+
+        Encrypted: the mapping name is declared directly (`luks_name`), so the
+        open mapping's path is exact. Plain: ``None``. Config order is only the
+        partition number on a disk dasik numbered itself; next to another
+        system (`wipe_disk: false`), with a subset declared or with a
+        `/dev/disk/by-id` device the guess is wrong, and a wrong source vetoes
+        a correct mountpoint match — the capture then kept the model default
+        and lost options the machine really mounts (re-review round 3). A
+        mountpoint is unique on a running machine, so target-only is the
+        right fallback.
+        """
+        if partition.get("encrypt") and partition.get("luks_name"):
+            return f"/dev/mapper/{partition['luks_name']}"
+        return None
+
+    @staticmethod
+    def _correct_subvol_options(partition: dict, live: "Dict[str, Tuple[str, List[str]]]",
+                                source: "Optional[str]" = None) -> None:
         """Replace declared subvolume options with the mounted truth (in place).
 
         `model_dump()` materializes defaults, so a config that declares a
@@ -608,19 +690,49 @@ class DiskPartitionAction(AbstractAction):
         derived rootflags then carried that value NEXT TO the partition's real
         one. Reporting the machine is the whole contract of `sync`.
 
-        What the partition already carries is subtracted, so a shared option is
-        stated once (the same shape `_hoist_common_mount_options` produces on
-        the discovery path). A subvolume findmnt does not mention is not
-        mounted: there is nothing to read, so the declaration stands.
+        Looked up by the subvolume's own MOUNTPOINT (S1), normalized with
+        `os.path.normpath` (NIT-4, re-review round 2) so a human-written
+        trailing slash (`"/home/"`) still finds findmnt's `/home` row — the
+        model has no validator for this field, and skipping the correction
+        over a spelling difference would silently leave the model-default
+        `compress-force=zstd` in the capture instead of the machine's real
+        options. `live` is keyed by mountpoint, so a data disk's subvolume of
+        the same NAME can never answer this partition's lookup.
+
+        NIT-5 (re-review round 2): a shared mountpoint is not proof of shared
+        identity — when *source* is resolvable (the caller's best-effort
+        device path for this DECLARED partition), it must agree with what
+        findmnt actually reports mounted there, or the correction is skipped:
+        a foreign filesystem some other layer happens to mount at the same
+        path is never read as this partition's subvolume. ``source=None``
+        (irresolvable) keeps the previous target-only behaviour.
+
+        What the partition already carries is subtracted by NAME AND
+        EQUIVALENCE (S4, review of fix/rootflags-sync-drift), not by whole
+        token: a live `compress-force=zstd:3` against a declared base
+        `compress-force=zstd` is the SAME option (the kernel-resolved level of
+        the same setting), so whole-token subtraction let it survive as if it
+        were new and captured it a SECOND time onto the subvolume — the
+        derived `rootflags=` then carried `compress-force=` twice. A
+        subvolume findmnt does not mention is not mounted: there is nothing to
+        read, so the declaration stands.
         """
         if not live:
             return
-        base = set(partition.get("mount_options") or [])
+        base = partition.get("mount_options") or []
         for subvol in partition.get("btrfs_subvolumes") or []:
-            mounted = live.get(subvol.get("name"))
-            if mounted is None:
+            mountpoint = subvol.get("mountpoint")
+            if not mountpoint:
                 continue
-            subvol["mount_options"] = [o for o in mounted if o not in base]
+            entry = live.get(os.path.normpath(mountpoint))
+            if entry is None:
+                continue
+            live_source, mounted = entry
+            if source is not None and live_source != source:
+                continue
+            subvol["mount_options"] = [
+                o for o in mounted if not any(option_equivalent(o, b) for b in base)
+            ]
 
     @staticmethod
     def _subvol_mount_options(partition, subvol) -> "List[str]":
@@ -628,24 +740,16 @@ class DiskPartitionAction(AbstractAction):
         as a base (so a hoisted `compress-force=…` applies), plus the subvolume's
         own, plus `subvol=<name>`.
 
-        De-duplicated by option NAME, not by whole token: the subvolume is the
-        more specific statement, so its value replaces the partition's in place
-        rather than being appended next to it. Appending produced
-        `compress-force=zstd:3,compress-force=zstd` — not a merge but a
-        contradiction, which the kernel resolves by taking the last one, i.e.
-        silently neither what the partition nor the subvolume asked for.
+        The merge is BY NAME, shared (S4, review of fix/rootflags-sync-drift)
+        with `KernelCmdlineAction._derive_from_disks`'s rootflags= derivation
+        via `merge_mount_options_by_name` — not a second copy of the same
+        "the more specific statement replaces in place" logic. Appending by
+        whole token instead produced `compress-force=zstd:3,compress-force=
+        zstd` — not a merge but a contradiction, which the kernel resolves by
+        taking the last one, i.e. silently neither what the partition nor the
+        subvolume asked for.
         """
-        def name_of(option: str) -> str:
-            return option.split("=", 1)[0]
-
-        merged = list(partition.mount_options)
-        for own in subvol.mount_options:
-            for i, existing in enumerate(merged):
-                if name_of(existing) == name_of(own):
-                    merged[i] = own          # the subvolume wins, in place
-                    break
-            else:
-                merged.append(own)
+        merged = merge_mount_options_by_name(partition.mount_options, subvol.mount_options)
         merged.append(f"subvol={subvol.name}")
         return merged
 
@@ -738,7 +842,7 @@ class DiskPartitionAction(AbstractAction):
             if not name or name in seen:
                 continue
             seen.add(name)
-            mopts = [o for o in opts.split(",") if o.startswith("compress")]
+            mopts = [o for o in opts.split(",") if self._is_declarable_btrfs_option(o)]
             subs.append({"name": name, "mountpoint": target,
                          "mount_options": mopts or ["compress-force=zstd"]})
         return subs

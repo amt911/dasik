@@ -135,6 +135,34 @@ def test_a_disabled_block_plans_nothing():
     assert _plan({"enable": False, "backend": "ufw", "rules": ["allow 22/tcp"]}) == []
 
 
+# --- removal: "firewall debe eliminar su config si desaparece" ------------- #
+#
+# `enable: false` is one of the three disappearance forms (the others: the
+# whole block gone, or a rule dropped from `rules` while enable stays true —
+# already covered by test_ufw_rule_removal.py). A managed rule that is still
+# LIVE must be planned for removal even when the block is disabled, not just
+# silently disowned.
+
+def test_a_disabled_block_with_an_owned_live_rule_plans_its_removal():
+    from types import SimpleNamespace
+    from unittest.mock import patch
+    from dasik.lib.actions.firewall_action import FirewallAction
+
+    cfg = {"enable": False, "backend": "ufw", "rules": ["allow 22/tcp"]}
+    action, fake = _action(cfg, status=True)   # "allow 22/tcp" is live
+    with patch("dasik.lib.actions.firewall_action.Command.execute", side_effect=fake):
+        changes = action.plan(managed=["allow 22/tcp"])
+    assert [(c.op, c.item) for c in changes] == [(Op.REMOVE, "allow 22/tcp")]
+    assert changes[0].destructive is True
+
+
+def test_a_disabled_block_does_not_plan_installs():
+    """Disabled must never plan the INSTALL half, even though `rules` is still
+    sitting in the (now-ignored) declaration."""
+    assert _plan({"enable": False, "backend": "ufw", "rules": ["allow 22/tcp"]},
+                status=False) == []
+
+
 def test_import_state_captures_the_live_ufw_rules():
     action, fake = _action({})
     with patch("dasik.lib.actions.firewall_action.Command.execute",

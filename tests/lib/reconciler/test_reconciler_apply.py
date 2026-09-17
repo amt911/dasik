@@ -85,6 +85,116 @@ def test_apply_runs_each_action_apply_in_order():
     assert call_log == [(a1, [c1]), (a2, [c2])]
 
 
+# --- SF-3: finalize_apply() runs once, after every action has applied ----- #
+#
+# FirewallAction runs BEFORE PackagesAction/SystemdAction (so a ufw REMOVE
+# can still shell out to `ufw` while the binary is there), so an immediate
+# daemon reload attempted from inside its own apply() can hit a transiently-
+# missing `firewalld` package. finalize_apply() is where it retries once the
+# whole apply has settled -- called by the reconciler, not a new plugin
+# system: one optional method per action, the same shape as verify().
+
+def test_apply_calls_finalize_apply_on_every_completed_action():
+    store = MagicMock()
+    gen = MagicMock()
+    r = _make_reconciler(store=store, gen_store=gen)
+    calls: list = []
+
+    class _Finalizing(AbstractAction):
+        @property
+        def name(self) -> str: return "fin"
+        def is_needed(self) -> bool: return False
+        def execute(self) -> None: pass
+        def plan(self, managed): return []
+        def apply(self, changes): pass
+        def managed_keys(self): return {}
+        def finalize_apply(self): calls.append(self)
+
+    a1 = _Finalizing(config=[], context=None)
+    a2 = _Finalizing(config=[], context=None)
+    plan = Plan()
+    plan.add(Change("packages", Op.INSTALL, "git"))
+    results = [
+        ActionPlanResult(action=a1, changes=[]),
+        ActionPlanResult(action=a2, changes=[]),
+    ]
+    r.apply(plan, results, assume_yes=True)
+    assert calls == [a1, a2]
+
+
+def test_apply_tolerates_an_action_double_with_no_finalize_apply():
+    """Not every action double in the suite subclasses AbstractAction --
+    finalize_apply() must be duck-typed (getattr + callable), never assumed,
+    or every plain test double in the reconciler suite breaks."""
+    store = MagicMock()
+    gen = MagicMock()
+    r = _make_reconciler(store=store, gen_store=gen)
+    a = _RecordingV3(config=[], context=None)
+    plan = Plan()
+    plan.add(Change("packages", Op.INSTALL, "git"))
+    results = [ActionPlanResult(action=a, changes=[])]
+    r.apply(plan, results, assume_yes=True)   # must not raise
+
+
+def test_apply_never_calls_finalize_apply_when_the_plan_is_empty():
+    store = MagicMock()
+    gen = MagicMock()
+    r = _make_reconciler(store=store, gen_store=gen)
+    finalize = MagicMock()
+
+    class _Finalizing(AbstractAction):
+        @property
+        def name(self) -> str: return "fin"
+        def is_needed(self) -> bool: return False
+        def execute(self) -> None: pass
+        def plan(self, managed): return []
+        def apply(self, changes): pass
+        def managed_keys(self): return {}
+        def finalize_apply(self): finalize()
+
+    a = _Finalizing(config=[], context=None)
+    new_manifest = r.apply(Plan(), [ActionPlanResult(action=a, changes=[])],
+                           assume_yes=True)
+    assert new_manifest is None
+    finalize.assert_not_called()
+
+
+def test_apply_never_calls_finalize_apply_on_the_action_that_raised_or_after_it():
+    """A failed apply persists a partial manifest and re-raises (see
+    test_partial_apply.py) -- finalize_apply() is for a SUCCESSFUL apply's
+    own end-of-run cleanup, not a recovery hook, so neither the action that
+    raised nor anything after it in the plan gets finalized."""
+    store = MagicMock()
+    gen = MagicMock()
+    r = _make_reconciler(store=store, gen_store=gen)
+    calls: list = []
+
+    class _Boom(AbstractAction):
+        @property
+        def name(self) -> str: return "boom"
+        def is_needed(self) -> bool: return False
+        def execute(self) -> None: pass
+        def plan(self, managed): return []
+        def apply(self, changes): raise RuntimeError("boom")
+        def managed_keys(self): return {}
+        def finalize_apply(self): calls.append(self)
+
+    class _Never(_Boom):
+        def apply(self, changes): pass
+
+    a1 = _Boom(config=[], context=None)
+    a2 = _Never(config=[], context=None)
+    plan = Plan()
+    plan.add(Change("packages", Op.INSTALL, "git"))
+    results = [
+        ActionPlanResult(action=a1, changes=[]),
+        ActionPlanResult(action=a2, changes=[]),
+    ]
+    with pytest.raises(RuntimeError):
+        r.apply(plan, results, assume_yes=True)
+    assert calls == []
+
+
 def test_apply_destructive_plan_prompts_user_and_aborts_on_no():
     store = MagicMock()
     gen = MagicMock()
@@ -250,3 +360,65 @@ def test_ctrl_c_at_the_prompt_aborts_the_same_way():
     assert r.apply(plan, results, assume_yes=False, input_fn=interrupted) is None
     store.save.assert_not_called()
     assert a.last_applied == []
+
+
+# --- SF2-1: the manifest describes a successful apply even if a hook fails - #
+#
+# finalize_apply() is best-effort by contract. A hook raising after every
+# apply() succeeded used to skip _persist entirely: the machine converged
+# while the manifest (and `generations`) said nothing had changed.
+
+def _finalizing_action(exc):
+    class _Raising(AbstractAction):
+        @property
+        def name(self) -> str: return "raising"
+        def is_needed(self) -> bool: return False
+        def execute(self) -> None: pass
+        def plan(self, managed): return []
+        def apply(self, changes): pass
+        def managed_keys(self): return {"packages": ["git"]}
+        def finalize_apply(self): raise exc
+    return _Raising(config=[], context=None)
+
+
+def test_a_finalize_apply_that_raises_still_persists_the_full_manifest(monkeypatch):
+    logger = MagicMock()
+    monkeypatch.setattr("dasik.lib.reconciler.reconciler.run_logger.get", lambda: logger)
+    store = MagicMock()
+    gen = MagicMock()
+    r = _make_reconciler(store=store, gen_store=gen)
+    plan = Plan()
+    plan.add(Change("packages", Op.INSTALL, "git"))
+    after = MagicMock()
+    second = _finalizing_action(RuntimeError("reload blew up"))
+    third = _finalizing_action(RuntimeError("unused"))
+    third.finalize_apply = after
+    results = [ActionPlanResult(action=second, changes=[]),
+               ActionPlanResult(action=third, changes=[])]
+
+    manifest = r.apply(plan, results, assume_yes=True)
+
+    assert manifest is not None
+    assert manifest.partial is False
+    store.save.assert_called_once_with(manifest)
+    gen.new.assert_called_once()
+    after.assert_called_once_with()          # one hook failing never skips the next
+    assert logger.warning.called
+    assert "reload blew up" in str(logger.warning.call_args)
+
+
+def test_an_interrupt_inside_finalize_apply_persists_the_manifest_first():
+    store = MagicMock()
+    gen = MagicMock()
+    r = _make_reconciler(store=store, gen_store=gen)
+    plan = Plan()
+    plan.add(Change("packages", Op.INSTALL, "git"))
+    results = [ActionPlanResult(action=_finalizing_action(KeyboardInterrupt()), changes=[])]
+
+    with pytest.raises(KeyboardInterrupt):
+        r.apply(plan, results, assume_yes=True)
+
+    store.save.assert_called_once()
+    saved = store.save.call_args.args[0]
+    assert saved.partial is False
+    assert saved.managed == {"packages": ["git"]}

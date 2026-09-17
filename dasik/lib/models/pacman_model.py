@@ -150,6 +150,9 @@ class PacmanRepositoryModel(BaseModel):
     def _validate_sig_level(cls, value: Optional[str]) -> Optional[str]:
         if value is None:
             return value
+        # Before split(): it would silently eat an embedded newline, and the
+        # original value is written verbatim as one `SigLevel = …` line.
+        reject_control_chars(value, "pacman repository sig_level")
         tokens = value.split()
         if not tokens:
             raise ValueError("pacman repository sig_level must not be empty")

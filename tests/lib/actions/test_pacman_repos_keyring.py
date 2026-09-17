@@ -245,6 +245,18 @@ def test_trusted_fingerprints_a_lone_sig_with_no_preceding_pub_trusts_nothing():
     assert trusted_fingerprints(text, {MASTER_KEYID}) == set()
 
 
+def test_trusted_fingerprints_an_fpr_record_with_an_empty_fingerprint_trusts_nothing():
+    # A "pub" followed by an "fpr" whose fingerprint field is EMPTY (truncated
+    # capture) must leave current_fpr as None: storing "" instead would let the
+    # local master sig right after it add "" to the trusted set.
+    text = (
+        "pub:-:4096:1:AAAA:1700000000:::-:::scESC::::::23::0:\n"
+        "fpr::::::::::\n"
+        f"sig:::1:{MASTER_KEYID}:1700000000::::Name:10l::{MASTER_FPR}:::10:\n"
+    )
+    assert trusted_fingerprints(text, {MASTER_KEYID}) == set()
+
+
 def test_trusted_fingerprints_a_pub_with_no_fpr_line_guards_its_own_sig():
     # A "pub" with no "fpr" record at all (malformed capture) resets
     # current_fpr to None; the sig right after it must not be attributed to

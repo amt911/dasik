@@ -892,9 +892,13 @@ owned/to-delete sections and reinserting the declared ones above `[core]`),
 then runs `pacman -Sy --config <temp>` **once per created/modified
 repository**, where `<temp>` holds the target's real `[options]` section plus
 *only* that one repository — never a plain `-Sy` against the whole file.
-Measured against a real `pacman`: this refreshes exactly `<name>.db` and
-leaves `core.db`/`extra.db` byte-identical, so a repository apply never causes
-a partial core/extra refresh.
+Measured against a real `pacman`: a `dasik apply -v` on this domain streams
+only `<name>` downloading — `core`/`extra` are never mentioned — confirming
+the sync is scoped to that one repository. An unchanged `core.db`/`extra.db`
+mtime alone does not prove this on its own: a full `-Sy` also leaves an
+already-current database's mtime untouched, since it skips the download too;
+the `-v` stream (or reverting to a plain `-Sy` and watching `core`/`extra`
+reappear in it) is what actually discriminates the two.
 
 ### `keys[]` — the PGP keys those repositories need trusted
 

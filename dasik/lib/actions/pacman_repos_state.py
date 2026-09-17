@@ -171,10 +171,12 @@ def below_core(text: str, name: str) -> bool:
 
 
 def options_block(text: str) -> str:
-    """The ``[options]`` section of *text*, verbatim: its header through the
-    line before the next uncommented header, or through the end of the file
-    if ``[options]`` is the last (or only) section. ``""`` if there is no
-    ``[options]`` header at all.
+    """The ``[options]`` section of *text*, verbatim: its header, plus every
+    line after it — options, blanks, AND comment lines alike, unlike a
+    repository section's ``_body_end`` — up to (not including) the next
+    uncommented header, or through the end of the file if ``[options]`` is
+    the last (or only) section. ``""`` if there is no ``[options]`` header at
+    all.
 
     Used by ``PacmanRepositoriesAction.apply`` to build the single-repo
     ``pacman.conf`` for ``pacman -Sy --config <temp>`` (FACT-PR-4,

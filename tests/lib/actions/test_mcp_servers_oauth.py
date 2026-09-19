@@ -129,3 +129,33 @@ def test_a_modify_readds_through_the_same_bounded_path(tmp_path):
     assert scripts[0].startswith("codex mcp remove")
     assert scripts[1].startswith("timeout 60 codex mcp add")
     assert action.failed_items == []
+
+
+def test_the_wait_is_announced_before_codex_prints_its_login_url(tmp_path, capsys):
+    """codex prints an OAuth URL that reads as "sign in to continue"; the user
+    must already know, when it appears, that the install moves on by itself."""
+    seen_before_run = []
+
+    def execute(*_args, **_kwargs):
+        seen_before_run.append(capsys.readouterr().out)
+        return MagicMock(returncode=0, stdout="", stderr="")
+
+    with patch("dasik.lib.actions.mcp_servers_action.Command.execute",
+               side_effect=execute):
+        _action(tmp_path, [_HTTP]).apply([Change("mcp_servers", Op.CREATE, _ITEM)])
+    notice, = seen_before_run
+    assert "figma" in notice
+    assert "60 s" in notice
+    assert "codex mcp login figma" in notice
+
+
+@pytest.mark.parametrize("entry", [
+    {"name": "figma", "url": "https://mcp.figma.com/mcp", "agents": ["claude-code"]},
+    {"name": "figma", "command": "npx", "args": ["x"], "agents": ["codex"]},
+])
+def test_other_adds_announce_no_wait(tmp_path, capsys, entry):
+    item = f"andres:{entry['agents'][0]}:figma"
+    with patch("dasik.lib.actions.mcp_servers_action.Command.execute") as execute:
+        execute.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        _action(tmp_path, [entry]).apply([Change("mcp_servers", Op.CREATE, item)])
+    assert "60 s" not in capsys.readouterr().out

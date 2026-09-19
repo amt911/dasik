@@ -413,6 +413,13 @@ class McpServersAction(AbstractAction):
         With *declared*, success is the registration reading back as declared,
         whatever the exit status — see ``_login_follows_add``.
         """
+        if declared is not None:
+            # codex's login URL reads as "sign in to continue"; it is not.
+            print(f"mcp_servers: {item} — codex will print an OAuth login URL. "
+                  "Signing in is optional: the install moves on in "
+                  f"{_CODEX_HTTP_ADD_BOUND_SECS} s either way. A login cut off "
+                  f"by then is lost; redo it later as {user}: "
+                  f"codex mcp login {declared['name']}")
         result = Command.execute(
             "su", self._su_argv(user, script, *args),
             target=self._target(), check=False, stream=True,

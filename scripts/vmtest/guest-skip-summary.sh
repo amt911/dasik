@@ -79,9 +79,13 @@ echo "SKIP-G: sync -> check -> plan"
 rm -rf /root/cfg && mkdir -p /root/cfg && cp "$C" /root/cfg/cap.json
 check SKIP-G-SYNC $D sync /root/cfg/cap.json --target / $L
 check SKIP-G-CHECK $D check /root/cfg/cap.json $L
-check SKIP-G-SYNC-REPORTS-REALITY not grep -q "$GHOST" /root/cfg/cap.json
+# A declared package is kept as INTENT by sync even when it is not installed
+# (PackagesAction.import_state), so the capture still names the ghost and its
+# plan still proposes it — and must propose nothing else.
+check SKIP-G-SYNC-KEEPS-INTENT grep -q "$GHOST" /root/cfg/cap.json
 $D plan --target / $L /root/cfg/cap.json > /tmp/plan3.txt 2>&1; cat /tmp/plan3.txt
-check SKIP-G-PLAN-SILENT grep -q "No changes" /tmp/plan3.txt
+check SKIP-G-PLAN-PROPOSES-GHOST grep -q "install $GHOST" /tmp/plan3.txt
+check SKIP-G-PLAN-NOTHING-ELSE bash -c "! grep -E '^\s+[-+~] \[' /tmp/plan3.txt | grep -v '$GHOST'"
 
 echo "SKIP-DONE rc=$FAILS"
 poweroff -f

@@ -8,10 +8,13 @@ AUR into a repo (repo wins on the next apply).
 
 Install routing at ``apply()``:
   1. Resolve the INSTALL set against the target's pacman sync DBs + the AUR RPC.
-  2. **Abort before touching the target** if any name is unknown (a typo / a
-     removed or purely-local package) or its source was unavailable (AUR
-     unreachable — retryable). This is what stops a single bad name from aborting
-     the whole ``pacman -S`` transaction and installing nothing.
+  2. Handle the names that cannot be installed before touching the target. An
+     unavailable source (AUR unreachable — retryable) always aborts. An unknown
+     name (a typo / a removed or purely-local package) follows
+     ``package_policy.unknown``: ``warn-and-skip`` (the default) warns and
+     installs the rest, ``error`` aborts. Either way a single bad name can no
+     longer abort the whole ``pacman -S`` transaction and install nothing.
+     What was skipped is repeated by ``finalize_apply()`` at the very end.
   3. Install repo packages + groups in one ``pacman -S`` (``check=True`` so a
      real pacman failure surfaces in red and aborts instead of silently
      "succeeding").
@@ -1116,6 +1119,25 @@ class PackagesAction(AbstractAction):
             # names stay out of the manifest, so the next plan shows them too.
             print("[packages] not installed this apply (will be retried): "
                   + ", ".join(self.failed_packages))
+
+    def finalize_apply(self) -> None:
+        """Repeat, as the last word of a successful apply, what it did NOT
+        install. Both policies that let an apply end with exit 0 while leaving
+        declared packages off the machine (``unknown: warn-and-skip`` and
+        ``build_failure: warn-and-continue``) warn when it happens, which in a
+        long apply is thousands of lines before the end."""
+        missing = []
+        if self._skipped_unknown:
+            missing.append("no source found: " + ", ".join(self._skipped_unknown))
+        if self.failed_packages:
+            missing.append("failed to build: " + ", ".join(self.failed_packages))
+        if missing:
+            run_logger.get().warning(
+                "declared packages NOT installed by this apply — "
+                + "; ".join(missing),
+                detail="dasik retries them on the next apply; `dasik plan` "
+                       "keeps listing them until they install.",
+            )
 
     @property
     def _continue_on_failure(self) -> bool:

@@ -102,7 +102,7 @@ written into those directories instead of inlined
 | `hostname` | string | `/etc/hostname` |
 | `users` | list | User accounts + groups + shell |
 | `packages` | list | pacman + AUR + Git-source packages (real names) |
-| `package_policy` | object | Unknown packages (`unknown`: `warn-and-skip` \| `error`) and install/build failures (`build_failure`: `abort` \| `warn-and-continue`) |
+| `package_policy` | object | Unknown packages (`unknown`: `warn-and-skip` \| `error`), install/build failures (`build_failure`: `abort` \| `warn-and-continue`) and an installed package that blocks a declared one (`conflicts`: `abort` \| `replace`) |
 | `luks_token_policy` | object | What an apply does when a TPM2/FIDO2 enrolment fails with no terminal to ask on (`enroll_failure`: `abort` \| `warn-and-continue`) |
 | `package_sources` | object | Git PKGBUILD source per package (outside repo/AUR) |
 | `drivers` | list | GPU driver selection |
@@ -733,7 +733,7 @@ that reports the keyslot it could not enrol.
 
 ### `package_policy`
 
-`{"unknown": "warn-and-skip" | "error", "build_failure": "abort" | "warn-and-continue"}`
+`{"unknown": "warn-and-skip" | "error", "build_failure": "abort" | "warn-and-continue", "conflicts": "abort" | "replace"}`
 
 `unknown` — how to treat a declared package that resolves to no known source.
 `warn-and-skip` (default) skips it with a warning and continues; `error` aborts
@@ -747,6 +747,28 @@ every package that is NOT on the machine, keeps them out of the manifest (so
 `plan` shows them again and the next apply retries), and carries on with
 everything else — the semantics `optional: true` gives one package, applied
 machine-wide. An unreachable AUR still always aborts.
+
+`conflicts` — how to treat an **installed** package pacman refuses to keep
+alongside a declared one:
+
+```
+:: libjodycode-4.1.2-3 and libjodycode-git-… are in conflict. Remove libjodycode-git? [y/N]
+error: unresolvable package conflicts detected
+```
+
+One such package fails the whole `pacman -S`, and so every other package in
+it. dasik finds it before mutating anything by preparing the transaction with
+`pacman -Sp` (which touches nothing and needs no root), so `plan` reports it
+too — the declared package's own metadata cannot: `pacman -Si libjodycode`
+says `Conflicts With : None`, because the conflict is declared by the
+installed side, often through a `provides` neither side names.
+
+`abort` (default) names the blocker and the exact `pacman -Rns` that clears it,
+and changes nothing. `replace` lets dasik remove the blocker itself and carry
+on — but only when it is **undeclared** (deleting half of what the config asks
+for is your decision, not dasik's; declaring both sides is reported and
+refused) and **required by no installed package** (`pacman -Rns` would refuse
+the transaction anyway).
 
 ### `package_sources`  *(sync ✓ — preserved)*
 

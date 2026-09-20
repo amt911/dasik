@@ -67,9 +67,19 @@ class PackagePolicyModel(BaseModel):
     as installed, so ``plan`` keeps showing it and the next apply retries it),
     and the apply carries on with everything else — the semantics
     ``optional: true`` gives one package, applied machine-wide.
+
+    ``conflicts`` governs an INSTALLED package that pacman refuses to keep
+    alongside a declared one (``:: X and Y are in conflict``), which fails the
+    whole transaction and so every other package in it. ``abort`` (default):
+    dasik names the blocker and the exact ``pacman -Rns`` that clears it, and
+    changes nothing. ``replace``: dasik removes the blocker itself and carries
+    on — but only when it is undeclared AND no installed package requires it,
+    because deleting half of what the config asks for, or breaking a
+    dependency, is never dasik's call.
     """
     unknown: Literal["warn-and-skip", "error"] = "warn-and-skip"
     build_failure: Literal["abort", "warn-and-continue"] = "abort"
+    conflicts: Literal["abort", "replace"] = "abort"
 
 
 class GitPackageSourceModel(BaseModel):

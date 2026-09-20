@@ -81,11 +81,13 @@ class PackagesAction(AbstractAction):
             policy = config.get("package_policy", {}) or {}
             self.unknown_policy: str = policy.get("unknown", "warn-and-skip")
             self.build_failure_policy: str = policy.get("build_failure", "abort")
+            self.conflicts_policy: str = policy.get("conflicts", "abort")
         else:
             raw = config if isinstance(config, list) else []
             self.package_sources = {}
             self.unknown_policy = "warn-and-skip"
             self.build_failure_policy = "abort"
+            self.conflicts_policy = "abort"
         self._original = raw
         self._resolver = PackageResolver()
         # Names dropped by warn-and-skip during apply() (confirmed to exist in no
@@ -640,6 +642,8 @@ class PackagesAction(AbstractAction):
         for name in self._removable(expanded, installed):
             changes.append(Change(self._PACMAN_DOMAIN, Op.REMOVE, name,
                                   reason="no longer declared"))
+        self._announce_conflicts(
+            [c.item for c in changes if c.op is Op.INSTALL], installed)
         return changes
 
     def _removable(self, names: "list[str]", installed: set) -> "list[str]":
@@ -701,6 +705,140 @@ class PackagesAction(AbstractAction):
             elif key == "Required By" and current:
                 result[current] = [] if value in ("None", "") else value.split()
         return result
+
+    # ------------------------------------------------------------ conflicts
+
+    def _probe_conflicts(self, names: "list[str]") -> list:
+        """Ask pacman — without mutating anything — whether *names* conflict.
+
+        ``pacman -Sp`` prepares the whole transaction and prints what it would
+        download; a conflict makes it say so and exit non-zero, having touched
+        nothing. It needs no root and no lock, which is what lets ``plan`` use
+        the same probe as ``apply``.
+
+        Deliberately not a reimplementation: whether two packages conflict is
+        decided by the installed side's metadata, often through a ``provides``
+        neither side names, so only pacman can answer it (see
+        ``pacman_conflicts``). A probe that cannot run answers "no conflict",
+        and the caller behaves exactly as it did before.
+        """
+        from .pacman_conflicts import parse_conflicts
+
+        if not names:
+            return []
+        target = getattr(self.context, "target", None) if self.context else None
+        try:
+            res = Command.execute(
+                "pacman", ["-Sp", "--noconfirm", "--needed", *names],
+                target=target)
+        except Exception:      # noqa: BLE001 - no pacman to ask: as before
+            return []
+        text = ""
+        for stream in ("stderr", "stdout"):
+            chunk = getattr(res, stream, None)
+            if isinstance(chunk, (bytes, bytearray)):
+                chunk = chunk.decode("utf-8", errors="replace")
+            # Anything else — a test double, a None, a stream that was consumed
+            # — is not pacman speaking, and silence is "no conflict".
+            if isinstance(chunk, str):
+                text += chunk
+        return parse_conflicts(text)
+
+    def _blocker(self, conflict, installed: set) -> "str | None":
+        """The installed side of *conflict* — the one that has to go.
+
+        pacman names it itself when it proposes a removal; otherwise it is
+        whichever side is already on the machine. Neither installed means both
+        are merely being installed, and no removal can fix that.
+        """
+        if conflict.removable:
+            return conflict.removable
+        for side in (conflict.left, conflict.right):
+            if side in installed:
+                return side
+        return None
+
+    def _announce_conflicts(self, install_names: "list[str]",
+                            installed: set) -> list:
+        """Name every conflict, and the exact command that clears it.
+
+        The answer was always in pacman's own text — `Remove libjodycode-git?`
+        — and dasik used to walk past it, printing the raw failure twice (the
+        batch, then the per-package salvage) and no instruction. Returns the
+        conflicts so ``apply`` can act on them; ``plan`` only warns, because a
+        plan mutates nothing.
+        """
+        conflicts = self._probe_conflicts(install_names)
+        for conflict in conflicts:
+            blocker = self._blocker(conflict, installed)
+            other = (conflict.right if blocker == conflict.left
+                     else conflict.left)
+            if blocker is None:
+                run_logger.get().warning(
+                    f"{conflict.left} and {conflict.right} conflict, and "
+                    "neither is installed",
+                    detail="pacman refuses a transaction holding both. Declare "
+                           "only one of them.",
+                )
+                continue
+            run_logger.get().warning(
+                f"installed {blocker} conflicts with declared {other}",
+                detail=f"pacman refuses the transaction while both exist, so "
+                       f"{other} cannot install. Clear it with:\n"
+                       f"    pacman -Rns {blocker}\n"
+                       "then apply again. Set `package_policy.conflicts` to "
+                       '"replace" to let dasik remove an undeclared blocker '
+                       "itself.",
+            )
+        return conflicts
+
+    def _clear_conflicts(self, install_names: "list[str]", target) -> None:
+        """Announce the conflicts and, under ``conflicts: "replace"``, clear them.
+
+        A blocker is removed only when it is BOTH undeclared (removing half of
+        what the config asks for is the user's decision, not dasik's) and
+        required by no installed package (``pacman -Rns`` would refuse the
+        whole transaction anyway — the lesson `_removable` already carries).
+        """
+        installed = self._installed_all()
+        conflicts = self._announce_conflicts(install_names, installed)
+        if not conflicts or self.conflicts_policy != "replace":
+            return
+        removable: list[str] = []
+        for conflict in conflicts:
+            blocker = self._blocker(conflict, installed)
+            if blocker is None:
+                continue
+            if blocker in self.desired:
+                run_logger.get().warning(
+                    f"not removing {blocker}: the config declares both it and "
+                    f"{conflict.right if blocker == conflict.left else conflict.left}",
+                    detail="Two declared packages that cannot coexist is a "
+                           "config to fix, not a package for dasik to delete. "
+                           "Drop one of the two names.",
+                )
+                continue
+            blockers = sorted(set(self._required_by([blocker]).get(blocker, ()))
+                              - {blocker})
+            if blockers:
+                run_logger.get().warning(
+                    f"not removing {blocker}: still required by "
+                    f"{', '.join(blockers)}",
+                    detail="pacman refuses a transaction that would break a "
+                           "dependency. Remove whatever requires it first.",
+                )
+                continue
+            removable.append(blocker)
+        if not removable:
+            return
+        run_logger.get().warning(
+            "removing conflicting packages: " + ", ".join(removable),
+            detail='`package_policy.conflicts: "replace"` clears an undeclared '
+                   "package that blocks a declared one. It was not declared by "
+                   "this config and nothing installed requires it.",
+        )
+        Command.execute("pacman", ["--noconfirm", "-Rns", *removable],
+                        target=target, check=True, stream=True)
 
     _REF_CHANGED = "source ref changed"
 
@@ -1019,6 +1157,12 @@ class PackagesAction(AbstractAction):
             # chain ends in a name nothing satisfies must abort HERE — with the
             # chain in the error — not 25 minutes in, mid-yay-transaction.
             aur_installs = self._gate_aur_closure(aur_installs, target)
+
+        if repo_installs:
+            # Before the first `-S`: a package the machine already has and
+            # cannot coexist with a declared one makes pacman refuse the WHOLE
+            # transaction, so every other name in it fails too.
+            self._clear_conflicts(repo_installs, target)
 
         required_repo, optional_repo = self._split_optional(repo_installs)
         if required_repo:

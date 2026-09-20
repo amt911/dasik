@@ -187,11 +187,12 @@ def _mutating(run):
     reasons true against reality (issue #188), `-Sg` to tell a declared pacman
     group from a package, and `-T` to see whether a declared name is already
     satisfied by a PROVIDER, so counting every call would count those read-only
-    queries too.
+    queries too. `-Sp` is the conflict probe: it prepares the transaction and
+    prints it, touching nothing.
     """
     return [c for c in run.call_args_list
             if c.args[0] == "pacman"
-            and c.args[1][0] not in ("-Qq", "-Qqe", "-D", "-Sg", "-T")]
+            and c.args[1][0] not in ("-Qq", "-Qqe", "-D", "-Sg", "-T", "-Sp")]
 
 
 def test_apply_install_routes_pacman_pkgs_through_pacman_S():

@@ -1,0 +1,9 @@
+[
+  {
+    "username": "test",
+    "hashed_password": "$6$dasikvmtest$pfoSKqgh8yWKbmkwBpNuvQuJ4/kLeJmwCPCezBolW4pKbtJbtvMGQCM5f7W/hkbF/FmtCMZMYr/NLwDO4OJm7.",
+    "groups": [
+      "wheel"
+    ]
+  }
+]

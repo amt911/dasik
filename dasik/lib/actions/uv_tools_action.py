@@ -40,6 +40,11 @@ _UV_TOOL_DIR = ".local/share/uv/tools"
 # `semgrep[all]==1.2.3` -> `semgrep`: the name uv gives the directory.
 _DIST_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]*")
 
+# uv records the interpreter it built a tool's environment with in the venv's
+# own `pyvenv.cfg`: `version_info = 3.13.7`. Read from the target's filesystem,
+# so the check costs no process and works against /mnt during an install.
+_VERSION_INFO_RE = re.compile(r"^\s*version_info\s*=\s*(\d+\.\d+)")
+
 
 class UvToolsAction(AbstractAction):
     """Converge the uv-installed programs each user has."""
@@ -68,8 +73,17 @@ class UvToolsAction(AbstractAction):
     # -- config ------------------------------------------------------------- #
 
     @property
-    def _tools(self) -> List[str]:
+    def _tools(self) -> List[Any]:
+        """The declarations verbatim: a string, or {name, python}."""
         return _field(self._block, "tools", []) or []
+
+    @staticmethod
+    def _split(declaration: Any) -> Tuple[str, Optional[str]]:
+        """(what uv is handed, the pinned interpreter or None)."""
+        if isinstance(declaration, str):
+            return declaration, None
+        name = _field(declaration, "name") or ""
+        return name, _field(declaration, "python")
 
     @property
     def failure_policy(self) -> str:
@@ -89,9 +103,16 @@ class UvToolsAction(AbstractAction):
 
         ``semgrep[all]==1.2.3`` and ``semgrep`` are the same installed tool; only
         the former says anything about which version.
+
+        The name is also NORMALISED the way uv normalises it (PEP 503: lower
+        case, every run of `-`, `_` or `.` collapsed to a single `-`). Measured
+        on the tower: `uv tool install inkscape_mcp` creates the directory
+        `inkscape-mcp`, so comparing the declaration verbatim would never match
+        and the tool would be proposed for installation on every run.
         """
         match = _DIST_RE.match(declaration)
-        return match.group(0) if match else declaration
+        name = match.group(0) if match else declaration
+        return re.sub(r"[-_.]+", "-", name).lower()
 
     # -- target ------------------------------------------------------------- #
 
@@ -140,14 +161,43 @@ class UvToolsAction(AbstractAction):
         except OSError:
             return []
 
-    def _desired(self) -> Dict[str, str]:
-        """item -> the declaration to hand `uv`, verbatim."""
-        desired: Dict[str, str] = {}
+    def _desired(self) -> Dict[str, Tuple[str, Optional[str]]]:
+        """item -> (the declaration to hand `uv` verbatim, the pin or None)."""
+        desired: Dict[str, Tuple[str, Optional[str]]] = {}
         for user in self._users():
             for declaration in self._tools:
-                desired[self._item(user, self.distribution(declaration))] = \
-                    declaration
+                spec, python = self._split(declaration)
+                desired[self._item(user, self.distribution(spec))] = (spec, python)
         return desired
+
+    def _venv_python(self, user: str, distribution: str) -> Optional[str]:
+        """`major.minor` uv built this tool's environment with, or None."""
+        path = os.path.join(self._abs(self._tool_dir(user)), distribution,
+                            "pyvenv.cfg")
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                lines = handle.readlines()
+        except OSError:
+            return None
+        for line in lines:
+            match = _VERSION_INFO_RE.match(line)
+            if match:
+                return match.group(1)
+        return None
+
+    def _default_python(self) -> Optional[str]:
+        """`major.minor` of the target's own `python3` — what uv would pick.
+
+        Used only by the capture: a tool sitting on the default needs no pin
+        recorded, and one sitting off it does, or re-applying the capture puts
+        it back on the interpreter it cannot live on.
+        """
+        try:
+            link = os.readlink(self._abs("/usr/bin/python3"))
+        except OSError:
+            return None
+        match = re.search(r"(\d+\.\d+)", os.path.basename(link))
+        return match.group(1) if match else None
 
     def actual(self) -> set:
         if self._target() is None:
@@ -162,12 +212,27 @@ class UvToolsAction(AbstractAction):
             return []
         from ..state.set_math import compute_changes
 
+        desired = self._desired()
+        actual = self.actual()
         changes, _drift = compute_changes(
             _DOMAIN,
-            desired=list(self._desired().keys()),
+            desired=list(desired.keys()),
             managed=managed,
-            actual=self.actual(),
+            actual=actual,
         )
+        # A pin is desired state, not install-time decoration: a tool uv built
+        # on the wrong interpreter is installed and broken, and a silent plan
+        # would make the declaration a comment.
+        for item in sorted(set(desired) & actual):
+            _spec, python = desired[item]
+            if not python:
+                continue          # no pin declared, no opinion
+            user, _, distribution = item.partition(":")
+            built_with = self._venv_python(user, distribution)
+            if built_with is not None and built_with != python:
+                changes.append(Change(
+                    _DOMAIN, Op.MODIFY, item,
+                    reason=f"built with python {built_with}, declared {python}"))
         return changes
 
     def managed_keys(self) -> dict:
@@ -188,11 +253,21 @@ class UvToolsAction(AbstractAction):
         desired = self._desired()
         for change in changes:
             user, _, distribution = change.item.partition(":")
-            if change.op is Op.INSTALL:
+            if change.op in (Op.INSTALL, Op.MODIFY):
                 # The DECLARATION goes to uv, not the directory name: the pin
                 # and the extras are the whole point of writing them.
-                self._run(user, 'uv tool install "$1"',
-                          (desired.get(change.item, distribution),), change.item)
+                spec, python = desired.get(change.item, (distribution, None))
+                if python and change.op is Op.MODIFY:
+                    # An environment already exists on the wrong interpreter;
+                    # uv leaves it alone unless told to replace it.
+                    self._run(user,
+                              'uv tool install --force --python "$1" "$2"',
+                              (python, spec), change.item)
+                elif python:
+                    self._run(user, 'uv tool install --python "$1" "$2"',
+                              (python, spec), change.item)
+                else:
+                    self._run(user, 'uv tool install "$1"', (spec,), change.item)
             elif change.op is Op.REMOVE:
                 self._run(user, 'uv tool uninstall "$1"', (distribution,),
                           change.item)
@@ -244,18 +319,45 @@ class UvToolsAction(AbstractAction):
         if not found:
             return {_DOMAIN: {}}
 
-        declared = {self.distribution(t): t for t in self._tools}
+        declared: Dict[str, Any] = {}
+        for declaration in self._tools:
+            spec, _python = self._split(declaration)
+            declared[self.distribution(spec)] = declaration
+        default = self._default_python()
         tools = sorted({d for names in found.values() for d in names})
         block: Dict[str, Any] = {
             "users": sorted(found),
             # Keep the declaration (pin, extras) for a tool that is declared;
-            # a discovered one can only be named.
-            "tools": [declared.get(d, d) for d in tools],
+            # a discovered one can only be named — except for the interpreter,
+            # which the venv records and which a re-apply would otherwise get
+            # wrong.
+            "tools": [self._captured(d, declared, found, default) for d in tools],
         }
         policy = _field(self._block, "failure_policy")
         if policy and policy != "warn-and-continue":
             block["failure_policy"] = policy
         return {_DOMAIN: block}
+
+    def _captured(self, distribution: str, declared: Dict[str, Any],
+                  found: Dict[str, List[str]], default: Optional[str]) -> Any:
+        """How one installed tool is written back.
+
+        A tool uv built on the machine's own `python3` needs no pin: the same
+        uv would pick it again. One built on anything else keeps its version,
+        whether or not the config it came from said so — that is the difference
+        between a capture that re-applies and one that quietly moves the tool
+        back to the interpreter it cannot live on.
+        """
+        entry = declared.get(distribution, distribution)
+        for user, names in sorted(found.items()):
+            if distribution not in names:
+                continue
+            built_with = self._venv_python(user, distribution)
+            if built_with and built_with != default:
+                name, _python = self._split(entry)
+                return {"name": name or distribution, "python": built_with}
+            break
+        return entry
 
     def verify(self) -> bool:
         return not self.plan(managed=[])

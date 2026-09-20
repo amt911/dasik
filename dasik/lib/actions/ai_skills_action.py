@@ -21,6 +21,7 @@ Item grammar::
 """
 from __future__ import annotations
 
+import re
 import os
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -84,6 +85,9 @@ class AiSkillsAction(AbstractAction):
         block = cfg.get("ai_skills") or {}
         self._block: Any = block
         self._config_users: List[Any] = cfg.get("users") or []
+        # One probe per user, per action: `_scan` runs for plan, apply and
+        # sync, and the answer cannot change inside one of them.
+        self._unusable_cache: Dict[str, set] = {}
         # Items whose installer failed under `warn-and-continue`. Excluded from
         # managed_keys so the manifest never claims dasik installed something it
         # could not — the next plan then asks for it again.
@@ -250,7 +254,19 @@ class AiSkillsAction(AbstractAction):
                 plugins, sources = reader(home)
                 for plugin_id in plugins:
                     items.add(self._item(user, agent, "plugin", plugin_id))
+                # The probe costs a process, so it is only worth asking when
+                # codex has a marketplace registered at all: with none, there
+                # is nothing the cache could have lost.
+                unusable = (self._codex_unusable_marketplaces(user)
+                            if agent == "codex" and sources else set())
                 for market_name, source in sources.items():
+                    if market_name in unusable:
+                        # Registered and unusable: codex's own cache for it is
+                        # gone, so the registry is describing something that no
+                        # longer exists. Reporting it as present makes `plan`
+                        # answer "No changes" for a machine whose plugin
+                        # manager refuses to start (measured in a guest).
+                        continue
                     item = self._item(user, agent, "marketplace", market_name)
                     items.add(item)
                     markets[item] = source
@@ -381,6 +397,13 @@ class AiSkillsAction(AbstractAction):
     # exit code only says whether the probe itself ran.
     _NO_MARKETPLACES = "no plugin marketplaces in scope"
     _MARKETPLACE_PROBE = "codex plugin marketplace list"
+    # The curated catalog is served REMOTELY now (measured against codex-cli
+    # 0.154.0, 2026-09-20: `openai-curated-remote`, carrying superpowers). It
+    # never appears in the marketplace listing — only `codex plugin list` names
+    # it, under a `Marketplace `<name>`` heading. That probe reaches the
+    # network, so it is the second question, asked only when the cheap local
+    # one has already missed.
+    _PLUGIN_PROBE = "codex plugin list"
 
     def _warn_unreachable_codex_marketplaces(self, creates, desired) -> None:
         """Say why a codex plugin will not install, at PLAN time.
@@ -402,10 +425,21 @@ class AiSkillsAction(AbstractAction):
         Probed only when a codex plugin is actually proposed: it costs a
         process, and a plan that changes nothing must ask nothing.
         """
+        # A marketplace this same plan registers is not a marketplace the user
+        # has to go and fetch: warning about it sends them to `codex login` for
+        # something the next line of the plan already does.
+        being_added = {
+            (desired.get(c.item) or {}).get("name")
+            for c in creates
+            if (desired.get(c.item) or {}).get("kind") == "marketplace"
+            and (desired.get(c.item) or {}).get("agent") == "codex"
+        }
         wanted: Dict[str, List[Tuple[str, str]]] = {}
         for change in creates:
             spec = desired.get(change.item) or {}
             if spec.get("kind") != "plugin" or spec.get("agent") != "codex":
+                continue
+            if spec.get("marketplace") in being_added:
                 continue
             wanted.setdefault(spec["user"], []).append(
                 (spec["marketplace"], f"{spec['plugin']}@{spec['marketplace']}"))
@@ -415,8 +449,15 @@ class AiSkillsAction(AbstractAction):
                 # Cannot tell (no codex, no su, a sandbox). "Unknown" is not
                 # "missing", and a warning nobody can act on is worse than none.
                 continue
+            remote: Optional[set] = None
             for marketplace, plugin_id in entries:
                 if marketplace in in_scope:
+                    continue
+                if remote is None:
+                    remote = self._codex_remote_catalogs(user)
+                if remote is None or marketplace in remote:
+                    # Either the catalog carries it, or the question could not
+                    # be asked — and "unknown" is not "missing".
                     continue
                 run_logger.get().warning(
                     f"ai_skills: codex has no marketplace '{marketplace}' in "
@@ -461,6 +502,79 @@ class AiSkillsAction(AbstractAction):
         # answer the question (a wrapper, a locale, a stub). Inventing "there
         # are none" from silence would warn about a machine that is fine.
         return names or None
+
+    # `- `21st-dev` at /home/...: marketplace root does not contain a supported
+    # manifest` — one line per marketplace codex knows about and cannot load.
+    _UNUSABLE_LINE = re.compile(r"^-\s+`([^`]+)`\s+at\s")
+    _UNUSABLE_HEADER = "failed to load marketplace"
+
+    def _codex_unusable_marketplaces(self, user: str) -> set:
+        """Marketplaces codex has registered but cannot load.
+
+        Only what codex SAYS is broken counts. A probe that cannot run answers
+        nothing, so the registry stays the evidence — inventing "missing" from
+        silence would re-add every marketplace on every run.
+        """
+        cached = self._unusable_cache.get(user)
+        if cached is not None:
+            return cached
+        out = self._codex_probe(user, self._MARKETPLACE_PROBE,
+                                accept_failure=True)
+        names: set = set()
+        if out and self._UNUSABLE_HEADER in out.lower():
+            for line in out.splitlines():
+                match = self._UNUSABLE_LINE.match(line.strip())
+                if match:
+                    names.add(match.group(1))
+        self._unusable_cache[user] = names
+        return names
+
+    # `Marketplace `openai-curated-remote`` — the heading `codex plugin list`
+    # prints above each catalog's table.
+    _MARKETPLACE_HEADING = re.compile(r"^Marketplace\s+`([^`]+)`")
+
+    def _codex_remote_catalogs(self, user: str) -> Optional[set]:
+        """Every marketplace `codex plugin list` names, or None.
+
+        None means the probe could not RUN. An output with no heading in it is
+        evidence of none: this is only ever asked after the local listing has
+        already answered, so the pair says "not here either" rather than
+        "unknown" — and swallowing that would drop the warning the signed-out
+        machine needs.
+        """
+        out = self._codex_probe(user, self._PLUGIN_PROBE)
+        if out is None:
+            return None
+        return {match.group(1)
+                for match in (self._MARKETPLACE_HEADING.match(line)
+                              for line in out.splitlines()) if match}
+
+    def _codex_probe(self, user: str, script: str,
+                     accept_failure: bool = False) -> Optional[str]:
+        """stdout of *script* run as *user*, or None when it could not run.
+
+        ``accept_failure`` keeps the output of a non-zero run AND its stderr:
+        codex reports a marketplace it cannot load by failing and printing the
+        report on stderr, so reading stdout alone sees an empty answer and
+        concludes nothing is wrong (measured in a guest).
+        """
+        try:
+            result = Command.execute(
+                "su", self._su_argv(user, script),
+                target=self._target(), check=False)
+        except Exception:      # nosec B110 - an unusable probe answers nothing
+            return None
+        if getattr(result, "returncode", 1) != 0 and not accept_failure:
+            return None
+        parts = []
+        streams = ("stdout", "stderr") if accept_failure else ("stdout",)
+        for attr in streams:
+            raw = getattr(result, attr, b"") or b""
+            if isinstance(raw, bytes):
+                raw = raw.decode("utf-8", errors="replace")
+            if raw:
+                parts.append(raw)
+        return "\n".join(parts)
 
     # -- apply -------------------------------------------------------------- #
 
@@ -686,8 +800,30 @@ class AiSkillsAction(AbstractAction):
         if item not in self.failed_items:
             self.failed_items.append(item)
 
+    # What codex answers when its config.toml still carries a marketplace
+    # whose cached root is gone: the registration is there, the listing is not,
+    # so dasik plans a create that can never succeed until the stale entry is
+    # removed. Self-healing it is the difference between an apply that
+    # converges and one the user has to unblock by hand.
+    _STALE_MARKETPLACE = "already added from a different source"
+
+    def _output_of(self, result) -> str:
+        """Everything the command printed.
+
+        `Command.execute(stream=True)` merges stderr INTO stdout and returns an
+        empty `stderr`, so reading only `.stderr` yields a failure message with
+        a command line and no reason — measured on a real apply.
+        """
+        for attr in ("stderr", "stdout"):
+            raw = getattr(result, attr, "") or ""
+            if isinstance(raw, bytes):
+                raw = raw.decode("utf-8", errors="replace")
+            if raw.strip():
+                return raw.strip()
+        return ""
+
     def _run(self, user: str, script: str, args: Tuple[str, ...],
-             item: str) -> bool:
+             item: str, retry_stale: bool = True) -> bool:
         """Run one installer command. False when it failed (and was tolerated)."""
         result = Command.execute(
             "su", self._su_argv(user, script, *args),
@@ -695,7 +831,10 @@ class AiSkillsAction(AbstractAction):
             label=f"ai_skills: {item}")
         if getattr(result, "returncode", 1) == 0:
             return True
-        detail = (getattr(result, "stderr", "") or "").strip()
+        detail = self._output_of(result)
+        if (retry_stale and "marketplace add" in script
+                and self._STALE_MARKETPLACE in detail):
+            return self._heal_stale_marketplace(user, script, args, item)
         message = (f"ai_skills: {item} failed. Command: su - {user} -c "
                    f"{script!r} -- sh {' '.join(args)}"
                    + (f"\n{detail}" if detail else ""))
@@ -703,6 +842,32 @@ class AiSkillsAction(AbstractAction):
         # artefact, and disowning the item makes the next plan ask again.
         self._fail(item, message)
         return False
+
+    def _heal_stale_marketplace(self, user: str, script: str,
+                                args: Tuple[str, ...], item: str) -> bool:
+        """Drop the registration the cache lost, then add it once more.
+
+        The name is taken from the ITEM (``<user>:<agent>:marketplace:<name>``),
+        never from the error text: the message is another program's output and
+        this value reaches a command line.
+        """
+        name = item.split(":", 3)[3] if item.count(":") >= 3 else ""
+        if not name:
+            return self._run(user, script, args, item, retry_stale=False)
+        cli = "claude" if ":claude-code:" in item else "codex"
+        # Quiet on purpose: only the RETRY's outcome means anything. A removal
+        # that answers non-zero because the name was already gone must not
+        # disown an entry the add then installs.
+        try:
+            Command.execute(
+                "su",
+                self._su_argv(user, f'{cli} plugin marketplace remove "$1"',
+                              name),
+                target=self._target(), check=False, stream=True,
+                label=f"ai_skills: {item} (stale registration)")
+        except Exception:      # nosec B110 - the retry is the real answer
+            pass
+        return self._run(user, script, args, item, retry_stale=False)
 
     # -- sync ---------------------------------------------------------------- #
 

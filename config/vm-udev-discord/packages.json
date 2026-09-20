@@ -1,0 +1,10 @@
+[
+  "base",
+  "linux",
+  "linux-firmware",
+  "sudo",
+  "git",
+  "python",
+  "python-pydantic",
+  "python-colorama"
+]

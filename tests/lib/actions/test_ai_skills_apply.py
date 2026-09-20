@@ -301,3 +301,130 @@ def test_a_tool_command_is_looked_for_where_uv_and_pipx_put_it(tmp_path):
     _action, execute = _apply(tmp_path, TOOL_CFG)
     for argv in _argvs(execute):
         assert argv[3].startswith('PATH="$HOME/.local/bin:$PATH"; ')
+
+
+# --- a marketplace the registry has and the listing does not --------------- #
+#
+# Measured on the GE63, 2026-09-20. `~/.codex/.tmp/marketplaces/<name>` is a
+# CACHE: lose it (a restored $HOME, a cleaned /tmp) and codex still carries the
+# `[marketplaces.<name>]` entry in config.toml. The listing then shows nothing —
+# so dasik plans a create — while `add` refuses with
+#
+#     Error: marketplace '21st-dev' is already added from a different source;
+#     remove it before adding this source
+#
+# and every apply from then on proposes the same create and fails it. The user
+# had to run `marketplace remove` by hand to break the loop.
+
+_GHOST = ("Error: marketplace '21st-dev' is already added from a different "
+          "source; remove it before adding this source")
+
+
+def _apply_with(tmp_path, results, cfg=None):
+    """Apply with a scripted sequence of results, keyed by what ran."""
+    action = _act(tmp_path, cfg)
+    calls = []
+
+    def fake(binary, args, **kwargs):
+        calls.append(args)
+        for needle, result in results:
+            if needle in args[3]:
+                return result
+        return MagicMock(returncode=0, stdout=b"", stderr=b"")
+
+    with patch("dasik.lib.actions.ai_skills_action.Command.execute",
+               side_effect=fake):
+        action.apply(action.plan(managed=[]))
+    return action, calls
+
+
+def test_a_stale_marketplace_registration_is_removed_and_the_add_retried(
+        tmp_path):
+    _passwd(tmp_path)
+    seen = {"adds": 0}
+
+    def add_result(*_a, **_k):
+        seen["adds"] += 1
+        # First add hits the ghost; the one after the remove succeeds.
+        if seen["adds"] == 1:
+            return MagicMock(returncode=1, stdout=_GHOST.encode(), stderr=b"")
+        return MagicMock(returncode=0, stdout=b"", stderr=b"")
+
+    action = _act(tmp_path)
+    calls = []
+
+    def fake(binary, args, **kwargs):
+        calls.append(args[3])
+        if "marketplace add" in args[3]:
+            return add_result()
+        return MagicMock(returncode=0, stdout=b"", stderr=b"")
+
+    with patch("dasik.lib.actions.ai_skills_action.Command.execute",
+               side_effect=fake):
+        action.apply(action.plan(managed=[]))
+
+    scripts = [s for s in calls if "marketplace" in s]
+    assert any("marketplace remove" in s for s in scripts), \
+        "the stale registration has to go before the add can work"
+    assert seen["adds"] == 2, "the add must be retried after the removal"
+    assert not action.failed_items, \
+        "a create that succeeded on the retry is not a failure"
+
+
+def test_an_add_that_fails_for_another_reason_is_not_retried(tmp_path):
+    _passwd(tmp_path)
+    boom = MagicMock(returncode=1, stdout=b"Error: network unreachable",
+                     stderr=b"")
+    _action, calls = _apply_with(tmp_path, [("marketplace add", boom)])
+    adds = [a for a in calls if "marketplace add" in a[3]]
+    assert len(adds) == 1
+    assert not any("marketplace remove" in a[3] for a in calls)
+
+
+def test_a_failure_reports_what_the_command_printed(tmp_path):
+    """`Command.execute(stream=True)` merges stderr INTO stdout and leaves
+    `stderr` empty, so a message that only reads `.stderr` can never say why —
+    which is exactly what the GE63 run showed: a command line and no reason."""
+    _passwd(tmp_path)
+    boom = MagicMock(returncode=1, stdout=_GHOST.encode(), stderr=b"")
+    action = _act(tmp_path)
+    printed = []
+    with patch("dasik.lib.actions.ai_skills_action.Command.execute",
+               side_effect=lambda *a, **k: boom), \
+            patch("builtins.print", lambda *a, **k: printed.append(" ".join(
+                str(x) for x in a))):
+        action.apply(action.plan(managed=[]))
+    assert any("already added from a different source" in line
+               for line in printed)
+
+
+def test_the_healing_removal_is_not_itself_reported_as_a_failure(tmp_path):
+    """Only the retry's outcome means anything.
+
+    `marketplace remove` can answer non-zero for reasons that do not matter
+    here (the name was already gone). Recording that as a failed item disowns
+    an entry the retry then installed perfectly well, and the next plan asks
+    for it again for ever.
+    """
+    _passwd(tmp_path)
+    state = {"adds": 0}
+
+    def fake(binary, args, **kwargs):
+        script = args[3]
+        if "marketplace remove" in script:
+            return MagicMock(returncode=1, stdout=b"Error: not found",
+                             stderr=b"")
+        if "marketplace add" in script:
+            state["adds"] += 1
+            if state["adds"] == 1:
+                return MagicMock(returncode=1, stdout=_GHOST.encode(),
+                                 stderr=b"")
+            return MagicMock(returncode=0, stdout=b"", stderr=b"")
+        return MagicMock(returncode=0, stdout=b"", stderr=b"")
+
+    action = _act(tmp_path)
+    with patch("dasik.lib.actions.ai_skills_action.Command.execute",
+               side_effect=fake):
+        action.apply(action.plan(managed=[]))
+    assert state["adds"] == 2
+    assert not action.failed_items

@@ -251,3 +251,101 @@ def test_the_captured_block_replans_to_nothing(tmp_path):
     JsonModel(**{"hostname": "x", **captured})
     assert _act(tmp_path, {"users": [{"username": "andres"}],
                            **captured}).plan(managed=[]) == []
+
+
+# --- a per-tool interpreter pin -------------------------------------------- #
+#
+# uv installs with its own default interpreter, and inkscape_mcp cannot live
+# there: it depends on inkex, which pins lxml 5.4.0, which ships no cp314 wheel,
+# so on a 3.14 machine the install tries to compile lxml and fails. Measured on
+# the tower, 2026-09-20.
+
+PINNED = {"users": [{"username": "andres"}],
+          "uv_tools": {"tools": [{"name": "inkscape_mcp", "python": "3.13"}]}}
+
+
+def _install_with_python(root, tool, version, user="andres"):
+    """A tool uv installed, with the interpreter uv recorded for its venv."""
+    d = root / "home" / user / ".local/share/uv/tools" / tool
+    (d / "bin").mkdir(parents=True, exist_ok=True)
+    (d / "pyvenv.cfg").write_text(
+        "home = /usr/bin\n"
+        f"version_info = {version}\n"
+        "include-system-site-packages = false\n")
+
+
+def test_a_pinned_tool_is_installed_with_that_interpreter(tmp_path):
+    _passwd(tmp_path)
+    _, execute = _apply(tmp_path, PINNED)
+    script = execute.call_args[0][1][3]
+    args = execute.call_args[0][1][6:]
+    assert "--python" in script
+    assert list(args) == ["3.13", "inkscape_mcp"]
+
+
+def test_a_pinned_tool_already_on_that_interpreter_plans_nothing(tmp_path):
+    _passwd(tmp_path)
+    # uv normalises the directory: `inkscape_mcp` is installed as `inkscape-mcp`.
+    _install_with_python(tmp_path, "inkscape-mcp", "3.13.7")
+    assert _act(tmp_path, PINNED).plan(managed=[]) == []
+
+
+def test_a_pinned_tool_built_on_the_wrong_interpreter_is_reinstalled(tmp_path):
+    # The whole point of the pin: an install that silently landed on 3.14 is
+    # the broken state this domain exists to prevent, and a plan that stays
+    # silent about it makes the declaration decoration.
+    _passwd(tmp_path)
+    _install_with_python(tmp_path, "inkscape-mcp", "3.14.0")
+    assert _items(_act(tmp_path, PINNED), managed=["andres:inkscape-mcp"]) == [
+        ("MODIFY", "andres:inkscape-mcp")]
+
+
+def test_an_unpinned_tool_has_no_opinion_about_its_interpreter(tmp_path):
+    _passwd(tmp_path)
+    _install_with_python(tmp_path, "graphifyy", "3.14.0")
+    cfg = {"users": [{"username": "andres"}], "uv_tools": {"tools": ["graphifyy"]}}
+    assert _act(tmp_path, cfg).plan(managed=[]) == []
+
+
+def test_reinstalling_forces_uv_to_replace_the_wrong_environment(tmp_path):
+    _passwd(tmp_path)
+    _install_with_python(tmp_path, "inkscape-mcp", "3.14.0")
+    _, execute = _apply(tmp_path, PINNED, managed=["andres:inkscape-mcp"])
+    script = execute.call_args[0][1][3]
+    assert "--force" in script
+
+
+def _default_python(root, version="3.14"):
+    """What `python3` is on the target, which is what uv would pick."""
+    (root / "usr/bin").mkdir(parents=True, exist_ok=True)
+    (root / f"usr/bin/python{version}").write_text("")
+    (root / "usr/bin/python3").symlink_to(f"python{version}")
+
+
+def test_sync_captures_the_pin_of_a_tool_off_the_default_interpreter(tmp_path):
+    # Without this, capturing a machine and re-applying the capture would
+    # reinstall inkscape_mcp on 3.14 — the one-way street.
+    _passwd(tmp_path)
+    _default_python(tmp_path, "3.14")
+    _install_with_python(tmp_path, "inkscape-mcp", "3.13.7")
+    block = _act(tmp_path, PINNED).import_state()["uv_tools"]
+    assert block["tools"] == [{"name": "inkscape_mcp", "python": "3.13"}]
+
+
+def test_sync_says_nothing_about_a_tool_on_the_default_interpreter(tmp_path):
+    _passwd(tmp_path)
+    _default_python(tmp_path, "3.14")
+    _install_with_python(tmp_path, "graphifyy", "3.14.0")
+    cfg = {"users": [{"username": "andres"}], "uv_tools": {"tools": ["graphifyy"]}}
+    block = _act(tmp_path, cfg).import_state()["uv_tools"]
+    assert block["tools"] == ["graphifyy"]
+
+
+def test_uv_normalises_the_directory_name_and_so_does_the_comparison(tmp_path):
+    """Measured on the tower: `uv tool install inkscape_mcp` creates
+    `~/.local/share/uv/tools/inkscape-mcp`. uv applies PEP 503 normalisation to
+    the directory, so comparing the declaration verbatim never matches and the
+    tool is proposed for installation on every single run."""
+    _passwd(tmp_path)
+    _install_with_python(tmp_path, "inkscape-mcp", "3.13.15")
+    assert _act(tmp_path, PINNED).plan(managed=[]) == []

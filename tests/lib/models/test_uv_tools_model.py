@@ -74,3 +74,34 @@ def test_an_unknown_failure_policy_is_rejected():
 
 def test_an_empty_block_is_valid():
     assert UvToolsModel().tools == []
+
+
+# --- a per-tool interpreter pin -------------------------------------------- #
+#
+# `uv tool install` uses uv's default interpreter, and for one real tool that is
+# the wrong one: inkscape_mcp pulls inkex, which pins lxml 5.4.0, which has no
+# cp314 wheel and fails to build. The pin is that tool's desired state, so it
+# belongs in the declaration rather than in a README nobody reads.
+
+def test_a_tool_may_be_an_object_carrying_its_interpreter():
+    model = UvToolsModel(tools=["graphifyy",
+                                {"name": "inkscape_mcp", "python": "3.13"}])
+    assert model.tools[0] == "graphifyy"
+    assert model.tools[1].name == "inkscape_mcp"
+    assert model.tools[1].python == "3.13"
+
+
+def test_a_pinned_tool_still_refuses_shell_syntax():
+    with pytest.raises(ValidationError):
+        UvToolsModel(tools=[{"name": "graphifyy; rm -rf /", "python": "3.13"}])
+
+
+def test_the_interpreter_is_a_major_minor_version():
+    with pytest.raises(ValidationError):
+        UvToolsModel(tools=[{"name": "graphifyy", "python": "python3.13"}])
+
+
+def test_a_tool_declared_twice_is_refused_whatever_form_it_takes():
+    with pytest.raises(ValidationError):
+        UvToolsModel(tools=["graphifyy",
+                            {"name": "graphifyy", "python": "3.13"}])

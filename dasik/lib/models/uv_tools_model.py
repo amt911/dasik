@@ -12,7 +12,7 @@ them. It is deliberately small: names, not versions (though a pin is allowed,
 since uv is the only thing that would move it), and no build options.
 """
 import re
-from typing import List, Literal
+from typing import List, Literal, Union
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -21,6 +21,50 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 # that could be read as shell syntax is allowed through.
 _TOOL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]*(\[[A-Za-z0-9,._-]+\])?"
                       r"([=<>!~]=?[A-Za-z0-9._*+-]+)?$")
+
+# `--python` takes what uv calls a version request. Only `major.minor` is
+# accepted here: a bare `3.13` is what a pin means, and anything longer (a path,
+# an implementation, a patch release) is either not portable across machines or
+# not a request uv would honour the same way twice.
+_PYTHON_RE = re.compile(r"^\d+\.\d+$")
+
+
+class UvToolModel(BaseModel):
+    """One tool that needs an interpreter other than uv's default.
+
+    uv installs with whatever `python` it picks, and for one real tool that is
+    the wrong one: `inkscape_mcp` depends on `inkex`, which pins `lxml 5.4.0`,
+    which ships no cp314 wheel — so on a machine whose default is 3.14 the
+    install tries to compile lxml and fails. That is desired state, not a note
+    in a README, so it is declared.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(description="The distribution name, exactly as the plain "
+                                  "string form takes it.")
+    python: str = Field(description="The interpreter uv installs it with, as "
+                                    "`major.minor` — it reaches `uv tool "
+                                    "install --python <value>`.")
+
+    @field_validator("name")
+    @classmethod
+    def _valid_name(cls, value: str) -> str:
+        if not _TOOL_RE.match(value):
+            raise ValueError(
+                f"{value!r} is not a distribution name `uv tool install` would "
+                "take. It reaches a command line, so anything that could be "
+                "read as shell syntax is refused.")
+        return value
+
+    @field_validator("python")
+    @classmethod
+    def _valid_python(cls, value: str) -> str:
+        if not _PYTHON_RE.match(value):
+            raise ValueError(
+                f"{value!r} is not a `major.minor` interpreter version "
+                "(e.g. '3.13').")
+        return value
 
 
 class UvToolsModel(BaseModel):
@@ -39,7 +83,7 @@ class UvToolsModel(BaseModel):
                     "network, no uv, a broken sdist). The default warns, keeps "
                     "going and leaves the tool unowned, so the next plan asks "
                     "again.")
-    tools: List[str] = Field(
+    tools: List[Union[str, UvToolModel]] = Field(
         default_factory=list,
         description="Distribution names as `uv tool install` takes them — the "
                     "PyPI name, not the command it provides (graphifyy, whose "
@@ -55,10 +99,12 @@ class UvToolsModel(BaseModel):
 
     @field_validator("tools")
     @classmethod
-    def _valid_tool_names(cls, value: List[str]) -> List[str]:
-        if len(set(value)) != len(value):
+    def _valid_tool_names(cls, value: List[Union[str, UvToolModel]]) \
+            -> List[Union[str, UvToolModel]]:
+        names = [t.name if isinstance(t, UvToolModel) else t for t in value]
+        if len(set(names)) != len(names):
             raise ValueError("duplicate tool in `tools`")
-        for tool in value:
+        for tool in names:
             if not _TOOL_RE.match(tool):
                 raise ValueError(
                     f"{tool!r} is not a distribution name `uv tool install` "

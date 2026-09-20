@@ -29,6 +29,11 @@ bad() { echo "$1-RC=1 ($2)"; FAILS=$((FAILS + 1)); }
 check() { local m=$1; shift; if "$@"; then ok "$m"; else bad "$m" "$*"; fi; }
 not() { ! "$@"; }
 gens() { $D generations --target / $L 2>/dev/null | grep -c '^ *Generation [0-9]'; }
+# `pacman -Q <name>` RESOLVES A PROVIDE: with openresolv removed it still
+# answers "systemd-resolvconf 261.3-1", because systemd-resolvconf provides
+# openresolv. Measured in this very guest. So the only honest question about a
+# PACKAGE is an exact match in `pacman -Qq`.
+pkg() { pacman -Qq | grep -qx "$1"; }
 # The config with the opt-in policy, and one declaring BOTH sides of the pair.
 mkcfg() {
   python - "$C" "$1" "$2" <<'PY'
@@ -49,8 +54,8 @@ mkcfg /root/both.json replace-both
 echo "CONFL-A: recreate the GE63 state - the blocker installed, the declared package gone"
 pacman -Rns --noconfirm "$WANT"
 pacman -S --noconfirm "$BLOCKER"
-check CONFL-A-BLOCKER-INSTALLED pacman -Q "$BLOCKER"
-check CONFL-A-WANT-ABSENT not pacman -Q "$WANT"
+check CONFL-A-BLOCKER-INSTALLED pkg "$BLOCKER"
+check CONFL-A-WANT-ABSENT not pkg "$WANT"
 # The bare pacman truth this whole feature exists for: the transaction fails.
 pacman -S --noconfirm --needed "$WANT" > /tmp/bare.txt 2>&1
 check CONFL-A-PACMAN-REALLY-REFUSES grep -qi "conflict" /tmp/bare.txt
@@ -67,19 +72,27 @@ check CONFL-C-PLAN-RC0 grep -q 'plan rc=0' /tmp/plan1.status
 check CONFL-C-PLAN-NAMES-BLOCKER grep -q "$BLOCKER" /tmp/plan1.txt
 check CONFL-C-PLAN-GIVES-COMMAND grep -q "pacman -Rns $BLOCKER" /tmp/plan1.txt
 check CONFL-C-PLAN-STILL-PROPOSES grep -q "install $WANT" /tmp/plan1.txt
-check CONFL-C-PLAN-CHANGED-NOTHING pacman -Q "$BLOCKER"
+check CONFL-C-PLAN-CHANGED-NOTHING pkg "$BLOCKER"
 
-echo "CONFL-R: red proof - without the probe, plan says nothing about it"
-python - "$C" > /tmp/plan-nofix.txt 2>&1 <<'PY'
+echo "CONFL-R: red proof - with the announcement stubbed out, both verbs go quiet"
+for verb in plan apply; do
+  python - "$C" "$verb" > /tmp/$verb-nofix.txt 2>&1 <<'RED'
 import runpy, sys
 import dasik.lib.actions.packages_action as p
-p.PackagesAction._announce_conflicts = lambda self, names, installed: []
-sys.argv = ["dasik", "plan", sys.argv[1], "--target", "/", "--no-log"]
+p.PackagesAction._announce = lambda self, conflicts, installed: None
+verb = sys.argv[2]
+sys.argv = ["dasik", verb, sys.argv[1], "--target", "/", "--no-log"] + (
+    ["--yes"] if verb == "apply" else [])
 runpy.run_module("dasik", run_name="__main__")
-PY
-cat /tmp/plan-nofix.txt
-check CONFL-R-NO-WARNING-WITHOUT-FIX not grep -q "pacman -Rns $BLOCKER" /tmp/plan-nofix.txt
+RED
+  cat /tmp/$verb-nofix.txt
+done
+check CONFL-R-PLAN-QUIET-WITHOUT-FIX not grep -q "pacman -Rns $BLOCKER" /tmp/plan-nofix.txt
+check CONFL-R-APPLY-QUIET-WITHOUT-FIX not grep -q "pacman -Rns $BLOCKER" /tmp/apply-nofix.txt
 check CONFL-R-SAME-PLAN-WITHOUT-FIX grep -q "install $WANT" /tmp/plan-nofix.txt
+# ... while the raw pacman failure is still there: what went missing is the
+# MESSAGE, not the failure.
+check CONFL-R-STILL-FAILS grep -qi "conflict" /tmp/apply-nofix.txt
 
 echo "CONFL-D: the default policy says it too, and removes nothing"
 G0=$(gens)
@@ -87,22 +100,22 @@ $D apply "$C" --target / --yes $L > /tmp/apply1.txt 2>&1; echo "apply rc=$?" > /
 cat /tmp/apply1.txt
 check CONFL-D-APPLY-RC0 grep -q 'apply rc=0' /tmp/apply1.status
 check CONFL-D-APPLY-GIVES-COMMAND grep -q "pacman -Rns $BLOCKER" /tmp/apply1.txt
-check CONFL-D-BLOCKER-KEPT pacman -Q "$BLOCKER"
-check CONFL-D-WANT-STILL-ABSENT not pacman -Q "$WANT"
+check CONFL-D-BLOCKER-KEPT pkg "$BLOCKER"
+check CONFL-D-WANT-STILL-ABSENT not pkg "$WANT"
 check CONFL-D-NOT-CLAIMED-INSTALLED not grep -q "\"$WANT\"" /var/lib/dasik/state.json
 
 echo "CONFL-E: replace refuses when the config declares BOTH sides"
 $D apply /root/both.json --target / --yes $L > /tmp/apply-both.txt 2>&1
 cat /tmp/apply-both.txt
 check CONFL-E-REFUSES grep -q "declares both" /tmp/apply-both.txt
-check CONFL-E-BLOCKER-KEPT pacman -Q "$BLOCKER"
+check CONFL-E-BLOCKER-KEPT pkg "$BLOCKER"
 
 echo "CONFL-F: replace clears an undeclared blocker and converges"
 $D apply /root/replace.json --target / --yes $L > /tmp/apply2.txt 2>&1; echo "apply rc=$?" > /tmp/apply2.status
 cat /tmp/apply2.txt
 check CONFL-F-APPLY-RC0 grep -q 'apply rc=0' /tmp/apply2.status
-check CONFL-F-BLOCKER-GONE not pacman -Q "$BLOCKER"
-check CONFL-F-WANT-INSTALLED pacman -Q "$WANT"
+check CONFL-F-BLOCKER-GONE not pkg "$BLOCKER"
+check CONFL-F-WANT-INSTALLED pkg "$WANT"
 
 echo "CONFL-G: plan -> apply -> plan is silent (idempotent)"
 $D plan --target / $L /root/replace.json > /tmp/plan2.txt 2>&1; cat /tmp/plan2.txt

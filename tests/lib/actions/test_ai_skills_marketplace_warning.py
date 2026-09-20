@@ -199,14 +199,16 @@ def test_a_marketplace_in_neither_listing_is_still_warned_about(
     assert _said(warnings, "openai-curated")
 
 
-def test_the_remote_catalog_is_only_asked_for_when_the_cheap_probe_misses(
-        tmp_path, monkeypatch, warnings):
-    """`codex plugin list` reaches the network. It must not run for a
-    marketplace the local listing already confirmed."""
+def test_the_remote_catalog_is_asked_for_at_most_once(tmp_path, monkeypatch,
+                                                      warnings):
+    """`codex plugin list` reaches the network, and a plan asks two different
+    questions of it (which catalogs exist, and which plugins are installed).
+    It must still cost ONE process: the answer cannot change inside a plan."""
     calls = _two_probes(monkeypatch, _IN_SCOPE, _PLUGIN_LIST)
     _plan(_machine(tmp_path), [_CODEX_ENTRY])
-    assert not any("plugin list" in " ".join(map(str, args))
-                   for _binary, args in calls)
+    asked = [args for _binary, args in calls
+             if "plugin list" in " ".join(map(str, args))]
+    assert len(asked) <= 1
 
 
 # --- a marketplace codex can no longer load -------------------------------- #
@@ -302,3 +304,56 @@ def test_the_broken_marketplace_report_is_read_from_stderr_too(
         "dasik.lib.actions.ai_skills_action.Command.execute", staticmethod(fake))
     plan = _plan(tmp_path, [_MARKET_ENTRY])
     assert [c for c in plan if "marketplace" in c.item]
+
+
+# --- a plugin codex installs but does not write down --------------------- #
+#
+# Measured on the tower, 2026-09-20: SEVEN plugins from the remote catalog are
+# `installed, enabled` while `~/.codex/config.toml` records exactly ONE (and
+# under the legacy marketplace name at that). Codex keeps remote-catalog
+# installs in its own account-side state, not in the TOML registry — so a
+# reader that trusts the registry alone never sees them, `apply` installs the
+# plugin correctly and the next `plan` proposes it again, for ever. Reported
+# from a real machine after twenty applies.
+
+_LIST_WITH_INSTALLED = (
+    "Marketplace `openai-curated-remote`\n"
+    "Remote catalog\n"
+    "\n"
+    "PLUGIN                             STATUS              VERSION  SOURCE\n"
+    "superpowers@openai-curated-remote  installed, enabled  6.4.1    plugins~Plugin_60ae\n"
+    "notion@openai-curated-remote       not installed       0.1.8    plugin_asdk_app_69c1\n")
+
+_REMOTE_PLUGIN_ENTRY = {"name": "superpowers", "method": "codex-plugin",
+                        "marketplace": {"name": "openai-curated-remote"}}
+
+
+def test_a_plugin_the_cli_reports_installed_is_present(tmp_path, monkeypatch,
+                                                       warnings):
+    """Nothing in config.toml, and it is still installed. Believing the file
+    over the CLI is what made `apply` succeed and `plan` ask again for ever."""
+    _machine(tmp_path)
+    _probe(monkeypatch, _LIST_WITH_INSTALLED)
+    plan = _plan(tmp_path, [_REMOTE_PLUGIN_ENTRY])
+    assert not [c for c in plan if "plugin" in c.item]
+
+
+def test_a_plugin_the_cli_reports_not_installed_is_planned(tmp_path, monkeypatch,
+                                                           warnings):
+    _machine(tmp_path)
+    _probe(monkeypatch, _LIST_WITH_INSTALLED)
+    entry = {"name": "notion", "method": "codex-plugin",
+             "marketplace": {"name": "openai-curated-remote"}}
+    plan = _plan(tmp_path, [entry])
+    assert [c for c in plan if "plugin" in c.item]
+
+
+def test_an_installed_but_disabled_plugin_is_not_present(tmp_path, monkeypatch,
+                                                         warnings):
+    """Same rule the registry reader already applies: `enabled = false` is not
+    a plugin dasik has, so a disabled one has to be planned."""
+    _machine(tmp_path)
+    _probe(monkeypatch, _LIST_WITH_INSTALLED.replace(
+        "installed, enabled ", "installed, disabled"))
+    plan = _plan(tmp_path, [_REMOTE_PLUGIN_ENTRY])
+    assert [c for c in plan if "plugin" in c.item]

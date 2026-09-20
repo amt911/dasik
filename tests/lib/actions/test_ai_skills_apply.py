@@ -21,18 +21,21 @@ def _apply(tmp_path, cfg=None, rc=0):
 
 
 _PROBE = "codex plugin marketplace list"
+# `codex plugin list` is the second read-only probe: it answers which remote
+# catalogs exist and which plugins codex has actually installed (codex does not
+# record a remote-catalog install in config.toml).
+_LIST_PROBE = "codex plugin list"
+_PROBES = (_PROBE, _LIST_PROBE)
 
 
 def _argvs(execute):
     """The ``su`` argv of every INSTALLER call, in order.
 
-    `plan` also runs a read-only `codex plugin marketplace list` through the
-    same `su`, to warn when a curated marketplace is not in scope (a signed-out
-    codex cannot resolve `plugin@marketplace`). It installs nothing, so it is
-    dropped here; it has its own test file.
+    `plan` also runs the read-only probes above through the same `su`. They
+    install nothing, so they are dropped here; they have their own test file.
     """
     return [call.args[1] for call in execute.call_args_list
-            if call.args[1][3] != _PROBE]
+            if call.args[1][3] not in _PROBES]
 
 
 def _scripts(execute):

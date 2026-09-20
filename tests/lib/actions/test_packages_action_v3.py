@@ -31,6 +31,19 @@ def _ok():
     return MagicMock(returncode=0, stdout=b"", stderr=b"")
 
 
+def _machine(*installed):
+    """A pacman whose `-Qq` reports *installed*. A planned removal is always
+    of a package that IS on the machine, and apply re-reads that before the
+    `-Rns` (a removal the apply itself already performed would otherwise fail
+    the whole transaction — found in a guest, 2026-09-20)."""
+    def execute(cmd, args, **kw):
+        if cmd == "pacman" and args and args[0] == "-Qq" and len(args) == 1:
+            return MagicMock(returncode=0, stderr=b"",
+                             stdout=("\n".join(installed) + "\n").encode())
+        return _ok()
+    return execute
+
+
 def _resolution(repo=(), aur=(), groups=(), unknown=(), unavailable=()):
     """A canned PackageResolution so apply-routing tests stay decoupled from the
     live PackageResolver (network + pacman DBs)."""
@@ -187,11 +200,12 @@ def _mutating(run):
     reasons true against reality (issue #188), `-Sg` to tell a declared pacman
     group from a package, and `-T` to see whether a declared name is already
     satisfied by a PROVIDER, so counting every call would count those read-only
-    queries too.
+    queries too. `-Sp` is the conflict probe: it prepares the transaction and
+    prints it, touching nothing.
     """
     return [c for c in run.call_args_list
             if c.args[0] == "pacman"
-            and c.args[1][0] not in ("-Qq", "-Qqe", "-D", "-Sg", "-T")]
+            and c.args[1][0] not in ("-Qq", "-Qqe", "-D", "-Sg", "-T", "-Sp")]
 
 
 def test_apply_install_routes_pacman_pkgs_through_pacman_S():
@@ -222,7 +236,7 @@ def test_apply_remove_routes_through_pacman_Rns():
     a = PackagesAction(config=[], context=_ctx("/"))
     changes = [Change("packages", Op.REMOVE, "vim")]
     with patch("dasik.lib.actions.packages_action.Command.execute") as run:
-        run.return_value = _ok()
+        run.side_effect = _machine("vim")
         a.apply(changes)
     assert len(_mutating(run)) == 1
     args = _mutating(run)[0]
@@ -243,7 +257,7 @@ def test_apply_mixes_install_and_remove_in_correct_order():
     ]
     with patch("dasik.lib.actions.packages_action.Command.execute") as run, \
          patch.object(a, "_resolve_sources", return_value=_resolution(repo=["git"])):
-        run.return_value = _ok()
+        run.side_effect = _machine("vim")
         a.apply(changes)
     # Two mutating calls: pacman -S first, then pacman -Rns
     assert len(_mutating(run)) == 2

@@ -88,6 +88,7 @@ class AiSkillsAction(AbstractAction):
         # One probe per user, per action: `_scan` runs for plan, apply and
         # sync, and the answer cannot change inside one of them.
         self._unusable_cache: Dict[str, set] = {}
+        self._installed_cache: Dict[str, set] = {}
         # Items whose installer failed under `warn-and-continue`. Excluded from
         # managed_keys so the manifest never claims dasik installed something it
         # could not — the next plan then asks for it again.
@@ -259,6 +260,14 @@ class AiSkillsAction(AbstractAction):
                 # is nothing the cache could have lost.
                 unusable = (self._codex_unusable_marketplaces(user)
                             if agent == "codex" and sources else set())
+                if agent == "codex" and self._declares_codex_plugin(user):
+                    # Codex does NOT write a remote-catalog install into
+                    # config.toml — that state is account-side. Measured on a
+                    # real machine: seven plugins `installed, enabled`, one in
+                    # the registry. Reading the file alone makes apply install
+                    # the plugin and the next plan ask for it again, for ever.
+                    for plugin_id in self._codex_installed_plugins(user):
+                        items.add(self._item(user, agent, "plugin", plugin_id))
                 for market_name, source in sources.items():
                     if market_name in unusable:
                         # Registered and unusable: codex's own cache for it is
@@ -527,6 +536,39 @@ class AiSkillsAction(AbstractAction):
                 if match:
                     names.add(match.group(1))
         self._unusable_cache[user] = names
+        return names
+
+    # `superpowers@openai-curated-remote  installed, enabled  6.4.1  ...` —
+    # one row per plugin, with the status codex itself reports. `not installed`
+    # contains the word too, so the whole status is matched, never a substring.
+    _PLUGIN_ROW = re.compile(
+        r"^(\S+@\S+)\s{2,}(installed, enabled|installed, disabled|not installed)")
+
+    def _declares_codex_plugin(self, user: str) -> bool:
+        """Does this user declare any codex plugin at all?
+
+        The probe costs a process and reaches the network, so a config with no
+        codex plugin in it must not pay for one.
+        """
+        prefix = f"{user}:codex:plugin:"
+        return any(item.startswith(prefix) for item in self._desired())
+
+    def _codex_installed_plugins(self, user: str) -> set:
+        """`plugin@marketplace` ids codex reports as installed AND enabled.
+
+        Empty when the probe cannot run: the registry is then the only evidence
+        there is, and it is read anyway.
+        """
+        cached = self._installed_cache.get(user)
+        if cached is not None:
+            return cached
+        out = self._codex_probe(user, self._PLUGIN_PROBE)
+        names: set = set()
+        for line in (out or "").splitlines():
+            match = self._PLUGIN_ROW.match(line.strip())
+            if match and match.group(2) == "installed, enabled":
+                names.add(match.group(1))
+        self._installed_cache[user] = names
         return names
 
     # `Marketplace `openai-curated-remote`` — the heading `codex plugin list`

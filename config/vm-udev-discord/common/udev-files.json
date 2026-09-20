@@ -1,0 +1,14 @@
+[
+  {
+    "path": "/etc/udev/rules.d/1-qudelix.rules",
+    "content": {
+      "$include_text": "etc/udev/rules.d/1-qudelix.rules"
+    }
+  },
+  {
+    "path": "/etc/udev/rules.d/50-dolphin-UB400.rules",
+    "content": {
+      "$include_text": "etc/udev/rules.d/50-dolphin-UB400.rules"
+    }
+  }
+]

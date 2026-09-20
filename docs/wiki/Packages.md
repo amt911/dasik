@@ -34,6 +34,36 @@ Two failure modes, deliberately different:
   Always a blocking error, whatever the policy: "we could not look" must never
   be silently downgraded to "it does not exist".
 
+### A package already on the machine that blocks a declared one
+
+`pacman` refuses a transaction holding two packages that conflict, and it fails
+the **whole** transaction — so one blocker stops every other package in it:
+
+```
+:: libjodycode-4.1.2-3 and libjodycode-git-… are in conflict. Remove libjodycode-git? [y/N]
+error: unresolvable package conflicts detected
+```
+
+dasik names the blocker and the exact command that clears it, in `plan` (before
+anything mutates) and in `apply` (before pacman's output):
+
+```
+warning: installed libjodycode-git conflicts with declared libjodycode
+    pacman -Rns libjodycode-git
+```
+
+`package_policy.conflicts` decides what it does about it: `abort` (default)
+changes nothing but the message; `replace` removes the blocker itself and
+retries once — but only when the blocker is **undeclared** (a config declaring
+both sides is a config to fix, and dasik says so instead of deleting one) and
+**required by no installed package**.
+
+Finding this needs pacman itself: the declared package's own metadata often
+says `Conflicts With : None`, because the conflict is declared by the installed
+side, sometimes only through a `provides` neither side names.
+
+---
+
 Package names are validated against the Arch grammar
 (`[a-zA-Z0-9][a-zA-Z0-9@._+-]*`, no leading `-`) before they ever reach a
 pacman argv.

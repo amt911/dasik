@@ -114,6 +114,34 @@ check UNDECL-S-FIGLET-KEPT pkg figlet
 plan_to "$C" /tmp/plan4.txt
 check UNDECL-S-SEED-STILL-REMOVES grep -q 'remove figlet' /tmp/plan4.txt
 
+echo "UNDECL-P: an explicit package that PROVIDES a declared name is the declaration"
+# `netcat` is satisfied by openbsd-netcat (`pacman -Qq netcat` prints it), and
+# nothing requires openbsd-netcat, so no dependency check masks the result:
+# planning it for removal would re-plan `netcat` on every apply. (bash was the
+# first attempt; half of base requires it, so the red could never show.)
+python - /root/cfg/cap.json /root/nc.json <<'PY'
+import json, sys
+cfg = json.load(open(sys.argv[1]))
+cfg["packages"].append("netcat")
+json.dump(cfg, open(sys.argv[2], "w"), indent=2)
+PY
+pacman -S --noconfirm openbsd-netcat
+check UNDECL-P-CHECK $D check /root/nc.json $L
+plan_to /root/nc.json /tmp/plan-nc.txt
+check UNDECL-P-PROVIDER-NOT-PLANNED not grep -q 'remove openbsd-netcat' /tmp/plan-nc.txt
+check UNDECL-P-NAME-NOT-PLANNED not grep -q 'install netcat' /tmp/plan-nc.txt
+check UNDECL-P-PLAN-SILENT not pkglines /tmp/plan-nc.txt
+python - /root/nc.json > /tmp/plan-nc-nofix.txt 2>&1 <<'RED'
+import runpy, sys
+import dasik.lib.actions.packages_action as p
+p.PackagesAction._providers_of = lambda self, names: set()
+sys.argv = ["dasik", "plan", sys.argv[1], "--target", "/", "--no-log"]
+runpy.run_module("dasik", run_name="__main__")
+RED
+cat /tmp/plan-nc-nofix.txt
+check UNDECL-P-RED-WITHOUT-FIX grep -q 'remove openbsd-netcat' /tmp/plan-nc-nofix.txt
+pacman -Rns --noconfirm openbsd-netcat
+
 echo "UNDECL-H: generations and rollback"
 $D generations --target / $L
 check UNDECL-H-HAS-CURRENT bash -c "$D generations --target / $L | grep -q '(current)'"

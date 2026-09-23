@@ -184,9 +184,40 @@ class PackagesAction(AbstractAction):
         """
         if self.undeclared_policy != "remove":
             return set()
+        providers = self._providers_of(
+            [n for n in self.desired if n not in installed])
+        if providers is None:
+            return set()
         return {name for name in explicit_raw - set(self.desired) - covered
-                - self._implied
+                - self._implied - providers
                 if not self._is_debug_by_product(name, installed)}
+
+    def _providers_of(self, names: "list[str]") -> "set[str] | None":
+        """Installed packages that satisfy *names* through a ``Provides``.
+
+        A declared `iptables` is satisfied by an installed `iptables-nft`, and
+        that package is the declaration, not a stranger: removing it makes the
+        next plan install `iptables` back, forever. `pacman -Qq <name>` resolves
+        a provide (`pacman -Qq sh` prints `bash`), one call for all of them; a
+        name nothing satisfies only adds an error line on stderr.
+
+        ``None`` when the probe cannot answer: then nothing is known to be
+        foreign, and the caller plans no undeclared removal at all.
+        """
+        target = getattr(self.context, "target", None) if self.context else None
+        if target is None or not names:
+            return set()
+        try:
+            result = Command.execute("pacman", ["-Qq", *sorted(names)],
+                                     target=target)
+        except Exception:      # nosec B110 - unreadable probe: remove nothing
+            return None
+        out = getattr(result, "stdout", b"") or b""
+        if isinstance(out, bytes):
+            out = out.decode("utf-8", errors="replace")
+        if not isinstance(out, str):
+            return None
+        return {line.strip() for line in out.splitlines() if line.strip()}
 
     @classmethod
     def empty_config(cls) -> Any:

@@ -231,3 +231,39 @@ def test_sync_then_plan_is_silent_under_remove():
                return_value=MagicMock(stdout=b"", returncode=0)):
         assert "cowsay" in captured["packages"]
         assert replayed.plan(managed=[]) == []
+
+
+# --- a declared name a PROVIDER satisfies ------------------------------- #
+
+def _provider_plan(explicit, declared, qq_stdout, qq_raises=False):
+    """Plan where `pacman -Qq <declared>` answers *qq_stdout* (it resolves a
+    provide: `pacman -Qq sh` prints `bash`) and every other probe is empty."""
+    cfg = {"packages": list(declared), "package_policy": {"undeclared": "remove"}}
+    action = PackagesAction(cfg, ActionContext(target=Target(root="/")))
+    _machine(action, explicit)
+
+    def fake(cmd, args, **kw):
+        if cmd == "pacman" and args[:1] == ["-Qq"]:
+            if qq_raises:
+                raise RuntimeError("no pacman")
+            return MagicMock(stdout=qq_stdout.encode(), returncode=0)
+        return MagicMock(stdout=b"", returncode=0)
+
+    with patch("dasik.lib.actions.packages_action.Command.execute",
+               side_effect=fake):
+        action._satisfied = MagicMock(return_value=set(declared) - set(explicit))
+        return [(c.op.name, c.item) for c in action.plan(managed=[])]
+
+
+def test_the_provider_of_a_declared_name_is_not_removed():
+    """`iptables-nft` satisfies a declared `iptables`: removing it would make
+    the next plan install `iptables` back — a flip-flop, every apply."""
+    assert _provider_plan({"iptables-nft", "cowsay"}, ["iptables"],
+                          "iptables-nft\n") == [("REMOVE", "cowsay")]
+
+
+def test_an_unreadable_provider_probe_plans_no_undeclared_removal():
+    """Fail-safe: not knowing what satisfies a declared name means not knowing
+    what is foreign, and the error to avoid is uninstalling."""
+    assert _provider_plan({"iptables-nft", "cowsay"}, ["iptables"], "",
+                          qq_raises=True) == []

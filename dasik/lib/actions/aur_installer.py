@@ -29,7 +29,9 @@ from typing import Dict, List, Sequence, Set, Tuple
 
 from . import srcinfo
 from .packages_action import PackagesAction, _validate_pkg_name
-from .package_resolver import AurUnavailableError, PackageResolver
+from .package_resolver import (
+    AurUnavailableError, BUILD_PREREQUISITES, PackageResolver,
+)
 from ..command_worker.command_worker import Command
 from ..exceptions.exceptions import CommandExecutionError
 from ..logging import run_logger
@@ -115,7 +117,7 @@ class AurInstaller:
         sends it through here. Without it the leftover warning fires on every
         such build and blames a previous run that never happened.
         """
-        self._run("pacman", ["--noconfirm", "--needed", "-S", "base-devel", "git"],
+        self._run("pacman", ["--noconfirm", "--needed", "-S", *BUILD_PREREQUISITES],
                   check=True)
         id_check = self._run("id", [self.BUILD_USER], check=False)
         created = getattr(id_check, "returncode", 0) != 0

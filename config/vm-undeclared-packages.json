@@ -1,0 +1,66 @@
+{
+  "metadata": {
+    "note": "VM test for package_policy.undeclared. A minimal bootable system with a small package subset and `undeclared: remove`. The guest installs packages by hand, outside the config, and checks that plan proposes removing them, that apply removes them, that a package another one requires is never proposed, that sync is how you keep one, and that the pacstrapped base (never listed in `packages` by hand) is never touched. NOT for real hardware."
+  },
+  "disks": {
+    "disks": [
+      {
+        "device": "/dev/vda",
+        "partition_table": "gpt",
+        "wipe_disk": false,
+        "partitions": [
+          {
+            "label": "ESP",
+            "size": "512MiB",
+            "filesystem": "fat32",
+            "partition_type": "esp",
+            "mountpoint": "/boot",
+            "format": true
+          },
+          {
+            "label": "ROOT",
+            "size": "rest",
+            "filesystem": "ext4",
+            "partition_type": "linux",
+            "mountpoint": "/",
+            "format": true
+          }
+        ]
+      }
+    ]
+  },
+  "enable_microcode": false,
+  "packages": [
+    "python",
+    "python-pydantic",
+    "python-colorama"
+  ],
+  "package_policy": {
+    "undeclared": "remove"
+  },
+  "bootloader": "sd-boot",
+  "hostname": "dasik-undeclared",
+  "kernel_cmdline": [
+    "console=ttyS0,115200"
+  ],
+  "timezone": {
+    "region": "Etc",
+    "city": "UTC"
+  },
+  "locales": {
+    "selected_locales": [
+      "en_US.UTF-8 UTF-8"
+    ],
+    "desired_locale": "en_US.UTF-8",
+    "desired_tty_layout": "us"
+  },
+  "network": {
+    "type": "systemd-networkd"
+  },
+  "files": [
+    {
+      "path": "/etc/systemd/system/serial-getty@ttyS0.service.d/autologin.conf",
+      "content": "[Service]\nExecStart=\nExecStart=-/sbin/agetty --autologin root --noclear --keep-baud 115200,38400,9600 %I $TERM\n"
+    }
+  ]
+}

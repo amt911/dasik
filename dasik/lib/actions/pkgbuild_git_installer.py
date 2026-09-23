@@ -25,7 +25,7 @@ from posixpath import normpath
 from typing import Iterable, List, Set
 
 from . import srcinfo
-from .package_resolver import ResolvedGitPackage
+from .package_resolver import BUILD_PREREQUISITES, ResolvedGitPackage
 from ..command_worker.command_worker import Command
 from ..exceptions.exceptions import CommandExecutionError
 
@@ -93,7 +93,7 @@ class PkgbuildGitInstaller:
         """Install base-devel + git, ensure the build user (+ passwordless sudo
         so makepkg can sync deps). Returns True if THIS run created the user."""
         Command.execute(
-            "pacman", ["--noconfirm", "--needed", "-S", "base-devel", "git"],
+            "pacman", ["--noconfirm", "--needed", "-S", *BUILD_PREREQUISITES],
             target=self._target,
         )
         id_check = self._run(["id", self.BUILD_USER], check=False)

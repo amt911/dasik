@@ -15,6 +15,9 @@ _FONTS_DIR = "/usr/local/share/fonts/WindowsFonts"
 _DOMAIN = "microsoft_fonts"
 
 
+_EXTRACTOR_PACKAGES = ("7zip",)
+
+
 class MicrosoftFontsAction(AbstractAction):
     """Extract and install MS fonts from a Windows ISO (v3 domain)."""
 
@@ -25,6 +28,15 @@ class MicrosoftFontsAction(AbstractAction):
         cfg: Dict[str, Any] = config if isinstance(config, dict) else {}
         self.install: bool = cfg.get("install", False)
         self.source_iso: str = cfg.get("source_iso") or ""
+
+    @staticmethod
+    def implied_packages(config: Dict[str, Any]) -> set:
+        """The extractor the font install needs, which no config lists.
+        *config* is the ROOT config; the block is ``microsoft_fonts``."""
+        block = config.get("microsoft_fonts") or {}
+        if isinstance(block, dict) and block.get("install", False):
+            return set(_EXTRACTOR_PACKAGES)
+        return set()
 
     @property
     def name(self) -> str:
@@ -88,7 +100,7 @@ class MicrosoftFontsAction(AbstractAction):
         """
         t = self._target()
         root = t.root if t is not None else "/mnt"
-        Command.execute("pacman", ["--noconfirm", "--needed", "-S", "7zip"],
+        Command.execute("pacman", ["--noconfirm", "--needed", "-S", *_EXTRACTOR_PACKAGES],
                         target=t, check=True)
         # /tmp here is inside the freshly-installed TARGET chroot during install
         # (single-user, no other local accounts yet), not the host /tmp — see the

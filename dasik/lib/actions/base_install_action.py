@@ -45,6 +45,10 @@ def _report_hook_failures(output) -> None:
         detail="\n".join(hits),
     )
 
+_BASE_PACKAGES = ("base", "linux", "linux-firmware")
+_MICROCODE_PACKAGES = ("amd-ucode", "intel-ucode")
+
+
 class BaseInstallAction(AbstractAction):
     """Install the Arch base system (base, linux, firmware, microcode)."""
 
@@ -64,11 +68,23 @@ class BaseInstallAction(AbstractAction):
         # encountered during the build"). Naming the declared generator makes the
         # dependency explicit: no prompt, one generator.
         self.generator: str = cfg.get("initramfs") or "mkinitcpio"
-        self.packages: List[str] = ["base", "linux", "linux-firmware",
-                                    self.generator]
+        self.packages: List[str] = [*_BASE_PACKAGES, self.generator]
         init(autoreset=True)
         if self.enable_microcode:
             self.packages += [self._detect_microcode()]
+
+    @staticmethod
+    def implied_packages(config: Dict[str, Any]) -> set:
+        """What pacstrap installs explicitly, which no config has to list.
+
+        Both microcode packages when microcode is enabled: the one pacstrap
+        picked depends on the CPU dasik ran on, and only the installed one can
+        ever be planned for removal anyway.
+        """
+        implied = {*_BASE_PACKAGES, config.get("initramfs") or "mkinitcpio"}
+        if config.get("enable_microcode", False):
+            implied |= set(_MICROCODE_PACKAGES)
+        return implied
 
     @property
     def name(self) -> str:

@@ -104,6 +104,7 @@ Full treatment: **[Packages](Packages.md)**.
 | --- | --- | --- | --- |
 | `packages` | list of string \| object | `[]` | real names — **no `aur-` prefix**; the source is resolved automatically |
 | `package_policy.unknown` | `"warn-and-skip"` \| `"error"` | `"warn-and-skip"` | what to do with a name that exists nowhere |
+| `package_policy.undeclared` | `"keep"` \| `"remove"` | `"keep"` | `remove`: `plan` removes explicit packages the config does not list — see [Packages](Packages.md#keeping-the-machine-down-to-the-config) |
 | `package_sources` | map name → object | `{}` | Git PKGBUILD for packages outside repos and AUR |
 
 The object form of a package entry:

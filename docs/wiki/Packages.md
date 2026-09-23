@@ -295,6 +295,36 @@ A package dasik installed and you stop declaring shows up as:
 - [packages] remove htop  (no longer declared)
 ```
 
-A package **you** installed by hand is not in the manifest, so it is never
-touched. That is the ownership rule: dasik takes back only what it put there.
-See [Workflows](Workflows.md#ownership).
+A package **you** installed by hand is not in the manifest, so by default it is
+never touched. That is the ownership rule: dasik takes back only what it put
+there. See [Workflows](Workflows.md#ownership).
+
+### Keeping the machine down to the config
+
+Set `package_policy.undeclared` to `remove` and `plan` also lists every
+explicitly-installed package (`pacman -Qqe`) the config does not account for:
+
+```json
+"package_policy": { "undeclared": "remove" }
+```
+
+```text
+- [packages] remove cowsay  (not declared (package_policy.undeclared: remove))
+```
+
+`apply` then removes it. To keep it instead, declare it, or run `dasik sync`:
+sync captures new explicit packages into `packages`, and the next `plan` is
+silent.
+
+Never proposed, whatever the policy:
+
+- a member of a declared group, and a `makepkg` `-debug` by-product;
+- a package another installed package requires (it is reported, not removed);
+- what dasik installs **outside** the `packages` list, which no hand-written
+  config lists: `base`, `linux`, `linux-firmware` and the declared initramfs
+  generator (pacstrap), `amd-ucode`/`intel-ucode` with `enable_microcode`,
+  `grub` and `efibootmgr` with the GRUB bootloader, `base-devel` and `git`
+  (AUR and PKGBUILD builds), and `7zip` with `microsoft_fonts.install`.
+
+Dependencies are never listed: removing an explicit package with `pacman -Rns`
+takes the dependencies nothing else needs with it.

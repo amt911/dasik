@@ -76,10 +76,23 @@ class PackagePolicyModel(BaseModel):
     on — but only when it is undeclared AND no installed package requires it,
     because deleting half of what the config asks for, or breaking a
     dependency, is never dasik's call.
+
+    ``undeclared`` governs an explicitly-installed package (``pacman -Qqe``)
+    that the config does not account for — typically one installed by hand.
+    ``keep`` (default): dasik removes only what its manifest owns, so such a
+    package is left alone and ``plan`` says nothing. ``remove``: ``plan``
+    proposes removing it and ``apply`` does, so the machine stays down to what
+    the config lists. Never proposed for removal: a declared package, a member
+    of a declared group, a ``makepkg`` ``-debug`` by-product, a package another
+    installed package requires, and what dasik itself installs outside the
+    ``packages`` list (the pacstrapped base, the initramfs generator, microcode,
+    GRUB, the AUR build prerequisites, 7zip for ``microsoft_fonts``). To keep
+    one, declare it, or let ``dasik sync`` capture it.
     """
     unknown: Literal["warn-and-skip", "error"] = "warn-and-skip"
     build_failure: Literal["abort", "warn-and-continue"] = "abort"
     conflicts: Literal["abort", "replace"] = "abort"
+    undeclared: Literal["keep", "remove"] = "keep"
 
 
 class GitPackageSourceModel(BaseModel):

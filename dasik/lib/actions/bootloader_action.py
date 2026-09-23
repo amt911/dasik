@@ -21,6 +21,8 @@ _DOMAIN = "bootloader"
 _SDBOOT = "sd-boot"
 _GRUB = "grub"
 _SDBOOT_MARKER = "/boot/EFI/systemd/systemd-bootx64.efi"
+# What a GRUB install puts on the machine, explicitly.
+_GRUB_PACKAGES = ("grub", "efibootmgr")
 _GRUB_MARKER = "/boot/grub/grub.cfg"
 _MARKERS = {_SDBOOT: _SDBOOT_MARKER, _GRUB: _GRUB_MARKER}
 _FALLBACK_ENTRY = "/boot/loader/entries/arch-fallback.conf"
@@ -51,6 +53,14 @@ class BootloaderAction(AbstractAction):
         self._cfg = cfg
         self.bootloader: str = cfg.get("bootloader", "grub")
         self.enable_microcode: bool = cfg.get("enable_microcode", False)
+
+    @staticmethod
+    def implied_packages(config: Dict[str, Any]) -> set:
+        """What the GRUB install puts on the machine, which no config lists.
+        `bootloader` defaults to grub, so an absent key is grub too."""
+        if config.get("bootloader", _GRUB) == _GRUB:
+            return set(_GRUB_PACKAGES)
+        return set()
 
     @property
     def name(self) -> str:
@@ -474,7 +484,7 @@ class BootloaderAction(AbstractAction):
                 f.write("\n".join(lines) + "\n")
             self._write_fallback_entry()
         else:
-            Command.execute("pacman", ["--noconfirm", "--needed", "-S", "grub", "efibootmgr"],
+            Command.execute("pacman", ["--noconfirm", "--needed", "-S", *_GRUB_PACKAGES],
                             target=t, check=True)
             Command.execute("grub-install", [
                 "--target=x86_64-efi", "--efi-directory=/boot", "--bootloader-id=GRUB",

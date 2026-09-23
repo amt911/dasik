@@ -31,6 +31,7 @@ from typing import Any, Dict, List
 from .abstract_action import AbstractAction
 from .package_resolver import (
     AurUnavailableError,
+    BUILD_PREREQUISITES,
     PackageResolution,
     PackageResolver,
 )
@@ -82,12 +83,18 @@ class PackagesAction(AbstractAction):
             self.unknown_policy: str = policy.get("unknown", "warn-and-skip")
             self.build_failure_policy: str = policy.get("build_failure", "abort")
             self.conflicts_policy: str = policy.get("conflicts", "abort")
+            self.undeclared_policy: str = policy.get("undeclared", "keep")
+            # What OTHER actions install outside the `packages` list (pacstrap,
+            # GRUB, …): the `undeclared: remove` policy must never plan those.
+            self._implied: set[str] = self._implied_by(config)
         else:
             raw = config if isinstance(config, list) else []
             self.package_sources = {}
             self.unknown_policy = "warn-and-skip"
             self.build_failure_policy = "abort"
             self.conflicts_policy = "abort"
+            self.undeclared_policy = "keep"
+            self._implied = set()
         self._original = raw
         self._resolver = PackageResolver()
         # Names dropped by warn-and-skip during apply() (confirmed to exist in no
@@ -150,6 +157,37 @@ class PackagesAction(AbstractAction):
                 self.pacman_pkgs.append(bare)
                 self._reason[bare] = reason
 
+    @staticmethod
+    def _implied_by(config: Dict[str, Any]) -> set[str]:
+        """Packages dasik installs explicitly WITHOUT the `packages` list.
+
+        Each owner answers for itself, so this cannot drift from what it
+        actually installs. The AUR build prerequisites are always in: which
+        declared name comes from the AUR is only known at apply time.
+        """
+        from .base_install_action import BaseInstallAction
+        from .bootloader_action import BootloaderAction
+        from .ms_fonts_action import MicrosoftFontsAction
+        return (BaseInstallAction.implied_packages(config)
+                | BootloaderAction.implied_packages(config)
+                | MicrosoftFontsAction.implied_packages(config)
+                | set(BUILD_PREREQUISITES))
+
+    def _undeclared(self, explicit_raw: set, installed: set,
+                    covered: set) -> set:
+        """Explicit packages the config does not account for at all.
+
+        Only under ``package_policy.undeclared: remove``. Left out: declared
+        names, members of a declared group, what other actions install
+        (``_implied``), and a makepkg ``-debug`` by-product — never declared,
+        and it goes with its package.
+        """
+        if self.undeclared_policy != "remove":
+            return set()
+        return {name for name in explicit_raw - set(self.desired) - covered
+                - self._implied
+                if not self._is_debug_by_product(name, installed)}
+
     @classmethod
     def empty_config(cls) -> Any:
         """Dict shape now that the action reads root config; ``__init__`` reads
@@ -189,7 +227,8 @@ class PackagesAction(AbstractAction):
 
     def _ensure_aur_prerequisites(self) -> None:
         """Install base-devel, git and create a temp build user."""
-        Command.execute("pacman", ["--noconfirm", "--needed", "-S", "base-devel", "git"], run_as_chroot=True)
+        Command.execute("pacman", ["--noconfirm", "--needed", "-S", *BUILD_PREREQUISITES],
+                        run_as_chroot=True)
 
         # Create build user if it does not exist
         result = subprocess.run(
@@ -603,6 +642,13 @@ class PackagesAction(AbstractAction):
         for name in desired:
             covered |= groups.get(name, set())
         removals = sorted(owned_not_declared - covered)
+        # `pacman -Qqe` is read at most once per plan: here for the policy,
+        # further down for the install reason.
+        explicit_raw = (self._explicit_raw()
+                        if self._reason or self.undeclared_policy == "remove"
+                        else set())
+        foreign = self._undeclared(explicit_raw, installed, covered) - set(managed)
+        removals = sorted(set(removals) | foreign)
 
         changes: list = []
         candidates = sorted(n for n in desired if n not in installed)
@@ -626,7 +672,6 @@ class PackagesAction(AbstractAction):
         # Probed only when some package actually declares a reason — a config
         # without one must not pay for a `pacman -Qqe`, and on a machine that
         # has no pacman at all (CI) the query would raise.
-        explicit_raw = self._explicit_raw() if self._reason else set()
         for name in sorted(self._reason):
             if name in installed:
                 current = "explicit" if name in explicit_raw else "dep"
@@ -643,8 +688,10 @@ class PackagesAction(AbstractAction):
                                       reason=self._REF_CHANGED))
         expanded = self._expand_group_removals(removals, groups, installed)
         for name in self._removable(expanded, installed):
-            changes.append(Change(self._PACMAN_DOMAIN, Op.REMOVE, name,
-                                  reason="no longer declared"))
+            changes.append(Change(
+                self._PACMAN_DOMAIN, Op.REMOVE, name,
+                reason=("not declared (package_policy.undeclared: remove)"
+                        if name in foreign else "no longer declared")))
         self._announce(
             self._metadata_conflicts([c.item for c in changes
                                       if c.op is Op.INSTALL]),

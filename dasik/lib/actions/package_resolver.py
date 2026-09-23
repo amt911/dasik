@@ -33,6 +33,10 @@ from ..exceptions.exceptions import ConfigValidationError
 # Same grammar PackagesAction enforces (pacman.conf(5)/PKGBUILD(5)); rejecting a
 # leading '-' or any shell metacharacter keeps an untrusted name out of both
 # pacman's argv and the AUR query URL.
+# What every AUR or PKGBUILD build installs first. One tuple, because the
+# `undeclared` package policy must never plan removing what a build needs.
+BUILD_PREREQUISITES = ("base-devel", "git")
+
 _VALID_PKG_NAME = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9@._+-]*")
 
 _AUR_RPC_INFO_URL = "https://aur.archlinux.org/rpc/v5/info"

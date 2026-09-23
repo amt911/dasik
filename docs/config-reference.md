@@ -102,7 +102,7 @@ written into those directories instead of inlined
 | `hostname` | string | `/etc/hostname` |
 | `users` | list | User accounts + groups + shell |
 | `packages` | list | pacman + AUR + Git-source packages (real names) |
-| `package_policy` | object | Unknown packages (`unknown`: `warn-and-skip` \| `error`), install/build failures (`build_failure`: `abort` \| `warn-and-continue`) and an installed package that blocks a declared one (`conflicts`: `abort` \| `replace`) |
+| `package_policy` | object | Unknown packages (`unknown`: `warn-and-skip` \| `error`), install/build failures (`build_failure`: `abort` \| `warn-and-continue`), an installed package that blocks a declared one (`conflicts`: `abort` \| `replace`) and hand-installed packages the config does not list (`undeclared`: `keep` \| `remove`) |
 | `luks_token_policy` | object | What an apply does when a TPM2/FIDO2 enrolment fails with no terminal to ask on (`enroll_failure`: `abort` \| `warn-and-continue`) |
 | `package_sources` | object | Git PKGBUILD source per package (outside repo/AUR) |
 | `drivers` | list | GPU driver selection |
@@ -733,7 +733,7 @@ that reports the keyslot it could not enrol.
 
 ### `package_policy`
 
-`{"unknown": "warn-and-skip" | "error", "build_failure": "abort" | "warn-and-continue", "conflicts": "abort" | "replace"}`
+`{"unknown": "warn-and-skip" | "error", "build_failure": "abort" | "warn-and-continue", "conflicts": "abort" | "replace", "undeclared": "keep" | "remove"}`
 
 `unknown` — how to treat a declared package that resolves to no known source.
 `warn-and-skip` (default) skips it with a warning and continues; `error` aborts
@@ -769,6 +769,17 @@ on — but only when it is **undeclared** (deleting half of what the config asks
 for is your decision, not dasik's; declaring both sides is reported and
 refused) and **required by no installed package** (`pacman -Rns` would refuse
 the transaction anyway).
+
+`undeclared` — how to treat an explicitly-installed package (`pacman -Qqe`)
+the config does not account for, typically one installed by hand. `keep`
+(default) leaves it alone: dasik removes only what its manifest owns. `remove`
+makes `plan` propose removing it, and `apply` removes it. Never proposed: a
+declared package, a member of a declared group, a `makepkg` `-debug`
+by-product, a package another installed package requires, and what dasik
+installs outside `packages` (`base`, `linux`, `linux-firmware`, the declared
+initramfs generator, microcode with `enable_microcode`, `grub`/`efibootmgr`
+with GRUB, `base-devel`/`git`, `7zip` with `microsoft_fonts`). To keep a
+package, declare it or let `dasik sync` capture it.
 
 ### `package_sources`  *(sync ✓ — preserved)*
 

@@ -6,14 +6,18 @@ leaves its images behind. They pile up on the ESP until an image build fails
 for lack of space. Measured on a real machine: four of them, ~560 MB of a
 1 GiB ESP, and the next `dracut --force` could not fit its temporary copy.
 
-An image is kept when an installed kernel owns it — initramfs-<pkgbase>.img or
-initramfs-<pkgbase>-fallback.img, the names the entries use — or when any boot
-entry references it. Everything else named initramfs-*.img is planned as a
-REMOVE, so the deletion is always announced by `plan` first.
+Only KVER-named images are candidates — initramfs-<kver>.img and its -fallback,
+kver starting with a digit, which is what those commands write. A pkgbase-named
+image with no kernel may be a hand-kept backup loaded from a config dasik cannot
+see, and dracut-remove.hook already deletes a removed kernel's own images, so
+those are never touched. A candidate is kept when any boot entry or grub .cfg
+references it, or when its kver is installed WITHOUT Arch's pkgbase file (a
+hand-built kernel whose kver image may be the only one it has). Everything else
+is planned as a REMOVE, so the deletion is always announced by `plan` first.
 
 Driven by the machine, not by the config: there is no block to declare and
 nothing for `sync` to capture. Without a single installed kernel the action
-plans nothing at all, because then every image would look orphaned.
+plans nothing at all.
 """
 from __future__ import annotations
 
@@ -23,18 +27,19 @@ import re
 from typing import Any, List, Set
 
 from .abstract_action import AbstractAction
-from .initramfs.base import image_path, installed_kernels
+from .initramfs.base import installed_kernels
 from ..state.change import Change, Op
 
 _DOMAIN = "initramfs_orphans"
 _BOOT = "/boot"
 _ENTRIES = "/boot/loader/entries/*.conf"
-_GRUB_CFG = "/boot/grub/grub.cfg"
+_GRUB_CFGS = "/boot/grub/*.cfg"
 _IMAGE = re.compile(r"initramfs-[^\s/]+\.img")
+_KVER_IMAGE = re.compile(r"initramfs-(\d[^\s/]*?)(?:-fallback)?\.img")
 
 
 class InitramfsOrphansAction(AbstractAction):
-    """Remove initramfs images no installed kernel owns and no entry loads."""
+    """Remove kver-named initramfs images no boot entry loads."""
 
     _DOMAIN = _DOMAIN
 
@@ -61,18 +66,18 @@ class InitramfsOrphansAction(AbstractAction):
 
     # --- state --------------------------------------------------------- #
 
-    def _owned(self) -> Set[str]:
-        """Images an installed kernel owns — empty when there is no kernel."""
-        owned: Set[str] = set()
-        for _kver, pkgbase in installed_kernels(self._p("/usr/lib/modules")):
-            owned.add(os.path.basename(image_path(pkgbase)))
-            owned.add(os.path.basename(image_path(pkgbase, fallback=True)))
-        return owned
+    def _modules(self) -> str:
+        return self._p("/usr/lib/modules")
+
+    def _hand_built(self, kver: str) -> bool:
+        """An installed kver with no pkgbase: a kernel outside Arch packaging."""
+        root = os.path.join(self._modules(), kver)
+        return os.path.isdir(root) and not os.path.exists(os.path.join(root, "pkgbase"))
 
     def _referenced(self) -> Set[str]:
         """Every initramfs image a systemd-boot entry or grub.cfg names."""
         found: Set[str] = set()
-        for path in glob.glob(self._p(_ENTRIES)) + [self._p(_GRUB_CFG)]:
+        for path in glob.glob(self._p(_ENTRIES)) + glob.glob(self._p(_GRUB_CFGS)):
             try:
                 with open(path, "r", encoding="utf-8", errors="replace") as f:
                     found.update(_IMAGE.findall(f.read()))
@@ -95,20 +100,25 @@ class InitramfsOrphansAction(AbstractAction):
     # --- v3 contract --------------------------------------------------- #
 
     def plan(self, managed: Any) -> List[Change]:
-        owned = self._owned()
-        if not owned:
+        if not installed_kernels(self._modules()):
             return []
-        orphans = self.actual() - owned - self._referenced()
+        referenced = self._referenced()
+        orphans = []
+        for name in sorted(self.actual()):
+            m = _KVER_IMAGE.fullmatch(name)
+            if not m or name in referenced or self._hand_built(m.group(1)):
+                continue
+            orphans.append(name)
         return [Change(self._DOMAIN, Op.REMOVE, name,
-                       reason="no installed kernel owns it and no boot entry loads it")
-                for name in sorted(orphans)]
+                       reason="named by kver: no boot entry loads it")
+                for name in orphans]
 
     def apply(self, changes) -> None:
         for change in changes:
             if change.op is not Op.REMOVE:
                 continue
             name = os.path.basename(str(change.item))
-            if not _IMAGE.fullmatch(name):   # never delete anything else
+            if not _KVER_IMAGE.fullmatch(name):   # never delete anything else
                 continue
             try:
                 os.remove(os.path.join(self._p(_BOOT), name))

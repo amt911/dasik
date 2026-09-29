@@ -827,7 +827,7 @@ On `sd-boot` dasik writes **two** entries: `arch.conf` (the `default`) and
 with dracut, the generic image dasik builds (and keeps rebuilt through its own
 pacman hook); with mkinitcpio, the preset's fallback when it made one and the
 main image otherwise. Every `kernel_cmdline` parameter is written to both.
-Initramfs images nothing boots (kver-named ones, a removed kernel's) are pruned
+Kver-named initramfs images no entry loads (what `dracut --regenerate-all` writes) are pruned
 by the `initramfs_orphans` domain — see the Boot wiki page. It also
 enables systemd's own `systemd-boot-update.service`, which keeps the loader on
 the ESP up to date.

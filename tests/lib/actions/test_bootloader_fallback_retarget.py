@@ -80,3 +80,10 @@ def test_an_entry_without_an_initramfs_line_is_not_touched(tmp_path):
     entries.mkdir(parents=True)
     (entries / "arch-fallback.conf").write_text("hand-edited\n")
     assert _action(tmp_path).plan(managed=[]) == []
+
+
+def test_mkinitcpio_entry_on_a_missing_fallback_is_not_rewritten(tmp_path):
+    """Retargeting is dracut's: under mkinitcpio the preset owns the images, and
+    a fallback momentarily missing mid-transaction must not flip the entry."""
+    _esp(tmp_path, "/initramfs-linux-fallback.img")
+    assert _action(tmp_path, generator="mkinitcpio").plan(managed=[]) == []

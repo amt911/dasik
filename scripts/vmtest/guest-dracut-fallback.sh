@@ -89,23 +89,25 @@ present "$ENTRY" '^initrd /initramfs-linux-fallback.img$'; rc FB-D-RETARGETED
 [ "$(grep '^options' "$ENTRY")" = "$opts_before" ]; rc FB-D-OPTIONS-KEPT
 quiet_plan "$C" /tmp/pD2.txt; rc FB-D-PLAN-QUIET
 
-echo "FB-E: orphans are pruned, a referenced image is kept"
+echo "FB-E: kver-named orphans are pruned; referenced and pkgbase-named images are kept"
 cp "$MAIN" "/boot/initramfs-$(uname -r).img"          # what --regenerate-all writes
 cp "$MAIN" /boot/initramfs-6.0.0-gone.img             # a removed kernel's
-cp "$MAIN" /boot/initramfs-custom.img
-printf 'title custom\nlinux /vmlinuz-linux\ninitrd /initramfs-custom.img\noptions rw\n' \
+cp "$MAIN" /boot/initramfs-5.0.0-kept.img
+cp "$MAIN" /boot/initramfs-linux-known-good.img
+printf 'title custom\nlinux /vmlinuz-linux\ninitrd /initramfs-5.0.0-kept.img\noptions rw\n' \
     > /boot/loader/entries/zz-custom.conf
 $D plan "$C" --target / $L > /tmp/pE.txt 2>&1
 present /tmp/pE.txt "initramfs-$(uname -r).img"; rc FB-E-PLANNED-KVER
 present /tmp/pE.txt 'initramfs-6.0.0-gone.img'; rc FB-E-PLANNED-GONE
-absent /tmp/pE.txt 'initramfs-custom.img'; rc FB-E-REFERENCED-NOT-PLANNED
+absent /tmp/pE.txt 'initramfs-5.0.0-kept.img'; rc FB-E-REFERENCED-NOT-PLANNED
+absent /tmp/pE.txt 'known-good'; rc FB-E-PKGBASE-NOT-PLANNED
 $D apply "$C" --target / --yes $L > /tmp/aE.txt 2>&1; rc FB-E-APPLY
 test ! -e "/boot/initramfs-$(uname -r).img"; rc FB-E-KVER-GONE
 test ! -e /boot/initramfs-6.0.0-gone.img; rc FB-E-GONE-GONE
-test -f /boot/initramfs-custom.img; rc FB-E-CUSTOM-KEPT
+test -f /boot/initramfs-5.0.0-kept.img && test -f /boot/initramfs-linux-known-good.img; rc FB-E-KEPT
 test -f "$MAIN" && test -f "$FB"; rc FB-E-OWN-IMAGES-KEPT
 quiet_plan "$C" /tmp/pE2.txt; rc FB-E-PLAN-QUIET
-rm -f /boot/initramfs-custom.img /boot/loader/entries/zz-custom.conf
+rm -f /boot/initramfs-5.0.0-kept.img /boot/initramfs-linux-known-good.img /boot/loader/entries/zz-custom.conf
 
 echo "FB-F: a conf an older dasik wrote (no uhid) is planned and rebuilt"
 sed -i '/add_drivers/d' /etc/dracut.conf.d/dasik.conf

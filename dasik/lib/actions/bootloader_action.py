@@ -239,7 +239,9 @@ class BootloaderAction(AbstractAction):
         if self._is_sdboot() and _FALLBACK_ITEM not in have:
             changes.append(Change(self._DOMAIN, Op.INSTALL, _FALLBACK_ITEM,
                                   reason="rescue boot entry"))
-        elif self._is_sdboot():
+        elif self._is_sdboot() and self._cfg.get("initramfs") == "dracut":
+            # Only dracut's name is declared; under mkinitcpio the preset owns
+            # the images and a fallback missing mid-transaction must not flip it.
             loads = self._fallback_entry_image()
             if loads is not None and loads != self._fallback_initrd():
                 changes.append(Change(

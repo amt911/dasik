@@ -5,6 +5,7 @@ import os
 from typing import List, Optional
 from .base import InitramfsBackend, image_path, installed_kernels
 from ...command_worker.command_worker import Command
+from ...expand.toggles import FALLBACK_DRACUT_FLAGS
 from ...exceptions.exceptions import CommandExecutionError
 from ..luks_uuid import luks_uuid
 from ..partition_utils import keydev_spec, mounts_root
@@ -367,8 +368,7 @@ class DracutBackend(InitramfsBackend):
         # to stand in for.
         for kver, pkgbase in kernels:
             for args in (["--force", "--fstab", image_path(pkgbase), kver],
-                         ["--force", "--no-hostonly", "--fstab",
-                          image_path(pkgbase, fallback=True), kver]):
+                         [*FALLBACK_DRACUT_FLAGS, image_path(pkgbase, fallback=True), kver]):
                 if self.target is not None:
                     Command.execute("dracut", args, target=self.target, check=True)
                 else:

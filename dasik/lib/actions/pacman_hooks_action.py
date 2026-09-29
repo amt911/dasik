@@ -97,8 +97,9 @@ class PacmanHooksAction(AbstractAction):
         changes: List[Change] = []
         for name, content in desired.items():
             if self._read(name) != content:
-                changes.append(Change(self._DOMAIN, Op.MODIFY, name,
-                                      reason="mkinitcpio neutralizer"))
+                reason = ("mkinitcpio neutralizer" if name in MKINITCPIO_HOOKS
+                          else "dracut fallback image")
+                changes.append(Change(self._DOMAIN, Op.MODIFY, name, reason=reason))
         # Only dasik's own hooks are removable — a same-named hook someone else
         # wrote is left untouched.
         for name in self.actual() - set(desired):

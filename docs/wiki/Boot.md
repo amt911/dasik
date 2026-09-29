@@ -159,18 +159,22 @@ systemd, firmware, cryptsetup, lvm, DKMS), for every installed kernel.
 ### Orphaned images
 
 `dracut --regenerate-all` and a bare `dracut -f` write `initramfs-<kver>.img`,
-which no entry loads, and a removed kernel can leave its images behind. They
-fill the ESP until the next build cannot fit its temporary copy. The
-`initramfs_orphans` domain plans a removal for every `initramfs-*.img` that no
-installed kernel owns (by the `<pkgbase>` names above) and that no systemd-boot
-entry or `grub.cfg` references:
+which no entry loads, and they pile up (one per kernel you ever ran that way)
+until the next build cannot fit its temporary copy on the ESP. The
+`initramfs_orphans` domain plans a removal for every **kver-named** image —
+`initramfs-<kver>.img` or its `-fallback`, kver starting with a digit — that no
+systemd-boot entry or `/boot/grub/*.cfg` references:
 
 ```text
-- [initramfs_orphans] remove initramfs-6.19.14-arch1-1.img  (no installed kernel owns it and no boot entry loads it)
+- [initramfs_orphans] remove initramfs-6.19.14-arch1-1.img  (named by kver: no boot entry loads it)
 ```
 
-It needs no config and captures nothing on `sync`. Without a single installed
-kernel it plans nothing — every image would look orphaned. To rebuild an image by
+Never touched: pkgbase-named images (`initramfs-linux-known-good.img` may be a
+backup loaded from somewhere dasik cannot see; a removed kernel's own images are
+deleted by dracut's remove hook), and the kver image of a kernel installed
+without Arch's `pkgbase` file (hand-built — it may be the only image it has). It
+needs no config, captures nothing on `sync`, and plans nothing on a target with
+no installed kernel. To rebuild an image by
 hand, name it: `dracut --force /boot/initramfs-linux.img --kver <kver>`.
 
 ### The mkinitcpio neutralizer (why `pacman_hooks` runs first)

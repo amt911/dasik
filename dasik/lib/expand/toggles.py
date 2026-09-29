@@ -302,6 +302,11 @@ FALLBACK_HOOK_MARKER = "# dasik-dracut-fallback"
 DRACUT_FALLBACK_HOOKS = ["91-dasik-dracut-fallback.hook",
                          "60-dasik-dracut-fallback-remove.hook"]
 
+# How the fallback is built — by DracutBackend.apply and by the hook alike, so a
+# kernel upgrade never changes what the image carries behind a plan that only
+# compares mtimes. The image and kver follow as positional arguments.
+FALLBACK_DRACUT_FLAGS = ["--force", "--no-hostonly", "--fstab"]
+
 # One Exec argument for alpm's shell-like word splitting: single-quoted, so the
 # script may use double quotes and $ freely. Every installed kernel is rebuilt on
 # every trigger — dracut, systemd or firmware updates change what the image
@@ -311,7 +316,7 @@ _FALLBACK_BUILD = (
     "for f in /usr/lib/modules/*/pkgbase; do "
     "[ -r \"$f\" ] || continue; "
     "k=\"${f#/usr/lib/modules/}\"; k=\"${k%/pkgbase}\"; read -r p < \"$f\"; "
-    "dracut --force --no-hostonly -L 3 \"/boot/initramfs-$p-fallback.img\" --kver \"$k\" "
+    f"dracut {' '.join(FALLBACK_DRACUT_FLAGS)} \"/boot/initramfs-$p-fallback.img\" \"$k\" "
     "|| echo \"dasik: could not build the fallback initramfs for $p\" >&2; "
     "done"
 )

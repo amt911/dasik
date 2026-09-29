@@ -62,12 +62,34 @@ def test_every_installed_kernel_keeps_both_its_images(tmp_path):
     assert _plan(tmp_path)[1] == []
 
 
-def test_the_fallback_of_a_removed_kernel_is_planned(tmp_path):
+def test_images_named_by_anything_but_a_kver_are_never_candidates(tmp_path):
+    """A pkgbase-named image with no installed kernel may be a hand-kept backup
+    (initramfs-linux-known-good.img) loaded from a config dasik cannot see;
+    dracut-remove.hook already deletes a removed kernel's own images. Only the
+    kver-named ones — what --regenerate-all writes — are dasik's to prune."""
     _kernel(tmp_path, "7.2.7-arch1-1", "linux")
-    _images(tmp_path, "initramfs-linux.img",
+    _images(tmp_path, "initramfs-linux.img", "initramfs-linux-known-good.img",
             "initramfs-linux-zen.img", "initramfs-linux-zen-fallback.img")
-    assert sorted(c.item for c in _plan(tmp_path)[1]) == [
-        "initramfs-linux-zen-fallback.img", "initramfs-linux-zen.img"]
+    assert _plan(tmp_path)[1] == []
+
+
+def test_the_kver_image_of_a_kernel_without_pkgbase_is_kept(tmp_path):
+    """A hand-built kernel installs modules without Arch's pkgbase file; its
+    kver-named image may be the only one it has."""
+    _kernel(tmp_path, "7.2.7-arch1-1", "linux")
+    (tmp_path / "usr/lib/modules/6.18.0-custom").mkdir(parents=True)
+    _images(tmp_path, "initramfs-linux.img", "initramfs-6.18.0-custom.img",
+            "initramfs-6.18.0-custom-fallback.img", "initramfs-6.1.0-gone-fallback.img")
+    assert [c.item for c in _plan(tmp_path)[1]] == ["initramfs-6.1.0-gone-fallback.img"]
+
+
+def test_an_image_any_grub_cfg_loads_is_kept(tmp_path):
+    _kernel(tmp_path, "7.2.7-arch1-1", "linux")
+    _images(tmp_path, "initramfs-linux.img", "initramfs-6.1.0-old.img")
+    grub = tmp_path / "boot/grub"
+    grub.mkdir(parents=True)
+    (grub / "custom.cfg").write_text("initrd /initramfs-6.1.0-old.img\n")
+    assert _plan(tmp_path)[1] == []
 
 
 def test_an_image_a_systemd_boot_entry_loads_is_kept(tmp_path):

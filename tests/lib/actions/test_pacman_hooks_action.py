@@ -115,6 +115,23 @@ def test_fallback_hook_builds_a_generic_image_per_kernel(tmp_path):
     assert "/usr/lib/modules/*/pkgbase" in exec_line
 
 
+def test_fallback_hook_and_apply_build_the_same_image(tmp_path):
+    """One source for the flags: a hook that built the image differently from
+    apply would change its contents on the first kernel upgrade, unseen by a
+    plan that compares mtimes only."""
+    from dasik.lib.expand.toggles import FALLBACK_DRACUT_FLAGS
+    body = _written(tmp_path, "91-dasik-dracut-fallback.hook")
+    assert f"dracut {' '.join(FALLBACK_DRACUT_FLAGS)} " in body
+    assert FALLBACK_DRACUT_FLAGS == ["--force", "--no-hostonly", "--fstab"]
+
+
+def test_fallback_hooks_are_planned_with_their_own_reason(tmp_path):
+    a = _a({"initramfs": "dracut"}, tmp_path)
+    reasons = {c.item: c.reason for c in a.plan(managed=[])}
+    for name in DRACUT_FALLBACK_HOOKS:
+        assert "neutralizer" not in reasons[name], reasons[name]
+
+
 def test_remove_hook_deletes_the_fallback_of_a_removed_kernel(tmp_path):
     body = _written(tmp_path, "60-dasik-dracut-fallback-remove.hook")
     assert "Operation = Remove" in body and "When = PreTransaction" in body

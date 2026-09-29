@@ -107,6 +107,13 @@ class DracutBackend(InitramfsBackend):
             lines.append(f'force_add_dracutmodules+=" {" ".join(force_mods)} "')
         if add_mods:
             lines.append(f'add_dracutmodules+=" {" ".join(add_mods)} "')
+        if self.bluetooth_in_initramfs:
+            # bluez creates the keyboard through /dev/uhid (UserspaceHID=true is
+            # its default, classic and BLE alike) and 70bluetooth installs only
+            # hidp. Without uhid the prompt logs "input-hog profile accept
+            # failed": the keyboard connects and never types. hid-generic is
+            # built into Arch's kernel, so uhid is the only missing piece.
+            lines.append('add_drivers+=" uhid "')
         for fs in self.keydev_filesystems:
             # The key device's filesystem: hostonly detection sees the root's
             # filesystems, never the pendrive the keyfile lives on, so the

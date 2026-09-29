@@ -293,6 +293,87 @@ def _neutralizer_hook(name: str) -> str:
     )
 
 
+# dracut's own 90-dracut-install.hook rebuilds only initramfs-<pkgbase>.img; the
+# generic fallback dasik builds next to it would go stale on the first kernel
+# upgrade. These two keep it in step: 91- sorts after dracut's hook (so the
+# kernel is already in /boot), 60- deletes a removed kernel's fallback the way
+# 60-dracut-remove.hook deletes its main image.
+FALLBACK_HOOK_MARKER = "# dasik-dracut-fallback"
+DRACUT_FALLBACK_HOOKS = ["91-dasik-dracut-fallback.hook",
+                         "60-dasik-dracut-fallback-remove.hook"]
+
+# One Exec argument for alpm's shell-like word splitting: single-quoted, so the
+# script may use double quotes and $ freely. Every installed kernel is rebuilt on
+# every trigger — dracut, systemd or firmware updates change what the image
+# carries even when the kernel did not move.
+_FALLBACK_BUILD = (
+    "[ -n \"$KERNEL_INSTALL_INITRD_GENERATOR\" ] && exit 0; "
+    "for f in /usr/lib/modules/*/pkgbase; do "
+    "[ -r \"$f\" ] || continue; "
+    "k=\"${f#/usr/lib/modules/}\"; k=\"${k%/pkgbase}\"; read -r p < \"$f\"; "
+    "dracut --force --no-hostonly -L 3 \"/boot/initramfs-$p-fallback.img\" --kver \"$k\" "
+    "|| echo \"dasik: could not build the fallback initramfs for $p\" >&2; "
+    "done"
+)
+_FALLBACK_REMOVE = (
+    "while read -r l; do case \"$l\" in usr/lib/modules/*/pkgbase) "
+    "read -r p < \"/$l\"; rm -f \"/boot/initramfs-$p-fallback.img\";; "
+    "esac; done"
+)
+
+
+def _fallback_hook(name: str) -> str:
+    header = (
+        f"{FALLBACK_HOOK_MARKER}\n"
+        "# Managed by dasik: keeps the generic fallback initramfs (the rescue\n"
+        "# boot entry's image) in step with the kernel.\n"
+    )
+    if name == DRACUT_FALLBACK_HOOKS[0]:
+        return header + (
+            "[Trigger]\n"
+            "Type = Path\n"
+            "Operation = Install\n"
+            "Operation = Upgrade\n"
+            "Operation = Remove\n"
+            "Target = usr/lib/dracut/*\n"
+            "Target = usr/lib/firmware/*\n"
+            "Target = usr/src/*/dkms.conf\n"
+            "Target = usr/lib/systemd/systemd\n"
+            "Target = usr/bin/cryptsetup\n"
+            "Target = usr/bin/lvm\n"
+            "\n"
+            "[Trigger]\n"
+            "Type = Path\n"
+            "Operation = Install\n"
+            "Operation = Upgrade\n"
+            "Target = usr/lib/modules/*/vmlinuz\n"
+            "Target = usr/lib/modules/*/pkgbase\n"
+            "\n"
+            "[Trigger]\n"
+            "Type = Package\n"
+            "Operation = Install\n"
+            "Operation = Upgrade\n"
+            "Target = dracut\n"
+            "\n"
+            "[Action]\n"
+            "Description = Updating fallback initramfs with dracut (dasik)\n"
+            "When = PostTransaction\n"
+            f"Exec = /usr/bin/bash -c '{_FALLBACK_BUILD}'\n"
+        )
+    return header + (
+        "[Trigger]\n"
+        "Type = Path\n"
+        "Operation = Remove\n"
+        "Target = usr/lib/modules/*/pkgbase\n"
+        "\n"
+        "[Action]\n"
+        "Description = Removing fallback initramfs (dasik)\n"
+        "When = PreTransaction\n"
+        f"Exec = /usr/bin/bash -c '{_FALLBACK_REMOVE}'\n"
+        "NeedsTargets\n"
+    )
+
+
 def expand_initramfs(config: Dict[str, Any]) -> Dict[str, Any]:
     """When the initramfs generator is dracut, install the dracut package.
 

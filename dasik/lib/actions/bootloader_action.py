@@ -239,6 +239,12 @@ class BootloaderAction(AbstractAction):
         if self._is_sdboot() and _FALLBACK_ITEM not in have:
             changes.append(Change(self._DOMAIN, Op.INSTALL, _FALLBACK_ITEM,
                                   reason="rescue boot entry"))
+        elif self._is_sdboot():
+            loads = self._fallback_entry_image()
+            if loads is not None and loads != self._fallback_initrd():
+                changes.append(Change(
+                    self._DOMAIN, Op.MODIFY, _FALLBACK_ITEM,
+                    reason=f"rescue entry loads {loads}, not {self._fallback_initrd()}"))
         # One entry per extra kernel: an image with nothing pointing at it is a
         # kernel you cannot boot, and the plan used to say the machine matched.
         if self._is_sdboot():
@@ -276,9 +282,11 @@ class BootloaderAction(AbstractAction):
                 self._uninstall(stale)
         if self._desired() in items:
             self._install()                 # writes both entries for sd-boot
-        if _FALLBACK_ITEM in items and self._is_sdboot() \
-                and not os.path.exists(self._p(_FALLBACK_ENTRY)):
-            self._write_fallback_entry()
+        if _FALLBACK_ITEM in items and self._is_sdboot():
+            if not os.path.exists(self._p(_FALLBACK_ENTRY)):
+                self._write_fallback_entry()
+            else:
+                self._retarget_fallback_entry()
         for change in changes:
             item = str(change.item)
             if not item.startswith(self._ENTRY_PREFIX):
@@ -384,13 +392,48 @@ class BootloaderAction(AbstractAction):
                 if os.path.exists(self._p("/boot" + img))]
 
     def _fallback_initrd(self) -> str:
-        """mkinitcpio's fallback image when the ESP has one, else the same image
-        the main entry loads. dracut builds no fallback image, so there the entry
-        is a duplicate — still worth having: it survives an edit that breaks
-        arch.conf."""
+        """The image the rescue entry loads.
+
+        Under dracut it is DECLARED: InitramfsAction builds the generic
+        fallback in the same apply, before this action runs, so looking at the
+        ESP would name it one run late. mkinitcpio keeps deciding from the ESP
+        — its fallback when the preset made one, else the main image (still
+        worth an entry: it survives an edit that breaks arch.conf)."""
+        if self._cfg.get("initramfs", "mkinitcpio") == "dracut":
+            return _FALLBACK_INITRD
         if os.path.exists(self._p("/boot" + _FALLBACK_INITRD)):
             return _FALLBACK_INITRD
         return _MAIN_INITRD
+
+    @staticmethod
+    def _is_initramfs_line(line: str) -> bool:
+        parts = line.split()
+        return len(parts) == 2 and parts[0] == "initrd" \
+            and parts[1].startswith("/initramfs-")
+
+    def _fallback_entry_image(self):
+        """The initramfs the existing rescue entry loads, or None when it has
+        no single such line (hand-written: not ours to reinterpret). Microcode
+        initrds are not initramfs lines and are left out."""
+        try:
+            with open(self._p(_FALLBACK_ENTRY), encoding="utf-8") as f:
+                images = [line.split()[1] for line in f if self._is_initramfs_line(line)]
+        except (OSError, AttributeError):
+            return None
+        return images[0] if len(images) == 1 else None
+
+    def _retarget_fallback_entry(self) -> None:
+        """Point the rescue entry at the right image, touching only that line:
+        its options are KernelCmdlineAction's, and rewriting the whole entry
+        would drop them until the next plan put them back."""
+        path = self._p(_FALLBACK_ENTRY)
+        with open(path, encoding="utf-8") as f:
+            lines = f.readlines()
+        wanted = self._fallback_initrd()
+        lines = [f"initrd {wanted}\n" if self._is_initramfs_line(line) else line
+                 for line in lines]
+        with open(path, "w", encoding="utf-8") as f:
+            f.writelines(lines)
 
     def _write_fallback_entry(self) -> None:
         path = self._p(_FALLBACK_ENTRY)

@@ -52,7 +52,7 @@ def test_writes_the_fallback_entry_using_the_fallback_image_when_present(tmp_pat
     assert "options root=LABEL=root rw" in entry
 
 
-def test_falls_back_to_the_main_image_when_dracut_built_no_fallback(tmp_path):
+def test_falls_back_to_the_main_image_when_mkinitcpio_built_no_fallback(tmp_path):
     _mark_installed(tmp_path)
     action = BootloaderAction(_sdboot_cfg(), _ctx(tmp_path))
 

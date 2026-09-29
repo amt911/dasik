@@ -15,7 +15,8 @@
 #
 # Phases: A install result, B pacman hook, C stale fallback, D rescue entry
 # retarget, E orphans, F uhid upgrade, G remove hook, H sync->check->plan,
-# I generations/rollback, J block removed, K restore + one-shot fallback boot.
+# I generations/rollback, J block removed, K restore + make the rescue entry
+# the default for the next boot.
 #
 # CONVENTION: every FB-<step>-RC=0 line is a PASS; FB-DONE rc=N counts failures.
 set -x
@@ -174,7 +175,11 @@ echo "FB-K: restore the declared config, then boot the rescue entry once"
 $D apply "$C" --target / --yes $L > /tmp/aK.txt 2>&1; rc FB-K-APPLY
 has_mod "$MAIN" uhid && has_mod "$FB" uhid; rc FB-K-UHID
 quiet_plan "$C" /tmp/pK.txt; rc FB-K-PLAN-QUIET
-bootctl set-oneshot arch-fallback.conf; rc FB-K-ONESHOT
+# Not `bootctl set-oneshot`: the harness hands every boot a fresh OVMF_VARS
+# copy, so an EFI variable never survives to the next boot. loader.conf lives
+# on the ESP inside the qcow2, and systemd-boot reads its `default` every boot.
+sed -i 's/^default .*/default arch-fallback.conf/' /boot/loader/loader.conf
+present /boot/loader/loader.conf '^default arch-fallback.conf$'; rc FB-K-DEFAULT-FALLBACK
 ls -la /boot
 
 echo "FB-DONE rc=$FAILS"

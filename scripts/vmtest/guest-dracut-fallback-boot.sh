@@ -1,6 +1,6 @@
 #!/bin/bash
-# Second boot of the vm-dracut-fallback image: guest-dracut-fallback.sh left a
-# one-shot pointing at arch-fallback.conf, so THIS boot went through the generic
+# Second boot of the vm-dracut-fallback image: guest-dracut-fallback.sh made
+# arch-fallback.conf the loader.conf default, so THIS boot went through the generic
 # (--no-hostonly) image. Reaching this shell at all proves it opened the LUKS
 # root; the checks pin down that it was really the rescue entry that did it.
 #

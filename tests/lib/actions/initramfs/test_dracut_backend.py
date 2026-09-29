@@ -98,11 +98,12 @@ def test_apply_regenerates_named_image_for_each_target_kernel():
         a.apply()
     body = "".join(c.args[0] for c in m().write.call_args_list)
     assert "systemd" in body
-    assert run.call_args.args[0] == "dracut"
-    assert run.call_args.args[1] == [
+    first = run.call_args_list[0]
+    assert first.args[0] == "dracut"
+    assert first.args[1] == [
         "--force", "--fstab", "/boot/initramfs-linux.img", "6.12.1-arch1-1"]
-    assert run.call_args.kwargs["target"].root == "/"
-    assert run.call_args.kwargs.get("check") is True
+    assert first.kwargs["target"].root == "/"
+    assert first.kwargs.get("check") is True
 
 
 def test_apply_regenerates_for_every_kernel():
@@ -367,6 +368,7 @@ def _target_tree(tmp_path, *, kver="6.9.1-arch1-1", pkgbase="linux", image=True)
     (mods / "pkgbase").write_text(pkgbase + "\n")
     if image:
         (tmp_path / "boot" / f"initramfs-{pkgbase}.img").write_text("IMG")
+        (tmp_path / "boot" / f"initramfs-{pkgbase}-fallback.img").write_text("FB")
     return tmp_path
 
 

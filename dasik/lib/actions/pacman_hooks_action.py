@@ -1,9 +1,10 @@
 """Action: dasik-owned pacman hooks — written BEFORE the first pacman runs.
 
-Today that means the mkinitcpio neutralizers: when the declared initramfs
-generator is dracut, a same-named hook under ``/etc/pacman.d/hooks`` overrides
-mkinitcpio's own hooks in ``/usr/share/libalpm/hooks`` so only dracut ever
-regenerates the initramfs.
+Both belong to the dracut generator: the mkinitcpio neutralizers — a same-named
+hook under ``/etc/pacman.d/hooks`` overrides mkinitcpio's own in
+``/usr/share/libalpm/hooks`` so only dracut ever regenerates the initramfs — and
+the pair that keeps dasik's generic fallback image in step with the kernel,
+which dracut's own hook never rebuilds.
 
 Why a separate action instead of the `files` domain: ``expand_initramfs``
 contributed these hooks to ``files``, which ``DropFilesAction`` writes in phase 4
@@ -24,7 +25,10 @@ import os
 from typing import Any, Dict, List
 
 from .abstract_action import AbstractAction
-from ..expand.toggles import MKINITCPIO_HOOKS, NEUTRALIZER_MARKER, _neutralizer_hook
+from ..expand.toggles import (
+    DRACUT_FALLBACK_HOOKS, FALLBACK_HOOK_MARKER, MKINITCPIO_HOOKS, NEUTRALIZER_MARKER,
+    _fallback_hook, _neutralizer_hook,
+)
 from ..state.change import Change, Op
 
 _HOOKS_DIR = "/etc/pacman.d/hooks"
@@ -66,7 +70,9 @@ class PacmanHooksAction(AbstractAction):
         """hook name -> content. Empty unless dracut is the generator."""
         if self.generator != "dracut":
             return {}
-        return {name: _neutralizer_hook(name) for name in MKINITCPIO_HOOKS}
+        hooks = {name: _neutralizer_hook(name) for name in MKINITCPIO_HOOKS}
+        hooks.update({name: _fallback_hook(name) for name in DRACUT_FALLBACK_HOOKS})
+        return hooks
 
     def _read(self, name: str) -> "str | None":
         try:
@@ -78,16 +84,22 @@ class PacmanHooksAction(AbstractAction):
     # --- v3 contract --------------------------------------------------- #
 
     def actual(self) -> set:
-        return {name for name in MKINITCPIO_HOOKS
-                if NEUTRALIZER_MARKER in (self._read(name) or "")}
+        """The hooks on disk that carry dasik's marker — never a same-named file
+        someone else wrote."""
+        owned = {name for name in MKINITCPIO_HOOKS
+                 if NEUTRALIZER_MARKER in (self._read(name) or "")}
+        owned |= {name for name in DRACUT_FALLBACK_HOOKS
+                  if FALLBACK_HOOK_MARKER in (self._read(name) or "")}
+        return owned
 
     def plan(self, managed) -> List[Change]:
         desired = self._desired()
         changes: List[Change] = []
         for name, content in desired.items():
             if self._read(name) != content:
-                changes.append(Change(self._DOMAIN, Op.MODIFY, name,
-                                      reason="mkinitcpio neutralizer"))
+                reason = ("mkinitcpio neutralizer" if name in MKINITCPIO_HOOKS
+                          else "dracut fallback image")
+                changes.append(Change(self._DOMAIN, Op.MODIFY, name, reason=reason))
         # Only dasik's own hooks are removable — a same-named hook someone else
         # wrote is left untouched.
         for name in self.actual() - set(desired):

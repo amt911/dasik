@@ -1,5 +1,6 @@
 """Initramfs generator backend interface + shared disk-config detection."""
 from __future__ import annotations
+import os
 from typing import Any, Dict, Optional
 
 from ..partition_utils import mounts_root
@@ -158,6 +159,36 @@ def detect_plymouth_theme(cfg: Dict[str, Any]) -> Optional[str]:
 def detect_bluetooth_in_initramfs(cfg: Dict[str, Any]) -> bool:
     bt = cfg.get("bluetooth")
     return bool(isinstance(bt, dict) and bt.get("in_initramfs"))
+
+
+def image_path(pkgbase: str, fallback: bool = False) -> str:
+    """Where the bootloader entries look for a kernel's image: named by
+    pkgbase, never by kver (that is `--regenerate-all`'s naming, which no entry
+    references)."""
+    return f"/boot/initramfs-{pkgbase}{'-fallback' if fallback else ''}.img"
+
+
+def installed_kernels(modules_dir: str) -> "list[tuple[str, str]]":
+    """``(kver, pkgbase)`` for every kernel under a ``/usr/lib/modules`` dir.
+
+    ``pkgbase`` (an Arch convention: the file ``<modules>/<kver>/pkgbase``) is
+    the image basename the bootloader entries reference. A modules dir without
+    one is skipped — not a bootable Arch kernel. An unreadable dir is none."""
+    kernels: "list[tuple[str, str]]" = []
+    try:
+        names = sorted(os.listdir(modules_dir))
+    except OSError:
+        return kernels
+    for kver in names:
+        try:
+            with open(os.path.join(modules_dir, kver, "pkgbase"), "r",
+                      encoding="utf-8") as f:
+                pkgbase = f.read().strip()
+        except OSError:
+            continue
+        if pkgbase:
+            kernels.append((kver, pkgbase))
+    return kernels
 
 
 class InitramfsBackend:

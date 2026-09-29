@@ -823,9 +823,12 @@ protects reproducibility, but a PKGBUILD is still third-party code you must trus
 `string` — `grub` (default) or `sd-boot` (a.k.a. `systemd-boot`).
 
 On `sd-boot` dasik writes **two** entries: `arch.conf` (the `default`) and
-`arch-fallback.conf`, a rescue entry loading `initramfs-linux-fallback.img` when
-mkinitcpio built one and the same image as the main entry otherwise (dracut
-builds no fallback). Every `kernel_cmdline` parameter is written to both. It also
+`arch-fallback.conf`, a rescue entry loading `initramfs-linux-fallback.img`:
+with dracut, the generic image dasik builds (and keeps rebuilt through its own
+pacman hook); with mkinitcpio, the preset's fallback when it made one and the
+main image otherwise. Every `kernel_cmdline` parameter is written to both.
+Kver-named initramfs images no entry loads (what `dracut --regenerate-all` writes) are pruned
+by the `initramfs_orphans` domain — see the Boot wiki page. It also
 enables systemd's own `systemd-boot-update.service`, which keeps the loader on
 the ESP up to date.
 
@@ -1549,7 +1552,7 @@ stays a plain entry.
 | --- | --- | --- | --- |
 | `enable` | bool | `false` | Installs `bluez`/`bluez-utils` + `bluetooth.service`. |
 | `package` | string | `bluez` | |
-| `in_initramfs` | bool | `false` | Pull the BT stack into the initramfs (dracut) so a paired BT keyboard works at the early LUKS/FIDO2 prompt. |
+| `in_initramfs` | bool | `false` | Pull the BT stack into the initramfs (dracut: the `bluetooth` module plus the `uhid` driver bluez needs) so a paired BT keyboard works at the early LUKS/FIDO2 prompt. |
 
 ### `hardware_acceleration`
 

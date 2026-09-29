@@ -215,6 +215,57 @@ def test_an_initramfs_that_already_has_the_hook_plans_nothing(tmp_path):
     assert action.plan(managed=[]) == []
 
 
+# --- dracut: uhid for the BT keyboard, and the fallback image -------------- #
+
+_DRACUT_BT = {"initramfs": "dracut", "bluetooth": {"enable": True, "in_initramfs": True}}
+
+
+def _dracut_target(tmp_path, conf, *, fallback=True):
+    import os
+    (tmp_path / "etc/dracut.conf.d").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "usr/lib/modules/6.9.1-arch1-1").mkdir(parents=True)
+    (tmp_path / "usr/lib/modules/6.9.1-arch1-1/pkgbase").write_text("linux\n")
+    (tmp_path / "boot").mkdir()
+    (tmp_path / "boot/vmlinuz-linux").write_text("k")
+    (tmp_path / "etc/dracut.conf.d/dasik.conf").write_text(conf)
+    images = ["initramfs-linux.img"] + (["initramfs-linux-fallback.img"] if fallback else [])
+    for p in (tmp_path / "etc/dracut.conf.d/dasik.conf", tmp_path / "etc/dracut.conf.d",
+              tmp_path / "boot/vmlinuz-linux"):
+        os.utime(p, (1000, 1000))
+    for name in images:
+        (tmp_path / "boot" / name).write_text("img")
+        os.utime(tmp_path / "boot" / name, (2000, 2000))
+
+
+def _dracut_plan(tmp_path):
+    from dasik.lib.actions.initramfs_action import InitramfsAction
+    with patch("dasik.lib.actions.initramfs_action._pkg_installed",
+               side_effect=lambda pkg, target: pkg == "dracut"):
+        action = InitramfsAction(_DRACUT_BT, _ctx(tmp_path))
+        return [c.op.name for c in action.plan(managed=[])]
+
+
+def _desired_dracut_conf():
+    from dasik.lib.actions.initramfs.dracut import DracutBackend
+    return DracutBackend(_DRACUT_BT).desired_value()
+
+
+def test_a_bt_initramfs_without_uhid_is_planned(tmp_path):
+    """The conf an older dasik wrote: bluetooth module, no uhid driver."""
+    _dracut_target(tmp_path, '# Managed by dasik\nadd_dracutmodules+=" bluetooth "\n')
+    assert _dracut_plan(tmp_path) == ["MODIFY"]
+
+
+def test_a_bt_initramfs_with_uhid_and_both_images_plans_nothing(tmp_path):
+    _dracut_target(tmp_path, _desired_dracut_conf())
+    assert _dracut_plan(tmp_path) == []
+
+
+def test_a_dracut_target_without_a_fallback_image_is_planned(tmp_path):
+    _dracut_target(tmp_path, _desired_dracut_conf(), fallback=False)
+    assert _dracut_plan(tmp_path) == ["MODIFY"]
+
+
 # --- pendrive LUKS keyfile ------------------------------------------------- #
 
 _PENDRIVE = {"disks": {"disks": [{"device": "/dev/vda", "partitions": [

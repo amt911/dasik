@@ -68,6 +68,9 @@ def _dracut_target(tmp_path):
     (tmp_path / "usr/lib/modules/6.1.0/pkgbase").write_text("linux\n")
     (tmp_path / "boot").mkdir()
     (tmp_path / "boot/initramfs-linux.img").write_text("image")
+    # the fallback follows the main image's mtime, so these tests keep
+    # exercising only the input they are about
+    (tmp_path / "boot/initramfs-linux-fallback.img").symlink_to("initramfs-linux.img")
     return Target(root=str(tmp_path))
 
 

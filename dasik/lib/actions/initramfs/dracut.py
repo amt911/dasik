@@ -3,8 +3,9 @@ from __future__ import annotations
 import glob
 import os
 from typing import List, Optional
-from .base import InitramfsBackend
+from .base import InitramfsBackend, image_path, installed_kernels
 from ...command_worker.command_worker import Command
+from ...expand.toggles import FALLBACK_DRACUT_FLAGS
 from ...exceptions.exceptions import CommandExecutionError
 from ..luks_uuid import luks_uuid
 from ..partition_utils import keydev_spec, mounts_root
@@ -107,6 +108,13 @@ class DracutBackend(InitramfsBackend):
             lines.append(f'force_add_dracutmodules+=" {" ".join(force_mods)} "')
         if add_mods:
             lines.append(f'add_dracutmodules+=" {" ".join(add_mods)} "')
+        if self.bluetooth_in_initramfs:
+            # bluez creates the keyboard through /dev/uhid (UserspaceHID=true is
+            # its default, classic and BLE alike) and 70bluetooth installs only
+            # hidp. Without uhid the prompt logs "input-hog profile accept
+            # failed": the keyboard connects and never types. hid-generic is
+            # built into Arch's kernel, so uhid is the only missing piece.
+            lines.append('add_drivers+=" uhid "')
         for fs in self.keydev_filesystems:
             # The key device's filesystem: hostonly detection sees the root's
             # filesystems, never the pendrive the keyfile lives on, so the
@@ -283,9 +291,16 @@ class DracutBackend(InitramfsBackend):
         return [conf_d, *sorted(glob.glob(os.path.join(conf_d, "*.conf")))]
 
     def _images_current(self, *input_paths: str) -> bool:
-        """True when every target kernel has an initramfs image at least as new
-        as the newest input file. No kernel yet (pre-pacstrap) → nothing to
-        verify, so the file compare decides on its own."""
+        """True when every target kernel has both images — the host-only one
+        and the generic fallback — at least as new as the newest input file.
+        No kernel yet (pre-pacstrap) → nothing to verify, so the file compare
+        decides on its own.
+
+        The fallback must ALSO be at least as new as the kernel it boots. It is
+        the image nothing else looks at, so it is the one that rots: on a
+        machine migrated from mkinitcpio the rescue entry kept loading a
+        months-old image whose kernel modules had been removed, and no input
+        file was newer than it to say so."""
         kernels = self._target_kernels()
         if not kernels:
             return True
@@ -296,12 +311,18 @@ class DracutBackend(InitramfsBackend):
             except OSError:
                 continue
         for _kver, pkgbase in kernels:
-            image = self._path(f"/boot/initramfs-{pkgbase}.img")
             try:
-                if os.path.getmtime(image) < newest_input:
+                kernel_mtime = os.path.getmtime(self._path(f"/boot/vmlinuz-{pkgbase}"))
+            except OSError:                      # UKI / kernel elsewhere: no bound
+                kernel_mtime = 0.0
+            wanted = ((image_path(pkgbase), newest_input),
+                      (image_path(pkgbase, fallback=True), max(newest_input, kernel_mtime)))
+            for image, not_before in wanted:
+                try:
+                    if os.path.getmtime(self._path(image)) < not_before:
+                        return False
+                except OSError:                  # missing image → not converged
                     return False
-            except OSError:                      # missing image → not converged
-                return False
         return True
 
     def apply(self) -> None:
@@ -340,35 +361,22 @@ class DracutBackend(InitramfsBackend):
                 "Refusing to run dracut: no kernel found under "
                 f"{self._path('/usr/lib/modules') if self.target else '/mnt/usr/lib/modules'}."
             )
+        #
+        # Then the fallback, per kernel: a generic (--no-hostonly) image for the
+        # rescue entry. dracut has no preset that makes one, so without this the
+        # "fallback" entry loaded the host-only image — the very one it exists
+        # to stand in for.
         for kver, pkgbase in kernels:
-            out = f"/boot/initramfs-{pkgbase}.img"
-            args = ["--force", "--fstab", out, kver]
-            if self.target is not None:
-                Command.execute("dracut", args, target=self.target, check=True)
-            else:
-                Command.execute("dracut", args, run_as_chroot=True, check=True)
+            for args in (["--force", "--fstab", image_path(pkgbase), kver],
+                         [*FALLBACK_DRACUT_FLAGS, image_path(pkgbase, fallback=True), kver]):
+                if self.target is not None:
+                    Command.execute("dracut", args, target=self.target, check=True)
+                else:
+                    Command.execute("dracut", args, run_as_chroot=True, check=True)
 
     def _target_kernels(self) -> "list[tuple[str, str]]":
         """``(kver, pkgbase)`` for every kernel in the target's
-        ``/usr/lib/modules``. ``pkgbase`` (an Arch convention: the file
-        ``/usr/lib/modules/<kver>/pkgbase``) is the image basename the bootloader
-        entry references, so ``initramfs-<pkgbase>.img`` lines up with it. A
-        modules dir without a ``pkgbase`` file is skipped (not a bootable Arch
-        kernel)."""
+        ``/usr/lib/modules`` — see ``installed_kernels``."""
         base = self._path("/usr/lib/modules") if self.target is not None \
             else "/mnt/usr/lib/modules"
-        kernels: "list[tuple[str, str]]" = []
-        try:
-            names = sorted(os.listdir(base))
-        except OSError:
-            return kernels
-        for kver in names:
-            pkgbase_file = os.path.join(base, kver, "pkgbase")
-            try:
-                with open(pkgbase_file, "r", encoding="utf-8") as f:
-                    pkgbase = f.read().strip()
-            except OSError:
-                continue
-            if pkgbase:
-                kernels.append((kver, pkgbase))
-        return kernels
+        return installed_kernels(base)

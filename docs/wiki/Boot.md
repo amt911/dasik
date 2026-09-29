@@ -47,10 +47,18 @@ so a machine that lost it plans it back:
 + [bootloader] install fallback-entry  (rescue boot entry)
 ```
 
-Its `initrd` is mkinitcpio's `initramfs-linux-fallback.img` when the ESP has one;
-dracut builds no fallback image, so there the entry loads the same image the main
-entry does — still useful, because it is a second entry you can edit at the boot
-menu.
+Its `initrd` is `initramfs-linux-fallback.img`. With dracut that name is
+declared — dasik builds the image itself (see [dracut](#dracut)) — so an entry
+that loads anything else is retargeted in place; only its initramfs line
+changes, never the options `kernel_cmdline` maintains:
+
+```text
+~ [bootloader] modify fallback-entry  (rescue entry loads /initramfs-linux.img, not /initramfs-linux-fallback.img)
+```
+
+With mkinitcpio it is decided from the ESP: the preset's fallback image when
+there is one, else the main image — still useful, because it is a second entry
+you can edit at the boot menu.
 
 ### Microcode
 
@@ -115,12 +123,55 @@ Modules are **forced** rather than merely added when it matters:
 | encrypted root | forced: `crypt`, `systemd`, `systemd-cryptsetup` (+ `btrfs` if the root is btrfs) |
 | fido2 / tpm2 | their token backends |
 | plain btrfs root | added: `btrfs` |
-| `bluetooth.in_initramfs` | added: `bluetooth` — so a paired BT keyboard can type the passphrase |
+| `bluetooth.in_initramfs` | added: `bluetooth`, plus the `uhid` driver — so a paired BT keyboard can type the passphrase |
 
 Forcing is not paranoia. dasik runs dracut inside `arch-chroot /mnt`, where
 hostonly detection does not see the target's LUKS root, so
 `71systemd-cryptsetup`'s `check()` fails, the module is silently omitted, and the
 machine hangs forever on `/dev/mapper/<name>`.
+
+`uhid` is not optional: bluez creates the keyboard through `/dev/uhid`
+(`UserspaceHID=true` is its default, classic and BLE alike) and dracut's
+`bluetooth` module installs only `hidp`. Without it the prompt logs
+`input-hog profile accept failed` — the keyboard pairs and never types.
+
+**Two images per kernel.** dracut has no preset, so dasik builds both:
+
+| Image | Built with | Loaded by |
+| --- | --- | --- |
+| `initramfs-<pkgbase>.img` | host-only (`dasik.conf`) | `arch.conf` |
+| `initramfs-<pkgbase>-fallback.img` | `--no-hostonly` (generic) | `arch-fallback.conf` |
+
+Both count for convergence. The fallback must also be at least as new as the
+kernel it boots: it is the image nothing else looks at, so it is the one that
+rots — a machine migrated from mkinitcpio kept a rescue entry loading a
+months-old image whose kernel modules were gone. After an install, two more dasik
+hooks keep it in step:
+
+```text
+91-dasik-dracut-fallback.hook          # after dracut's own 90-: rebuild every kernel's fallback
+60-dasik-dracut-fallback-remove.hook   # a removed kernel takes its fallback with it
+```
+
+The rebuild fires on the same triggers as dracut's own hook (kernel, dracut,
+systemd, firmware, cryptsetup, lvm, DKMS), for every installed kernel.
+
+### Orphaned images
+
+`dracut --regenerate-all` and a bare `dracut -f` write `initramfs-<kver>.img`,
+which no entry loads, and a removed kernel can leave its images behind. They
+fill the ESP until the next build cannot fit its temporary copy. The
+`initramfs_orphans` domain plans a removal for every `initramfs-*.img` that no
+installed kernel owns (by the `<pkgbase>` names above) and that no systemd-boot
+entry or `grub.cfg` references:
+
+```text
+- [initramfs_orphans] remove initramfs-6.19.14-arch1-1.img  (no installed kernel owns it and no boot entry loads it)
+```
+
+It needs no config and captures nothing on `sync`. Without a single installed
+kernel it plans nothing — every image would look orphaned. To rebuild an image by
+hand, name it: `dracut --force /boot/initramfs-linux.img --kver <kver>`.
 
 ### The mkinitcpio neutralizer (why `pacman_hooks` runs first)
 

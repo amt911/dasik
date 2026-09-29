@@ -60,6 +60,7 @@ def setup_actions() -> None:
     from .snapper_action import SnapperAction
     from .drop_files_action import DropFilesAction
     from .initramfs_action import InitramfsAction
+    from .initramfs_orphans_action import InitramfsOrphansAction
     from .kernel_cmdline_action import KernelCmdlineAction
     from .bootloader_action import BootloaderAction
     from .ms_fonts_action import MicrosoftFontsAction
@@ -395,6 +396,14 @@ def setup_actions() -> None:
     # === Phase 5: boot (must come last) ===================================
     register_action(
         action_class=InitramfsAction,
+        config_key='__root__',
+        is_optional=True,
+    )
+    # Prune images nothing boots, after InitramfsAction has written the ones the
+    # entries do use: a kver-named image from `dracut --regenerate-all`, or a
+    # removed kernel's, is what fills the ESP until the next build cannot fit.
+    register_action(
+        action_class=InitramfsOrphansAction,
         config_key='__root__',
         is_optional=True,
     )

@@ -3,7 +3,7 @@ from __future__ import annotations
 import glob
 import os
 from typing import List, Optional
-from .base import InitramfsBackend
+from .base import InitramfsBackend, image_path, installed_kernels
 from ...command_worker.command_worker import Command
 from ...exceptions.exceptions import CommandExecutionError
 from ..luks_uuid import luks_uuid
@@ -22,13 +22,6 @@ _KEYFILE_TIMEOUT = "keyfile-timeout=10s"
 # file's own content (kept as a literal so the backend stays free of imports
 # from the expand layer).
 _PLYMOUTHD_CONF = "/etc/plymouth/plymouthd.conf"
-
-
-def image_path(pkgbase: str, fallback: bool = False) -> str:
-    """Where the bootloader entries look for a kernel's image: named by
-    pkgbase, never by kver (that is `--regenerate-all`'s naming, which no entry
-    references)."""
-    return f"/boot/initramfs-{pkgbase}{'-fallback' if fallback else ''}.img"
 
 
 class DracutBackend(InitramfsBackend):
@@ -383,25 +376,7 @@ class DracutBackend(InitramfsBackend):
 
     def _target_kernels(self) -> "list[tuple[str, str]]":
         """``(kver, pkgbase)`` for every kernel in the target's
-        ``/usr/lib/modules``. ``pkgbase`` (an Arch convention: the file
-        ``/usr/lib/modules/<kver>/pkgbase``) is the image basename the bootloader
-        entry references, so ``initramfs-<pkgbase>.img`` lines up with it. A
-        modules dir without a ``pkgbase`` file is skipped (not a bootable Arch
-        kernel)."""
+        ``/usr/lib/modules`` — see ``installed_kernels``."""
         base = self._path("/usr/lib/modules") if self.target is not None \
             else "/mnt/usr/lib/modules"
-        kernels: "list[tuple[str, str]]" = []
-        try:
-            names = sorted(os.listdir(base))
-        except OSError:
-            return kernels
-        for kver in names:
-            pkgbase_file = os.path.join(base, kver, "pkgbase")
-            try:
-                with open(pkgbase_file, "r", encoding="utf-8") as f:
-                    pkgbase = f.read().strip()
-            except OSError:
-                continue
-            if pkgbase:
-                kernels.append((kver, pkgbase))
-        return kernels
+        return installed_kernels(base)

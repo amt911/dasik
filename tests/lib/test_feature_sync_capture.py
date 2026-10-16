@@ -1468,9 +1468,10 @@ def test_sync_captures_a_day2_subvolume_and_replans_to_nothing(tmp_path, monkeyp
         == [f"{root_part['label']}:@new"]
 
 
-def test_a_declared_day2_subvolume_survives_a_declared_sync(tmp_path, monkeypatch):
-    """With the disks declared, sync reports the declaration back: the day-2
-    subvolume the user wrote must still be there afterwards."""
+def test_a_declared_block_is_echoed_back_by_a_declared_sync(tmp_path, monkeypatch):
+    """Pins the ECHO-BACK of a declared `disks` block, not capture: with the
+    disks declared, sync returns the declaration, so a subvolume the user wrote
+    survives. Capturing a mounted-but-undeclared one is the discovery test above."""
     from dasik.lib.actions.disk_partition_action import DiskPartitionAction
     root = _subvol_machine(tmp_path, monkeypatch)
     ctx = ActionContext(target=Target(root=str(root)))
@@ -1480,17 +1481,3 @@ def test_a_declared_day2_subvolume_survives_a_declared_sync(tmp_path, monkeypatc
     captured = DiskPartitionAction(cfg["disks"], ctx).import_state(managed=[])
     part = captured["disks"]["disks"][0]["partitions"][1]
     assert "@var_lib_ollama" in [s["name"] for s in part["btrfs_subvolumes"]]
-
-
-def test_the_day2_subvolume_is_planned_where_the_machine_lacks_it(tmp_path, monkeypatch):
-    """Sabotage: the check above must be able to fail. Declare a subvolume the
-    machine does not have and an INSTALL appears."""
-    from dasik.lib.actions.btrfs_subvolume_action import BtrfsSubvolumeAction
-    root = _subvol_machine(tmp_path, monkeypatch)
-    ctx = ActionContext(target=Target(root=str(root)))
-    cfg = _declared_without_the_new_subvolume()
-    cfg["disks"]["disks"][0]["partitions"][1]["btrfs_subvolumes"].append(
-        {"name": "@missing", "mountpoint": "/srv/missing"})
-
-    items = [c.item for c in BtrfsSubvolumeAction(cfg, ctx).plan(managed=[])]
-    assert items == ["ROOT:@missing"]

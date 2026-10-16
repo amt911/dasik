@@ -16,8 +16,13 @@ findmnt /srv/data > /dev/null 2>&1 && ok=1
 [ -f /srv/data2/big.bin ] || ok=1
 step REBOOT-FSTAB $ok
 
-$D plan config/vm-subvol-day2.json --target / > /tmp/plan.log 2>&1; cat /tmp/plan.log
-grep -q '\[btrfs_subvolumes\]' /tmp/plan.log && ok=1 || ok=0
+$D plan config/vm-subvol-day2.json --target / > /tmp/plan.log 2>&1; PRC=$?; cat /tmp/plan.log
+# The plan must have RUN (rc 0, no traceback, Plan.render output) and be silent
+# in this domain; a crash or an empty log is a failure, not silence.
+ok=1
+if [ "$PRC" -eq 0 ] && [ -s /tmp/plan.log ] && ! grep -q Traceback /tmp/plan.log \
+   && grep -Eq '^No changes|^  [-+~!] \[[a-z_0-9]+\]' /tmp/plan.log \
+   && ! grep -q '\[btrfs_subvolumes\]' /tmp/plan.log; then ok=0; fi
 step REBOOT $ok
 
 echo "SUBVOL-REBOOT-DONE rc=$FAIL"

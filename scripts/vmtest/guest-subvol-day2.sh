@@ -23,8 +23,15 @@ FAIL=0
 
 # step NAME RC  -> echo the marker, remember any failure
 step() { echo "SUBVOL-$1=$2"; [ "$2" -eq 0 ] || FAIL=1; }
-# rc of "output file does / does not contain a [btrfs_subvolumes] line"
-silent() { grep -q '\[btrfs_subvolumes\]' "$1" && return 1 || return 0; }
+# plan_ok FILE RC: the plan REALLY ran. rc 0, non-empty, no traceback, and it
+# printed what Plan.render prints ("No changes - system matches config." or one
+# or more "  <+|~|-> [domain] ..." lines). A crash/empty log is NOT "silent".
+plan_ok() {
+    [ "$2" -eq 0 ] && [ -s "$1" ] && ! grep -q 'Traceback' "$1" \
+        && grep -Eq '^No changes|^  [-+~!] \[[a-z_0-9]+\]' "$1"
+}
+# silent FILE RC: the plan ran AND has no [btrfs_subvolumes] line.
+silent() { plan_ok "$1" "$2" && ! grep -q '\[btrfs_subvolumes\]' "$1"; }
 root_dev() { findmnt -no SOURCE / | sed 's/\[.*//'; }
 top_mount() { mkdir -p $TOP; mountpoint -q $TOP || mount -o subvolid=5 "$(root_dev)" $TOP; }
 top_umount() { mountpoint -q $TOP && umount $TOP; }
@@ -37,8 +44,8 @@ if [ -e /srv/data/big.bin ] || [ -e /srv/data2/big.bin ]; then
 fi
 
 # 1 - the base config is converged
-$D plan $BASE --target / > $LOG 2>&1; cat $LOG
-silent $LOG; step BASE $?
+$D plan $BASE --target / > $LOG 2>&1; PRC=$?; cat $LOG
+silent $LOG $PRC; step BASE $?
 
 # 2 - seed data at the future mountpoint
 mkdir -p /srv/data
@@ -47,8 +54,8 @@ SUM=$(sha256sum /srv/data/big.bin | cut -d' ' -f1)
 [ -n "$SUM" ]; step SEED $?
 
 # 3 - the add is planned
-$D plan $ADD --target / > $LOG 2>&1; cat $LOG
-grep -q '+ \[btrfs_subvolumes\] install ROOT:@data' $LOG; step PLAN-ADD $?
+$D plan $ADD --target / > $LOG 2>&1; PRC=$?; cat $LOG
+plan_ok $LOG $PRC && grep -q '+ \[btrfs_subvolumes\] install ROOT:@data' $LOG; step PLAN-ADD $?
 
 # 4 - the add is applied
 $D apply $ADD --target / --yes; RC=$?
@@ -63,8 +70,8 @@ findmnt --verify > /tmp/verify.log 2>&1 || { ok=1; cat /tmp/verify.log; }
 step APPLY-ADD $ok
 
 # 5 - converged after the add
-$D plan $ADD --target / > $LOG 2>&1; cat $LOG
-silent $LOG; step REPLAN-ADD $?
+$D plan $ADD --target / > $LOG 2>&1; PRC=$?; cat $LOG
+silent $LOG $PRC; step REPLAN-ADD $?
 
 # 6 - sync reads the day-2 subvolume back, and the capture re-plans to nothing
 # From an EMPTY seed, so the disks block is discovered off the machine itself
@@ -76,8 +83,8 @@ $D sync /tmp/s.json --target / --no-log; RC=$?
 ok=$RC
 $D check /tmp/s.json || ok=1
 grep -q '@data' /tmp/s.json || { ok=1; echo "SUBVOL: sync did not capture @data"; }
-$D plan /tmp/s.json --target / > $LOG 2>&1; cat $LOG
-silent $LOG || ok=1
+$D plan /tmp/s.json --target / > $LOG 2>&1; PRC=$?; cat $LOG
+silent $LOG $PRC || ok=1
 step SYNC $ok
 
 # 7 - move: /srv/data -> /srv/data2, data stays in the subvolume
@@ -88,6 +95,7 @@ findmnt /srv/data > /dev/null 2>&1 && ok=1
 grep -q '/srv/data2 btrfs' /etc/fstab || ok=1
 grep -q ' /srv/data btrfs' /etc/fstab && ok=1
 [ "$(sha256sum /srv/data2/big.bin | cut -d' ' -f1)" = "$SUM" ] || ok=1
+findmnt --verify > /tmp/verify.log 2>&1 || { ok=1; cat /tmp/verify.log; }
 step MOVE $ok
 
 # 8 - remove: back to the base config; data comes back into @
@@ -101,8 +109,9 @@ grep -q '@data' /etc/fstab && ok=1
 top_mount
 [ -f $TOP/@/srv/data2/big.bin ] || ok=1
 top_umount
-$D plan $BASE --target / > $LOG 2>&1; cat $LOG
-silent $LOG || ok=1
+findmnt --verify > /tmp/verify.log 2>&1 || { ok=1; cat /tmp/verify.log; }
+$D plan $BASE --target / > $LOG 2>&1; PRC=$?; cat $LOG
+silent $LOG $PRC || ok=1
 step REMOVE $ok
 
 echo "SUBVOL-DONE rc=$FAIL"

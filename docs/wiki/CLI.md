@@ -13,6 +13,7 @@ Source of truth: `dasik/__main__.py` (`_build_parser`, `_KNOWN_VERBS`).
 | [`check`](#check) | no | no | *(no target)* | no |
 | [`plan`](#plan) | no | no | `/mnt` | to read some state |
 | [`apply`](#apply) | **YES — destructive** | no | `/mnt` | yes |
+| [`upgrade`](#upgrade) | **YES** — runs the tools' own updaters | no | `/mnt` | yes |
 | [`sync`](#sync) | no | **yes** (writes `.bak`) | `/` | yes |
 | [`save`](#save) | no | **yes** — and commits it | `/` | yes |
 | [`generations`](#generations) | `--prune` deletes HISTORY (never the system) | no | `/` | yes |
@@ -291,6 +292,20 @@ block. **It never partitions anything** — it composes a config and stops, so
 `plan` stays the last gate before a disk is erased.
 
 Full page: [Partition wizard](Partition-wizard.md).
+
+## `upgrade`
+
+```bash
+dasik upgrade config.json [--target /]
+```
+
+Moves the declared AI tooling (`uv_tools`, then `ai_skills`) to its latest
+version by driving each tool's own updater as the declaring user. Takes the
+apply lock, writes **no generation**, and is **not undone by `rollback`**.
+Exact pins are skipped, items not yet installed are skipped (run `apply`), and
+one failure never stops the rest; the exit code is 1 if any step failed.
+Without those blocks it prints `Nothing to upgrade.`. `mcp_servers` has nothing
+to upgrade: `npx`/`uvx` servers resolve at start.
 
 ## `rollback`
 

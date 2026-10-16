@@ -14,6 +14,9 @@ Verbs (slice 1 of declarative-convergence):
     current one. **Read-only.**
   * ``rollback [N] [--target /] [--yes]`` — restore generation N's config and
     re-apply it (DESTRUCTIVE; defaults N to the generation before current).
+  * ``upgrade <config> [--target / | /mnt]`` — move the declared AI tooling
+    (``ai_skills``, ``uv_tools``) to its latest version. Not undone by
+    ``rollback``.
   * ``check <config>`` — validate the config (JSON syntax + schema) without
     touching the system. **Read-only.**
 
@@ -33,6 +36,10 @@ from pathlib import Path
 from typing import Optional
 
 from dasik.lib.actions.actions_handler_v2 import setup_actions
+from dasik.lib.actions.action_context import ActionContext
+from dasik.lib.actions.ai_skills_action import AiSkillsAction
+from dasik.lib.actions.uv_tools_action import UvToolsAction
+from dasik.lib.upgrade.runner import exit_code, render, run_steps
 from dasik.lib.actions.action_registry import get_default_registry
 from dasik.lib.logging import run_logger
 from dasik.lib.reconciler.reconciler import Reconciler
@@ -57,7 +64,8 @@ from dasik.lib.passwords import SHA512, YESCRYPT, hash_password
 
 # Verbs that shell out to real commands and therefore benefit from an install
 # log. Read-only/trivial verbs (check, hash-password) write no log by default.
-_LOGGED_VERBS = {"plan", "apply", "sync", "save", "rollback", "generations"}
+_LOGGED_VERBS = {"plan", "apply", "sync", "save", "rollback", "generations",
+                 "upgrade"}
 
 
 def _version() -> str:
@@ -173,6 +181,20 @@ def _build_parser() -> argparse.ArgumentParser:
         "--yes", "-y",
         action="store_true",
         help="Skip the destructive-change confirmation prompt.",
+    )
+
+    upgrade_p = sub.add_parser(
+        "upgrade",
+        parents=[common],
+        help="Update the declared AI tooling (ai_skills, uv_tools) to its "
+             "latest version. Not undone by rollback.",
+    )
+    upgrade_p.add_argument("config", help="Path to the JSON configuration file")
+    upgrade_p.add_argument(
+        "--target",
+        default="/mnt",
+        help="Root commands run against (/ for the live host, /mnt for an "
+             "install target). Default: /mnt.",
     )
 
     sync_p = sub.add_parser(
@@ -315,7 +337,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 _KNOWN_VERBS = {"plan", "apply", "sync", "save", "generations", "rollback",
-                "check", "hash-password", "partition-wizard"}
+                "upgrade", "check", "hash-password", "partition-wizard"}
 
 
 def _is_legacy_invocation(raw: list[str]) -> Optional[str]:
@@ -514,6 +536,40 @@ def _cmd_apply(config_path: Path, target_root: str, assume_yes: bool) -> int:
 
     print(f"Applied: now at generation {new_manifest.generation}.")
     return 0
+
+
+def _cmd_upgrade(config_path: Path, target_root: str) -> int:
+    """Bring the declared AI tooling to its latest version (mutates the target)."""
+    target = _target_or_none(target_root)
+    if target is None:
+        return 1
+    config = _load_validated_config(config_path)
+    if config is None:
+        return 1
+    config = expand_config(config)
+
+    try:
+        lock = ApplyLock(target).__enter__()
+    except ApplyLockBusy as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    try:
+        ctx = ActionContext(target=target)
+        # uv first: graphify's skill follows the new binary.
+        steps = (UvToolsAction(config, ctx).upgrade_steps()
+                 + AiSkillsAction(config, ctx).upgrade_steps())
+        if not steps:
+            print("Nothing to upgrade.")
+            return 0
+        outcomes = run_steps(steps, target)
+    finally:
+        lock.__exit__()
+    print(render(outcomes))
+    if config.get("mcp_servers") is not None:
+        print("mcp_servers: nothing to upgrade — npx/uvx servers resolve at "
+              "start; uv-installed ones are upgraded through uv_tools")
+    print("Note: dasik rollback does not revert an upgrade.")
+    return exit_code(outcomes)
 
 
 def _cmd_sync(config_path: Path, target_root: str) -> int:
@@ -1142,6 +1198,12 @@ def main(argv: Optional[list[str]] = None) -> int:
             if path is None:
                 return 1
             return _cmd_apply(path, args.target, args.yes)
+
+        if args.verb == "upgrade":
+            path = _validate_config_file(args.config)
+            if path is None:
+                return 1
+            return _cmd_upgrade(path, args.target)
 
         if args.verb == "sync":
             path = _validate_config_file(args.config)

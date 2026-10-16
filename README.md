@@ -35,6 +35,7 @@ dasik check  config.json                 # validate: JSON + schema + coherence  
 dasik check  config.json --resolve-aur   # …plus package sources and the AUR dep closure (network)
 dasik plan   config.json                 # the dry run: every change, touches nothing
 dasik apply  config.json --target /mnt   # converge  (DESTRUCTIVE on install)
+dasik upgrade config.json --target /   # move declared ai_skills/uv_tools to latest (rollback does not undo)
 dasik sync   config.json --target /      # capture the running system into the config
 dasik save   config.json                 # …and commit it to the config's Git repo
 dasik partition-wizard --output mine.json  # compose a disks block from the real disks

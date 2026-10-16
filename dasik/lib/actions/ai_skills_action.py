@@ -23,13 +23,16 @@ from __future__ import annotations
 
 import re
 import os
-from typing import Any, Dict, List, Optional, Tuple
+from functools import partial
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .abstract_action import AbstractAction
 from .ai_skills_state import (AGENT_SKILL_DIRS, CANONICAL_SKILL_DIR,
                               antigravity_plugins,
-                              carries_skill, claude_state, codex_state,
-                              installed_agents, skills_state)
+                              carries_skill, claude_plugin_version,
+                              claude_state, codex_state,
+                              installed_agents, skill_folder_hash,
+                              skills_state)
 from .config_access import field as _field
 from ..command_worker.command_worker import Command
 from ..command_worker.su_argv import su_argv
@@ -37,6 +40,7 @@ from ..exceptions.exceptions import CommandExecutionError
 from ..logging import run_logger
 from ..models.ai_skills_model import PLUGIN_NAME_RE
 from ..state.change import Change, Op
+from ..upgrade.steps import UpgradeStep
 
 _DOMAIN = "ai_skills"
 
@@ -75,6 +79,10 @@ _TOOL_PLATFORMS = {"claude-code": "claude", "antigravity-cli": "antigravity"}
 _SHARED_SKILL_DIR_AGENTS = {"antigravity", "antigravity-cli"}
 
 _ROOT = "root"
+
+
+def _no_version() -> Optional[str]:
+    return None
 
 
 class AiSkillsAction(AbstractAction):
@@ -618,6 +626,72 @@ class AiSkillsAction(AbstractAction):
             if raw:
                 parts.append(raw)
         return "\n".join(parts)
+
+    # -- upgrade ------------------------------------------------------------ #
+
+    def _upgrade_commands(self, spec: Dict[str, Any]
+                          ) -> Tuple[Tuple[str, Tuple[str, ...]], ...]:
+        """The native updater of one declared item, as (script, args) pairs."""
+        kind, agent = spec["kind"], spec["agent"]
+        if kind == "marketplace":
+            if agent == "claude-code":
+                return (('claude plugin marketplace update "$1"',
+                         (spec["name"],)),)
+            return (('codex plugin marketplace upgrade "$1"', (spec["name"],)),)
+        if kind == "plugin" and agent == _AGY_AGENT:
+            return ((_AGY_INSTALL, (self._clone_url(spec["source"]),)),)
+        if kind == "plugin":
+            plugin_id = f"{spec['plugin']}@{spec['marketplace']}"
+            if agent == "claude-code":
+                return (('claude plugin update "$1" -s user -y', (plugin_id,)),)
+            # Re-adding after the marketplace refresh is how codex is told to
+            # take the new revision; it has no `update` verb of its own.
+            return (('codex plugin add "$1"', (plugin_id,)),)
+        # method `tool`: the program's installer rewrites the copy it ships.
+        return tuple((script, args) for script, args in
+                     self._command_for(Change(_DOMAIN, Op.CREATE, ""), spec))
+
+    def upgrade_steps(self) -> List[UpgradeStep]:
+        """One step per declared marketplace, plugin and skill."""
+        if self._target() is None:
+            return []
+        installed = self.actual()
+        homes = self._passwd()
+        desired = self._desired()
+        steps: List[UpgradeStep] = []
+        seen_skills: set = set()
+        for item, spec in desired.items():
+            user = spec["user"]
+            home = self._abs(self._home_of(user, homes))
+            version: Callable[[], Optional[str]] = _no_version
+            commands: Tuple[Tuple[str, Tuple[str, ...]], ...]
+            if spec["kind"] == "skill" and spec["method"] == "skills":
+                # One `skills update` covers the shared copy every agent reads,
+                # so it is one step per (user, name), however many agents.
+                if (user, spec["name"]) in seen_skills:
+                    continue
+                seen_skills.add((user, spec["name"]))
+                item = f"{user}:skills:{spec['name']}"
+                present = any(
+                    other in installed for other, o in desired.items()
+                    if o["kind"] == "skill" and o["method"] == "skills"
+                    and o["user"] == user and o["name"] == spec["name"])
+                commands = (('npx -y skills update "$1" -g -y',
+                             (spec["name"],)),)
+                version = partial(skill_folder_hash, home, spec["name"])
+            else:
+                present = item in installed
+                commands = self._upgrade_commands(spec)
+                if spec["kind"] == "plugin" and spec["agent"] == "claude-code":
+                    plugin_id = f"{spec['plugin']}@{spec['marketplace']}"
+                    version = partial(claude_plugin_version, home, plugin_id)
+            if not present:
+                steps.append(UpgradeStep(_DOMAIN, item, user,
+                                         skip="not installed — run dasik apply"))
+                continue
+            steps.append(UpgradeStep(_DOMAIN, item, user, commands=commands,
+                                     version=version))
+        return steps
 
     # -- apply -------------------------------------------------------------- #
 

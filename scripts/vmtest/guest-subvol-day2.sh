@@ -87,6 +87,11 @@ $D plan /tmp/s.json --target / > $LOG 2>&1; PRC=$?; cat $LOG
 silent $LOG $PRC || ok=1
 step SYNC $ok
 
+# 6b - sync must not dispossess @data: planning the BASE config (no @data) right
+# after the sync, before any further apply, must still propose removing it.
+$D plan $BASE --target / > $LOG 2>&1; PRC=$?; cat $LOG
+plan_ok $LOG $PRC && grep -q -- '- \[btrfs_subvolumes\] remove ROOT:@data' $LOG; step SYNC-OWNS $?
+
 # 7 - move: /srv/data -> /srv/data2, data stays in the subvolume
 $D apply $MOVE --target / --yes; RC=$?
 ok=$RC

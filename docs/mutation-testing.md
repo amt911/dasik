@@ -140,14 +140,14 @@ In `btrfs_subvol_state.py` (day-2 btrfs subvolumes, 2026-10):
   text before the first separator for any `n >= 1`. Signatures:
   `source.split("[", )` and `source.split("[", 2)`.
 
-All ten of the equivalents above were confirmed by generating mutmut's own
+Every equivalent listed above (the two `parse_findmnt` signatures included) was confirmed by generating mutmut's own
 mutated function bodies (`mutants/dasik/lib/actions/pacman_repos_state.py`,
 one variant per mutant behind a `MUTANT_UNDER_TEST`-driven trampoline) and
 calling them directly against a battery of hand-picked inputs — not assumed
 from reading the diff. Every *other* survivor found the same way turned out
 to be reachable through a concrete input and got a killing test instead (see
 `tests/lib/actions/test_pacman_repos_conf.py` and
-`test_pacman_repos_keyring.py`); none of the ten above ever produced a
+`test_pacman_repos_keyring.py`); none of the equivalents above ever produced a
 different result for any input tried.
 
 ## CI

@@ -4,7 +4,8 @@ An MCP server is registered, never installed: ``claude mcp add`` and
 ``codex mcp add`` write a line into each agent's own configuration, and what
 the line points at (``uvx inkscape_mcp``, a URL) is fetched by the agent when it
 starts the server. So the declaration names the *command* or the *URL*, and
-never a version — ``uvx`` owns that the way pacman owns a package's.
+never a version — ``uvx`` owns that the way pacman owns a package's. There is
+nothing for ``dasik upgrade`` to do here: ``npx``/``uvx`` resolve at start.
 
 The CLIs are not symmetric, and the model refuses to paper over it: only
 Claude Code and Antigravity take ``--header``, only codex takes

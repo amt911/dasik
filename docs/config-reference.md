@@ -1133,6 +1133,9 @@ normalises it the way PEP 503 does — `inkscape_mcp` is installed as
 normalised to that name before comparing — and
 a captured config carries the plain names, which still re-plans to nothing.
 
+Versions never move on `apply`; `dasik upgrade` moves them (exact pins stay
+put, and `rollback` does not undo it).
+
 This domain runs **before `ai_skills`**, which may need one of these programs:
 graphify's skill is written by the program itself.
 
@@ -1142,7 +1145,9 @@ graphify's skill is written by the program itself.
 
 Declares which skills each user's AI coding agents carry, and installs them with
 **each agent's own official installer** — so updating stays `claude plugin
-update` / `npx skills update` and dasik never fights it.
+update` / `npx skills update` and dasik never fights it. `apply` only ensures
+presence; `dasik upgrade` is the verb that runs those updaters (not undone by
+`rollback`).
 
 ```json
 "ai_skills": {

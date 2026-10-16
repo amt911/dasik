@@ -23,19 +23,24 @@ from __future__ import annotations
 
 import re
 import os
-from typing import Any, Dict, List, Optional, Tuple
+from functools import partial
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .abstract_action import AbstractAction
 from .ai_skills_state import (AGENT_SKILL_DIRS, CANONICAL_SKILL_DIR,
                               antigravity_plugins,
-                              carries_skill, claude_state, codex_state,
-                              installed_agents, skills_state)
+                              carries_skill, claude_plugin_version,
+                              claude_state, codex_state,
+                              installed_agents, skill_folder_hash,
+                              skills_state)
 from .config_access import field as _field
 from ..command_worker.command_worker import Command
+from ..command_worker.su_argv import su_argv
 from ..exceptions.exceptions import CommandExecutionError
 from ..logging import run_logger
 from ..models.ai_skills_model import PLUGIN_NAME_RE
 from ..state.change import Change, Op
+from ..upgrade.steps import UpgradeStep
 
 _DOMAIN = "ai_skills"
 
@@ -48,7 +53,8 @@ _AGY_AGENT = "antigravity"
 # `agy plugin install` takes a directory and nothing else (FACT-AGY-5), so the
 # repository is cloned into a throwaway directory first. `--` stops git reading
 # the URL as an option; the clone is removed whatever happened, and the exit
-# status is the installer's.
+# status is the installer's. Measured (agy, throwaway HOME): installing the same
+# plugin over itself succeeds non-interactively, rc 0, so upgrade reuses it.
 _AGY_INSTALL = ('dir=$(mktemp -d) || exit 1; '
                 'git clone --depth 1 --quiet -- "$1" "$dir/plugin" '
                 '&& agy plugin install "$dir/plugin"; rc=$?; '
@@ -74,6 +80,10 @@ _TOOL_PLATFORMS = {"claude-code": "claude", "antigravity-cli": "antigravity"}
 _SHARED_SKILL_DIR_AGENTS = {"antigravity", "antigravity-cli"}
 
 _ROOT = "root"
+
+
+def _no_version() -> Optional[str]:
+    return None
 
 
 class AiSkillsAction(AbstractAction):
@@ -618,17 +628,96 @@ class AiSkillsAction(AbstractAction):
                 parts.append(raw)
         return "\n".join(parts)
 
+    # -- upgrade ------------------------------------------------------------ #
+
+    def _upgrade_commands(self, spec: Dict[str, Any]
+                          ) -> Tuple[Tuple[str, Tuple[str, ...]], ...]:
+        """The native updater of one declared item, as (script, args) pairs."""
+        kind, agent = spec["kind"], spec["agent"]
+        if kind == "marketplace":
+            if agent == "claude-code":
+                return (('claude plugin marketplace update "$1"',
+                         (spec["name"],)),)
+            return (('codex plugin marketplace upgrade "$1"', (spec["name"],)),)
+        if kind == "plugin" and agent == _AGY_AGENT:
+            return ((_AGY_INSTALL, (self._clone_url(spec["source"]),)),)
+        if kind == "plugin":
+            plugin_id = f"{spec['plugin']}@{spec['marketplace']}"
+            if agent == "claude-code":
+                return (('claude plugin update "$1" -s user -y', (plugin_id,)),)
+            # Re-adding after the marketplace refresh is how codex is told to
+            # take the new revision; it has no `update` verb of its own.
+            return (('codex plugin add "$1"', (plugin_id,)),)
+        # method `tool`: the program's installer rewrites the copy it ships.
+        return tuple((script, args) for script, args in
+                     self._command_for(Change(_DOMAIN, Op.CREATE, ""), spec))
+
+    def upgrade_steps(self) -> List[UpgradeStep]:
+        """One step per declared marketplace, plugin and skill."""
+        if self._target() is None:
+            return []
+        installed = self.actual()
+        homes = self._passwd()
+        desired = self._desired()
+        steps: List[UpgradeStep] = []
+        seen_skills: set = set()
+        for item, spec in desired.items():
+            user = spec["user"]
+            home = self._abs(self._home_of(user, homes))
+            version: Callable[[], Optional[str]] = _no_version
+            commands: Tuple[Tuple[str, Tuple[str, ...]], ...]
+            after: Optional[str] = None
+            failure_text: Tuple[str, ...] = ()
+            if spec["kind"] == "skill" and spec["method"] == "skills":
+                # One `skills update` covers the shared copy every agent reads,
+                # so it is one step per (user, name), however many agents.
+                if (user, spec["name"]) in seen_skills:
+                    continue
+                seen_skills.add((user, spec["name"]))
+                item = f"{user}:skills:{spec['name']}"
+                present = any(
+                    other in installed for other, o in desired.items()
+                    if o["kind"] == "skill" and o["method"] == "skills"
+                    and o["user"] == user and o["name"] == spec["name"])
+                commands = (('npx -y skills update "$1" -g -y',
+                             (spec["name"],)),)
+                version = partial(skill_folder_hash, home, spec["name"])
+                # Measured offline: the CLI prints this and still exits 0.
+                failure_text = ("Failed to check skills",)
+            else:
+                present = item in installed
+                commands = self._upgrade_commands(spec)
+                if spec["kind"] == "plugin" and spec["agent"] == "claude-code":
+                    plugin_id = f"{spec['plugin']}@{spec['marketplace']}"
+                    version = partial(claude_plugin_version, home, plugin_id)
+                if spec["kind"] == "plugin" and spec.get("marketplace"):
+                    market = (f"{user}:{spec['agent']}:marketplace:"
+                              f"{spec['marketplace']}")
+                    if market in desired:
+                        after = market
+                    elif spec["agent"] == "codex":
+                        # No `source`: codex serves that catalog itself, so a
+                        # re-add would report success without refreshing.
+                        steps.append(UpgradeStep(
+                            _DOMAIN, item, user,
+                            skip="catalog managed by codex" if present
+                            else "not installed — run dasik apply"))
+                        continue
+            if not present:
+                steps.append(UpgradeStep(_DOMAIN, item, user,
+                                         skip="not installed — run dasik apply"))
+                continue
+            steps.append(UpgradeStep(_DOMAIN, item, user, commands=commands,
+                                     version=version, after=after,
+                                     failure_text=failure_text))
+        return steps
+
     # -- apply -------------------------------------------------------------- #
 
     @staticmethod
     def _su_argv(user: str, script: str, *args: str) -> List[str]:
-        """``su - <user> -c <script> -- sh <args>``.
-
-        ``--`` terminates util-linux ``su``'s own option parsing before the
-        shell's positional argv, and every value travels as ``$1``.. so a name
-        with shell metacharacters arrives as inert data instead of code.
-        """
-        return ["-", user, "-c", script, "--", "sh", *args]
+        """See :func:`su_argv`."""
+        return su_argv(user, script, *args)
 
     def _command_for(self, change: Change, spec: Dict[str, Any]
                      ) -> List[Tuple[str, Tuple[str, ...]]]:

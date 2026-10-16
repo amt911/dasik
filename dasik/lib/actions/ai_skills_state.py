@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Dict, Set, Tuple
+from typing import Dict, Optional, Set, Tuple
 
 from .toml_reader import load_toml
 
@@ -254,6 +254,35 @@ def skills_state(home: str) -> Tuple[Set[str], Dict[str, Set[str]], Dict[str, st
             if isinstance(source, str) and source and name in known:
                 sources[name] = source
     return canonical, per_agent, sources
+
+
+def claude_plugin_version(home: str, plugin_id: str) -> Optional[str]:
+    """Version Claude Code recorded for *plugin_id*, or None when unreadable.
+
+    The first record's ``version``, else its ``gitCommitSha``: a plugin from a
+    marketplace without versions is identified by the commit it was cloned at.
+    """
+    registry = _read_json(os.path.join(home, _CLAUDE_PLUGINS,
+                                       "installed_plugins.json"))
+    plugins = registry.get("plugins") if isinstance(registry, dict) else None
+    records = plugins.get(plugin_id) if isinstance(plugins, dict) else None
+    record = records[0] if isinstance(records, list) and records else None
+    if not isinstance(record, dict):
+        return None
+    for key in ("version", "gitCommitSha"):
+        value = record.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
+def skill_folder_hash(home: str, name: str) -> Optional[str]:
+    """The ``skillFolderHash`` the `skills` CLI locked for *name*, or None."""
+    lock = _read_json(os.path.join(home, LOCK_REL))
+    skills = lock.get("skills") if isinstance(lock, dict) else None
+    entry = skills.get(name) if isinstance(skills, dict) else None
+    value = entry.get("skillFolderHash") if isinstance(entry, dict) else None
+    return value if isinstance(value, str) and value else None
 
 
 def installed_agents(home: str) -> Set[str]:

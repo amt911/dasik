@@ -36,6 +36,7 @@ from .package_resolver import (
     PackageResolver,
 )
 from ..command_worker.command_worker import Command
+from ..command_worker.su_argv import su_argv
 from ..exceptions.exceptions import CommandExecutionError, ConfigValidationError
 from ..logging import run_logger
 import os
@@ -300,7 +301,7 @@ class PackagesAction(AbstractAction):
         arrive as inert data ($1, $2, …) and could not be executed as code. $0 is
         a conventional placeholder.
         """
-        return ["su", "-", user, "-c", script, "--", "sh", *args]
+        return ["su", *su_argv(user, script, *args)]
 
     def _install_single_aur_pkg(self, pkg: str) -> None:
         """Clone and build a single AUR package as the build user."""

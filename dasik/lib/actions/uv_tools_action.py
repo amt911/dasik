@@ -26,8 +26,10 @@ from typing import Any, Dict, List, Optional, Tuple
 from .abstract_action import AbstractAction
 from .config_access import field as _field
 from ..command_worker.command_worker import Command
+from ..command_worker.su_argv import su_argv
 from ..exceptions.exceptions import CommandExecutionError
 from ..state.change import Change, Op
+from ..upgrade.steps import UpgradeStep
 
 _DOMAIN = "uv_tools"
 _ROOT = "root"
@@ -44,6 +46,12 @@ _DIST_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]*")
 # own `pyvenv.cfg`: `version_info = 3.13.7`. Read from the target's filesystem,
 # so the check costs no process and works against /mnt during an install.
 _VERSION_INFO_RE = re.compile(r"^\s*version_info\s*=\s*(\d+\.\d+)")
+
+# `semgrep[all]==1.2.3` -> `==1.2.3`: what follows the name and its extras.
+_EXTRAS_RE = re.compile(r"^\s*\[[^\]]*\]")
+
+# `graphifyy-0.6.7.dist-info`: the distribution (underscored) and its version.
+_DIST_INFO_RE = re.compile(r"^(?P<name>.+)-(?P<version>[^-]+)\.dist-info$")
 
 
 class UvToolsAction(AbstractAction):
@@ -243,9 +251,8 @@ class UvToolsAction(AbstractAction):
 
     @staticmethod
     def _su_argv(user: str, script: str, *args: str) -> List[str]:
-        """``su - <user> -c <script> -- sh <args>``; values are $1.., never
-        interpolated into *script*."""
-        return ["-", user, "-c", script, "--", "sh", *args]
+        """See :func:`su_argv`."""
+        return su_argv(user, script, *args)
 
     def apply(self, changes) -> None:
         if self._target() is None:
@@ -289,6 +296,62 @@ class UvToolsAction(AbstractAction):
         print(f"\033[31m{message}\033[0m")
         if item not in self.failed_tools:
             self.failed_tools.append(item)
+
+    # -- upgrade ------------------------------------------------------------ #
+
+    @staticmethod
+    def is_exact_pin(spec: str) -> bool:
+        """True when *spec* names one version (``==`` or ``===``)."""
+        match = _DIST_RE.match(spec)
+        rest = spec[match.end():] if match else spec
+        rest = _EXTRAS_RE.sub("", rest, count=1).lstrip()
+        return rest.startswith("==")
+
+    def installed_version(self, user: str, distribution: str) -> Optional[str]:
+        """Version from the tool's ``*.dist-info``, or None when unreadable.
+
+        The dist-info name is normalised like the directory is, so
+        ``Inkscape_MCP-1.2.0.dist-info`` belongs to ``inkscape-mcp``.
+        """
+        site = os.path.join(self._abs(self._tool_dir(user)), distribution, "lib")
+        try:
+            pythons = sorted(os.listdir(site))
+            for python in pythons:
+                packages = os.path.join(site, python, "site-packages")
+                for entry in sorted(os.listdir(packages)):
+                    match = _DIST_INFO_RE.match(entry)
+                    if match and self.distribution(match.group("name")) \
+                            == distribution:
+                        return match.group("version")
+        except OSError:
+            return None
+        return None
+
+    def upgrade_steps(self) -> List[UpgradeStep]:
+        """One step per declared tool: what `dasik upgrade` should run."""
+        if self._target() is None:
+            return []
+        installed = self.actual()
+        steps: List[UpgradeStep] = []
+        for item, (spec, python) in self._desired().items():
+            user, _, dist = item.partition(":")
+            version = (lambda u=user, d=dist: self.installed_version(u, d))
+            skip: Optional[str] = None
+            commands: Tuple[Tuple[str, Tuple[str, ...]], ...] = ()
+            if item not in installed:
+                skip = "not installed — run dasik apply"
+            elif self.is_exact_pin(spec):
+                skip = "pinned"
+            elif python:
+                # The declaration wins over a receipt pinned by a manual install.
+                commands = ((
+                    'uv tool install --upgrade --python "$1" "$2"',
+                    (python, spec)),)
+            else:
+                commands = (('uv tool install --upgrade "$1"', (spec,)),)
+            steps.append(UpgradeStep("uv_tools", item, user, commands=commands,
+                                     skip=skip, version=version))
+        return steps
 
     # -- sync --------------------------------------------------------------- #
 

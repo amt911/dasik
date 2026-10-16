@@ -9,8 +9,9 @@ files itself.
 
 **Presence, never version.** There is deliberately no ``version`` field. The
 reason the official CLI is driven at all is so ``claude plugin update`` /
-``npx skills update`` remain the user's; a version pinned here would turn every
-one of those updates into drift the next ``plan`` reverts. This mirrors
+``npx skills update`` keep owning versions: ``apply`` only ensures presence,
+and versions move through ``dasik upgrade``. A version pinned here would turn
+every one of those updates into drift the next ``plan`` reverts. This mirrors
 ``packages``, which names packages and lets pacman own the versions.
 """
 import re

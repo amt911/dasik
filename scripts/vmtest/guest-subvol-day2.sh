@@ -49,6 +49,12 @@ silent $LOG $PRC; step BASE $?
 
 # 2 - seed data at the future mountpoint
 mkdir -p /srv/data
+# Baseline of @/srv BEFORE any apply (what the distro ships - ftp, http - plus
+# the empty data dir), so later checks compare to it instead of guessing names.
+top_mount
+ls -A $TOP/@/srv | sort > /root/srv.base.ls
+find $TOP/@/srv -type f | sort > /root/srv.base.files
+top_umount
 head -c 50M /dev/urandom > /srv/data/big.bin
 SUM=$(sha256sum /srv/data/big.bin | cut -d' ' -f1)
 [ -n "$SUM" ]; step SEED $?
@@ -67,8 +73,8 @@ top_mount
 # beside it in @/srv (a staging / .dasik-moving leftover would), and no file at
 # all is left under @/srv.
 if [ -d $TOP/@/srv/data ] && [ -z "$(ls -A $TOP/@/srv/data)" ]; then :; else ok=1; echo "SUBVOL: @/srv/data missing or not empty"; fi
-if [ "$(ls -A $TOP/@/srv)" = "data" ]; then :; else ok=1; echo "SUBVOL: @/srv holds more than data: $(ls -A $TOP/@/srv)"; fi
-if [ -z "$(find $TOP/@/srv -type f)" ]; then :; else ok=1; echo "SUBVOL: files left under @/srv: $(find $TOP/@/srv -type f)"; fi
+if [ "$(ls -A $TOP/@/srv | sort)" = "$(cat /root/srv.base.ls)" ]; then :; else ok=1; echo "SUBVOL: @/srv differs from its baseline: $(ls -A $TOP/@/srv | sort | tr '\n' ' ')"; fi
+if [ "$(find $TOP/@/srv -type f | sort)" = "$(cat /root/srv.base.files)" ]; then :; else ok=1; echo "SUBVOL: files left under @/srv: $(find $TOP/@/srv -type f)"; fi
 top_umount
 grep -q '/srv/data btrfs' /etc/fstab || ok=1
 findmnt --verify > /tmp/verify.log 2>&1 || { ok=1; cat /tmp/verify.log; }

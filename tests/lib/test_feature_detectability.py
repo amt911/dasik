@@ -1580,3 +1580,55 @@ def test_timezone_block_absent_from_the_whole_config_plans_nothing(tmp_path):
     # The point of this row: TimezoneAction must be VISITED (so the domain's
     # ownership is released deliberately), not silently skipped by the probe.
     assert len(results) == 1
+
+
+# --- btrfs day-2 subvolumes ------------------------------------------------ #
+
+def _btrfs_action(tmp_path, monkeypatch, declared, mounted):
+    from types import SimpleNamespace
+    from dasik.lib.actions.btrfs_subvolume_action import BtrfsSubvolumeAction
+    from dasik.lib.command_worker.command_worker import Command
+    (tmp_path / "etc").mkdir(exist_ok=True)
+    (tmp_path / "etc/fstab").write_text("".join(
+        f"UUID=u {mp} btrfs rw,subvol=/{n} 0 0\n" for n, mp in mounted.items()))
+
+    def fake(cmd, args, **kw):
+        if cmd == "lsblk":
+            out = "ROOT\n"
+        elif cmd == "findmnt":
+            out = "".join(
+                f"{tmp_path}{'' if mp == '/' else mp} /dev/x[/{n}] u rw,subvol=/{n}\n"
+                for n, mp in mounted.items())
+        else:
+            out = "".join(f"ID 25{i} gen 1 top level 5 path {n}\n"
+                          for i, n in enumerate(mounted))
+        return SimpleNamespace(stdout=out, returncode=0, stderr="")
+    monkeypatch.setattr(Command, "execute", staticmethod(fake))
+    cfg = {"disks": {"disks": [{"device": "/dev/vda", "partitions": [
+        {"label": "ROOT", "size": "rest", "filesystem": "btrfs",
+         "btrfs_subvolumes": [{"name": n, "mountpoint": mp} for n, mp in declared]}]}]}}
+    return BtrfsSubvolumeAction(cfg, _ctx(tmp_path))
+
+
+_BASE = {"@": "/", "@home": "/home"}
+
+
+def test_btrfs_subvolume_missing_is_planned(tmp_path, monkeypatch):
+    a = _btrfs_action(tmp_path, monkeypatch, list(_BASE.items()) + [("@v", "/v")], _BASE)
+    assert [(c.op.name, c.item) for c in a.plan(managed=[])] == [("INSTALL", "ROOT:@v")]
+
+
+def test_btrfs_subvolume_present_plans_nothing(tmp_path, monkeypatch):
+    a = _btrfs_action(tmp_path, monkeypatch, list(_BASE.items()), _BASE)
+    assert a.plan(managed=[]) == []
+
+
+def test_btrfs_subvolume_owned_but_undeclared_is_removed(tmp_path, monkeypatch):
+    a = _btrfs_action(tmp_path, monkeypatch, [("@", "/")], _BASE)
+    assert [(c.op.name, c.item) for c in a.plan(managed=["ROOT:@home"])] == [
+        ("REMOVE", "ROOT:@home")]
+
+
+def test_btrfs_subvolume_unowned_is_left_alone(tmp_path, monkeypatch):
+    a = _btrfs_action(tmp_path, monkeypatch, [("@", "/")], _BASE)
+    assert a.plan(managed=[]) == []

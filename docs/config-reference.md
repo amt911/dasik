@@ -489,7 +489,7 @@ for making a captured layout portable.
 | `unlock_fido2` | bool \| int | `false` | FIDO2 keyslots to enroll — `true` is one key, an integer is that many, one per physical key you own (max 31). Needs the key at enroll **and** boot. Same `luks_token` domain and same rules as `unlock_tpm2`, with two additions: keys are enrolled **one at a time** (`systemd-cryptenroll --fido2-device=auto` needs exactly one plugged in), so dasik asks you to swap them and lets you answer `s` to skip the ones you do not have; and a removal wipes keyslots **by number**, so going from 3 keys to 2 takes one, not all three. The header can be counted, never named — dasik knows how many tokens are enrolled, not which key each one is. |
 | `luks_options` | list[str] | `[]` | Extra verbatim `rd.luks.options` tokens (e.g. `token-timeout=10s`). |
 | `mount_options` | list[str] | `[]` | Extra mount options for the partition. |
-| `btrfs_subvolumes` | list | `[]` | Only for `btrfs` (below). |
+| `btrfs_subvolumes` | list | `[]` | Only for `btrfs` (below). Editing it on an installed machine adds, moves or removes subvolumes (domain `btrfs_subvolumes`, items `<label>:<name>`) — see [Disks](wiki/Disks.md). |
 
 ### BtrfsSubvolume
 
@@ -498,6 +498,19 @@ for making a captured layout portable.
 | `name` | string | — | e.g. `@`, `@home`. |
 | `mountpoint` | string | — | e.g. `/`, `/home`. |
 | `mount_options` | list[str] | `["compress-force=zstd"]` | |
+
+**Day-2 behaviour.** On an installed machine (`--target /` or `/mnt`) a new entry
+creates a flat top-level subvolume, reflink-copies the existing contents of its
+`mountpoint` into it, empties the old directory in the parent subvolume, mounts
+it and adds its `/etc/fstab` line; a changed `mountpoint` remounts it and
+rewrites the line (data stays); removing an entry that dasik owns copies the
+contents back, unmounts, drops the line and deletes the subvolume. dasik refuses,
+changing nothing, when the mountpoint is `/` or the root subvolume, a process is
+using the path, the path is already a mountpoint or a nested subvolume, a
+subvolume to remove has nested subvolumes, or there is no space for a non-reflink
+copy. Known limitations: removing the **last** subvolume of a partition (the list
+becomes empty) is not planned, and a partition being moved that also gains a
+brand-new subvolume in the same run skips the new one until the next run.
 
 `sync` captures the btrfs options you can declare and the kernel does not add by
 itself — `compress*`, `noatime`, `nodiratime`, `lazytime`, `autodefrag`,

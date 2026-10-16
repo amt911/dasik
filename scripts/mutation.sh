@@ -58,6 +58,11 @@ _EQUIVALENT_SIGNATURES=(
   # element at index 0 never depends on how many further splits happen.
   'stripped.split(":", )'
   'stripped.split(":", 2)'
+  # btrfs_subvol_state.parse_findmnt: `source.split("[", 1)[0]` with the
+  # maxsplit dropped or raised to 2 — the element at index 0 is the text
+  # before the FIRST "[" whatever follows (same reasoning as packaged_trusted).
+  'source.split("[", )'
+  'source.split("[", 2)'
 )
 
 _is_equivalent_diff() {

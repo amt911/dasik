@@ -439,7 +439,8 @@ class BtrfsSubvolumeAction(AbstractAction):
         out = []
         for line in self._strict("btrfs", ["subvolume", "list", top]).splitlines():
             _, sep, path = line.partition(" path ")
-            if sep and path.strip().startswith(prefix):
+            if sep and (path.strip().startswith(prefix)
+                        or path.strip() == rel_path.rstrip("/")):
                 out.append(path.strip())
         return out
 
@@ -532,6 +533,13 @@ class BtrfsSubvolumeAction(AbstractAction):
             src = self._vet_location(live, top, name, mp)
             dst = self._inside(top, os.path.join(top, name))
             self._fill_subvolume(live, src, dst, host_mp, name)
+        if self._has_content(host_mp):
+            raise SubvolumeChangeRefused(
+                f"files appeared at {mp} while {name} was being filled (a process "
+                f"opened a path there); mounting would hide them. {name} holds the "
+                "copy and stays unmounted with no fstab line, so the next plan shows "
+                f"it as an adopt and refuses while both hold data. Move those files "
+                "away (see ls " + host_mp + ") and run dasik again.")
         self._mount_new(device, part, subvol)
         self._fstab_set(mp, line, name, uuid)
 
@@ -578,10 +586,19 @@ class BtrfsSubvolumeAction(AbstractAction):
             except BaseException:
                 self._unstage(src, staging)
                 raise
-            shutil.rmtree(staging)
         except BaseException:
             self._discard_partial(dst, created, adopt and has)
             raise
+        # COMMITTED: the copy returned 0, dst holds everything. Nothing below may
+        # touch dst, whatever happens to the old copy.
+        if os.path.lexists(staging):
+            try:
+                shutil.rmtree(staging)
+            except Exception as exc:    # noqa: BLE001 - the data is safe in dst
+                run_logger.get().warning(
+                    f"could not delete the old copy at {staging}; the data is "
+                    f"safe in the new subvolume {name}. Remove it by hand",
+                    detail=str(exc))
 
     @staticmethod
     def _unstage(src: str, staging: str) -> None:

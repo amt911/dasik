@@ -247,3 +247,71 @@ def test_fstab_rewrite_fsyncs_and_keeps_the_mode(rig, monkeypatch):
     _install(rig)
     assert synced
     assert (path.stat().st_mode & 0o777) == 0o600
+
+
+# --- re-review: committed copies, late writers, exact-path subvolume ------- #
+
+def test_failing_delete_of_the_old_copy_never_touches_the_new_subvolume(rig, monkeypatch):
+    import shutil
+    d = _ollama_dir(rig)
+
+    def half_delete(path, *a, **k):
+        raise OSError("immutable file")
+    monkeypatch.setattr(shutil, "rmtree", half_delete)
+    _install(rig)          # warns, does not raise, does not wipe dst
+    assert (rig.top / OLLAMA / "model.bin").read_text() == "weights"
+    assert (rig.top / OLLAMA / "sub" / "x").exists()
+    assert (d.parent / (d.name + ".dasik-moving") / "model.bin").exists()
+    assert ("btrfs", ["subvolume", "delete", str(rig.top / OLLAMA)]) not in rig.argvs()
+    assert rig.find("mount", f"subvol={OLLAMA}") is not None
+
+
+def test_interrupted_delete_of_the_old_copy_keeps_the_new_subvolume(rig, monkeypatch):
+    import shutil
+    _ollama_dir(rig)
+    monkeypatch.setattr(shutil, "rmtree",
+                        lambda *a, **k: (_ for _ in ()).throw(KeyboardInterrupt()))
+    with pytest.raises(KeyboardInterrupt):
+        _install(rig)
+    assert (rig.top / OLLAMA / "model.bin").read_text() == "weights"
+    assert ("btrfs", ["subvolume", "delete", str(rig.top / OLLAMA)]) not in rig.argvs()
+
+
+def test_remove_failing_subvolume_delete_keeps_the_copied_back_data(tmp_path, monkeypatch):
+    r = _removal(tmp_path, monkeypatch)
+    dst = r.top / "@" / "var/lib/ollama"
+    dst.mkdir(parents=True)
+    real = r.__class__.__call__
+
+    def call(self, cmd, args, **kw):
+        if cmd == "btrfs" and args[:2] == ["subvolume", "delete"]:
+            raise CommandExecutionError("busy")
+        return real(self, cmd, args, **kw)
+    monkeypatch.setattr(r.__class__, "__call__", call)
+    with pytest.raises(CommandExecutionError):
+        _remove(r)
+    assert (dst / "model.bin").read_text() == "weights"
+
+
+def test_files_that_appear_under_the_mountpoint_block_the_mount(rig, tmp_path):
+    _ollama_dir(rig)
+    host = tmp_path / "var/lib/ollama"
+
+    def late():
+        host.mkdir(parents=True, exist_ok=True)
+        (host / "late.bin").write_text("x")
+    rig.cp_hook = late
+    with pytest.raises(SubvolumeChangeRefused, match="holds the copy"):
+        _install(rig)
+    assert rig.find("mount", f"subvol={OLLAMA}") is None
+    assert "var/lib/ollama" not in rig.fstab()
+    assert (rig.top / OLLAMA / "model.bin").exists() and (host / "late.bin").exists()
+
+
+def test_a_subvolume_exactly_at_the_path_is_refused_even_if_show_fails(rig):
+    d = _ollama_dir(rig)
+    rig.show_rc = 1
+    rig.deep = ["@/var/lib/ollama"]
+    with pytest.raises(SubvolumeChangeRefused, match="nested"):
+        _install(rig)
+    assert (d / "model.bin").exists() and rig.find("btrfs", "subvolume", "create") is None

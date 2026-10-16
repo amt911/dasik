@@ -32,6 +32,7 @@ from .ai_skills_state import (AGENT_SKILL_DIRS, CANONICAL_SKILL_DIR,
                               installed_agents, skills_state)
 from .config_access import field as _field
 from ..command_worker.command_worker import Command
+from ..command_worker.su_argv import su_argv
 from ..exceptions.exceptions import CommandExecutionError
 from ..logging import run_logger
 from ..models.ai_skills_model import PLUGIN_NAME_RE
@@ -622,13 +623,8 @@ class AiSkillsAction(AbstractAction):
 
     @staticmethod
     def _su_argv(user: str, script: str, *args: str) -> List[str]:
-        """``su - <user> -c <script> -- sh <args>``.
-
-        ``--`` terminates util-linux ``su``'s own option parsing before the
-        shell's positional argv, and every value travels as ``$1``.. so a name
-        with shell metacharacters arrives as inert data instead of code.
-        """
-        return ["-", user, "-c", script, "--", "sh", *args]
+        """See :func:`su_argv`."""
+        return su_argv(user, script, *args)
 
     def _command_for(self, change: Change, spec: Dict[str, Any]
                      ) -> List[Tuple[str, Tuple[str, ...]]]:

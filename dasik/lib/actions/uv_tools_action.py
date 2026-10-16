@@ -26,6 +26,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from .abstract_action import AbstractAction
 from .config_access import field as _field
 from ..command_worker.command_worker import Command
+from ..command_worker.su_argv import su_argv
 from ..exceptions.exceptions import CommandExecutionError
 from ..state.change import Change, Op
 
@@ -243,9 +244,8 @@ class UvToolsAction(AbstractAction):
 
     @staticmethod
     def _su_argv(user: str, script: str, *args: str) -> List[str]:
-        """``su - <user> -c <script> -- sh <args>``; values are $1.., never
-        interpolated into *script*."""
-        return ["-", user, "-c", script, "--", "sh", *args]
+        """See :func:`su_argv`."""
+        return su_argv(user, script, *args)
 
     def apply(self, changes) -> None:
         if self._target() is None:

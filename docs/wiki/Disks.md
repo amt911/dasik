@@ -257,6 +257,44 @@ The partition is mounted even when its `mountpoint` is `null`, as long as it has
 subvolumes: the subvolumes carry the mounts, and skipping it used to leave the
 fstab empty. Mount order follows the shallowest effective mountpoint.
 
+#### Day-2: add, move and remove subvolumes on an installed machine
+
+The same `btrfs_subvolumes` list keeps working after the install. Edit it and
+run `dasik plan` / `dasik apply` against the running machine (`--target /`) or a
+mounted one (`--target /mnt`); the domain is called `btrfs_subvolumes` and each
+item is `<partition label>:<subvolume name>` (for example `root:@var_lib_ollama`).
+
+| You change | `plan` shows | `apply` does |
+| --- | --- | --- |
+| add a subvolume | `+ [btrfs_subvolumes] install root:@data` | creates it at the top level of the filesystem (flat, next to `@`), reflink-copies what lives at the mountpoint into it, **empties the old directory in the parent subvolume** (so it no longer rides in `@` snapshots), mounts it and writes its `/etc/fstab` line |
+| change its `mountpoint` | `~ … move /srv/data -> /srv/data2` | remounts it and rewrites the fstab line; the data stays in the subvolume |
+| drop it from the list | `- … no longer declared` | copies the contents back into the parent subvolume, unmounts, drops the fstab line, **deletes the subvolume** |
+
+Data is copied before anything is deleted, and any failing step aborts the apply
+with nothing removed. Removal only touches subvolumes dasik owns (created by an
+earlier apply); one made by hand, by docker or by snapper is never deleted.
+A fresh install is unchanged: on a disk the same run is partitioning, the install
+path creates the subvolumes and this domain stays silent.
+
+dasik **refuses** (and says why, changing nothing) when:
+
+- the mountpoint is `/` or the subvolume is the root one;
+- a process has a file or its working directory under the path (the message names
+  the process: stop it and run dasik again);
+- the target path is already a mountpoint or already a (nested) subvolume,
+  such as the one a service's `tmpfiles` rule creates;
+- the subvolume being removed contains nested subvolumes;
+- there is not enough free space for a copy that cannot use reflinks.
+
+Known limitations:
+
+1. Removing the **last** subvolume of a partition (the list becomes empty) is not
+   planned: with no `btrfs_subvolumes` the partition is no longer treated as
+   subvolumed. Leave at least one entry.
+2. A partition whose existing subvolumes are being moved in the same run, and
+   which also gains a brand-new subvolume, skips the new one until the next run.
+   Run `dasik apply` twice.
+
 Pair this with [`snapper`](Features.md#snapper) for automatic pre/post snapshots
 on every pacman transaction.
 

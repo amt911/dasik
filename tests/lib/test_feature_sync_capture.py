@@ -1373,3 +1373,124 @@ def test_the_manifest_after_a_silent_plan_still_agrees_with_the_entry(tmp_path):
 
     assert "rootflags=compress-force=zstd,noatime,subvol=@" in managed
     assert "rootflags=compress-force=zstd:3,noatime,subvol=@" not in managed
+
+
+# --- day-2 btrfs subvolumes ------------------------------------------------ #
+#
+# The `disks` block has ONE author on the way back (DiskPartitionAction), so a
+# subvolume added day-2 only survives `sync` if that capture lists it — and
+# the captured config must then re-plan to nothing in `btrfs_subvolumes`.
+
+_SUBVOL_UUID = "1111-2222"
+
+
+def _subvol_machine(tmp_path, monkeypatch):
+    """A converged btrfs machine carrying a day-2 `@var_lib_ollama` mount."""
+    from types import SimpleNamespace
+    from dasik.lib.actions.disk_partition_action import DiskPartitionAction
+    from dasik.lib.command_worker.command_worker import Command
+
+    mounted = {"@": "/", "@home": "/home", "@var_lib_ollama": "/var/lib/ollama"}
+    (tmp_path / "etc").mkdir()
+    (tmp_path / "etc/fstab").write_text("".join(
+        f"UUID={_SUBVOL_UUID} {mp} btrfs rw,subvol=/{n} 0 0\n"
+        for n, mp in mounted.items()))
+    rows = [(mp, f"/dev/vda2[/{n}]",
+             f"rw,relatime,subvolid={256 + i},subvol=/{n}")
+            for i, (n, mp) in enumerate(mounted.items())]
+
+    def fake(cmd, args, **kw):
+        if cmd == "lsblk":
+            out = "ESP\nROOT\nboot\nroot\n"
+        elif cmd == "findmnt":
+            out = "".join(
+                f"{tmp_path}{'' if mp == '/' else mp} /dev/vda2[/{n}] {_SUBVOL_UUID} "
+                f"rw,relatime,subvol=/{n}\n" for n, mp in mounted.items())
+        elif cmd == "btrfs":
+            out = "".join(f"ID {256 + i} gen 9 top level 5 path {n}\n"
+                          for i, n in enumerate(mounted))
+        else:
+            raise FileNotFoundError(cmd)
+        return SimpleNamespace(stdout=out, returncode=0, stderr="")
+
+    monkeypatch.setattr(Command, "execute", staticmethod(fake))
+    monkeypatch.setattr(DiskPartitionAction, "_findmnt_btrfs_rows",
+                        lambda self: rows)
+    return tmp_path
+
+
+def _declared_without_the_new_subvolume():
+    return {"disks": {"disks": [{
+        "device": "/dev/vda", "partition_table": "gpt", "wipe_disk": False,
+        "partitions": [
+            {"label": "ESP", "size": "512MiB", "filesystem": "fat32",
+             "partition_type": "esp", "mountpoint": "/boot"},
+            {"label": "ROOT", "size": "rest", "filesystem": "btrfs",
+             "partition_type": "linux", "mountpoint": "/",
+             "btrfs_subvolumes": [{"name": "@", "mountpoint": "/"},
+                                  {"name": "@home", "mountpoint": "/home"}]},
+        ]}]}}
+
+
+def _discovered(ctx, monkeypatch):
+    """`sync` from an empty seed: the disks block is discovered off the machine."""
+    from dasik.lib.actions.disk_partition_action import DiskPartitionAction
+    tree = [{"name": "vda", "path": "/dev/vda", "type": "disk", "pttype": "gpt",
+             "children": [
+                 {"name": "vda1", "path": "/dev/vda1", "type": "part",
+                  "fstype": "vfat", "size": 536870912, "mountpoint": "/boot",
+                  "parttypename": "EFI System"},
+                 {"name": "vda2", "path": "/dev/vda2", "type": "part",
+                  "fstype": "btrfs", "size": 10737418240, "mountpoint": "/",
+                  "parttypename": "Linux filesystem"}]}]
+    monkeypatch.setattr(DiskPartitionAction, "_lsblk_tree", lambda self: tree)
+    return DiskPartitionAction(None, ctx).import_state(managed=[])
+
+
+def test_sync_captures_a_day2_subvolume_and_replans_to_nothing(tmp_path, monkeypatch):
+    from dasik.lib.actions.btrfs_subvolume_action import BtrfsSubvolumeAction
+
+    root = _subvol_machine(tmp_path, monkeypatch)
+    ctx = ActionContext(target=Target(root=str(root)))
+    captured = _discovered(ctx, monkeypatch)
+
+    root_part = next(p for p in captured["disks"]["disks"][0]["partitions"]
+                     if p.get("btrfs_subvolumes"))
+    names = {s["name"]: s["mountpoint"] for s in root_part["btrfs_subvolumes"]}
+    assert names["@var_lib_ollama"] == "/var/lib/ollama"
+
+    JsonModel.model_validate({**captured, "bootloader": "sd-boot"})
+    assert BtrfsSubvolumeAction(captured, ctx).plan(managed=[]) == []
+
+    # Not vacuous: the same probe DOES plan an addition the machine lacks.
+    root_part["btrfs_subvolumes"].append({"name": "@new", "mountpoint": "/srv/new"})
+    assert [c.item for c in BtrfsSubvolumeAction(captured, ctx).plan(managed=[])] \
+        == [f"{root_part['label']}:@new"]
+
+
+def test_a_declared_day2_subvolume_survives_a_declared_sync(tmp_path, monkeypatch):
+    """With the disks declared, sync reports the declaration back: the day-2
+    subvolume the user wrote must still be there afterwards."""
+    from dasik.lib.actions.disk_partition_action import DiskPartitionAction
+    root = _subvol_machine(tmp_path, monkeypatch)
+    ctx = ActionContext(target=Target(root=str(root)))
+    cfg = _declared_without_the_new_subvolume()
+    cfg["disks"]["disks"][0]["partitions"][1]["btrfs_subvolumes"].append(
+        {"name": "@var_lib_ollama", "mountpoint": "/var/lib/ollama"})
+    captured = DiskPartitionAction(cfg["disks"], ctx).import_state(managed=[])
+    part = captured["disks"]["disks"][0]["partitions"][1]
+    assert "@var_lib_ollama" in [s["name"] for s in part["btrfs_subvolumes"]]
+
+
+def test_the_day2_subvolume_is_planned_where_the_machine_lacks_it(tmp_path, monkeypatch):
+    """Sabotage: the check above must be able to fail. Declare a subvolume the
+    machine does not have and an INSTALL appears."""
+    from dasik.lib.actions.btrfs_subvolume_action import BtrfsSubvolumeAction
+    root = _subvol_machine(tmp_path, monkeypatch)
+    ctx = ActionContext(target=Target(root=str(root)))
+    cfg = _declared_without_the_new_subvolume()
+    cfg["disks"]["disks"][0]["partitions"][1]["btrfs_subvolumes"].append(
+        {"name": "@missing", "mountpoint": "/srv/missing"})
+
+    items = [c.item for c in BtrfsSubvolumeAction(cfg, ctx).plan(managed=[])]
+    assert items == ["ROOT:@missing"]

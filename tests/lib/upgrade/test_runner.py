@@ -148,3 +148,26 @@ def test_no_failure_text_ignores_output(monkeypatch):
     _stub(monkeypatch, [0], stdout="Failed to check")
     [o] = run_steps([_step()], None)
     assert o.status == "refreshed"
+
+
+def test_exception_from_command_is_a_failed_outcome_and_run_continues(monkeypatch):
+    calls = []
+
+    def fake(cmd, args, **kw):
+        calls.append(args)
+        if len(calls) == 1:
+            raise OSError("su: not found\nsecond line")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+    monkeypatch.setattr(Command, "execute", staticmethod(fake))
+    out = run_steps([_step("a"), _step("b")], None)
+    assert [(o.item, o.status) for o in out] == [("a", "failed"), ("b", "refreshed")]
+    assert out[0].detail == "su: not found"
+
+
+def test_exception_from_version_is_a_failed_outcome(monkeypatch):
+    _stub(monkeypatch, [0])
+
+    def boom():
+        raise RuntimeError("bad record")
+    out = run_steps([_step(version=boom)], None)
+    assert out[0].status == "failed" and out[0].detail == "bad record"

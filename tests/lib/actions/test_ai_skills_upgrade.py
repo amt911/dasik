@@ -122,6 +122,19 @@ def test_codex_marketplace_upgrade(tmp_path):
     assert step.skip is None and step.version() is None
 
 
+def test_codex_plugin_on_remote_catalog_is_skipped(tmp_path):
+    """No `source`: codex serves the catalog itself, a bare re-add proves nothing."""
+    remote = dict(CODEX, marketplace={"name": "openai-curated-remote"})
+    codex = tmp_path / "home/andres/.codex"
+    codex.mkdir(parents=True)
+    (codex / "config.toml").write_text(
+        '[plugins."superpowers@openai-curated-remote"]\nenabled = true\n')
+    step = _by_item(_steps(tmp_path, remote))[
+        "andres:codex:plugin:superpowers@openai-curated-remote"]
+    assert step.skip == "catalog managed by codex"
+    assert step.commands == ()
+
+
 def test_codex_plugin_readd(tmp_path):
     _passwd(tmp_path)
     _codex_plugin(tmp_path)

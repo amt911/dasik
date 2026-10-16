@@ -38,6 +38,15 @@ def _failure_line(result, needles) -> Optional[str]:
 
 
 def _run_one(step: UpgradeStep, target) -> UpgradeOutcome:
+    try:
+        return _execute(step, target)
+    except Exception as exc:  # one broken step never stops the run
+        text = str(exc).strip()
+        first = text.splitlines()[0] if text else type(exc).__name__
+        return UpgradeOutcome(step.item, "failed", None, None, first)
+
+
+def _execute(step: UpgradeStep, target) -> UpgradeOutcome:
     if step.skip is not None:
         return UpgradeOutcome(step.item, "skipped", None, None, step.skip)
     before = step.version()

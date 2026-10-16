@@ -53,7 +53,8 @@ _AGY_AGENT = "antigravity"
 # `agy plugin install` takes a directory and nothing else (FACT-AGY-5), so the
 # repository is cloned into a throwaway directory first. `--` stops git reading
 # the URL as an option; the clone is removed whatever happened, and the exit
-# status is the installer's.
+# status is the installer's. Measured (agy, throwaway HOME): installing the same
+# plugin over itself succeeds non-interactively, rc 0, so upgrade reuses it.
 _AGY_INSTALL = ('dir=$(mktemp -d) || exit 1; '
                 'git clone --depth 1 --quiet -- "$1" "$dir/plugin" '
                 '&& agy plugin install "$dir/plugin"; rc=$?; '
@@ -694,6 +695,14 @@ class AiSkillsAction(AbstractAction):
                               f"{spec['marketplace']}")
                     if market in desired:
                         after = market
+                    elif spec["agent"] == "codex":
+                        # No `source`: codex serves that catalog itself, so a
+                        # re-add would report success without refreshing.
+                        steps.append(UpgradeStep(
+                            _DOMAIN, item, user,
+                            skip="catalog managed by codex" if present
+                            else "not installed — run dasik apply"))
+                        continue
             if not present:
                 steps.append(UpgradeStep(_DOMAIN, item, user,
                                          skip="not installed — run dasik apply"))

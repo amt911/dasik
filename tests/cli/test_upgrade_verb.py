@@ -5,9 +5,12 @@ the uv and claude installs are laid out on disk the way the real tools leave
 them, which is what the steps' `actual()` reads.
 """
 import json
+import shutil
 from unittest.mock import MagicMock, patch
 
 from dasik.__main__ import main
+from dasik.lib.state.generation_store import GenerationStore
+from dasik.lib.target.target import Target
 from tests.lib.actions.test_ai_skills_plan import (_install_claude_plugin,
                                                    _passwd as _ai_passwd)
 from tests.lib.actions.test_uv_tools_action import _install
@@ -68,17 +71,26 @@ def test_upgrade_then_plan_is_silent(tmp_path, capsys):
     path = _root(tmp_path, _full_cfg())
     _upgrade(tmp_path, path)
     capsys.readouterr()
-    _upgrade(tmp_path, path, verb="plan")
+    rc, _ = _upgrade(tmp_path, path, verb="plan")
     out = capsys.readouterr().out
+    assert rc == 0
+    assert "[base]" in out                      # plan really printed its diff
     assert "[uv_tools]" not in out and "[ai_skills]" not in out
+
+
+def test_plan_positive_control_sees_a_missing_uv_tool(tmp_path, capsys):
+    path = _root(tmp_path, _full_cfg())
+    shutil.rmtree(tmp_path / "home/andres/.local/share/uv")
+    rc, _ = _upgrade(tmp_path, path, verb="plan")
+    assert rc == 0
+    assert "[uv_tools]" in capsys.readouterr().out
 
 
 def test_upgrade_writes_no_generation(tmp_path):
     path = _root(tmp_path, _full_cfg())
     _upgrade(tmp_path, path)
-    assert not (tmp_path / "var/lib/dasik/state.json").exists()
-    assert not list((tmp_path / "var/lib/dasik").glob("generations*")) \
-        if (tmp_path / "var/lib/dasik").exists() else True
+    assert not (tmp_path / "var/lib/dasik/generations").exists()
+    assert GenerationStore(Target(root=str(tmp_path))).list() == []
 
 
 def test_upgrade_without_ai_blocks(tmp_path, capsys):

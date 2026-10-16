@@ -36,11 +36,11 @@ from pathlib import Path
 from typing import Optional
 
 from dasik.lib.actions.actions_handler_v2 import setup_actions
+from dasik.lib.actions.action_registry import get_default_registry
 from dasik.lib.actions.action_context import ActionContext
 from dasik.lib.actions.ai_skills_action import AiSkillsAction
 from dasik.lib.actions.uv_tools_action import UvToolsAction
 from dasik.lib.upgrade.runner import exit_code, render, run_steps
-from dasik.lib.actions.action_registry import get_default_registry
 from dasik.lib.logging import run_logger
 from dasik.lib.reconciler.reconciler import Reconciler
 from dasik.lib.json_parser.etc_tree import extract_to_etc_tree

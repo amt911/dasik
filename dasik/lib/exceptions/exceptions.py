@@ -47,3 +47,15 @@ class ConfigValidationError(Exception):
     """
     def __init__(self, message : str = "Invalid configuration value."):
         super().__init__(message)
+
+
+class SubvolumeChangeRefused(Exception):
+    """Raised when a day-2 btrfs subvolume change would be unsafe.
+
+    Raised BEFORE the item mutates anything: a busy path, a mountpoint that is
+    already a mount or a nested subvolume, data on both sides of a move, or too
+    little free space for the non-reflink copy. The message names the path and
+    what to do about it.
+    """
+    def __init__(self, message: str = "Btrfs subvolume change refused."):
+        super().__init__(message)

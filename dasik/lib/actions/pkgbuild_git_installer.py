@@ -27,6 +27,7 @@ from typing import Iterable, List, Set
 from . import srcinfo
 from .package_resolver import BUILD_PREREQUISITES, ResolvedGitPackage
 from ..command_worker.command_worker import Command
+from ..command_worker.su_argv import su_argv
 from ..exceptions.exceptions import CommandExecutionError
 
 
@@ -36,7 +37,7 @@ def _su_argv(user: str, script: str, *args: str) -> List[str]:
     conventional placeholder. The ``--`` option terminator ensures a later
     dash-prefixed value belongs to the child shell rather than util-linux ``su``.
     Mirrors PackagesAction._su_argv."""
-    return ["su", "-", user, "-c", script, "--", "sh", *args]
+    return ["su", *su_argv(user, script, *args)]
 
 
 class PkgbuildGitInstaller:

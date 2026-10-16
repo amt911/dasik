@@ -26,6 +26,7 @@ from .abstract_action import AbstractAction
 from .config_access import field as _field
 from .mcp_servers_state import antigravity_mcp, claude_mcp, codex_mcp
 from ..command_worker.command_worker import Command
+from ..command_worker.su_argv import su_argv
 from ..exceptions.exceptions import CommandExecutionError
 from ..state.change import Change, Op
 
@@ -258,7 +259,7 @@ class McpServersAction(AbstractAction):
         shell's positional argv, and every value travels as ``$1``.. so a name,
         a URL or an env value arrives as inert data instead of code.
         """
-        return ["-", user, "-c", script, "--", "sh", *args]
+        return su_argv(user, script, *args)
 
     @staticmethod
     def _agy_add_command(spec: Dict[str, Any]) -> Tuple[str, Tuple[str, ...]]:

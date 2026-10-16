@@ -148,3 +148,33 @@ def test_no_target_is_inert(tmp_path, monkeypatch):
 def test_import_state_is_empty_and_empty_config():
     assert BtrfsSubvolumeAction({}, None).import_state() == {}
     assert BtrfsSubvolumeAction.empty_config() == {}
+
+
+def test_unmounted_partition_does_not_borrow_another_filesystem(tmp_path, monkeypatch):
+    """DATA declares `@` too, but its filesystem is not mounted: ROOT's `@`
+    must not be read as DATA's (that would plan MODIFY DATA:@ / -> /data)."""
+    a = _setup(tmp_path, monkeypatch, BASE, labels=("ROOT", "DATA"))
+    cfg = _cfg(BASE)
+    cfg["disks"]["disks"][0]["partitions"][0]["size"] = "20GiB"
+    cfg["disks"]["disks"][0]["partitions"].append(
+        {"label": "DATA", "size": "rest", "filesystem": "btrfs",
+         "btrfs_subvolumes": [{"name": "@", "mountpoint": "/data"}]})
+    a = BtrfsSubvolumeAction(cfg, SimpleNamespace(target=_Target(tmp_path)))
+    assert a.plan(managed=[]) == []
+    assert "DATA" not in a._live()
+
+
+def test_owned_key_of_an_undeclared_partition_is_not_removed(tmp_path, monkeypatch):
+    a = _setup(tmp_path, monkeypatch, BASE)
+    assert a.plan(managed=["GONE:@x"]) == []
+
+
+def test_failing_probe_is_logged_not_silent(tmp_path, monkeypatch):
+    from dasik.lib.logging import run_logger
+    a = _setup(tmp_path, monkeypatch, BASE)
+    seen = []
+    monkeypatch.setattr(run_logger.get(), "warning",
+                        lambda m, detail="": seen.append(m))
+    monkeypatch.setattr(Command, "execute",
+                        staticmethod(lambda *x, **k: (_ for _ in ()).throw(OSError("boom"))))
+    assert a._host("findmnt", []) == "" and seen

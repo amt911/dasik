@@ -30,6 +30,7 @@ from .btrfs_subvol_state import (
 )
 from .disk_partition_action import DiskPartitionAction
 from ..command_worker.command_worker import Command
+from ..logging import run_logger
 from ..models.disk_model import FileSystemType
 from ..state.change import Change, Op
 
@@ -109,7 +110,10 @@ class BtrfsSubvolumeAction(AbstractAction):
     def _host(self, cmd: str, args: List[str]) -> str:
         try:
             return _text(Command.execute(cmd, args))
-        except Exception:
+        except Exception as exc:
+            run_logger.get().warning(
+                f"btrfs probe `{cmd}` failed; treating its output as empty",
+                detail=str(exc))
             return ""
 
     def _live(self) -> Dict[str, Live]:
@@ -128,13 +132,31 @@ class BtrfsSubvolumeAction(AbstractAction):
                 rows.append((r, canon))
         fstab = parse_fstab_subvols(self._read_fstab())
         live: Dict[str, Live] = {}
+        # First pass: the filesystem that already carries a declared subvolume
+        # at its declared mountpoint. Claimed UUIDs are off-limits to the move
+        # fallback, so a common name like `@` on a second, unmounted partition
+        # cannot borrow another partition's filesystem.
+        first: Dict[str, Set[str]] = {}
         for _disk, part in parts:
             names = {s.name: s.mountpoint for s in part.btrfs_subvolumes}
-            uuids = {r.uuid for r, c in rows if names.get(r.subvol) == c}
+            first[part.label] = {r.uuid for r, c in rows if names.get(r.subvol) == c}
+        claimed = {u for us in first.values() for u in us}
+        for _disk, part in parts:
+            names = {s.name: s.mountpoint for s in part.btrfs_subvolumes}
+            uuids = set(first[part.label])
             if not uuids:   # every declared subvolume is somewhere else (moves)
-                uuids = {r.uuid for r, _c in rows if r.subvol in names}
-            if len(uuids) != 1:
-                continue    # not mounted, or ambiguous: not our call yet
+                for u in {r.uuid for r, _c in rows if r.subvol in names} - claimed:
+                    here = {r.subvol for r, _c in rows if r.uuid == u}
+                    if set(names) <= here:   # stricter: all declared names present
+                        uuids.add(u)
+            if len(uuids) > 1:
+                run_logger.get().warning(
+                    f"btrfs partition {part.label}: several mounted filesystems "
+                    "match its subvolumes; skipping it",
+                    detail=", ".join(sorted(uuids)))
+                continue
+            if not uuids:
+                continue    # not mounted: not our call yet
             uuid = uuids.pop()
             mine = [(r, c) for r, c in rows if r.uuid == uuid]
             listing = self._host("btrfs", ["subvolume", "list", mine[0][0].target])

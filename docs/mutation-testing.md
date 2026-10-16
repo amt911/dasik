@@ -133,6 +133,13 @@ In `pacman_repos_state.py` (added for `pacman.repositories`/`pacman.keys`,
   `0` can change it. Signatures: `stripped.split(":", )` and
   `stripped.split(":", 2)`.
 
+In `btrfs_subvol_state.py` (day-2 btrfs subvolumes, 2026-10):
+
+- `parse_findmnt`: `source.split("[", 1)[0]` mutated to drop the `1` or make
+  it `2`. Same argument as `packaged_trusted`: index `0` of a split is the
+  text before the first separator for any `n >= 1`. Signatures:
+  `source.split("[", )` and `source.split("[", 2)`.
+
 All ten of the equivalents above were confirmed by generating mutmut's own
 mutated function bodies (`mutants/dasik/lib/actions/pacman_repos_state.py`,
 one variant per mutant behind a `MUTANT_UNDER_TEST`-driven trampoline) and

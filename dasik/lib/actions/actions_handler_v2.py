@@ -76,6 +76,7 @@ def setup_actions() -> None:
     from .plymouth_action import PlymouthAction
     from .luks_keyfile_action import LuksKeyfileAction
     from .luks_token_action import LuksTokenAction
+    from .btrfs_subvolume_action import BtrfsSubvolumeAction
     from .encrypted_swap_action import EncryptedSwapAction
     from .apparmor_action import ApparmorAction
     from .auditd_conf_action import AuditdConfAction
@@ -104,6 +105,14 @@ def setup_actions() -> None:
     register_action(
         action_class=LuksTokenAction,
         config_key='__root__',   # reads `disks` — the unlock lives per partition
+        is_optional=True,
+    )
+    # Day-2 btrfs subvolumes: add / move / remove on an installed machine. After
+    # the volumes are open and mounted, and before anything writes under
+    # `/var/lib` (a new subvolume's mountpoint must exist before its contents).
+    register_action(
+        action_class=BtrfsSubvolumeAction,
+        config_key='__root__',   # reads `disks` — subvolumes live per partition
         is_optional=True,
     )
     # dasik-owned pacman hooks (today: the mkinitcpio neutralizers). MUST come

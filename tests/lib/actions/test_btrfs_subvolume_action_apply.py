@@ -41,6 +41,7 @@ class Rig:
         self.du = "100\tx\n"
         self.lsattr = "--------------e------- x\n"
         self.fail_mount_new = False
+        self.deep = []        # extra `btrfs subvolume list` lines (nested subvolumes)
         (tmp_path / "etc").mkdir(exist_ok=True)
         (tmp_path / "etc" / "fstab").write_text("".join(
             f"UUID={UUID} {mp} btrfs rw,subvol=/{n},compress=zstd:3 0 0\n"
@@ -85,14 +86,17 @@ class Rig:
                 return SimpleNamespace(stdout=self.nested, returncode=0, stderr="")
             out = "".join(f"ID {256 + i} gen 9 top level 5 path {n}\n"
                           for i, n in enumerate(self.existing))
+            out += "".join(f"ID 900 gen 9 top level 260 path {d}\n" for d in self.deep)
             return SimpleNamespace(stdout=out, returncode=0, stderr="")
         if cmd == "btrfs" and args[:2] == ["subvolume", "show"]:
             return SimpleNamespace(stdout="", returncode=self.show_rc, stderr="")
         if cmd == "btrfs" and args[:2] == ["subvolume", "create"]:
             os.makedirs(args[2])
+            self.existing.append(os.path.basename(args[2]))
             return ok
         if cmd == "btrfs" and args[:2] == ["subvolume", "delete"]:
             shutil.rmtree(args[2])
+            self.existing.remove(os.path.basename(args[2]))
             return ok
         if cmd == "cp":
             rc = self.reflink_rc if "--reflink=always" in args else self.plain_rc
@@ -106,8 +110,14 @@ class Rig:
             return SimpleNamespace(stdout=self.du, returncode=0, stderr="")
         if cmd == "lsattr":
             return SimpleNamespace(stdout=self.lsattr, returncode=0, stderr="")
-        if cmd == "mount" and self.fail_mount_new and "subvolid=5" not in args[1]:
-            raise CommandExecutionError("mount failed")
+        if cmd == "mount" and "subvolid=5" not in args[1]:
+            if self.fail_mount_new:
+                raise CommandExecutionError("mount failed")
+            sub = [o for o in args[1].split(",") if o.startswith("subvol=")][0][7:]
+            self.mounted[sub] = args[-1][len(str(self.root)):] or "/"
+        if cmd == "umount" and args[0] != str(self.top):
+            mp = args[0][len(str(self.root)):] or "/"
+            self.mounted = {n: m for n, m in self.mounted.items() if m != mp}
         return ok     # mount / umount / chattr
 
     def fstab(self):
@@ -375,11 +385,26 @@ def test_remove_copy_failure_keeps_the_subvolume(tmp_path, monkeypatch):
     (r.top / "@" / "var/lib/ollama").mkdir(parents=True)
     r.reflink_rc = r.plain_rc = 1
     r.du = "10\tx\n"
-    with pytest.raises(CommandExecutionError):
+    with pytest.raises(SubvolumeChangeRefused, match="remounted"):
         _remove(r)
     assert (r.top / OLLAMA / "model.bin").exists()
     assert r.find("btrfs", "subvolume", "delete") is None
     assert "/var/lib/ollama" in r.fstab()
+    um = r.find("umount", str(tmp_path / "var/lib/ollama"))
+    re = r.find("mount", f"subvol=/{OLLAMA}", str(tmp_path / "var/lib/ollama"))
+    assert re is not None and um < re
+    assert r.calls[re][1][:2] == ["-o", f"rw,subvol=/{OLLAMA},compress=zstd:3"]
+
+
+def test_remove_copy_failure_and_remount_failure_says_so(tmp_path, monkeypatch):
+    r = _removal(tmp_path, monkeypatch)
+    (r.top / "@" / "var/lib/ollama").mkdir(parents=True)
+    r.reflink_rc = r.plain_rc = 1
+    r.du = "10\tx\n"
+    r.fail_mount_new = True
+    with pytest.raises(SubvolumeChangeRefused, match="mount it by hand"):
+        _remove(r)
+    assert r.find("btrfs", "subvolume", "delete") is None
 
 
 def test_root_never_touched(tmp_path, monkeypatch):
@@ -439,3 +464,148 @@ def test_unmounted_filesystem_refuses(tmp_path, monkeypatch):
 def test_undeclared_item_refuses(rig):
     with pytest.raises(SubvolumeChangeRefused, match="not declared"):
         rig.action.apply([Change("btrfs_subvolumes", Op.INSTALL, "ROOT:@ghost")])
+
+
+def _two_items(r):
+    r.action.apply([Change("btrfs_subvolumes", Op.INSTALL, "ROOT:@var"),
+                    Change("btrfs_subvolumes", Op.INSTALL, "ROOT:@var_log")])
+
+
+def test_nested_additions_reprobe_so_logs_are_not_hidden(tmp_path, monkeypatch):
+    r = Rig(tmp_path, {"@": "/", "@home": "/home"},
+            declared=[("@", "/"), ("@home", "/home"), ("@var", "/var"),
+                      ("@var_log", "/var/log")])
+    monkeypatch.setattr(Command, "execute", staticmethod(r))
+    monkeypatch.setattr(BtrfsSubvolumeAction, "_PROC", str(tmp_path / "proc"))
+    (tmp_path / "proc").mkdir()
+    (r.top / "@" / "var/log").mkdir(parents=True)
+    (r.top / "@" / "var/log/syslog").write_text("logs")
+    (r.top / "@" / "var/cache").mkdir()
+    _two_items(r)
+    assert (r.top / "@var_log" / "syslog").read_text() == "logs"
+    assert (r.top / "@var" / "cache").is_dir()
+    assert not (r.top / "@var" / "log" / "syslog").exists()
+    assert not (r.top / "@" / "var" / "log" / "syslog").exists()
+
+
+def test_move_onto_non_empty_target_refused_nothing_unmounted(tmp_path, monkeypatch):
+    r = Rig(tmp_path, {"@": "/", "@home": "/home"},
+            declared=[("@", "/"), ("@home", "/srv/home")])
+    monkeypatch.setattr(Command, "execute", staticmethod(r))
+    monkeypatch.setattr(BtrfsSubvolumeAction, "_PROC", str(tmp_path / "proc"))
+    (tmp_path / "proc").mkdir()
+    (r.top / "@" / "srv/home").mkdir(parents=True)
+    (r.top / "@" / "srv/home/hidden").write_text("h")
+    with pytest.raises(SubvolumeChangeRefused, match="hide that data"):
+        r.action.apply([Change("btrfs_subvolumes", Op.MODIFY, "ROOT:@home")])
+    assert r.find("umount", str(tmp_path / "home")) is None
+    assert r.find("mount", "subvol=@home") is None
+    assert " /home btrfs" in r.fstab()
+
+
+def test_move_onto_a_subvolume_refused_nothing_unmounted(tmp_path, monkeypatch):
+    r = Rig(tmp_path, {"@": "/", "@home": "/home"},
+            declared=[("@", "/"), ("@home", "/srv/home")])
+    monkeypatch.setattr(Command, "execute", staticmethod(r))
+    (r.top / "@" / "srv/home").mkdir(parents=True)
+    r.show_rc = 0
+    with pytest.raises(SubvolumeChangeRefused, match="nested"):
+        r.action.apply([Change("btrfs_subvolumes", Op.MODIFY, "ROOT:@home")])
+    assert r.find("umount", str(tmp_path / "home")) is None
+
+
+def test_move_onto_existing_mountpoint_refused(tmp_path, monkeypatch):
+    r = Rig(tmp_path, {"@": "/", "@home": "/home"},
+            declared=[("@", "/"), ("@home", "/srv/home")])
+    monkeypatch.setattr(Command, "execute", staticmethod(r))
+    monkeypatch.setattr(os.path, "ismount", lambda p: p.endswith("srv/home"))
+    with pytest.raises(SubvolumeChangeRefused, match="already a mountpoint"):
+        r.action.apply([Change("btrfs_subvolumes", Op.MODIFY, "ROOT:@home")])
+    assert r.find("umount", str(tmp_path / "home")) is None
+
+
+def test_move_of_the_root_subvolume_refused(tmp_path, monkeypatch):
+    r = Rig(tmp_path, {"@": "/", "@home": "/home"},
+            declared=[("@", "/srv/root"), ("@home", "/home")])
+    monkeypatch.setattr(Command, "execute", staticmethod(r))
+    with pytest.raises(SubvolumeChangeRefused, match="root subvolume"):
+        r.action.apply([Change("btrfs_subvolumes", Op.MODIFY, "ROOT:@")])
+    assert r.find("umount") is None
+
+
+@pytest.mark.parametrize("name,mp", [
+    ("/@foo", "/srv/foo"), ("@a/b", "/srv/foo"), ("..", "/srv/foo"),
+    ("@foo", "srv/foo"), ("@foo", "/home/../srv"), ("@foo", "/srv//foo"),
+    ("@foo", "/srv/foo/"),
+])
+def test_declarations_that_could_escape_are_refused(tmp_path, monkeypatch, name, mp):
+    r = Rig(tmp_path, {"@": "/", "@home": "/home"},
+            declared=[("@", "/"), ("@home", "/home"), (name, mp)])
+    monkeypatch.setattr(Command, "execute", staticmethod(r))
+    with pytest.raises(SubvolumeChangeRefused, match="Nothing was changed"):
+        r.action.apply([Change("btrfs_subvolumes", Op.INSTALL, f"ROOT:{name}")])
+    assert not {"umount", "cp"} & set(r.names())
+    assert r.find("btrfs", "subvolume", "create") is None
+    assert r.find("mount", "subvolid=5") is None
+
+
+def test_remove_with_a_dotdot_mountpoint_never_copies_outside(tmp_path, monkeypatch):
+    r = Rig(tmp_path, {"@": "/", "@home": "/home"},
+            declared=[("@", "/"), ("@home", "/home")])
+    r.existing.append("@x")
+    (r.top / "@x").mkdir()
+    (r.top / "@x" / "f").write_text("f")
+    (tmp_path / "etc" / "fstab").write_text(
+        r.fstab() + f"UUID={UUID} /home/../srv btrfs subvol=/@x 0 0\n")
+    monkeypatch.setattr(Command, "execute", staticmethod(r))
+    with pytest.raises(SubvolumeChangeRefused, match="normalized"):
+        r.action.apply([Change("btrfs_subvolumes", Op.REMOVE, "ROOT:@x")])
+    assert not (r.top / "srv").exists() and (r.top / "@x" / "f").exists()
+    assert r.find("btrfs", "subvolume", "delete") is None
+
+
+def test_path_resolving_outside_the_top_level_is_refused(rig, tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "keep").write_text("k")
+    (rig.top / "@" / "var/lib").mkdir(parents=True)
+    os.symlink(outside, rig.top / "@" / "var/lib/ollama")
+    with pytest.raises(SubvolumeChangeRefused, match="outside the btrfs top level"):
+        _install(rig)
+    assert (outside / "keep").exists()
+    assert rig.find("btrfs", "subvolume", "create") is None
+
+
+def test_subvolume_below_the_add_path_refused_not_flattened(rig):
+    d = _ollama_dir(rig)
+    rig.deep = ["@/var/lib/ollama/Q"]
+    with pytest.raises(SubvolumeChangeRefused, match="contains nested subvolumes"):
+        _install(rig)
+    assert (d / "model.bin").exists()
+    assert rig.find("btrfs", "subvolume", "create") is None and rig.find("cp") is None
+
+
+def test_sibling_prefix_subvolume_does_not_block(rig):
+    _ollama_dir(rig)
+    rig.deep = ["@/var/lib/ollama2/Q"]
+    _install(rig)
+    assert rig.find("btrfs", "subvolume", "create") is not None
+
+
+def test_mount_failure_after_create_raises_and_writes_no_fstab(rig):
+    _ollama_dir(rig)
+    rig.fail_mount_new = True
+    with pytest.raises(CommandExecutionError):
+        _install(rig)
+    assert "var/lib/ollama" not in rig.fstab()
+    assert rig.find("umount", str(rig.top)) is not None
+
+
+def test_fstab_is_replaced_atomically_never_left_half_written(rig, monkeypatch):
+    _ollama_dir(rig)
+    seen = []
+    real = os.replace
+    monkeypatch.setattr(os, "replace", lambda a, b: (seen.append((a, b)), real(a, b))[1])
+    _install(rig)
+    assert seen and seen[0][0].endswith("fstab.dasik-tmp") and seen[0][1].endswith("etc/fstab")
+    assert not (rig.root / "etc" / "fstab.dasik-tmp").exists()

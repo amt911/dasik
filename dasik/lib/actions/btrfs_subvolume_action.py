@@ -327,30 +327,99 @@ class BtrfsSubvolumeAction(AbstractAction):
         opts = ",".join(DiskPartitionAction._subvol_mount_options(part, subvol))
         return f"UUID={uuid} {subvol.mountpoint} btrfs {opts} 0 0"
 
-    def _fstab_drop(self, mountpoint: str) -> None:
-        """Drop the btrfs lines for *mountpoint*; any other line stays."""
-        current = self._read_fstab()
+    def _fstab_write(self, text: str) -> None:
+        """Replace fstab atomically (temp file + rename), never in place."""
+        path = self._p(_FSTAB)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = path + ".dasik-tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(text)
+        os.replace(tmp, path)
+
+    @staticmethod
+    def _without_btrfs_lines(text: str, mountpoint: str) -> List[str]:
         kept = []
-        for ln in current.splitlines():
+        for ln in text.splitlines():
             cols = ln.split()
             if len(cols) >= 3 and not ln.lstrip().startswith("#") \
                     and cols[1] == mountpoint and cols[2] == "btrfs":
                 continue
             kept.append(ln)
+        return kept
+
+    def _fstab_drop(self, mountpoint: str) -> None:
+        """Drop the btrfs lines for *mountpoint*; any other line stays."""
+        current = self._read_fstab()
+        kept = self._without_btrfs_lines(current, mountpoint)
         if len(kept) == len(current.splitlines()):
             return
-        with open(self._p(_FSTAB), "w", encoding="utf-8") as f:
-            f.write("\n".join(kept) + ("\n" if kept else ""))
+        self._fstab_write("\n".join(kept) + ("\n" if kept else ""))
 
     def _fstab_set(self, mountpoint: str, line: str) -> None:
-        self._fstab_drop(mountpoint)
-        path = self._p(_FSTAB)
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        current = self._read_fstab()
-        with open(path, "a", encoding="utf-8") as f:
-            if current and not current.endswith("\n"):
-                f.write("\n")
-            f.write(line + "\n")
+        kept = self._without_btrfs_lines(self._read_fstab(), mountpoint)
+        self._fstab_write("\n".join(kept + [line]) + "\n")
+
+    def _fstab_options(self, mountpoint: str, name: str) -> str:
+        for ln in self._read_fstab().splitlines():
+            cols = ln.split()
+            if len(cols) >= 4 and cols[1] == mountpoint and cols[2] == "btrfs":
+                return cols[3]
+        return f"subvol={name}"
+
+    # --- vetting ---------------------------------------------------------- #
+
+    @staticmethod
+    def _vet_declaration(name: str, mountpoint: Optional[str]) -> None:
+        """Config-derived strings become paths: refuse any that could leave
+        the directory they are meant for."""
+        if not name or "/" in name or ".." in name.split("/") or name in (".", ".."):
+            raise SubvolumeChangeRefused(
+                f"subvolume name {name!r} must be a plain name (no '/' and no "
+                "'..'). Nothing was changed.")
+        if mountpoint is not None and (
+                not mountpoint.startswith("/")
+                or os.path.normpath(mountpoint) != mountpoint):
+            raise SubvolumeChangeRefused(
+                f"mountpoint {mountpoint!r} of {name} must be an absolute, "
+                "normalized path (no '..', no '//', no trailing '/'). "
+                "Nothing was changed.")
+
+    @staticmethod
+    def _inside(top: str, path: str) -> str:
+        root = os.path.realpath(top)
+        if os.path.commonpath([root, os.path.realpath(path)]) != root:
+            raise SubvolumeChangeRefused(
+                f"{path} resolves outside the btrfs top level {top}; "
+                "nothing was changed.")
+        return path
+
+    def _subvolumes_below(self, top: str, rel_path: str) -> List[str]:
+        """Subvolumes (any depth) whose path lies under *rel_path* (top-relative)."""
+        prefix = rel_path.rstrip("/") + "/"
+        out = []
+        for line in self._host("btrfs", ["subvolume", "list", top]).splitlines():
+            _, sep, path = line.partition(" path ")
+            if sep and path.strip().startswith(prefix):
+                out.append(path.strip())
+        return out
+
+    def _vet_location(self, live: Live, top: str, name: str, mp: str) -> str:
+        """The parent-side directory for *mp* inside the top-level mount, after
+        refusing a nested subvolume at or below it."""
+        parent, rel = self._parent(live, name, mp)
+        src = self._inside(top, os.path.join(top, parent, rel))
+        if os.path.isdir(src) and Command.execute(
+                "btrfs", ["subvolume", "show", src]).returncode == 0:
+            raise SubvolumeChangeRefused(
+                f"{mp} is itself a btrfs subvolume (nested); remove or move "
+                "it first. Nothing was changed.")
+        below = self._subvolumes_below(top, f"{parent}/{rel}")
+        if below:
+            raise SubvolumeChangeRefused(
+                f"{mp} contains nested subvolumes ({', '.join(below)}); copying "
+                "would flatten and delete them. Remove or move them first. "
+                "Nothing was changed.")
+        return src
 
     @staticmethod
     def _parent(live: Live, name: str, mountpoint: str) -> Tuple[str, str]:
@@ -389,6 +458,13 @@ class BtrfsSubvolumeAction(AbstractAction):
             if os.path.ismount(host_mp):
                 raise SubvolumeChangeRefused(
                     f"{mp} is already a mountpoint; unmount it first.")
+            with self._top_level_mount(device) as top:
+                target = self._vet_location(live, top, name, mp)
+                if self._has_content(target):
+                    raise SubvolumeChangeRefused(
+                        f"{mp} is not empty inside its parent subvolume; mounting "
+                        f"{name} there would hide that data. Empty it and run "
+                        "dasik again. Nothing was changed.")
             self._assert_idle(self._p(old), f"moving {name}")
             Command.execute("umount", [self._p(old)], check=True)
             self._fstab_drop(old)
@@ -399,16 +475,10 @@ class BtrfsSubvolumeAction(AbstractAction):
             raise SubvolumeChangeRefused(
                 f"{mp} is already a mountpoint; unmount it or pick another "
                 "path. Nothing was changed.")
-        parent, rel = self._parent(live, name, mp)
         self._assert_idle(host_mp, f"adding {name}")
         with self._top_level_mount(device) as top:
-            src = os.path.join(top, parent, rel)
-            dst = os.path.join(top, name)
-            if os.path.isdir(src) and Command.execute(
-                    "btrfs", ["subvolume", "show", src]).returncode == 0:
-                raise SubvolumeChangeRefused(
-                    f"{mp} is itself a btrfs subvolume (nested); remove or move "
-                    "it first. Nothing was changed.")
+            src = self._vet_location(live, top, name, mp)
+            dst = self._inside(top, os.path.join(top, name))
             adopt = name in live.existing
             has = self._has_content(src)
             if adopt and has and self._has_content(dst):
@@ -437,14 +507,16 @@ class BtrfsSubvolumeAction(AbstractAction):
                 f"{name}: cannot tell where it was mounted, so its data would "
                 "have nowhere to go. Nothing was deleted.")
         if mp == "/":
-            raise SubvolumeChangeRefused(f"{name} is the root subvolume (mounted at /); dasik never removes it.")
+            raise SubvolumeChangeRefused(
+                f"{name} is the root subvolume (mounted at /); dasik never removes it.")
+        self._vet_declaration(name, mp)
         parent, rel = self._parent(live, name, mp)
         host_mp = self._p(mp)
         if name in live.mounted:
             self._assert_idle(host_mp, f"removing {name}")
         with self._top_level_mount(device) as top:
-            src = os.path.join(top, name)
-            dst = os.path.join(top, parent, rel)
+            src = self._inside(top, os.path.join(top, name))
+            dst = self._inside(top, os.path.join(top, parent, rel))
             nested = self._host("btrfs", ["subvolume", "list", "-o", src]).strip()
             if nested:
                 raise SubvolumeChangeRefused(
@@ -454,19 +526,36 @@ class BtrfsSubvolumeAction(AbstractAction):
                 raise SubvolumeChangeRefused(
                     f"{mp} is not empty inside its parent subvolume; empty it so "
                     "the data of the subvolume can be copied back. Nothing was deleted.")
-            if name in live.mounted:
+            unmounted = name in live.mounted
+            opts = self._fstab_options(mp, name)
+            if unmounted:
                 Command.execute("umount", [host_mp], check=True)
-            self._copy(src, dst)
+            try:
+                self._copy(src, dst)
+            except Exception as exc:
+                if not unmounted:
+                    raise
+                try:
+                    Command.execute("mount", ["-o", opts, device, host_mp], check=True)
+                except Exception as exc2:
+                    raise SubvolumeChangeRefused(
+                        f"copying {name} back failed ({exc}) and remounting it "
+                        f"at {mp} failed too ({exc2}); mount it by hand. "
+                        "Nothing was deleted.") from exc
+                raise SubvolumeChangeRefused(
+                    f"copying {name} back failed ({exc}); it was remounted at "
+                    f"{mp} and nothing was deleted.") from exc
             self._fstab_drop(mp)
             Command.execute("btrfs", ["subvolume", "delete", src], check=True)
 
     def apply(self, changes) -> None:
-        """Re-probe, then act per item: the live state decides create / adopt /
-        fstab-only / move; ``Change.reason`` is display text and never read."""
-        live = self._live()
+        """Re-probe PER ITEM, then act: the live state decides create / adopt /
+        fstab-only / move (an earlier item may have changed the parent of a
+        later one); ``Change.reason`` is display text and never read."""
         models = {f"{p.label}:{s.name}": (p, s)
                   for _d, p in self._btrfs_partitions() for s in p.btrfs_subvolumes}
         for c in changes:
+            live = self._live()
             label, _, name = c.item.partition(":")
             lv = live.get(label)
             if lv is None or label not in self._fs:
@@ -483,6 +572,7 @@ class BtrfsSubvolumeAction(AbstractAction):
                 raise SubvolumeChangeRefused(
                     f"{c.item} is declared at /; dasik never touches the root "
                     "mount. Nothing was changed.")
+            self._vet_declaration(subvol.name, subvol.mountpoint)
             self._install(lv, device, uuid, part, subvol)
 
     def import_state(self, managed=None) -> dict:

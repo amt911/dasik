@@ -665,6 +665,8 @@ class AiSkillsAction(AbstractAction):
             home = self._abs(self._home_of(user, homes))
             version: Callable[[], Optional[str]] = _no_version
             commands: Tuple[Tuple[str, Tuple[str, ...]], ...]
+            after: Optional[str] = None
+            failure_text: Tuple[str, ...] = ()
             if spec["kind"] == "skill" and spec["method"] == "skills":
                 # One `skills update` covers the shared copy every agent reads,
                 # so it is one step per (user, name), however many agents.
@@ -679,18 +681,26 @@ class AiSkillsAction(AbstractAction):
                 commands = (('npx -y skills update "$1" -g -y',
                              (spec["name"],)),)
                 version = partial(skill_folder_hash, home, spec["name"])
+                # Measured offline: the CLI prints this and still exits 0.
+                failure_text = ("Failed to check skills",)
             else:
                 present = item in installed
                 commands = self._upgrade_commands(spec)
                 if spec["kind"] == "plugin" and spec["agent"] == "claude-code":
                     plugin_id = f"{spec['plugin']}@{spec['marketplace']}"
                     version = partial(claude_plugin_version, home, plugin_id)
+                if spec["kind"] == "plugin" and spec.get("marketplace"):
+                    market = (f"{user}:{spec['agent']}:marketplace:"
+                              f"{spec['marketplace']}")
+                    if market in desired:
+                        after = market
             if not present:
                 steps.append(UpgradeStep(_DOMAIN, item, user,
                                          skip="not installed — run dasik apply"))
                 continue
             steps.append(UpgradeStep(_DOMAIN, item, user, commands=commands,
-                                     version=version))
+                                     version=version, after=after,
+                                     failure_text=failure_text))
         return steps
 
     # -- apply -------------------------------------------------------------- #

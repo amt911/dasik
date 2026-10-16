@@ -17,6 +17,12 @@ class UpgradeStep:
     commands: Tuple[Tuple[str, Tuple[str, ...]], ...] = ()
     skip: Optional[str] = None
     version: Callable[[], Optional[str]] = lambda: None
+    #: item id of a step this one depends on; if that one failed, this one is
+    #: skipped without running anything.
+    after: Optional[str] = None
+    #: substrings that mark a failure even when the command exits 0 (a CLI that
+    #: swallows its network error).
+    failure_text: Tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

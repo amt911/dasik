@@ -1,5 +1,6 @@
 """Run upgrade steps and summarise them; one failure never stops the run."""
-from typing import List, Sequence
+import re
+from typing import List, Optional, Sequence
 
 from dasik.lib.command_worker.command_worker import Command
 from dasik.lib.command_worker.su_argv import su_argv
@@ -21,6 +22,21 @@ def _output_of(result) -> str:
     return ""
 
 
+_ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+
+def _failure_line(result, needles) -> Optional[str]:
+    """First output line (either stream) containing one of *needles*."""
+    for attr in ("stdout", "stderr"):
+        raw = getattr(result, attr, "") or ""
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8", errors="replace")
+        for line in _ANSI.sub("", raw).replace("\r", "\n").splitlines():
+            if any(n in line for n in needles):
+                return line.strip()
+    return None
+
+
 def _run_one(step: UpgradeStep, target) -> UpgradeOutcome:
     if step.skip is not None:
         return UpgradeOutcome(step.item, "skipped", None, None, step.skip)
@@ -32,6 +48,9 @@ def _run_one(step: UpgradeStep, target) -> UpgradeOutcome:
         if getattr(result, "returncode", 1) != 0:
             return UpgradeOutcome(step.item, "failed", before, None,
                                   _output_of(result))
+        line = _failure_line(result, step.failure_text)
+        if line is not None:
+            return UpgradeOutcome(step.item, "failed", before, None, line)
     after = step.version()
     if before is None or after is None:
         status = "refreshed"
@@ -41,7 +60,18 @@ def _run_one(step: UpgradeStep, target) -> UpgradeOutcome:
 
 
 def run_steps(steps: Sequence[UpgradeStep], target) -> List[UpgradeOutcome]:
-    return [_run_one(step, target) for step in steps]
+    outcomes: List[UpgradeOutcome] = []
+    failed = set()
+    for step in steps:
+        if step.after is not None and step.after in failed:
+            outcome = UpgradeOutcome(step.item, "skipped", None, None,
+                                     "marketplace refresh failed")
+        else:
+            outcome = _run_one(step, target)
+        if outcome.status == "failed":
+            failed.add(step.item)
+        outcomes.append(outcome)
+    return outcomes
 
 
 def _line(o: UpgradeOutcome) -> str:

@@ -67,6 +67,17 @@ echo "AIUP-1: install sequence — check, plan, apply, plan silent"
 $D check $FULL $L; rc AIUP-CHECK
 $D plan $FULL --target / $L > /tmp/plan0.txt 2>&1; rc AIUP-PLAN
 grep -E '^\[|ai_skills|mcp' /tmp/plan0.txt | head
+# positive controls: the headers the silent checks below grep for DO appear
+# when the domain has something to do.
+present /tmp/plan0.txt '\[mcp_servers\]'; rc AIUP-POSITIVE-MCP-HEADER
+python - <<'PY'
+import json
+cfg = json.load(open("/tmp/full.json"))
+cfg["uv_tools"]["tools"].append("httpie")
+json.dump(cfg, open("/tmp/withextra.json", "w"), indent=2)
+PY
+$D plan /tmp/withextra.json --target / $L > /tmp/plan-pos.txt 2>&1
+present /tmp/plan-pos.txt '\[uv_tools\]'; rc AIUP-POSITIVE-UV-HEADER
 $D apply $FULL --target / --yes $L; rc AIUP-APPLY
 $D plan $FULL --target / $L > /tmp/plan1.txt 2>&1
 cat /tmp/plan1.txt | tail -8
@@ -113,10 +124,21 @@ PY
 printf -- '---\nname: impeccable\n---\nOLD CONTENT\n' > $H/.agents/skills/impeccable/SKILL.md
 chown -R $U:$U $H/.agents
 OLD_SM=$(md5sum $H/.agents/skills/impeccable/SKILL.md | cut -d' ' -f1)
-# the claude plugin: a bogus recorded commit, and (if the clone has history) an old checkout
-CLONE=$H/.claude/plugins/marketplaces/caveman
-git -C $CLONE log --oneline 2>/dev/null | wc -l
-su - $U -c "git -C ~/.claude/plugins/marketplaces/caveman checkout -q HEAD~2" ; echo "AIUP-CLONE-CHECKOUT-rc=$?"
+# the claude plugin: a bogus recorded version and commit, like the skill trick
+python - <<PY
+import json
+p = "$H/.claude/plugins/installed_plugins.json"
+d = json.load(open(p))
+r = d["plugins"]["caveman@caveman"][0]
+# A consistent old install, not a lie: a record whose installPath does not exist
+# reads as a ghost registry (plan would say "install it"), not as a stale one.
+import os
+old = r["installPath"]; new = os.path.join(os.path.dirname(old), "0.0.1")
+os.rename(old, new)
+r["version"] = "0.0.1"; r["gitCommitSha"] = "bogus0000"; r["installPath"] = new
+json.dump(d, open(p, "w"), indent=2)
+PY
+chown $U:$U $H/.claude/plugins/installed_plugins.json
 PLUG_BEFORE=$(python - <<PY
 import json
 d = json.load(open("$H/.claude/plugins/installed_plugins.json"))
@@ -145,12 +167,19 @@ NEWHASH=$(python -c "import json;print(json.load(open('$LOCK'))['skills']['impec
 NEW_SM=$(md5sum $H/.agents/skills/impeccable/SKILL.md | cut -d' ' -f1)
 echo "AIUP-SKILL hash now=$NEWHASH (was bogus0000) md5 now=$NEW_SM old=$OLD_SM"
 [ "$NEWHASH" != "bogus0000" ] && [ "$NEW_SM" != "$OLD_SM" ]; rc AIUP-SKILL-MOVED
+# BEFORE any manual reinstall: what `dasik upgrade` itself left behind.
+UP_GS=$(md5sum $H/.claude/skills/graphify/SKILL.md | cut -d' ' -f1)
+UP_GSX=$(md5sum $H/.codex/skills/graphify/SKILL.md | cut -d' ' -f1)
+echo "AIUP-GRAPHIFY-SKILL md5 old=$OLD_GS after-upgrade(claude)=$UP_GS (codex)=$UP_GSX"
+[ "$UP_GS" != "$OLD_GS" ]; rc AIUP-GRAPHIFY-SKILL-MOVED
+# ...and it is what the new binary writes (reference taken only now).
 su - $U -c "$GPATH; graphify install --platform claude" > /tmp/gi.log 2>&1
-cp $H/.claude/skills/graphify/SKILL.md /tmp/gs-after-upgrade.md
-su - $U -c "$GPATH; graphify install --platform claude" > /tmp/gi2.log 2>&1
 NEW_GS=$(md5sum $H/.claude/skills/graphify/SKILL.md | cut -d' ' -f1)
-echo "AIUP-GRAPHIFY-SKILL md5 old=$OLD_GS new=$NEW_GS"
-cmp /tmp/gs-after-upgrade.md $H/.claude/skills/graphify/SKILL.md; rc AIUP-GRAPHIFY-SKILL
+echo "AIUP-GRAPHIFY-SKILL md5 upgrade=$UP_GS fresh-install=$NEW_GS"
+su - $U -c "$GPATH; graphify install --platform codex" > /tmp/gi2.log 2>&1
+NEW_GSX=$(md5sum $H/.codex/skills/graphify/SKILL.md | cut -d' ' -f1)
+echo "AIUP-GRAPHIFY-SKILL codex md5 upgrade=$UP_GSX fresh-install=$NEW_GSX"
+[ "$UP_GS" = "$NEW_GS" ] && [ "$UP_GSX" = "$NEW_GSX" ]; rc AIUP-GRAPHIFY-SKILL
 PLUG_AFTER=$(python - <<PY
 import json
 d = json.load(open("$H/.claude/plugins/installed_plugins.json"))
@@ -159,6 +188,9 @@ print(r.get("version"), r.get("gitCommitSha"))
 PY
 )
 echo "AIUP-CAVEMAN-RECORD-AFTER=$PLUG_AFTER (before: $PLUG_BEFORE)"
+[ "$PLUG_AFTER" != "$PLUG_BEFORE" ] && ! echo "$PLUG_AFTER" | grep -q 'bogus0000'; rc AIUP-CAVEMAN-MOVED
+present /tmp/upgrade1.txt 'plugin:caveman@caveman: updated'; rc AIUP-CAVEMAN-UPDATED-LINE
+present /tmp/upgrade1.txt 'codex:plugin:superpowers@superpowers-dev: \(refreshed\|updated\|already\)'; rc AIUP-CODEX-PLUGIN-LINE
 su - $U -c 'codex plugin list' 2>&1 | head -10 > /tmp/codex-after.txt; cat /tmp/codex-after.txt
 diff /tmp/codex-before.txt /tmp/codex-after.txt; echo "AIUP-CODEX-LISTDIFF-rc=$? (measurement only)"
 grep -E 'caveman|superpowers|impeccable|graphify|ruff|black' /tmp/upgrade1.txt
@@ -197,10 +229,11 @@ echo "AIUP-OFFLINE-UPGRADE-rc=$UP3"
 [ "$UP3" -eq 1 ]; rc AIUP-OFFLINE-RC1
 present /tmp/upgrade3.txt 'graphifyy: FAILED'; rc AIUP-OFFLINE-UV-FAILED
 present /tmp/upgrade3.txt 'ruff: FAILED'; rc AIUP-OFFLINE-RUFF-FAILED
-# MEASURED: `npx skills update` swallows the network error and exits 0, so the
-# verb can only report the skill as unchanged ("already latest"), never FAILED.
-# What must hold is that offline it never claims to have moved anything.
-absent /tmp/upgrade3.txt 'impeccable: updated'; rc AIUP-OFFLINE-SKILL-NOT-UPDATED
+# MEASURED: offline `npx skills update` exits 0 but prints "Failed to check
+# skills from <source>"; the step's failure_text turns that into FAILED.
+present /tmp/upgrade3.txt 'impeccable: FAILED'; rc AIUP-OFFLINE-SKILL-FAILED
+present /tmp/upgrade3.txt 'claude-code:plugin:caveman@caveman: skipped (marketplace refresh failed)'; rc AIUP-OFFLINE-CLAUDE-PLUGIN-SKIPPED
+present /tmp/upgrade3.txt 'codex:plugin:superpowers@superpowers-dev: skipped (marketplace refresh failed)'; rc AIUP-OFFLINE-CODEX-PLUGIN-SKIPPED
 grep 'impeccable' /tmp/upgrade3.txt
 ip link set "$IFACE" up
 systemctl restart systemd-networkd

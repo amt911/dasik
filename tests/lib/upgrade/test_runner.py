@@ -98,3 +98,53 @@ def test_render_lines():
         "e: FAILED — bad",
         "1 updated, 1 already latest, 1 refreshed, 1 skipped, 1 failed",
     ]
+
+
+# --- dependent steps and failure text -------------------------------------- #
+
+def test_step_after_a_failed_step_is_skipped_without_running(monkeypatch):
+    calls = _stub(monkeypatch, [1, 0], stderr="offline")
+    mkt = _step("M")
+    plug = _step("P", after="M", version=_versions("1", "1"))
+    out = run_steps([mkt, plug], None)
+    assert [o.status for o in out] == ["failed", "skipped"]
+    assert out[1].detail == "marketplace refresh failed"
+    assert len(calls) == 1
+
+
+def test_step_after_a_good_step_runs(monkeypatch):
+    calls = _stub(monkeypatch, [0, 0])
+    out = run_steps([_step("M"), _step("P", after="M")], None)
+    assert [o.status for o in out] == ["refreshed", "refreshed"]
+    assert len(calls) == 2
+
+
+def test_after_unknown_item_runs_normally(monkeypatch):
+    _stub(monkeypatch, [0])
+    [o] = run_steps([_step("P", after="nope")], None)
+    assert o.status == "refreshed"
+
+
+def test_failure_text_in_stdout_fails_a_zero_exit(monkeypatch):
+    _stub(monkeypatch, [0], stdout="a\n\x1b[1m✗ Failed to check skills\x1b[0m\nb")
+    [o] = run_steps([_step(failure_text=("Failed to check",))], None)
+    assert o.status == "failed"
+    assert o.detail == "✗ Failed to check skills"
+
+
+def test_failure_text_in_stderr_also_counts(monkeypatch):
+    _stub(monkeypatch, [0], stderr="Failed to check")
+    [o] = run_steps([_step(failure_text=("Failed to check",))], None)
+    assert o.status == "failed"
+
+
+def test_failure_text_absent_keeps_the_zero_exit_good(monkeypatch):
+    _stub(monkeypatch, [0], stdout="all good")
+    [o] = run_steps([_step(failure_text=("Failed to check",))], None)
+    assert o.status == "refreshed"
+
+
+def test_no_failure_text_ignores_output(monkeypatch):
+    _stub(monkeypatch, [0], stdout="Failed to check")
+    [o] = run_steps([_step()], None)
+    assert o.status == "refreshed"

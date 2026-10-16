@@ -214,3 +214,29 @@ def test_unknown_user_does_not_raise(tmp_path):
 def test_no_target_gives_no_steps():
     from dasik.lib.actions.ai_skills_action import AiSkillsAction
     assert AiSkillsAction(_cfg(CLAUDE)).upgrade_steps() == []
+
+
+# --- dependencies and failure text ----------------------------------------- #
+
+def test_plugin_steps_run_after_their_marketplace(tmp_path):
+    _passwd(tmp_path)
+    _install_claude_plugin(tmp_path)
+    steps = _by_item(_steps(tmp_path, CLAUDE))
+    assert steps["andres:claude-code:plugin:superpowers@caveman"].after == \
+        "andres:claude-code:marketplace:caveman"
+    assert steps["andres:claude-code:marketplace:caveman"].after is None
+
+
+def test_codex_plugin_runs_after_its_marketplace(tmp_path):
+    _passwd(tmp_path)
+    _codex_plugin(tmp_path)
+    steps = _by_item(_steps(tmp_path, CODEX))
+    assert steps["andres:codex:plugin:superpowers@caveman"].after == \
+        "andres:codex:marketplace:caveman"
+
+
+def test_skills_step_knows_the_cli_swallows_network_errors(tmp_path):
+    _passwd(tmp_path)
+    _install_skill(tmp_path)
+    step = _by_item(_steps(tmp_path, SKILL))["andres:skills:impeccable"]
+    assert step.failure_text == ("Failed to check skills",)

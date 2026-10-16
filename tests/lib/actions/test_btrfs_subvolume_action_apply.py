@@ -22,6 +22,7 @@ OLLAMA = "@var_lib_ollama"
 class _Target:
     def __init__(self, root):
         self.root = str(root)
+        self.is_chroot = True      # the default: an install target under /mnt
 
     def path(self, canonical):
         return os.path.join(self.root, canonical.lstrip("/"))
@@ -42,6 +43,11 @@ class Rig:
         self.lsattr = "--------------e------- x\n"
         self.fail_mount_new = False
         self.deep = []        # extra `btrfs subvolume list` lines (nested subvolumes)
+        self.other_mounts = []   # host paths of non-btrfs mounts (findmnt -o TARGET)
+        self.list_rc = 0      # exit status of every `btrfs subvolume list`
+        self.partial = False  # a failing cp leaves a half-written file in the destination
+        self.sysctl_kw = None
+        self.cp_hook = None   # called after a successful cp (a writer racing the copy)
         (tmp_path / "etc").mkdir(exist_ok=True)
         (tmp_path / "etc" / "fstab").write_text("".join(
             f"UUID={UUID} {mp} btrfs rw,subvol=/{n},compress=zstd:3 0 0\n"
@@ -71,7 +77,8 @@ class Rig:
         return None
 
     def __call__(self, cmd, args, **kw):
-        assert "target" not in kw and not kw.get("run_as_chroot"), "host only"
+        assert (cmd == "systemctl" or "target" not in kw) \
+            and not kw.get("run_as_chroot"), "host only"
         self.calls.append((cmd, list(args)))
         ok = SimpleNamespace(stdout="", returncode=0, stderr="")
         if cmd == "lsblk":
@@ -80,8 +87,13 @@ class Rig:
             out = "".join(
                 f"{self.root}{'' if mp == '/' else mp} /dev/mapper/crypt[/{n}] {UUID} "
                 f"rw,subvolid=1,subvol=/{n}\n" for n, mp in self.mounted.items())
+            out += "".join(f"{m} tmpfs - rw\n" for m in self.other_mounts)
             return SimpleNamespace(stdout=out, returncode=0, stderr="")
         if cmd == "btrfs" and args[:2] == ["subvolume", "list"]:
+            if self.list_rc:
+                if kw.get("check"):
+                    raise CommandExecutionError("btrfs list failed")
+                return SimpleNamespace(stdout="", returncode=self.list_rc, stderr="no")
             if "-o" in args:
                 return SimpleNamespace(stdout=self.nested, returncode=0, stderr="")
             out = "".join(f"ID {256 + i} gen 9 top level 5 path {n}\n"
@@ -98,11 +110,19 @@ class Rig:
             shutil.rmtree(args[2])
             self.existing.remove(os.path.basename(args[2]))
             return ok
+        if cmd == "systemctl":
+            self.sysctl_kw = kw
         if cmd == "cp":
             rc = self.reflink_rc if "--reflink=always" in args else self.plain_rc
             if rc == 0:
                 src, dst = args[-2][:-2], args[-1]
                 shutil.copytree(src, dst, dirs_exist_ok=True, symlinks=True)
+                if self.cp_hook:
+                    self.cp_hook()
+            if rc != 0 and self.partial:
+                os.makedirs(args[-1], exist_ok=True)
+                with open(os.path.join(args[-1], "partial.bin"), "w") as f:
+                    f.write("half")
             if rc != 0 and kw.get("check"):
                 raise CommandExecutionError("cp failed")
             return SimpleNamespace(stdout="", returncode=rc, stderr="no")
@@ -185,10 +205,13 @@ def test_top_level_mount_unmounted_even_on_failure(rig):
     assert rig.find("umount", str(rig.top)) is not None
 
 
-def test_empty_source_dir_creates_without_copy(rig):
+def test_empty_source_dir_still_copies_so_owner_and_mode_follow(rig):
+    """`cp -a src/. dst/` on an EMPTY dir still stamps dst with src's owner,
+    mode and ACLs: an ollama:ollama 0700 dir must not become root:root 0755."""
+    (rig.top / "@" / "var/lib/ollama").mkdir(parents=True)
     _install(rig)
     assert rig.find("btrfs", "subvolume", "create") is not None
-    assert rig.find("cp") is None
+    assert rig.find("cp", "--reflink=always") is not None
     assert (rig.root / "var/lib/ollama").is_dir()
     assert rig.find("mount", f"subvol={OLLAMA}") is not None
 
@@ -202,14 +225,15 @@ def test_nocow_source_dir_keeps_nocow_before_copy(rig):
         < rig.find("cp")
 
 
-def test_copy_failure_deletes_nothing_and_raises(rig):
+def test_copy_failure_deletes_no_user_data_and_raises(rig):
     d = _ollama_dir(rig)
     rig.reflink_rc = 1
     rig.plain_rc = 1
     with pytest.raises(CommandExecutionError):
         _install(rig)
     assert (d / "model.bin").read_text() == "weights"
-    assert OLLAMA in "".join(p for p in os.listdir(rig.top))   # subvolume left, not deleted
+    assert (d / "sub" / "x").exists()
+    assert OLLAMA not in os.listdir(rig.top)    # the half-filled NEW subvolume is gone
     assert "var/lib/ollama" not in rig.fstab()
     assert rig.find("mount", f"subvol={OLLAMA}") is None
 

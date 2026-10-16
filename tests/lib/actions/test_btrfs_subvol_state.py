@@ -192,3 +192,9 @@ def test_diff_remove_key_name_may_contain_colon():
     live = _live({}, {}, {"@a:b"})
     assert diff([], {"root": live}, {"root"}, ["root:@a:b"]) == [
         (Op.REMOVE, "root:@a:b", "no longer declared")]
+
+
+def test_parse_mount_targets_takes_the_first_column_and_unescapes():
+    from dasik.lib.actions.btrfs_subvol_state import parse_mount_targets
+    text = "/mnt/var/log tmpfs - rw\n\n/mnt/a\\x20b ext4 x y\n/mnt\n"
+    assert parse_mount_targets(text) == ["/mnt/var/log", "/mnt/a b", "/mnt"]

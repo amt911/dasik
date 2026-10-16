@@ -72,6 +72,17 @@ def parse_fstab_subvols(text: str) -> Dict[str, str]:
     return out
 
 
+def _unescape(target: str) -> str:
+    # findmnt -r escapes a space as \x20 (and other bytes the same way).
+    return re.sub(r"\\x([0-9a-fA-F]{2})",
+                  lambda m: chr(int(m.group(1), 16)), target)
+
+
+def parse_mount_targets(text: str) -> List[str]:
+    """Targets of ``findmnt -rn -o TARGET`` output (any filesystem type)."""
+    return [_unescape(ln.split()[0]) for ln in text.splitlines() if ln.split()]
+
+
 def parse_findmnt(text: str) -> List[MountRow]:
     """Parse ``findmnt -rn -t btrfs -o TARGET,SOURCE,UUID,OPTIONS`` output."""
     rows: List[MountRow] = []
@@ -83,9 +94,7 @@ def parse_findmnt(text: str) -> List[MountRow]:
         subvol = _subvol_option(options)
         if not subvol:
             continue
-        # findmnt -r escapes a space as \x20 (and other bytes the same way).
-        target = re.sub(r"\\x([0-9a-fA-F]{2})",
-                        lambda m: chr(int(m.group(1), 16)), target)
+        target = _unescape(target)
         rows.append(MountRow(target, source.split("[", 1)[0], uuid, subvol))
     return rows
 
@@ -114,6 +123,11 @@ def diff(wanted: List[Wanted], live_by_label: Dict[str, Live],
     """Decide the changes that bring ``live_by_label`` to ``wanted``."""
     changes: List[Tuple[Op, str, str]] = []
     for w in wanted:
+        if w.mountpoint == "/":
+            # The root is never ours to plan: booted into a snapshot, or with a
+            # root fstab line that only says `subvolid=`, it would never match
+            # `@` and apply (which refuses the root) could never converge it.
+            continue
         live = live_by_label.get(w.label)
         if live is None:
             continue  # disk not converged / partition not mounted: not our call yet

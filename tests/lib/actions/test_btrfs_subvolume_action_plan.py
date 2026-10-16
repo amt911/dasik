@@ -114,9 +114,11 @@ def test_converged_plans_nothing(tmp_path, monkeypatch):
 
 
 def test_actual_lists_converged_keys(tmp_path, monkeypatch):
+    """Reality: every mounted top-level subvolume with an fstab line, except
+    the one at `/`. managed_keys() is the DECLARED subset of it."""
     a = _setup(tmp_path, monkeypatch, BASE + [("@new", "/new")])
-    assert a.actual() == {"ROOT:@", "ROOT:@home"}
-    assert a.managed_keys() == {"btrfs_subvolumes": ["ROOT:@", "ROOT:@home"]}
+    assert a.actual() == {"ROOT:@home"}
+    assert a.managed_keys() == {"btrfs_subvolumes": ["ROOT:@home"]}
 
 
 def test_dropped_disks_block_removes_nothing(tmp_path, monkeypatch):

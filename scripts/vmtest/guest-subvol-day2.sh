@@ -13,7 +13,7 @@
 # drives, and this script mutates it.
 cd /root/repo || { echo "SUBVOL-DONE rc=91"; poweroff -f; }
 
-D="python -m dasik"
+D="python -m dasik --no-log"   # repo is a read-only 9p mount: no run log in the cwd
 BASE=config/vm-subvol-day2.json
 ADD=config/vm-subvol-day2-add.json
 MOVE=config/vm-subvol-day2-move.json

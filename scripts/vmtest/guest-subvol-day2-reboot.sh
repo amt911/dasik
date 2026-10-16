@@ -5,7 +5,7 @@
 #   qemu.sh drive <vda.qcow2> guest-subvol-day2-reboot.sh SUBVOL-REBOOT-DONE
 cd /root/repo || { echo "SUBVOL-REBOOT-DONE rc=91"; poweroff -f; }
 
-D="python -m dasik"
+D="python -m dasik --no-log"   # repo is a read-only 9p mount: no run log in the cwd
 FAIL=0
 step() { echo "SUBVOL-$1=$2"; [ "$2" -eq 0 ] || FAIL=1; }
 

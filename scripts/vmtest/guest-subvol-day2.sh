@@ -63,7 +63,12 @@ ok=$RC
 findmnt -no OPTIONS /srv/data | grep -q 'subvol=/@data' || ok=1
 [ "$(sha256sum /srv/data/big.bin | cut -d' ' -f1)" = "$SUM" ] || ok=1
 top_mount
-if [ -d $TOP/@/srv/data ] && [ -z "$(ls -A $TOP/@/srv/data)" ]; then :; else ok=1; echo "SUBVOL: @/srv/data not empty"; fi
+# "The old data is gone from @": the mountpoint dir is empty, NOTHING else sits
+# beside it in @/srv (a staging / .dasik-moving leftover would), and no file at
+# all is left under @/srv.
+if [ -d $TOP/@/srv/data ] && [ -z "$(ls -A $TOP/@/srv/data)" ]; then :; else ok=1; echo "SUBVOL: @/srv/data missing or not empty"; fi
+if [ "$(ls -A $TOP/@/srv)" = "data" ]; then :; else ok=1; echo "SUBVOL: @/srv holds more than data: $(ls -A $TOP/@/srv)"; fi
+if [ -z "$(find $TOP/@/srv -type f)" ]; then :; else ok=1; echo "SUBVOL: files left under @/srv: $(find $TOP/@/srv -type f)"; fi
 top_umount
 grep -q '/srv/data btrfs' /etc/fstab || ok=1
 findmnt --verify > /tmp/verify.log 2>&1 || { ok=1; cat /tmp/verify.log; }
@@ -113,6 +118,11 @@ findmnt /srv/data2 > /dev/null 2>&1 && ok=1
 grep -q '@data' /etc/fstab && ok=1
 top_mount
 [ -f $TOP/@/srv/data2/big.bin ] || ok=1
+# Nothing left behind: no @data at the top level, no .dasik-moving leftover
+# anywhere in @/srv, and exactly one copy of the data under @.
+[ ! -e $TOP/@data ] || { ok=1; echo "SUBVOL: top-level @data still there"; }
+[ -z "$(find $TOP/@/srv -name '*.dasik-moving')" ] || { ok=1; echo "SUBVOL: leftover: $(find $TOP/@/srv -name '*.dasik-moving')"; }
+[ "$(find $TOP/@/srv -name big.bin | wc -l)" = "1" ] || { ok=1; echo "SUBVOL: big.bin copies: $(find $TOP/@/srv -name big.bin)"; }
 top_umount
 findmnt --verify > /tmp/verify.log 2>&1 || { ok=1; cat /tmp/verify.log; }
 $D plan $BASE --target / > $LOG 2>&1; PRC=$?; cat $LOG

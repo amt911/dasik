@@ -22,6 +22,10 @@ echo "RSAVE-0: fresh state (the image persists between drives)"
 rm -rf "$H/.config/config-saver" "$H/cfg" "$H/remote.git" "$H/key.txt" /tmp/published /tmp/gh.log
 rm -rf "$H"/.cache/dasik-home-export-*
 pacman -Q config-saver restic age || { echo "RSAVE-PKGS MISSING"; echo "RSAVE-DONE rc=94"; poweroff -f; }
+# A login profile that greets: `su -` runs it before mktemp, and the export
+# dir's path must still be read right (the last line of stdout).
+grep -q 'dasik-greeting' "$H/.bash_profile" 2>/dev/null || \
+    echo 'echo "hello from the profile"  # dasik-greeting' >> "$H/.bash_profile"
 su - "$U" -c 'config-saver --version'
 
 echo "RSAVE-A: an encrypted document, one archive, then the restic store"

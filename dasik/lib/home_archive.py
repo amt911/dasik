@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
 from .command_worker.command_worker import Command
+from .login_shell import MARKED, strip_login_noise
 
 ENCRYPTED_SUFFIXES = (".age", ".gpg")
 DEFAULT_ROOT = ".config/config-saver/configs"
@@ -127,15 +128,14 @@ def make_export_dir(home: "str | Path", user: Optional[str]) -> Path:
             return Path(tempfile.mkdtemp(prefix=_EXPORT_PREFIX, dir=cache))
         except OSError as e:
             raise HomeArchiveError(f"could not create an export directory in {cache}: {e}") from e
-    done = Command.execute("su", ["-", user, "-c",
-                                  'mkdir -p "$HOME/.cache" && '
-                                  f'mktemp -d "$HOME/.cache/{_EXPORT_PREFIX}XXXXXX"'])
+    done = strip_login_noise(Command.execute("su", ["-", user, "-c", MARKED(
+        'mkdir -p "$HOME/.cache" && '
+        f'mktemp -d "$HOME/.cache/{_EXPORT_PREFIX}XXXXXX"')]))
     if getattr(done, "returncode", 1) != 0:
         detail = _text(done, "stderr")
         raise HomeArchiveError(f"could not create an export directory in {cache}: "
                                f"{detail or 'mktemp failed'}")
-    lines = _text(done, "stdout").splitlines()
-    made = Path(lines[-1].strip() if lines else "")
+    made = Path(_text(done, "stdout"))
     if made.parent != cache or not made.name.startswith(_EXPORT_PREFIX):
         raise HomeArchiveError(f"unexpected export directory from mktemp: {made}")
     return made
@@ -166,8 +166,11 @@ def store_exports(user: Optional[str],
     if user is None:
         done = Command.execute("config-saver", args)
     else:
-        done = Command.execute("su", ["-", user, "-c", 'config-saver "$@"', "--",
-                                     "config-saver", *args])
+        # The message on failure is parsed into the report: keep the profile's
+        # greeting out of it.
+        done = strip_login_noise(Command.execute(
+            "su", ["-", user, "-c", MARKED('config-saver "$@"'), "--",
+                   "config-saver", *args]))
     exported: Dict[str, Path] = {}
     for path in sorted(p for p in out_dir.iterdir() if p.is_file() and _is_archive(p)):
         match = _EXPORT_NAME.match(path.name)

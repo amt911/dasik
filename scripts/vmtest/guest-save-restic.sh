@@ -30,7 +30,7 @@ su - "$U" -c 'config-saver --version'
 
 echo "RSAVE-A: an encrypted document, one archive, then the restic store"
 su - "$U" -c 'age-keygen -o ~/key.txt' 2>/dev/null
-PUB=$(su - "$U" -c 'age-keygen -y ~/key.txt')
+PUB=$(su - "$U" -c 'age-keygen -y ~/key.txt' | tail -1)   # the profile greets first
 install -d -o "$U" -g "$U" "$H/.config/config-saver" "$H/.config/config-saver/configs.d"
 cat > "$H/.config/config-saver/configs.d/dotfiles.yaml" <<YAML
 directories:
@@ -83,7 +83,9 @@ cat /tmp/rsave.txt; cat /tmp/gh.log
 grep -q "Published 1 archive" /tmp/rsave.txt && echo "RSAVE-PUBLISHED ok" || { echo "RSAVE-PUBLISHED MISSING"; rc=1; }
 grep -q "^$U release create dasik-save-restic " /tmp/gh.log && echo "RSAVE-GH-AS-USER ok" || { echo "RSAVE-GH-AS-USER BAD"; rc=1; }
 asset=$(ls /tmp/published/dotfiles-*.tar.gz.age 2>/dev/null | head -1)
-if [ -n "$asset" ] && su - "$U" -c "age -d -i ~/key.txt $asset" | tar -tz | grep -q 'bashrc'; then
+# Decrypted as root with the user's key file: through `su -` the profile's
+# greeting would land in the tar stream.
+if [ -n "$asset" ] && age -d -i "$H/key.txt" "$asset" | tar -tz | grep -q 'bashrc'; then
     echo "RSAVE-ASSET ok ($(basename "$asset"))"
 else
     echo "RSAVE-ASSET BAD (${asset:-none})"; ls -la /tmp/published; rc=1

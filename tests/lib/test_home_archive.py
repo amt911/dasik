@@ -136,6 +136,7 @@ from types import SimpleNamespace  # noqa: E402
 
 from dasik.lib import home_archive  # noqa: E402
 from dasik.lib.home_archive import has_restic_store, store_exports  # noqa: E402
+from dasik.lib.login_shell import MARKED  # noqa: E402
 
 
 def test_a_home_with_a_restic_store_is_detected(tmp_path):
@@ -170,7 +171,7 @@ def test_exports_run_as_the_user_and_map_each_configuration(tmp_path, monkeypatc
 
     archives, warnings = store_exports("andres", tmp_path)
 
-    assert calls == [["su", "-", "andres", "-c", 'config-saver "$@"', "--",
+    assert calls == [["su", "-", "andres", "-c", MARKED('config-saver "$@"'), "--",
                       "config-saver", "--export-all-configs",
                       "--output", str(tmp_path)]]
     assert archives == {
@@ -247,9 +248,9 @@ def test_the_export_dir_is_made_by_the_user(tmp_path, monkeypatch):
     calls = _recording(monkeypatch, stdout=f"{made}\n")
 
     assert make_export_dir(tmp_path, "andres") == made
-    assert calls == [["su", "-", "andres", "-c",
+    assert calls == [["su", "-", "andres", "-c", MARKED(
                       'mkdir -p "$HOME/.cache" && '
-                      'mktemp -d "$HOME/.cache/dasik-home-export-XXXXXX"']]
+                      'mktemp -d "$HOME/.cache/dasik-home-export-XXXXXX"')]]
 
 
 def test_an_export_dir_outside_the_users_cache_is_refused(tmp_path, monkeypatch):
@@ -319,6 +320,6 @@ def test_a_chatty_login_profile_does_not_break_the_export_dir(tmp_path, monkeypa
     """`su -` is a login shell: a profile that greets (fastfetch, motd) prints
     before mktemp. The path is the last line, not all of stdout."""
     made = tmp_path / ".cache" / "dasik-home-export-abc123"
-    _recording(monkeypatch, stdout=f"Welcome back!\n\n{made}\n")
+    _recording(monkeypatch, stdout=f"Welcome back!\n\n\x1edasik\x1e{made}\n")
 
     assert make_export_dir(tmp_path, "andres") == made

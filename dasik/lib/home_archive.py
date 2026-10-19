@@ -134,7 +134,8 @@ def make_export_dir(home: "str | Path", user: Optional[str]) -> Path:
         detail = _text(done, "stderr")
         raise HomeArchiveError(f"could not create an export directory in {cache}: "
                                f"{detail or 'mktemp failed'}")
-    made = Path(_text(done, "stdout"))
+    lines = _text(done, "stdout").splitlines()
+    made = Path(lines[-1].strip() if lines else "")
     if made.parent != cache or not made.name.startswith(_EXPORT_PREFIX):
         raise HomeArchiveError(f"unexpected export directory from mktemp: {made}")
     return made

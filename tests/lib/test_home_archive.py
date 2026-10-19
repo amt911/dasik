@@ -313,3 +313,12 @@ def test_an_export_name_without_a_stamp_keeps_its_stem(tmp_path, monkeypatch):
     archives, _ = store_exports("andres", tmp_path)
 
     assert archives == {"odd": tmp_path / "odd.tar.gz.age"}
+
+
+def test_a_chatty_login_profile_does_not_break_the_export_dir(tmp_path, monkeypatch):
+    """`su -` is a login shell: a profile that greets (fastfetch, motd) prints
+    before mktemp. The path is the last line, not all of stdout."""
+    made = tmp_path / ".cache" / "dasik-home-export-abc123"
+    _recording(monkeypatch, stdout=f"Welcome back!\n\n{made}\n")
+
+    assert make_export_dir(tmp_path, "andres") == made

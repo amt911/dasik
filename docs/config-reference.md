@@ -213,6 +213,7 @@ archive the old one produced.
 | `configs` | object | `{}` | name → config-saver document, written to `/etc/config-saver/configs/<name>.json`. It reads JSON as well as YAML, and JSON needs no new dependency and round-trips exactly. |
 | `timer_users` | list | `[]` | Enables `config-saver@<user>.timer` for each. |
 | `restore` | list | `[]` | `{user, archive}` — an absolute path **on the target**. Unpacked into that user's `$HOME` with `config-saver --decompress`. |
+| `restic_stores` | list | `[]` | `{user, identity}` — config-saver's deduplicated, encrypted **restic store** (config-saver ≥ 3.5.0) for that user, created with `config-saver --restic-init`. `identity` (default `~/.config/age/key.txt`; `~/…` or absolute) is the age private key; the public key is derived from it. Never deleted by dasik. Missing restic, age, the key or a config-saver < 3.5.0 is a **warning** and the store stays pending; a half-made store (repository without password file or the reverse) is an error. Moving old archives in stays manual: `config-saver --migrate --delete-migrated`. |
 
 **Where a configuration can live (config-saver ≥ 3.3.0).** Three levels; the
 two active ones are merged by file name and the more specific wins:

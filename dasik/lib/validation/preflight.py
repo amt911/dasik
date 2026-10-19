@@ -807,6 +807,28 @@ def _check_config_saver(config: Dict[str, Any]) -> List[Issue]:
         "~/.config/config-saver/configs.d by hand.")]
 
 
+def _check_config_saver_store(config: Dict[str, Any], packages: Set[str]) -> List[Issue]:
+    """`restic_stores` needs `restic` and `age` on the target.
+
+    A warning, not an error: apply skips the store with a warning of its own
+    and config-saver keeps writing archives — the package may also arrive by
+    hand. Naming it before the first mutation is just cheaper.
+    """
+    block = config.get("config_saver")
+    if not isinstance(block, dict) or not block.get("restic_stores"):
+        return []
+    missing = [f"`{p}`" for p in ("restic", "age") if p not in packages]
+    if not missing:
+        return []
+    return [Issue(
+        "warning", "config_saver_store_without_restic",
+        f"config_saver.restic_stores is declared but {' and '.join(missing)} "
+        "is not in `packages`. The store cannot be created without them: "
+        "apply will skip it with a warning and config-saver keeps writing "
+        ".tar.gz archives. Declare them (restic can be "
+        '`{"name": "restic", "optional": true}`).')]
+
+
 def _check_wireguard(config: Dict[str, Any]) -> List[Issue]:
     """A tunnel whose file nobody can read is a failure worth proving early.
 
@@ -914,6 +936,7 @@ def preflight(config: Dict[str, Any],
     issues += _check_random_swap(config)
     issues += _check_unlock_keyfile(config)
     issues += _check_config_saver(config)
+    issues += _check_config_saver_store(config, packages)
     issues += _check_wireguard(config)
     issues += _check_ai_skills(config, packages)
     issues += _check_uv_tools(config, packages)

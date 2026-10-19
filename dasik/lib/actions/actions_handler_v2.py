@@ -46,7 +46,7 @@ def setup_actions() -> None:
     from .pacman_repositories_action import PacmanRepositoriesAction
     from .users_action import UsersAction
     from .home_files_action import HomeFilesAction
-    from .config_saver_action import ConfigSaverAction
+    from .config_saver_action import ConfigSaverAction, ConfigSaverResticAction
     from .ai_skills_action import AiSkillsAction
     from .mcp_servers_action import McpServersAction
     from .uv_tools_action import UvToolsAction
@@ -277,6 +277,13 @@ def setup_actions() -> None:
     register_action(
         action_class=ConfigSaverAction,
         config_key='__root__',   # reads root-level `config_saver`
+        is_optional=True,
+    )
+    # Its restic store, after the restores (one may bring the key home) and
+    # after Packages (restic, age and a config-saver >= 3.5.0 must be there).
+    register_action(
+        action_class=ConfigSaverResticAction,
+        config_key='__root__',   # reads `config_saver.restic_stores`
         is_optional=True,
     )
     # Python programs their own upstream ships through `uv tool install`,

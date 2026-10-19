@@ -225,6 +225,18 @@ megabytes that change daily. Existing releases are updated with `--clobber`, so
 there is one release per machine holding its latest, rather than a pile nobody
 prunes.
 
+**With config-saver's restic store** (config-saver 3.5.0+, after
+`config-saver --restic-init`) the backups are snapshots inside
+`~/.config/config-saver/restic` and nothing under `configs/` is the newest one
+any more. `save` sees the store and **exports** first: it runs
+`config-saver --export-all-configs` as you into a private directory under
+`~/.cache` (on disk — `/tmp` is a tmpfs and the newest archives of a real home
+are about a gigabyte), publishes those `<name>-<stamp>.tar.gz.age` files exactly
+as above, and deletes the directory. A configuration that fails to export is a
+warning and the others are still published; an export that produces nothing
+(say the age key is missing, so the store password cannot be read) is
+`Not published: …` and the capture still stands.
+
 **A plaintext archive is refused, and nothing is uploaded.** A release asset is
 a URL and `$HOME` holds browser profiles and SSH config, so an archive that is
 not `.age`/`.gpg` stops the publish with the fix in the message (declare

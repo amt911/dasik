@@ -17,16 +17,25 @@ Two rules, both learned the hard way:
   precisely the mistake worth refusing rather than reporting.
 
 `gh` runs as the invoking user: the credentials are theirs, not root's.
+
+With config-saver 3.5.0's restic store (``--restic-init``) the backups are
+snapshots inside ``~/.config/config-saver/restic`` and the tree above goes
+stale; the newest of each configuration is then exported first
+(``store_exports``) and published the same way.
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
-from typing import Dict, Optional, Sequence
+from typing import Dict, List, Optional, Sequence, Tuple
 
 from .command_worker.command_worker import Command
 
 ENCRYPTED_SUFFIXES = (".age", ".gpg")
 DEFAULT_ROOT = ".config/config-saver/configs"
+RESTIC_STORE = ".config/config-saver/restic"
+# config-saver names an export after its configuration and snapshot time.
+_EXPORT_NAME = re.compile(r"(.+)-\d{8}-\d{6}\.tar\.gz(?:\.age|\.gpg)?$")
 
 
 def _is_archive(path: Path) -> bool:
@@ -78,6 +87,58 @@ def latest_archives(root: "str | Path") -> Dict[str, Path]:
             "--compress` first (and check `config-saver --show-configs` finds "
             "your documents)")
     return newest
+
+
+def has_restic_store(home: "str | Path") -> bool:
+    """Whether config-saver keeps this home's backups in its restic store.
+
+    config-saver 3.5.0+ creates the store at ``--restic-init``; from then on the
+    backups are snapshots inside it and nothing under DEFAULT_ROOT is the
+    newest one any more.
+    """
+    return (Path(home) / RESTIC_STORE).is_dir()
+
+
+def store_exports(user: Optional[str],
+                  out_dir: "str | Path") -> Tuple[Dict[str, Path], List[str]]:
+    """Export the newest backup of each configuration from the restic store.
+
+    config-saver encrypts each export per its document's ``encrypt:`` block, so
+    what lands in *out_dir* is the same ``<name>-<stamp>.tar.gz.age`` a run used
+    to leave on disk — and ``publish_archives`` refuses it the same way when it
+    is not encrypted. It runs as *user*: the store, its password and the age key
+    are theirs. A failure that still exported something is returned as a
+    warning, like a configuration that produced nothing on disk is just absent;
+    one that exported nothing is an error.
+    """
+    out_dir = Path(out_dir)
+    args = ["--export-all-configs", "--output", str(out_dir)]
+    if user is None:
+        done = Command.execute("config-saver", args)
+    else:
+        done = Command.execute("su", ["-", user, "-c", 'config-saver "$@"', "--",
+                                     "config-saver", *args])
+    exported: Dict[str, Path] = {}
+    for path in sorted(p for p in out_dir.iterdir() if p.is_file() and _is_archive(p)):
+        match = _EXPORT_NAME.match(path.name)
+        exported[match.group(1) if match else path.name.split(".tar.gz")[0]] = path
+
+    returncode = getattr(done, "returncode", 1)
+    detail = " ".join(str(getattr(done, s, "") or "").strip()
+                      for s in ("stderr", "stdout")).strip()
+    if returncode != 0 and not exported:
+        raise HomeArchiveError(
+            f"config-saver could not export from its restic store (exit "
+            f"{returncode}): {detail or 'no output'}")
+    if not exported:
+        raise HomeArchiveError(
+            "config-saver's restic store exported nothing — run `config-saver "
+            "--compress` first (and check `config-saver --list`)")
+    warnings = []
+    if returncode != 0:
+        warnings.append(f"config-saver --export-all-configs failed for some "
+                        f"configuration (exit {returncode}): {detail or 'no output'}")
+    return exported, warnings
 
 
 def publish_archives(repo: str, tag: str, archives: Dict[str, Path],

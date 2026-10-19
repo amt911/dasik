@@ -58,7 +58,8 @@ from dasik.lib.exceptions.exceptions import PasswordHashError
 from dasik.lib.git_save import (GitSaveError, chown_to, commit_paths,
                                 invoking_user, repo_root)
 from dasik.lib.home_archive import (HomeArchiveError, DEFAULT_ROOT,
-                                    latest_archives, publish_archives)
+                                    has_restic_store, latest_archives,
+                                    publish_archives, store_exports)
 from dasik.lib.passwords import SHA512, YESCRYPT, hash_password
 
 
@@ -743,14 +744,48 @@ def _publish_home(home_repo: str, user: Optional[str], host: str) -> None:
     here is reported, never fatal — the capture is already committed.
     """
     import pwd
-    home = Path(pwd.getpwnam(user).pw_dir) if user else Path.home()
+    account = pwd.getpwnam(user) if user else None
+    home = Path(account.pw_dir) if account else Path.home()
     try:
-        archives = latest_archives(home / DEFAULT_ROOT)
-        publish_archives(home_repo, host, archives, user)
+        if has_restic_store(home):
+            archives = _publish_store_exports(home_repo, host, home, user, account)
+        else:
+            archives = latest_archives(home / DEFAULT_ROOT)
+            publish_archives(home_repo, host, archives, user)
     except HomeArchiveError as e:
         print(f"Not published: {e}", file=sys.stderr)
         return
     print(f"Published {len(archives)} archive(s) to {home_repo} ({host})")
+
+
+def _publish_store_exports(home_repo: str, host: str, home: Path,
+                           user: Optional[str], account) -> dict:
+    """Export the newest backup of each configuration from config-saver's restic
+    store, publish the exports, and remove them.
+
+    The exports go to a private directory under ``~/.cache`` — on disk: ``/tmp``
+    is a tmpfs, and the newest archives of a real home are about a gigabyte. The
+    directory belongs to the user, who runs both the export and ``gh``.
+    """
+    import shutil
+    import tempfile
+    cache = home / ".cache"
+    created = not cache.exists()
+    cache.mkdir(exist_ok=True)
+    # mkdtemp makes it 0700; root (sudo) creates it, so it is handed over.
+    work = Path(tempfile.mkdtemp(prefix="dasik-home-export-", dir=cache))
+    try:
+        if account is not None:
+            if created:
+                os.chown(cache, account.pw_uid, account.pw_gid)
+            os.chown(work, account.pw_uid, account.pw_gid)
+        archives, warnings = store_exports(user, work)
+        for warning in warnings:
+            print(f"Warning: {warning}", file=sys.stderr)
+        publish_archives(home_repo, host, archives, user)
+        return archives
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
 
 
 def _cmd_generations(target_root: str, prune: Optional[int] = None) -> int:

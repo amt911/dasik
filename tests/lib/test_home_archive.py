@@ -125,3 +125,95 @@ def test_a_missing_release_is_created(tmp_path, monkeypatch):
     assert any("create" in args for _cmd, args in recorder.calls)
     assert not any("upload" in args for _cmd, args in recorder.calls), \
         "create already carries the assets; uploading them again is a second copy"
+
+
+# --- config-saver's restic store (3.5.0+) ------------------------------------ #
+# Once the archives live in config-saver's deduplicated restic store there is
+# no `<name>/<stamp>/*.tar.gz.age` left on disk: the newest backup of each
+# configuration has to be EXPORTED before it can be published.
+
+from types import SimpleNamespace  # noqa: E402
+
+from dasik.lib import home_archive  # noqa: E402
+from dasik.lib.home_archive import has_restic_store, store_exports  # noqa: E402
+
+
+def test_a_home_with_a_restic_store_is_detected(tmp_path):
+    assert has_restic_store(tmp_path) is False
+    (tmp_path / ".config/config-saver/restic").mkdir(parents=True)
+    assert has_restic_store(tmp_path) is True
+
+
+def _fake_export(monkeypatch, names, returncode=0, stderr=""):
+    """Stand in for `config-saver --export-all-configs --output DIR`."""
+    calls = []
+
+    def execute(cmd, args, **kwargs):
+        calls.append([cmd, *args])
+        out = Path(args[args.index("--output") + 1])
+        for name in names:
+            (out / name).write_text("x")
+        return SimpleNamespace(returncode=returncode, stdout="", stderr=stderr)
+
+    monkeypatch.setattr(home_archive.Command, "execute", staticmethod(execute))
+    return calls
+
+
+def test_exports_run_as_the_user_and_map_each_configuration(tmp_path, monkeypatch):
+    calls = _fake_export(monkeypatch, [
+        "zsh-20261019-030000.tar.gz.age",
+        "claude-conversations-20261019-030000.tar.gz.age",
+    ])
+
+    archives, warnings = store_exports("andres", tmp_path)
+
+    assert calls == [["su", "-", "andres", "-c", 'config-saver "$@"', "--",
+                      "config-saver", "--export-all-configs",
+                      "--output", str(tmp_path)]]
+    assert archives == {
+        "zsh": tmp_path / "zsh-20261019-030000.tar.gz.age",
+        "claude-conversations":
+            tmp_path / "claude-conversations-20261019-030000.tar.gz.age",
+    }
+    assert warnings == []
+
+
+def test_exports_without_a_user_run_config_saver_directly(tmp_path, monkeypatch):
+    calls = _fake_export(monkeypatch, ["zsh-20261019-030000.tar.gz.age"])
+
+    store_exports(None, tmp_path)
+
+    assert calls == [["config-saver", "--export-all-configs",
+                      "--output", str(tmp_path)]]
+
+
+def test_a_failed_export_with_nothing_exported_is_an_error(tmp_path, monkeypatch):
+    _fake_export(monkeypatch, [], returncode=5,
+                 stderr="cannot decrypt the store password with /k")
+
+    with pytest.raises(HomeArchiveError, match="cannot decrypt the store password"):
+        store_exports("andres", tmp_path)
+
+
+def test_a_partly_failed_export_still_returns_what_it_exported(tmp_path, monkeypatch):
+    """One unreadable document must not stop the others from being published —
+    the same as on disk, where a configuration that produced nothing is just
+    absent. The failure is surfaced, not swallowed."""
+    _fake_export(monkeypatch, ["zsh-20261019-030000.tar.gz.age"], returncode=3,
+                 stderr="Error exporting kde: invalid configuration")
+
+    archives, warnings = store_exports("andres", tmp_path)
+
+    assert set(archives) == {"zsh"}
+    assert len(warnings) == 1 and "invalid configuration" in warnings[0]
+    assert "exit 3" in warnings[0]
+
+
+def test_plaintext_exports_are_still_refused_by_publishing(tmp_path, monkeypatch):
+    """An export of a document without `encrypt:` is a plain .tar.gz; the
+    refusal that guards the on-disk path guards this one too."""
+    _fake_export(monkeypatch, ["zsh-20261019-030000.tar.gz"])
+    archives, _ = store_exports("andres", tmp_path)
+
+    with pytest.raises(HomeArchiveError, match="not encrypted"):
+        publish_archives("me/repo", "torre", archives)

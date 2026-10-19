@@ -284,10 +284,11 @@ Rules:
 ## Working rules
 
 - **Use superpowers skills whenever they apply** — invoke via `Skill` before acting; process skills before implementation skills.
-- **New dependencies: ask first, then install** — adding a package is allowed when the task
-  genuinely needs one, but ask before installing (which package, why, what it replaces) and wait
-  for the go-ahead. Runtime deps are intentionally minimal (`pydantic`, `colorama`), so check what
-  is already there first.
+- **New dependencies: install, then say so** — no prior ask (user, 2026-10-05). Runtime deps are
+  intentionally minimal (`pydantic`, `colorama`), so check what is already there first; name every
+  new package in the PR (which, why, what it replaces).
+- **Fast and light by default** — at runtime and in deploys, pick the option with less memory,
+  CPU and image size, and say in the PR what it saves. Measure when it matters.
 - **Reuse before you write** — search `dasik/lib/` before adding a helper, model or action (`rg -n "^(def|class) " dasik/`). A new action is assembled from what exists — `Command`/`command_worker` for shelling out, the `models/` pydantic types, the errors module, the existing `is_needed`/`verify`/`import_state` shapes — never from a private copy of them. Two actions that both parse the same system output are one helper waiting to be extracted; do it at the third copy, in the same PR, migrating the call sites. A second copy of a state-detection routine is how `plan` and `sync` start disagreeing about the same machine.
 - **SOLID where it pays, not by rote** — split actions and models by reason to change, extend
   through the `setup_actions()` registry rather than a growing `if`/`elif` chain, keep every

@@ -26,6 +26,8 @@ stale; the newest of each configuration is then exported first
 from __future__ import annotations
 
 import re
+import shutil
+import tempfile
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -99,6 +101,53 @@ def has_restic_store(home: "str | Path") -> bool:
     return (Path(home) / RESTIC_STORE).is_dir()
 
 
+_EXPORT_PREFIX = "dasik-home-export-"
+
+
+def _text(done, stream: str) -> str:
+    """stdout/stderr of a Command.execute result, which are bytes."""
+    value = getattr(done, stream, b"") or b""
+    if isinstance(value, bytes):
+        value = value.decode("utf-8", "replace")
+    return str(value).strip()
+
+
+def make_export_dir(home: "str | Path", user: Optional[str]) -> Path:
+    """A private (0700) directory under ``~/.cache`` for the store's exports.
+
+    On disk on purpose: ``/tmp`` is a tmpfs and the newest archives of a real
+    home are about a gigabyte. Under sudo it is made **by the user** — root never
+    creates or chowns inside their home, where a symlinked ``~/.cache`` would
+    send it anywhere — and what comes back must sit in that ``~/.cache``.
+    """
+    cache = Path(home) / ".cache"
+    if user is None:
+        try:
+            cache.mkdir(exist_ok=True)
+            return Path(tempfile.mkdtemp(prefix=_EXPORT_PREFIX, dir=cache))
+        except OSError as e:
+            raise HomeArchiveError(f"could not create an export directory in {cache}: {e}") from e
+    done = Command.execute("su", ["-", user, "-c",
+                                  'mkdir -p "$HOME/.cache" && '
+                                  f'mktemp -d "$HOME/.cache/{_EXPORT_PREFIX}XXXXXX"'])
+    if getattr(done, "returncode", 1) != 0:
+        detail = _text(done, "stderr")
+        raise HomeArchiveError(f"could not create an export directory in {cache}: "
+                               f"{detail or 'mktemp failed'}")
+    made = Path(_text(done, "stdout"))
+    if made.parent != cache or not made.name.startswith(_EXPORT_PREFIX):
+        raise HomeArchiveError(f"unexpected export directory from mktemp: {made}")
+    return made
+
+
+def remove_export_dir(path: "str | Path", user: Optional[str]) -> None:
+    """Remove what ``make_export_dir`` made, as the same user. Best effort."""
+    if user is None:
+        shutil.rmtree(path, ignore_errors=True)
+        return
+    Command.execute("su", ["-", user, "-c", 'rm -rf -- "$1"', "--", "rm", str(path)])
+
+
 def store_exports(user: Optional[str],
                   out_dir: "str | Path") -> Tuple[Dict[str, Path], List[str]]:
     """Export the newest backup of each configuration from the restic store.
@@ -124,8 +173,7 @@ def store_exports(user: Optional[str],
         exported[match.group(1) if match else path.name.split(".tar.gz")[0]] = path
 
     returncode = getattr(done, "returncode", 1)
-    detail = " ".join(str(getattr(done, s, "") or "").strip()
-                      for s in ("stderr", "stdout")).strip()
+    detail = " ".join(_text(done, s) for s in ("stderr", "stdout")).strip()
     if returncode != 0 and not exported:
         raise HomeArchiveError(
             f"config-saver could not export from its restic store (exit "

@@ -153,7 +153,10 @@ def _fake_export(monkeypatch, names, returncode=0, stderr=""):
         out = Path(args[args.index("--output") + 1])
         for name in names:
             (out / name).write_text("x")
-        return SimpleNamespace(returncode=returncode, stdout="", stderr=stderr)
+        # Command.execute hands back BYTES, as subprocess does — a str here
+        # once hid a b'/home/…' path that only the VM caught.
+        return SimpleNamespace(returncode=returncode, stdout=b"",
+                               stderr=stderr.encode())
 
     monkeypatch.setattr(home_archive.Command, "execute", staticmethod(execute))
     return calls
@@ -191,8 +194,9 @@ def test_a_failed_export_with_nothing_exported_is_an_error(tmp_path, monkeypatch
     _fake_export(monkeypatch, [], returncode=5,
                  stderr="cannot decrypt the store password with /k")
 
-    with pytest.raises(HomeArchiveError, match="cannot decrypt the store password"):
+    with pytest.raises(HomeArchiveError, match="cannot decrypt the store password") as e:
         store_exports("andres", tmp_path)
+    assert "b'" not in str(e.value)
 
 
 def test_a_partly_failed_export_still_returns_what_it_exported(tmp_path, monkeypatch):
@@ -217,3 +221,95 @@ def test_plaintext_exports_are_still_refused_by_publishing(tmp_path, monkeypatch
 
     with pytest.raises(HomeArchiveError, match="not encrypted"):
         publish_archives("me/repo", "torre", archives)
+
+
+# --- the export directory: made and removed AS THE USER ---------------------- #
+# Root (sudo) never creates, chowns or deletes inside the user's home: a
+# symlinked ~/.cache would otherwise make root write wherever it points.
+
+from dasik.lib.home_archive import make_export_dir, remove_export_dir  # noqa: E402
+
+
+def _recording(monkeypatch, stdout="", returncode=0):
+    calls = []
+
+    def execute(cmd, args, **kwargs):
+        calls.append([cmd, *args])
+        return SimpleNamespace(returncode=returncode, stdout=stdout.encode(),
+                               stderr=b"boom")
+
+    monkeypatch.setattr(home_archive.Command, "execute", staticmethod(execute))
+    return calls
+
+
+def test_the_export_dir_is_made_by_the_user(tmp_path, monkeypatch):
+    made = tmp_path / ".cache" / "dasik-home-export-abc123"
+    calls = _recording(monkeypatch, stdout=f"{made}\n")
+
+    assert make_export_dir(tmp_path, "andres") == made
+    assert calls == [["su", "-", "andres", "-c",
+                      'mkdir -p "$HOME/.cache" && '
+                      'mktemp -d "$HOME/.cache/dasik-home-export-XXXXXX"']]
+
+
+def test_an_export_dir_outside_the_users_cache_is_refused(tmp_path, monkeypatch):
+    _recording(monkeypatch, stdout="/etc/dasik-home-export-abc123\n")
+
+    with pytest.raises(HomeArchiveError, match="unexpected export directory"):
+        make_export_dir(tmp_path, "andres")
+
+
+def test_failing_to_make_the_export_dir_is_a_home_archive_error(tmp_path, monkeypatch):
+    _recording(monkeypatch, returncode=1)
+
+    with pytest.raises(HomeArchiveError, match="could not create"):
+        make_export_dir(tmp_path, "andres")
+
+
+def test_without_a_user_the_dir_is_made_directly(tmp_path):
+    made = make_export_dir(tmp_path, None)
+
+    assert made.parent == tmp_path / ".cache"
+    assert made.name.startswith("dasik-home-export-")
+    assert made.stat().st_mode & 0o777 == 0o700
+
+
+def test_a_broken_cache_without_a_user_is_a_home_archive_error(tmp_path):
+    (tmp_path / ".cache").symlink_to(tmp_path / "nowhere")
+
+    with pytest.raises(HomeArchiveError, match="could not create"):
+        make_export_dir(tmp_path, None)
+
+
+def test_the_export_dir_is_removed_by_the_user(tmp_path, monkeypatch):
+    calls = _recording(monkeypatch)
+    target = tmp_path / ".cache" / "dasik-home-export-abc123"
+
+    remove_export_dir(target, "andres")
+
+    assert calls == [["su", "-", "andres", "-c", 'rm -rf -- "$1"', "--", "rm",
+                      str(target)]]
+
+
+def test_without_a_user_the_dir_is_removed_directly(tmp_path):
+    target = make_export_dir(tmp_path, None)
+    (target / "x.tar.gz.age").write_text("x")
+
+    remove_export_dir(target, None)
+
+    assert not target.exists()
+
+
+def test_exit_zero_with_nothing_exported_is_an_error(tmp_path, monkeypatch):
+    _fake_export(monkeypatch, [])
+
+    with pytest.raises(HomeArchiveError, match="exported nothing"):
+        store_exports("andres", tmp_path)
+
+
+def test_an_export_name_without_a_stamp_keeps_its_stem(tmp_path, monkeypatch):
+    _fake_export(monkeypatch, ["odd.tar.gz.age"])
+
+    archives, _ = store_exports("andres", tmp_path)
+
+    assert archives == {"odd": tmp_path / "odd.tar.gz.age"}

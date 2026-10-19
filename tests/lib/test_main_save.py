@@ -215,6 +215,11 @@ def test_home_with_a_restic_store_publishes_its_exports(repo, monkeypatch,
     monkeypatch.setattr(m, "invoking_user", lambda: None)
     monkeypatch.setattr(m.Path, "home", staticmethod(lambda: home))
     monkeypatch.setattr(m, "store_exports", fake_exports)
+    removed = []
+    real_remove = m.remove_export_dir
+    monkeypatch.setattr(m, "remove_export_dir",
+                        lambda path, user: (removed.append((path, user)),
+                                            real_remove(path, user)))
     monkeypatch.setattr(m, "latest_archives",
                         lambda root: pytest.fail("the on-disk tree is stale"))
     monkeypatch.setattr(m, "publish_archives",
@@ -232,6 +237,7 @@ def test_home_with_a_restic_store_publishes_its_exports(repo, monkeypatch,
     assert seen["dir"].parent == home / ".cache"
     assert seen["mode"] == 0o700
     assert not seen["dir"].exists()          # cleaned up after publishing
+    assert removed == [(seen["dir"], None)]
     assert "Published 1 archive" in out.out
     assert "failed for kde" in out.err
 
@@ -255,3 +261,23 @@ def test_home_restic_export_failure_is_reported_not_fatal(repo, monkeypatch,
     assert rc == 0
     assert "Not published: config-saver could not export" in capsys.readouterr().err
     assert list((home / ".cache").iterdir()) == []
+
+
+def test_home_export_dir_failure_is_reported_not_fatal(repo, monkeypatch,
+                                                      tmp_path, capsys):
+    """A broken ~/.cache (say a dangling symlink) is a publish problem, not a
+    failed save: the capture is already committed."""
+    home = tmp_path / "home"
+    (home / ".config/config-saver/restic").mkdir(parents=True)
+    (home / ".cache").symlink_to(tmp_path / "nowhere")
+    monkeypatch.setattr(m, "invoking_user", lambda: None)
+    monkeypatch.setattr(m.Path, "home", staticmethod(lambda: home))
+    monkeypatch.setattr(m, "store_exports",
+                        lambda user, out: pytest.fail("no directory, no export"))
+    _stub_capture(monkeypatch, {"hostname": "torre"})
+
+    rc = m._cmd_save(repo / "main.json", "/", message=None, push=False,
+                     home_repo="amt911/config-saver-personal-config")
+
+    assert rc == 0
+    assert "Not published: could not create" in capsys.readouterr().err

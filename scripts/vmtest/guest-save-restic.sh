@@ -37,12 +37,14 @@ encrypt:
   recipients: [$PUB]
 YAML
 chown "$U:$U" "$H/.config/config-saver/configs.d/dotfiles.yaml"
-su - "$U" -c 'config-saver --compress'; echo "RSAVE-COMPRESS1 rc=$?"
+su - "$U" -c 'config-saver --compress'; r=$?
+echo "RSAVE-COMPRESS1 rc=$r"; [ "$r" = 0 ] || rc=1
 su - "$U" -c "config-saver --restic-init --encrypt-to $PUB --identity ~/key.txt"; r=$?
 echo "RSAVE-INIT rc=$r"; [ "$r" = 0 ] || rc=1
 su - "$U" -c 'config-saver --migrate --delete-migrated'; r=$?
 echo "RSAVE-MIGRATE rc=$r"; [ "$r" = 0 ] || rc=1
-su - "$U" -c 'config-saver --compress'; echo "RSAVE-COMPRESS2 rc=$?"
+su - "$U" -c 'config-saver --compress'; r=$?
+echo "RSAVE-COMPRESS2 rc=$r"; [ "$r" = 0 ] || rc=1
 left=$(find "$H/.config/config-saver/configs" -name '*.tar.gz*' 2>/dev/null | wc -l)
 [ "$left" = 0 ] && echo "RSAVE-NO-TARS ok" || { echo "RSAVE-NO-TARS BAD=$left"; rc=1; }
 su - "$U" -c 'config-saver --list'
@@ -53,7 +55,7 @@ cat > /usr/local/bin/gh <<'GH'
 #!/bin/bash
 echo "$(id -un) $*" >> /tmp/gh.log
 [ "$1 $2" = "release view" ] && exit 1
-for a in "$@"; do [ -f "$a" ] && cp "$a" /tmp/published/; done
+for a in "$@"; do [ -f "$a" ] && { cp "$a" /tmp/published/; stat -c 'dir-owner %U' "$(dirname "$a")" >> /tmp/gh.log; }; done
 exit 0
 GH
 chmod 755 /usr/local/bin/gh
@@ -84,7 +86,8 @@ else
 fi
 leftover=$(ls -d "$H"/.cache/dasik-home-export-* 2>/dev/null | wc -l)
 [ "$leftover" = 0 ] && echo "RSAVE-CLEANUP ok" || { echo "RSAVE-CLEANUP BAD=$leftover"; rc=1; }
-stat -c 'RSAVE-CACHE-OWNER %U' "$H/.cache"
+# Root must never create inside the user's home: the export dir is theirs.
+grep -q "^dir-owner $U$" /tmp/gh.log && echo "RSAVE-EXPORTDIR-OWNER ok" || { echo "RSAVE-EXPORTDIR-OWNER BAD"; rc=1; }
 
 echo "RSAVE-E: without the age key the export fails — reported, save still succeeds"
 mv "$H/key.txt" "$H/key.txt.away"
@@ -99,6 +102,7 @@ mv "$H/key.txt.away" "$H/key.txt"
 leftover=$(ls -d "$H"/.cache/dasik-home-export-* 2>/dev/null | wc -l)
 [ "$leftover" = 0 ] && echo "RSAVE-NOKEY-CLEANUP ok" || { echo "RSAVE-NOKEY-CLEANUP BAD=$leftover"; rc=1; }
 
+rm -f /usr/local/bin/gh       # the image persists; leave no stub behind
 echo "RSAVE-DONE rc=$rc"
 sync
 poweroff -f

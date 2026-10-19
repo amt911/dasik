@@ -695,12 +695,17 @@ same path. What is different:
 - **To keep the history**, copy the whole store across instead —
   `~/.config/config-saver/restic/`, `restic-password.age` and
   `restic-store.json` — together with the age key. The key is the only secret:
-  the store password is encrypted to it.
+  the store password is encrypted to it. `restic-store.json` records the key's
+  **absolute** path; on a machine with another user, home or key location, fix
+  that path or pass `--identity` to every command.
+- **Keep `encrypt:` in every document.** The store is always encrypted, but an
+  *export* is encrypted only by the document's own `encrypt:` block — drop it
+  "because the store encrypts" and `save --home` refuses to publish.
 - **Restoring straight from a store** (an older snapshot, or no release at all):
   `config-saver --list` shows the snapshots, then
   ```bash
-  config-saver --export-config <name> --output /tmp/restore/
-  config-saver --decompress --input /tmp/restore/<name>-<stamp>.tar.gz.age \
+  config-saver --export-config <name> --output ~/restore/
+  config-saver --decompress --input ~/restore/<name>-<stamp>.tar.gz.age \
       --identity ~/.config/age/key.txt
   ```
 - **`restic` is an optional package** in the configs that use it: a machine

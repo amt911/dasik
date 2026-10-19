@@ -229,8 +229,8 @@ prunes.
 `config-saver --restic-init`) the backups are snapshots inside
 `~/.config/config-saver/restic` and nothing under `configs/` is the newest one
 any more. `save` sees the store and **exports** first: it runs
-`config-saver --export-all-configs` as you into a private directory under
-`~/.cache` (on disk — `/tmp` is a tmpfs and the newest archives of a real home
+`config-saver --export-all-configs` as you into a private directory you own
+under `~/.cache` (made and removed as you, never by root; on disk — `/tmp` is a tmpfs and the newest archives of a real home
 are about a gigabyte), publishes those `<name>-<stamp>.tar.gz.age` files exactly
 as above, and deletes the directory. A configuration that fails to export is a
 warning and the others are still published; an export that produces nothing

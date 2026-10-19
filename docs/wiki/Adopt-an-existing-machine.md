@@ -676,6 +676,41 @@ That second apply does only the restore. dasik marks it by the archive's
 **content hash**, so re-running restores nothing and a newer capture at the
 same path restores again.
 
+#### If config-saver keeps your backups in its restic store
+
+config-saver 3.5.0 can store the backups as deduplicated snapshots in one
+encrypted restic repository (`config-saver --restic-init`, then
+`--migrate --delete-migrated`). **The restore above does not change**: `save
+--home` exports the newest snapshot of each configuration and publishes the
+same `.tar.gz.age` files, so `gh release download` + decrypt + `restore` is the
+same path. What is different:
+
+- **The store is not inside the archive.** A restored `$HOME` brings back your
+  documents in `~/.config/config-saver/configs.d`, not
+  `~/.config/config-saver/restic`. On the new machine config-saver starts over
+  in archive mode (every `--compress` says so on stderr) until you run
+  `config-saver --restic-init --encrypt-to <your age public key> --identity
+  ~/.config/age/key.txt` again. That is a *new*, empty store: the history stays
+  in the old one.
+- **To keep the history**, copy the whole store across instead —
+  `~/.config/config-saver/restic/`, `restic-password.age` and
+  `restic-store.json` — together with the age key. The key is the only secret:
+  the store password is encrypted to it. `restic-store.json` records the key's
+  **absolute** path; on a machine with another user, home or key location, fix
+  that path or pass `--identity` to every command.
+- **Keep `encrypt:` in every document.** The store is always encrypted, but an
+  *export* is encrypted only by the document's own `encrypt:` block — drop it
+  "because the store encrypts" and `save --home` refuses to publish.
+- **Restoring straight from a store** (an older snapshot, or no release at all):
+  `config-saver --list` shows the snapshots, then
+  ```bash
+  config-saver --export-config <name> --output ~/restore/
+  config-saver --decompress --input ~/restore/<name>-<stamp>.tar.gz.age \
+      --identity ~/.config/age/key.txt
+  ```
+- **`restic` is an optional package** in the configs that use it: a machine
+  without it keeps working in archive mode, it just does not deduplicate.
+
 Restoring by hand works too, and takes the identity directly:
 
 ```bash
@@ -795,26 +830,31 @@ published one refreshed (`gh release upload … --clobber`).
    no `--identity`. Decrypt, then point `restore.archive` at the plain file.
 5. **A capture comes back with `wipe_disk: false`** and this machine's
    `luks_uuid`. Arming it for a reinstall is a deliberate edit (step 6).
-6. **config-saver with no document anywhere exits 6.** Since 3.3.0 there is no
+6. **config-saver's restic store does not travel in the archive.** A restored
+   `$HOME` starts in archive mode; re-run `config-saver --restic-init` (a new
+   store) or copy the old store and its password file across (keeps history).
+7. **config-saver with no document anywhere exits 6.** Since 3.3.0 there is no
    fallback to the shipped examples — they reach `~/.ssh` and `~/.config/rclone`,
    and installing a package must not start a daily timer that archives
    credentials nobody chose. `dasik plan` warns when `timer_users` is declared
    with an empty `configs`.
-7. **Upgrading config-saver leaves the timer inert.** A `.timer` that changed is
+8. **Upgrading config-saver leaves the timer inert.** A `.timer` that changed is
    reloaded but not re-armed, so `systemctl list-timers` shows an empty `NEXT`
    and no backup ever runs. `sudo systemctl restart config-saver@$USER.timer`
    (the package names the affected timers on upgrade).
-8. **A configuration's name is its file name**, and declaring one in the dasik
+9. **A configuration's name is its file name**, and declaring one in the dasik
    config does not create it until `apply` runs. On the machine you are
    capturing *from*, the documents that exist are the ones in
    `~/.config/config-saver/configs.d`. `config-saver --show-configs` is the
    answer to "what can I export?" — there is no `dotfiles` unless you made one.
-9. **Nothing prunes the archives.** A daily timer keeps every run forever;
-   114 copies of one document filled 7.2 GB on a machine already at 96%.
-10. **A synced config points at secrets it does not carry.** `tailscale`'s
+10. **Before config-saver 3.5.0 nothing pruned the archives.** A daily timer kept
+   every run forever; 114 copies of one document filled 7.2 GB on a machine
+   already at 96%. 3.5.0 prunes with a `retention:` block (always, with defaults,
+   once the restic store exists).
+11. **A synced config points at secrets it does not carry.** `tailscale`'s
    `auth_key_file` is a path; on a fresh machine the file is not there and dasik
    writes the conffile *without* `AuthKey` — on purpose, since a dangling
    `file:` reference stops `tailscaled` from starting. Create the file, apply,
    restart the daemon (step 9).
-11. **Never commit a run log or an archive.** The `.gitignore` in step 3 covers
+12. **Never commit a run log or an archive.** The `.gitignore` in step 3 covers
    the logs; archives are release assets and never enter Git.

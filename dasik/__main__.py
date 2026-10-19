@@ -58,7 +58,9 @@ from dasik.lib.exceptions.exceptions import PasswordHashError
 from dasik.lib.git_save import (GitSaveError, chown_to, commit_paths,
                                 invoking_user, repo_root)
 from dasik.lib.home_archive import (HomeArchiveError, DEFAULT_ROOT,
-                                    latest_archives, publish_archives)
+                                    has_restic_store, latest_archives,
+                                    make_export_dir, publish_archives,
+                                    remove_export_dir, store_exports)
 from dasik.lib.passwords import SHA512, YESCRYPT, hash_password
 
 
@@ -745,12 +747,30 @@ def _publish_home(home_repo: str, user: Optional[str], host: str) -> None:
     import pwd
     home = Path(pwd.getpwnam(user).pw_dir) if user else Path.home()
     try:
-        archives = latest_archives(home / DEFAULT_ROOT)
-        publish_archives(home_repo, host, archives, user)
+        if has_restic_store(home):
+            archives = _publish_store_exports(home_repo, host, home, user)
+        else:
+            archives = latest_archives(home / DEFAULT_ROOT)
+            publish_archives(home_repo, host, archives, user)
     except HomeArchiveError as e:
         print(f"Not published: {e}", file=sys.stderr)
         return
     print(f"Published {len(archives)} archive(s) to {home_repo} ({host})")
+
+
+def _publish_store_exports(home_repo: str, host: str, home: Path,
+                           user: Optional[str]) -> dict:
+    """Export the newest backup of each configuration from config-saver's restic
+    store into a private directory the user owns, publish, and remove it."""
+    work = make_export_dir(home, user)
+    try:
+        archives, warnings = store_exports(user, work)
+        for warning in warnings:
+            print(f"Warning: {warning}", file=sys.stderr)
+        publish_archives(home_repo, host, archives, user)
+        return archives
+    finally:
+        remove_export_dir(work, user)
 
 
 def _cmd_generations(target_root: str, prune: Optional[int] = None) -> int:

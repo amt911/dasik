@@ -161,6 +161,9 @@ def test_home_publishes_the_newest_archive_of_each_configuration(repo, monkeypat
 
     published = {}
     monkeypatch.setattr(m, "invoking_user", lambda: None)
+    # Path.home() is the developer's real home here; once it has a restic
+    # store the other branch would run. This test is the on-disk one.
+    monkeypatch.setattr(m, "has_restic_store", lambda home: False)
     monkeypatch.setattr(m, "latest_archives", lambda root: {
         p.parent.parent.name: p for p in archives.glob("*/*/*.age")})
     monkeypatch.setattr(m, "publish_archives",
@@ -187,3 +190,94 @@ def test_home_needs_a_repository_to_publish_to(repo, monkeypatch, capsys):
                      home_repo="")
 
     assert rc == 0     # the capture still happened; only --home was skipped
+
+
+def test_home_with_a_restic_store_publishes_its_exports(repo, monkeypatch,
+                                                         tmp_path, capsys):
+    """config-saver 3.5.0 keeps the backups as snapshots in a restic store, so
+    nothing on disk is the newest archive any more: `--home` exports them into a
+    private directory on disk (not /tmp, a tmpfs: ~1 GB of exports in RAM), as
+    the user, publishes them, and removes the directory."""
+    home = tmp_path / "home"
+    (home / ".config/config-saver/restic").mkdir(parents=True)
+    seen = {}
+
+    def fake_exports(user, out_dir):
+        out_dir = Path(out_dir)
+        seen["dir"] = out_dir
+        seen["mode"] = out_dir.stat().st_mode & 0o777
+        seen["user"] = user
+        archive = out_dir / "zsh-20261019-030000.tar.gz.age"
+        archive.write_text("x")
+        return {"zsh": archive}, ["config-saver --export-all-configs failed for kde"]
+
+    published = {}
+    monkeypatch.setattr(m, "invoking_user", lambda: None)
+    monkeypatch.setattr(m.Path, "home", staticmethod(lambda: home))
+    monkeypatch.setattr(m, "store_exports", fake_exports)
+    removed = []
+    real_remove = m.remove_export_dir
+    monkeypatch.setattr(m, "remove_export_dir",
+                        lambda path, user: (removed.append((path, user)),
+                                            real_remove(path, user)))
+    monkeypatch.setattr(m, "latest_archives",
+                        lambda root: pytest.fail("the on-disk tree is stale"))
+    monkeypatch.setattr(m, "publish_archives",
+                        lambda repo, tag, arch, user=None: published.update(
+                            {"tag": tag, "names": sorted(arch),
+                             "exists": all(p.exists() for p in arch.values())}))
+    _stub_capture(monkeypatch, {"hostname": "torre"})
+
+    rc = m._cmd_save(repo / "main.json", "/", message=None, push=False,
+                     home_repo="amt911/config-saver-personal-config")
+
+    out = capsys.readouterr()
+    assert rc == 0
+    assert published == {"tag": "torre", "names": ["zsh"], "exists": True}
+    assert seen["dir"].parent == home / ".cache"
+    assert seen["mode"] == 0o700
+    assert not seen["dir"].exists()          # cleaned up after publishing
+    assert removed == [(seen["dir"], None)]
+    assert "Published 1 archive" in out.out
+    assert "failed for kde" in out.err
+
+
+def test_home_restic_export_failure_is_reported_not_fatal(repo, monkeypatch,
+                                                          tmp_path, capsys):
+    home = tmp_path / "home"
+    (home / ".config/config-saver/restic").mkdir(parents=True)
+    monkeypatch.setattr(m, "invoking_user", lambda: None)
+    monkeypatch.setattr(m.Path, "home", staticmethod(lambda: home))
+
+    def boom(user, out_dir):
+        raise m.HomeArchiveError("config-saver could not export (exit 5): no key")
+
+    monkeypatch.setattr(m, "store_exports", boom)
+    _stub_capture(monkeypatch, {"hostname": "torre"})
+
+    rc = m._cmd_save(repo / "main.json", "/", message=None, push=False,
+                     home_repo="amt911/config-saver-personal-config")
+
+    assert rc == 0
+    assert "Not published: config-saver could not export" in capsys.readouterr().err
+    assert list((home / ".cache").iterdir()) == []
+
+
+def test_home_export_dir_failure_is_reported_not_fatal(repo, monkeypatch,
+                                                      tmp_path, capsys):
+    """A broken ~/.cache (say a dangling symlink) is a publish problem, not a
+    failed save: the capture is already committed."""
+    home = tmp_path / "home"
+    (home / ".config/config-saver/restic").mkdir(parents=True)
+    (home / ".cache").symlink_to(tmp_path / "nowhere")
+    monkeypatch.setattr(m, "invoking_user", lambda: None)
+    monkeypatch.setattr(m.Path, "home", staticmethod(lambda: home))
+    monkeypatch.setattr(m, "store_exports",
+                        lambda user, out: pytest.fail("no directory, no export"))
+    _stub_capture(monkeypatch, {"hostname": "torre"})
+
+    rc = m._cmd_save(repo / "main.json", "/", message=None, push=False,
+                     home_repo="amt911/config-saver-personal-config")
+
+    assert rc == 0
+    assert "Not published: could not create" in capsys.readouterr().err

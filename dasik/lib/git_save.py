@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Iterable, List, Optional, Sequence, Set
 
 from .command_worker.command_worker import Command
+from .login_shell import MARKED, strip_login_noise
 
 
 class GitSaveError(Exception):
@@ -58,8 +59,11 @@ def _run(repo: Path, args: Sequence[str], user: Optional[str] = None):
         return Command.execute("git", git_args)
     # `su - <user> -c '<script>' -- sh <args…>`: the script is fixed and the
     # values arrive as "$1", "$2"… so a path can never be spliced into it.
-    script = 'git "$@"'
-    return Command.execute("su", ["-", user, "-c", script, "--", "git", *git_args])
+    # A login shell runs the user's profile first; anything it prints is cut
+    # off at the marker, so the output callers parse is git's own.
+    script = MARKED('git "$@"')
+    return strip_login_noise(
+        Command.execute("su", ["-", user, "-c", script, "--", "git", *git_args]))
 
 
 def invoking_user() -> Optional[str]:

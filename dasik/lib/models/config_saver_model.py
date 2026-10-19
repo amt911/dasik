@@ -81,6 +81,50 @@ class ConfigSaverRestore(BaseModel):
         return v
 
 
+class ConfigSaverResticStore(BaseModel):
+    """config-saver's deduplicated restic store (config-saver 3.5.0+) for one user.
+
+    dasik creates it with ``config-saver --restic-init`` as that user; the
+    public key is derived from *identity* (``age-keygen -y``), so the two can
+    never disagree. Un-declaring it never deletes it: it holds the backups.
+    Moving the existing ``.tar.gz`` history into it stays a manual, one-time
+    ``config-saver --migrate --delete-migrated``.
+    """
+    user: str = Field(..., description="Whose store (and whose config-saver timer)")
+    identity: str = Field(
+        default="~/.config/age/key.txt",
+        description="The age private key on the target: `~/…` is the user's "
+                    "home, or an absolute path. The store password is "
+                    "encrypted to its public key.",
+    )
+
+    @field_validator("user")
+    @classmethod
+    def _valid_user(cls, v: str) -> str:
+        if not _VALID_USERNAME.fullmatch(v or ""):
+            raise ValueError(f"invalid username {v!r}")
+        return v
+
+    @field_validator("identity")
+    @classmethod
+    def _plain_path(cls, v: str) -> str:
+        reject_control_chars(v, "config_saver.restic_stores.identity")
+        if not (v.startswith("/") or v.startswith("~/")):
+            raise ValueError(
+                "config_saver.restic_stores.identity must be absolute or start "
+                f"with '~/', got {v!r}")
+        if ".." in v.split("/"):
+            raise ValueError(
+                f"config_saver.restic_stores.identity has a '..' segment: {v!r}")
+        # restic reads the store password through a command line it splits
+        # itself, and it cannot carry these (config-saver refuses them too).
+        if any(c in v for c in "'\"\\"):
+            raise ValueError(
+                "config_saver.restic_stores.identity cannot contain a quote or "
+                f"a backslash (restic's password command cannot carry it): {v!r}")
+        return v
+
+
 class ConfigSaverModel(BaseModel):
     """config-saver: the package, its configurations, its timers, its restores.
 
@@ -108,6 +152,24 @@ class ConfigSaverModel(BaseModel):
                     "restored once per archive CONTENT: replacing the file with "
                     "a newer capture restores again, re-running does not.",
     )
+
+    restic_stores: List[ConfigSaverResticStore] = Field(
+        default_factory=list,
+        description="Users whose backups live in config-saver's deduplicated "
+                    "restic store (config-saver 3.5.0+, `restic` and `age` "
+                    "installed). Created once; never deleted by dasik.",
+    )
+
+    @field_validator("restic_stores")
+    @classmethod
+    def _one_store_per_user(cls, v: List[ConfigSaverResticStore]) -> List[ConfigSaverResticStore]:
+        users = [store.user for store in v]
+        repeated = sorted({u for u in users if users.count(u) > 1})
+        if repeated:
+            raise ValueError(
+                f"config_saver.restic_stores declares {', '.join(repeated)} more "
+                "than once: a user has one store")
+        return v
 
     @field_validator("configs")
     @classmethod

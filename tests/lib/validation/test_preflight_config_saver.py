@@ -84,3 +84,39 @@ def test_an_unrelated_home_file_does_not_count(tmp_path):
 
     assert len([w for w in _warnings(cfg)
                 if w.code == "config_saver_timer_without_configs"]) == 1
+
+
+# --- restic_stores without restic --------------------------------------------- #
+# The store needs `restic` and `age` on the target. Missing at apply time is a
+# warning there; naming it before the first mutation is cheaper.
+
+def _store_codes(packages):
+    cfg = {"packages": packages,
+           "config_saver": {"restic_stores": [{"user": "andres"}]}}
+    return [w for w in _warnings(cfg) if w.code == "config_saver_store_without_restic"]
+
+
+def test_a_store_without_restic_or_age_in_packages_warns():
+    warns = _store_codes(["config-saver"])
+    assert len(warns) == 1
+    assert "`restic` and `age` are not in `packages`" in warns[0].message
+
+
+def test_a_store_with_both_packages_is_quiet_plain_or_optional():
+    assert _store_codes(["restic", "age"]) == []
+    assert _store_codes([{"name": "restic", "optional": True}, "age"]) == []
+
+
+def test_a_store_with_only_restic_names_age():
+    warns = _store_codes(["restic"])
+    assert len(warns) == 1 and "`age` is not in `packages`" in warns[0].message
+    assert "`restic`" not in warns[0].message.split("(")[0]
+
+
+def test_no_store_no_warning():
+    cfg = {"packages": [], "config_saver": {}}
+    assert [w for w in _warnings(cfg) if w.code == "config_saver_store_without_restic"] == []
+
+
+def test_a_deprecated_aur_prefix_still_counts():
+    assert _store_codes(["aur-restic", "age"]) == []

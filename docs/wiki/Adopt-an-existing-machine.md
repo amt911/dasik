@@ -687,11 +687,15 @@ same path. What is different:
 
 - **The store is not inside the archive.** A restored `$HOME` brings back your
   documents in `~/.config/config-saver/configs.d`, not
-  `~/.config/config-saver/restic`. On the new machine config-saver starts over
-  in archive mode (every `--compress` says so on stderr) until you run
-  `config-saver --restic-init --encrypt-to <your age public key> --identity
-  ~/.config/age/key.txt` again. That is a *new*, empty store: the history stays
-  in the old one.
+  `~/.config/config-saver/restic`. Declare it instead —
+  `"config_saver": {"restic_stores": [{"user": "andres"}]}` (see
+  [Features](Features.md#the-deduplicated-restic-store)) — and the apply after
+  you put the age key back creates a *new*, empty store; until then
+  config-saver keeps writing archives. The history stays in the old store.
+- **A machine already running config-saver** converges the same way: declare
+  the store, `pacman -Syu` for config-saver ≥ 3.5.0 if it is older (apply warns
+  until it is), apply, then move the old archives in by hand once:
+  `config-saver --migrate --delete-migrated`.
 - **To keep the history**, copy the whole store across instead —
   `~/.config/config-saver/restic/`, `restic-password.age` and
   `restic-store.json` — together with the age key. The key is the only secret:
@@ -831,8 +835,8 @@ published one refreshed (`gh release upload … --clobber`).
 5. **A capture comes back with `wipe_disk: false`** and this machine's
    `luks_uuid`. Arming it for a reinstall is a deliberate edit (step 6).
 6. **config-saver's restic store does not travel in the archive.** A restored
-   `$HOME` starts in archive mode; re-run `config-saver --restic-init` (a new
-   store) or copy the old store and its password file across (keeps history).
+   `$HOME` starts in archive mode until `restic_stores` creates a new store
+   (or you copy the old store and its password file across to keep history).
 7. **config-saver with no document anywhere exits 6.** Since 3.3.0 there is no
    fallback to the shipped examples — they reach `~/.ssh` and `~/.config/rclone`,
    and installing a package must not start a daily timer that archives

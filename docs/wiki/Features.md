@@ -468,6 +468,47 @@ Restores are **once per archive content**: the marker under
 re-applying does nothing and a newer capture at the same path is restored again.
 Un-declaring one removes nothing — unpacking cannot be undone.
 
+### The deduplicated restic store
+
+```json
+"packages": [{ "name": "restic", "optional": true }, "age"],
+"config_saver": {
+  "timer_users": ["andres"],
+  "restic_stores": [{ "user": "andres" }]
+}
+```
+
+config-saver 3.5.0 can keep the backups as snapshots in one encrypted restic
+repository instead of a `.tar.gz.age` per day — unchanged files are stored once
+(measured: ~45 MB per daily snapshot of a 2 GB tree instead of ~790 MB) — and
+prunes them with a snapper-style retention after every run. `restic_stores`
+creates that store per user with `config-saver --restic-init`, run **as the
+user**; the public key is derived from `identity` (default
+`~/.config/age/key.txt`) with `age-keygen -y`, so at creation the two never
+disagree. Changing `identity` later does not re-key an existing store — the
+store is keyed by user, and `sync` writes back the identity it records.
+
+- **plan** names the store until it exists (the repository *and* its
+  age-encrypted password file); **sync** captures it back, with the identity
+  the store records.
+- **A missing piece is a warning, not a failed apply**: no `restic` or `age`,
+  config-saver itself (a failed build), a config-saver older than 3.5.0, or
+  the key not on the machine yet — a fresh
+  install gets it after the first boot. config-saver keeps writing `.tar.gz`
+  meanwhile; apply again once it is there. `preflight` already warns when
+  `restic`/`age` are not in `packages`.
+- **A half-made store is an error**: dasik will not initialise over a
+  repository whose password file is gone. So is a key file `age-keygen` cannot
+  read — a present-but-broken key is not "not there yet".
+- **Un-declaring it deletes nothing** — the store holds the backups.
+- **Old archives are not migrated by dasik.** `config-saver --migrate
+  --delete-migrated` deletes the originals (each only after its snapshot hashes
+  identically), once per machine: an `apply` that deletes backups is not "the
+  same JSON changes nothing".
+
+`dasik save --home` publishes from the store too: it exports the newest backup
+of each configuration first (see [CLI](CLI.md#--home-ownerrepo)).
+
 ### It is not only `$HOME` — `/etc/ssh` and friends
 
 A backup document takes absolute paths, so system configuration goes in the same

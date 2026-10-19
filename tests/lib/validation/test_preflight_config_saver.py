@@ -99,7 +99,7 @@ def _store_codes(packages):
 def test_a_store_without_restic_or_age_in_packages_warns():
     warns = _store_codes(["config-saver"])
     assert len(warns) == 1
-    assert "restic" in warns[0].message and "age" in warns[0].message
+    assert "`restic` and `age` are not in `packages`" in warns[0].message
 
 
 def test_a_store_with_both_packages_is_quiet_plain_or_optional():
@@ -109,7 +109,8 @@ def test_a_store_with_both_packages_is_quiet_plain_or_optional():
 
 def test_a_store_with_only_restic_names_age():
     warns = _store_codes(["restic"])
-    assert len(warns) == 1 and "`age`" in warns[0].message and "`restic`" not in warns[0].message
+    assert len(warns) == 1 and "`age` is not in `packages`" in warns[0].message
+    assert "`restic`" not in warns[0].message.split("(")[0]
 
 
 def test_no_store_no_warning():

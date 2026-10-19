@@ -823,7 +823,8 @@ def _check_config_saver_store(config: Dict[str, Any], packages: Set[str]) -> Lis
     return [Issue(
         "warning", "config_saver_store_without_restic",
         f"config_saver.restic_stores is declared but {' and '.join(missing)} "
-        "is not in `packages`. The store cannot be created without them: "
+        f"{'are' if len(missing) > 1 else 'is'} not in `packages`. The store "
+        "cannot be created without them: "
         "apply will skip it with a warning and config-saver keeps writing "
         ".tar.gz archives. Declare them (restic can be "
         '`{"name": "restic", "optional": true}`).')]

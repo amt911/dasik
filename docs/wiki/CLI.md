@@ -308,12 +308,21 @@ Full page: [Partition wizard](Partition-wizard.md).
 ## `upgrade`
 
 ```bash
-dasik upgrade config.json [--target /]
+sudo dasik upgrade config.json [--target /]
 ```
 
 Moves the declared AI tooling (`uv_tools`, then `ai_skills`) to its latest
-version by driving each tool's own updater as the declaring user. Takes the
-apply lock, writes **no generation**, and is **not undone by `rollback`**.
+version by driving each tool's own updater as the declaring user. **Needs
+root** — it switches to each user with `su` — and refuses at once without it.
+Takes the apply lock, writes **no generation**, and is **not undone by
+`rollback`**.
+
+Each step prints `→ <item>` as it starts and its outcome as it ends, then a
+count of every status. An item whose version did not move (or has none) is
+judged by its files: `updated (contents changed)` or `already latest
+(contents unchanged)`. Only what no version or file can tell apart stays
+`refreshed (version unknown)` — today, a codex marketplace. A Claude plugin
+without releases shows as `commit <sha>`.
 Exact pins are skipped, items not yet installed are skipped (run `apply`), and
 one failure never stops the rest; the exit code is 1 if any step failed.
 Without those blocks it prints `Nothing to upgrade.`. `mcp_servers` has nothing

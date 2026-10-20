@@ -8,6 +8,8 @@ import json
 import shutil
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from dasik.__main__ import main
 from dasik.lib.state.generation_store import GenerationStore
 from dasik.lib.target.target import Target
@@ -17,6 +19,12 @@ from tests.lib.actions.test_uv_tools_action import _install
 
 MKT = {"name": "caveman", "source": "JuliusBrussee/caveman"}
 PLUGIN = {"name": "superpowers", "method": "claude-plugin", "marketplace": MKT}
+
+
+@pytest.fixture(autouse=True)
+def _as_root(monkeypatch):
+    """`upgrade` refuses to run unprivileged; these journeys are root's."""
+    monkeypatch.setattr("dasik.__main__.os.geteuid", lambda: 0)
 
 
 def _cfg(**blocks):
@@ -116,3 +124,27 @@ def test_upgrade_notes_mcp_servers_and_rollback(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "mcp_servers: nothing to upgrade" in out
     assert "dasik rollback does not revert an upgrade." in out
+
+
+def test_upgrade_refuses_without_root(tmp_path, monkeypatch, capsys):
+    # Unprivileged, `su - andres` asks for a password into a pipe nobody shows,
+    # and the run hangs with a blank screen. Refuse before the first step.
+    monkeypatch.setattr("dasik.__main__.os.geteuid", lambda: 1000)
+    path = _root(tmp_path, _full_cfg())
+    rc, scripts = _upgrade(tmp_path, path)
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert scripts == []
+    assert "root" in err and "sudo dasik upgrade" in err
+
+
+def test_upgrade_shows_each_step_live(tmp_path, capsys):
+    path = _root(tmp_path, _full_cfg())
+    rc, _ = _upgrade(tmp_path, path)
+    lines = capsys.readouterr().out.splitlines()
+    assert rc == 0
+    start = lines.index("→ andres:graphifyy")
+    done = next(i for i, l in enumerate(lines) if l.startswith("andres:graphifyy: "))
+    nxt = lines.index("→ andres:claude-code:marketplace:caveman")
+    assert start < done < nxt
+    assert any(l.endswith("0 failed") for l in lines[nxt:])

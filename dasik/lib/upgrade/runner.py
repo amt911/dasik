@@ -1,6 +1,6 @@
 """Run upgrade steps and summarise them; one failure never stops the run."""
 import re
-from typing import List, Optional, Sequence
+from typing import Callable, List, Optional, Sequence
 
 from dasik.lib.command_worker.command_worker import Command
 from dasik.lib.command_worker.su_argv import su_argv
@@ -47,9 +47,8 @@ def _run_one(step: UpgradeStep, target) -> UpgradeOutcome:
 
 
 def _execute(step: UpgradeStep, target) -> UpgradeOutcome:
-    if step.skip is not None:
-        return UpgradeOutcome(step.item, "skipped", None, None, step.skip)
     before = step.version()
+    print_before = step.fingerprint()
     for script, args in step.commands:
         result = Command.execute(
             "su", su_argv(step.user, script, *args), target=target,
@@ -61,33 +60,71 @@ def _execute(step: UpgradeStep, target) -> UpgradeOutcome:
         if line is not None:
             return UpgradeOutcome(step.item, "failed", before, None, line)
     after = step.version()
-    if before is None or after is None:
-        status = "refreshed"
-    else:
-        status = "current" if before == after else "updated"
+    print_after = step.fingerprint()
+    versions = before is not None and after is not None
+    if versions and before != after:
+        return UpgradeOutcome(step.item, "updated", before, after)
+    if print_before is not None and print_after is not None:
+        changed = print_before != print_after
+        return UpgradeOutcome(step.item, "updated" if changed else "current",
+                              before, after,
+                              contents="changed" if changed else "unchanged")
+    status = "current" if versions else "refreshed"
     return UpgradeOutcome(step.item, status, before, after)
 
 
-def run_steps(steps: Sequence[UpgradeStep], target) -> List[UpgradeOutcome]:
+def run_steps(steps: Sequence[UpgradeStep], target,
+              on_start: Optional[Callable[[UpgradeStep], None]] = None,
+              on_done: Optional[Callable[[UpgradeOutcome], None]] = None,
+              ) -> List[UpgradeOutcome]:
+    """Run every step; *on_start* fires before one that runs commands,
+    *on_done* after every step — so a caller can show progress live."""
     outcomes: List[UpgradeOutcome] = []
     failed = set()
     for step in steps:
         if step.after is not None and step.after in failed:
             outcome = UpgradeOutcome(step.item, "skipped", None, None,
                                      "marketplace refresh failed")
+        elif step.skip is not None:
+            outcome = UpgradeOutcome(step.item, "skipped", None, None, step.skip)
         else:
+            if on_start is not None:
+                on_start(step)
             outcome = _run_one(step, target)
         if outcome.status == "failed":
             failed.add(step.item)
+        if on_done is not None:
+            on_done(outcome)
         outcomes.append(outcome)
     return outcomes
 
 
-def _line(o: UpgradeOutcome) -> str:
+_LONG_HASH = re.compile(r"[0-9a-f]{20,}")
+
+
+def _short(value: Optional[str]) -> Optional[str]:
+    """A full hex digest cut to 12 characters, the way git abbreviates."""
+    if value is not None and _LONG_HASH.fullmatch(value):
+        return value[:12]
+    return value
+
+
+def line(o: UpgradeOutcome) -> str:
+    """One outcome, as the user reads it."""
+    before, after = _short(o.before), _short(o.after)
     if o.status == "updated":
-        return f"{o.item}: updated {o.before} → {o.after}"
+        if o.contents == "changed":
+            if after is None:
+                return f"{o.item}: updated (contents changed)"
+            if before == after:
+                return (f"{o.item}: updated {after} "
+                        "(contents changed, same version)")
+            return f"{o.item}: updated (contents changed, now {after})"
+        return f"{o.item}: updated {before} → {after}"
     if o.status == "current":
-        return f"{o.item}: already latest ({o.after})"
+        if after is None:
+            return f"{o.item}: already latest (contents unchanged)"
+        return f"{o.item}: already latest ({after})"
     if o.status == "refreshed":
         return f"{o.item}: refreshed (version unknown)"
     if o.status == "skipped":
@@ -96,12 +133,10 @@ def _line(o: UpgradeOutcome) -> str:
     return f"{o.item}: FAILED — {first}"
 
 
-def render(outcomes: Sequence[UpgradeOutcome]) -> str:
-    lines = [_line(o) for o in outcomes]
+def summary(outcomes: Sequence[UpgradeOutcome]) -> str:
+    """The closing count of every status."""
     counts = [sum(o.status == key for o in outcomes) for key, _ in _ORDER]
-    lines.append(", ".join(f"{n} {label}"
-                           for n, (_, label) in zip(counts, _ORDER)))
-    return "\n".join(lines)
+    return ", ".join(f"{n} {label}" for n, (_, label) in zip(counts, _ORDER))
 
 
 def exit_code(outcomes: Sequence[UpgradeOutcome]) -> int:

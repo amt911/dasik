@@ -150,9 +150,33 @@ echo "AIUP-CAVEMAN-RECORD-BEFORE=$PLUG_BEFORE"
 su - $U -c 'codex plugin list' 2>&1 | head -10 > /tmp/codex-before.txt; cat /tmp/codex-before.txt
 GENS_PRE=$(dgens)
 
+echo "AIUP-3a: unprivileged upgrade refuses at once instead of hanging on su's password"
+# Before this check, `su - test` asked for a password into the captured output
+# and the run sat on a blank screen. Run from copies the user can read.
+rm -rf /tmp/np && mkdir -p /tmp/np && cp -r /root/repo/dasik /tmp/np/ && cp $FULL /tmp/np/full.json
+chmod -R a+rX /tmp/np
+if [ "$D" = "dasik" ]; then ND="dasik"; else ND="env PYTHONPATH=/tmp/np python -m dasik"; fi
+(cd /tmp && timeout 60 runuser -u $U -- $ND upgrade /tmp/np/full.json --target / $L) > /tmp/upgrade-nonroot.txt 2>&1
+NR=$?; cat /tmp/upgrade-nonroot.txt; echo "AIUP-NONROOT-rc=$NR"
+[ "$NR" -eq 1 ]; rc AIUP-NONROOT-RC1
+present /tmp/upgrade-nonroot.txt 'must run as root'; rc AIUP-NONROOT-MESSAGE
+
 echo "AIUP-3: dasik upgrade"
 $D upgrade $FULL --target / $L > /tmp/upgrade1.txt 2>&1; echo "AIUP-UPGRADE-rc=$?"
 cat /tmp/upgrade1.txt
+# live progress: each step announces itself before its outcome line
+python - <<'PY'; rc AIUP-PROGRESS-ORDER
+import sys
+lines = open("/tmp/upgrade1.txt").read().splitlines()
+start = lines.index("→ test:graphifyy")
+done = next(i for i, l in enumerate(lines) if l.startswith("test:graphifyy: "))
+print("progress line", start, "outcome line", done)
+sys.exit(0 if start < done else 1)
+PY
+# the graphify skill was made stale on purpose: its contents moved, and the line
+# says so instead of "refreshed (version unknown)"
+present /tmp/upgrade1.txt 'claude-code:skill:graphify: updated (contents changed)'; rc AIUP-FP-SKILL-CHANGED
+absent /tmp/upgrade1.txt 'claude-code:marketplace:caveman: refreshed'; rc AIUP-FP-MARKET-DECIDED
 present /tmp/upgrade1.txt 'updated'; rc AIUP-SUMMARY-UPDATED
 present /tmp/upgrade1.txt 'mcp_servers: nothing to upgrade'; rc AIUP-MCP-NOTE
 absent /tmp/upgrade1.txt 'FAILED'; rc AIUP-NO-FAILED
@@ -194,6 +218,13 @@ present /tmp/upgrade1.txt 'codex:plugin:superpowers@superpowers-dev: \(refreshed
 su - $U -c 'codex plugin list' 2>&1 | head -10 > /tmp/codex-after.txt; cat /tmp/codex-after.txt
 diff /tmp/codex-before.txt /tmp/codex-after.txt; echo "AIUP-CODEX-LISTDIFF-rc=$? (measurement only)"
 grep -E 'caveman|superpowers|impeccable|graphify|ruff|black' /tmp/upgrade1.txt
+
+echo "AIUP-3b: an immediate second upgrade finds nothing new"
+$D upgrade $FULL --target / $L > /tmp/upgrade1b.txt 2>&1; echo "AIUP-UPGRADE2-rc=$?"
+cat /tmp/upgrade1b.txt
+present /tmp/upgrade1b.txt 'claude-code:skill:graphify: already latest (contents unchanged)'; rc AIUP-FP-SKILL-UNCHANGED
+present /tmp/upgrade1b.txt 'claude-code:marketplace:caveman: already latest (contents unchanged)'; rc AIUP-FP-MARKET-UNCHANGED
+absent /tmp/upgrade1b.txt 'graphifyy: updated'; rc AIUP-UV-STAYS
 
 echo "AIUP-4: round trips"
 $D plan $FULL --target / $L > /tmp/plan2.txt 2>&1

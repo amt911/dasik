@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 
 from dasik.lib.command_worker.command_worker import Command
-from dasik.lib.upgrade.runner import exit_code, render, run_steps
+from dasik.lib.upgrade.runner import exit_code, line, run_steps, summary
 from dasik.lib.upgrade.steps import UpgradeOutcome, UpgradeStep
 
 
@@ -82,7 +82,7 @@ def test_exit_code_zero_when_no_failure():
     assert exit_code([UpgradeOutcome("a", "skipped", None, None, "p")]) == 0
 
 
-def test_render_lines():
+def test_lines_and_summary():
     outs = [
         UpgradeOutcome("a", "updated", "1", "2"),
         UpgradeOutcome("b", "current", "3", "3"),
@@ -90,14 +90,104 @@ def test_render_lines():
         UpgradeOutcome("d", "skipped", None, None, "pinned"),
         UpgradeOutcome("e", "failed", None, None, "bad\nrest"),
     ]
-    assert render(outs).splitlines() == [
+    assert [line(o) for o in outs] == [
         "a: updated 1 → 2",
         "b: already latest (3)",
         "c: refreshed (version unknown)",
         "d: skipped (pinned)",
         "e: FAILED — bad",
-        "1 updated, 1 already latest, 1 refreshed, 1 skipped, 1 failed",
     ]
+    assert summary(outs) == \
+        "1 updated, 1 already latest, 1 refreshed, 1 skipped, 1 failed"
+
+
+def test_long_hashes_are_shortened():
+    full = "4874196972ac8394f3f76112f57cdd38931bc25e"
+    new = "f09f5ad7f7d913f9d4eeecd464c59868b27406ba"
+    assert line(UpgradeOutcome("s", "updated", full, new)) == \
+        "s: updated 4874196972ac → f09f5ad7f7d9"
+    assert line(UpgradeOutcome("s", "current", new, new)) == \
+        "s: already latest (f09f5ad7f7d9)"
+
+
+def test_short_versions_are_left_alone():
+    assert line(UpgradeOutcome("p", "updated", "6.4.1", "7.0.0")) == \
+        "p: updated 6.4.1 → 7.0.0"
+
+
+# --- contents fingerprint --------------------------------------------------- #
+
+def test_unknown_version_changed_contents_is_updated(monkeypatch):
+    _stub(monkeypatch, [0])
+    [o] = run_steps([_step(fingerprint=_versions("aa", "bb"))], None)
+    assert o.status == "updated"
+    assert line(o) == "x: updated (contents changed)"
+
+
+def test_unknown_version_same_contents_is_current(monkeypatch):
+    _stub(monkeypatch, [0])
+    [o] = run_steps([_step(fingerprint=_versions("aa", "aa"))], None)
+    assert o.status == "current"
+    assert line(o) == "x: already latest (contents unchanged)"
+
+
+def test_same_version_changed_contents_is_updated(monkeypatch):
+    _stub(monkeypatch, [0])
+    [o] = run_steps([_step(version=_versions("7.0.0", "7.0.0"),
+                           fingerprint=_versions("aa", "bb"))], None)
+    assert o.status == "updated"
+    assert line(o) == "x: updated 7.0.0 (contents changed, same version)"
+
+
+def test_version_appearing_with_changed_contents_is_not_same_version(monkeypatch):
+    _stub(monkeypatch, [0])
+    [o] = run_steps([_step(version=_versions(None, "1.0"),
+                           fingerprint=_versions("aa", "bb"))], None)
+    assert line(o) == "x: updated (contents changed, now 1.0)"
+
+
+def test_version_change_wins_over_fingerprint(monkeypatch):
+    _stub(monkeypatch, [0])
+    [o] = run_steps([_step(version=_versions("1", "2"),
+                           fingerprint=_versions("aa", "aa"))], None)
+    assert (o.status, line(o)) == ("updated", "x: updated 1 → 2")
+
+
+def test_fingerprint_missing_on_one_side_falls_back(monkeypatch):
+    _stub(monkeypatch, [0])
+    [o] = run_steps([_step(fingerprint=_versions(None, "bb"))], None)
+    assert o.status == "refreshed"
+
+
+def test_skipped_step_never_reads_the_fingerprint(monkeypatch):
+    _stub(monkeypatch, [])
+
+    def boom():
+        raise AssertionError("read")
+    [o] = run_steps([_step(skip="pinned", fingerprint=boom)], None)
+    assert o.status == "skipped"
+
+
+# --- live progress ---------------------------------------------------------- #
+
+def test_progress_callbacks_in_order(monkeypatch):
+    _stub(monkeypatch, [0])
+    events = []
+    run_steps([_step("a", skip="pinned"), _step("b")], None,
+              on_start=lambda s: events.append(("start", s.item)),
+              on_done=lambda o: events.append(("done", o.item, o.status)))
+    assert events == [("done", "a", "skipped"),
+                      ("start", "b"), ("done", "b", "refreshed")]
+
+
+def test_progress_reports_a_dependent_skip(monkeypatch):
+    _stub(monkeypatch, [1])
+    events = []
+    run_steps([_step("M"), _step("P", after="M")], None,
+              on_start=lambda s: events.append(("start", s.item)),
+              on_done=lambda o: events.append(("done", o.item, o.status)))
+    assert events == [("start", "M"), ("done", "M", "failed"),
+                      ("done", "P", "skipped")]
 
 
 # --- dependent steps and failure text -------------------------------------- #

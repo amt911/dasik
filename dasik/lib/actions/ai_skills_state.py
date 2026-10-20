@@ -256,24 +256,43 @@ def skills_state(home: str) -> Tuple[Set[str], Dict[str, Set[str]], Dict[str, st
     return canonical, per_agent, sources
 
 
-def claude_plugin_version(home: str, plugin_id: str) -> Optional[str]:
-    """Version Claude Code recorded for *plugin_id*, or None when unreadable.
-
-    The first record's ``version``, else its ``gitCommitSha``: a plugin from a
-    marketplace without versions is identified by the commit it was cloned at.
-    """
+def _claude_plugin_record(home: str, plugin_id: str) -> Optional[dict]:
+    """The first ``installed_plugins.json`` record of *plugin_id*, or None."""
     registry = _read_json(os.path.join(home, _CLAUDE_PLUGINS,
                                        "installed_plugins.json"))
     plugins = registry.get("plugins") if isinstance(registry, dict) else None
     records = plugins.get(plugin_id) if isinstance(plugins, dict) else None
     record = records[0] if isinstance(records, list) and records else None
-    if not isinstance(record, dict):
-        return None
-    for key in ("version", "gitCommitSha"):
-        value = record.get(key)
-        if isinstance(value, str) and value:
-            return value
-    return None
+    return record if isinstance(record, dict) else None
+
+
+def _text(record: Optional[dict], key: str) -> Optional[str]:
+    value = record.get(key) if record is not None else None
+    return value if isinstance(value, str) and value else None
+
+
+def claude_plugin_version(home: str, plugin_id: str) -> Optional[str]:
+    """Version Claude Code recorded for *plugin_id*, or None when unreadable.
+
+    A plugin from a marketplace without versions is identified by the commit
+    it was cloned at, and Claude Code then writes the short SHA into
+    ``version`` itself (measured). Either way that comes back as
+    ``commit <sha>``, so a commit is never shown as if it were a release.
+    """
+    record = _claude_plugin_record(home, plugin_id)
+    version, sha = _text(record, "version"), _text(record, "gitCommitSha")
+    is_commit = (version is not None and sha is not None and len(version) >= 7
+                 and all(c in "0123456789abcdef" for c in version)
+                 and sha.startswith(version))
+    if version is not None and not is_commit:
+        return version
+    commit = version or sha
+    return f"commit {commit[:12]}" if commit is not None else None
+
+
+def claude_plugin_commit(home: str, plugin_id: str) -> Optional[str]:
+    """The ``gitCommitSha`` Claude Code recorded for *plugin_id*, or None."""
+    return _text(_claude_plugin_record(home, plugin_id), "gitCommitSha")
 
 
 def skill_folder_hash(home: str, name: str) -> Optional[str]:

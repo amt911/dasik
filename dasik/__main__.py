@@ -40,7 +40,7 @@ from dasik.lib.actions.action_registry import get_default_registry
 from dasik.lib.actions.action_context import ActionContext
 from dasik.lib.actions.ai_skills_action import AiSkillsAction
 from dasik.lib.actions.uv_tools_action import UvToolsAction
-from dasik.lib.upgrade.runner import exit_code, render, run_steps
+from dasik.lib.upgrade.runner import exit_code, line, run_steps, summary
 from dasik.lib.logging import run_logger
 from dasik.lib.reconciler.reconciler import Reconciler
 from dasik.lib.json_parser.etc_tree import extract_to_etc_tree
@@ -542,6 +542,13 @@ def _cmd_apply(config_path: Path, target_root: str, assume_yes: bool) -> int:
 
 def _cmd_upgrade(config_path: Path, target_root: str) -> int:
     """Bring the declared AI tooling to its latest version (mutates the target)."""
+    if os.geteuid() != 0:
+        # Every step runs as its user through `su`, which, unprivileged, asks
+        # for a password into the captured output: a blank screen, forever.
+        print("error: dasik upgrade must run as root — it switches to each "
+              f"user with su. Run: sudo dasik upgrade {config_path} "
+              f"--target {target_root}", file=sys.stderr)
+        return 1
     target = _target_or_none(target_root)
     if target is None:
         return 1
@@ -563,10 +570,13 @@ def _cmd_upgrade(config_path: Path, target_root: str) -> int:
         if not steps:
             print("Nothing to upgrade.")
             return 0
-        outcomes = run_steps(steps, target)
+        outcomes = run_steps(
+            steps, target,
+            on_start=lambda step: print(f"→ {step.item}", flush=True),
+            on_done=lambda outcome: print(line(outcome), flush=True))
     finally:
         lock.__exit__()
-    print(render(outcomes))
+    print(summary(outcomes))
     if config.get("mcp_servers") is not None:
         print("mcp_servers: nothing to upgrade — npx/uvx servers resolve at "
               "start; uv-installed ones are upgraded through uv_tools")

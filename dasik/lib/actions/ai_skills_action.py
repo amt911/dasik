@@ -29,7 +29,8 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from .abstract_action import AbstractAction
 from .ai_skills_state import (AGENT_SKILL_DIRS, CANONICAL_SKILL_DIR,
                               antigravity_plugins,
-                              carries_skill, claude_plugin_version,
+                              carries_skill, claude_plugin_commit,
+                              claude_plugin_version,
                               claude_state, codex_state,
                               installed_agents, skill_folder_hash,
                               skills_state)
@@ -37,6 +38,7 @@ from .config_access import field as _field
 from ..command_worker.command_worker import Command
 from ..command_worker.su_argv import su_argv
 from ..exceptions.exceptions import CommandExecutionError
+from ..upgrade.fingerprint import tree_fingerprint
 from ..logging import run_logger
 from ..models.ai_skills_model import PLUGIN_NAME_RE
 from ..state.change import Change, Op
@@ -652,6 +654,36 @@ class AiSkillsAction(AbstractAction):
         return tuple((script, args) for script, args in
                      self._command_for(Change(_DOMAIN, Op.CREATE, ""), spec))
 
+    @staticmethod
+    def _upgrade_fingerprint(spec: Dict[str, Any], home: str
+                             ) -> Callable[[], Optional[str]]:
+        """What tells whether an item's update changed anything on disk.
+
+        Only places measured on real machines; anything else answers None and
+        stays "refreshed". The `skills` method has none on purpose: its lock
+        hash already is one.
+        """
+        kind, agent = spec["kind"], spec["agent"]
+        paths: List[str] = []
+        if kind == "plugin" and agent == "claude-code":
+            return partial(claude_plugin_commit, home,
+                           f"{spec['plugin']}@{spec['marketplace']}")
+        if kind == "marketplace" and agent == "claude-code":
+            paths = [os.path.join(home, ".claude/plugins/marketplaces",
+                                  spec["name"])]
+        elif kind == "plugin" and agent == _AGY_AGENT:
+            paths = [os.path.join(home, ".gemini/config/plugins", spec["plugin"])]
+        elif kind == "plugin" and agent == "codex":
+            paths = [os.path.join(home, ".codex/plugins/cache",
+                                  spec["marketplace"], spec["plugin"])]
+        elif kind == "skill" and spec.get("method") == "tool":
+            paths = [os.path.join(home, AGENT_SKILL_DIRS.get(agent, CANONICAL_SKILL_DIR),
+                                  spec["name"]),
+                     os.path.join(home, CANONICAL_SKILL_DIR, spec["name"])]
+        if not paths:
+            return _no_version
+        return partial(tree_fingerprint, paths)
+
     def upgrade_steps(self) -> List[UpgradeStep]:
         """One step per declared marketplace, plugin and skill."""
         if self._target() is None:
@@ -665,6 +697,7 @@ class AiSkillsAction(AbstractAction):
             user = spec["user"]
             home = self._abs(self._home_of(user, homes))
             version: Callable[[], Optional[str]] = _no_version
+            fingerprint: Callable[[], Optional[str]] = _no_version
             commands: Tuple[Tuple[str, Tuple[str, ...]], ...]
             after: Optional[str] = None
             failure_text: Tuple[str, ...] = ()
@@ -687,6 +720,7 @@ class AiSkillsAction(AbstractAction):
             else:
                 present = item in installed
                 commands = self._upgrade_commands(spec)
+                fingerprint = self._upgrade_fingerprint(spec, home)
                 if spec["kind"] == "plugin" and spec["agent"] == "claude-code":
                     plugin_id = f"{spec['plugin']}@{spec['marketplace']}"
                     version = partial(claude_plugin_version, home, plugin_id)
@@ -708,8 +742,8 @@ class AiSkillsAction(AbstractAction):
                                          skip="not installed — run dasik apply"))
                 continue
             steps.append(UpgradeStep(_DOMAIN, item, user, commands=commands,
-                                     version=version, after=after,
-                                     failure_text=failure_text))
+                                     version=version, fingerprint=fingerprint,
+                                     after=after, failure_text=failure_text))
         return steps
 
     # -- apply -------------------------------------------------------------- #

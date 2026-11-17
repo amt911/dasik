@@ -8,6 +8,7 @@ from __future__ import annotations
 import os
 from typing import Any, Dict, List
 from colorama import Fore, Style, init
+from .preserved_fstab import preserved_fstab_lines
 from .abstract_action import AbstractAction
 from ..command_worker.command_worker import Command
 from ..logging import run_logger
@@ -57,6 +58,7 @@ class BaseInstallAction(AbstractAction):
     def __init__(self, config: Any, context=None):
         super().__init__(config, context)
         cfg: Dict[str, Any] = config if isinstance(config, dict) else {}
+        self._cfg = cfg
         self.enable_microcode: bool = cfg.get("enable_microcode", False)
         # `base` depends on the VIRTUAL `initramfs`, provided by mkinitcpio,
         # booster and dracut alike; pacstrap answers its own provider prompt with
@@ -197,5 +199,11 @@ class BaseInstallAction(AbstractAction):
                 "genfstab produced an empty fstab; refusing to write a mountless "
                 "/etc/fstab (the installed system would be non-bootable)."
             )
+        # genfstab sees only what is mounted: an encrypted disk kept across the
+        # reinstall is closed here, and would be unlocked at boot but mounted
+        # nowhere without these (see preserved_fstab).
+        kept = preserved_fstab_lines(self._cfg, fstab)
+        if kept:
+            fstab = fstab.rstrip("\n") + "\n" + "\n".join(kept) + "\n"
         with open(self._p("/etc/fstab"), "a") as f:
             f.write(fstab)

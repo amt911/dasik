@@ -1,0 +1,126 @@
+{
+  "metadata": {
+    "note": "VM rehearsal of a REINSTALL that keeps an encrypted data disk \u2014 torre-amd's games disk, shrunk. /dev/vda is wiped and installed (encrypted root, same passphrase as the kept disk so the initramfs password cache can open both). /dev/vdb is the KEPT disk: before `dasik apply` runs, scripts/vmtest/pre-preserved-luks.sh builds it inside the live ISO (LUKS2 with the fixed UUID below, btrfs with @ and @snapshots, a marker file, and two fake systemd-fido2 tokens on keyslots 1 and 2) and CLOSES it \u2014 exactly the state a real games disk is in on the ISO. What it proves: the install plans no luks_token change for the kept disk (its header is read through /dev/disk/by-uuid while closed and already carries both tokens), the installed fstab names /dev/mapper/games for both subvolumes, and the booted machine unlocks the disk in the initramfs and mounts it with the marker intact. The tokens are fake, so the boot falls back to the passphrase after token-timeout. Packages are the minimum that boots and runs dasik. Public test passphrase 'keptpass'. NOT for real hardware. `nofail` in luks_options makes the kept disk optional: guest-preserved-luks-absent.sh boots the same image with vdb DETACHED and asserts the machine still comes up (no emergency shell), with Games simply not mounted."
+  },
+  "disks": {
+    "disks": [
+      {
+        "device": "/dev/vda",
+        "partition_table": "gpt",
+        "wipe_disk": true,
+        "partitions": [
+          {
+            "label": "ESP",
+            "size": "512MiB",
+            "filesystem": "fat32",
+            "partition_type": "esp",
+            "mountpoint": "/boot",
+            "format": true
+          },
+          {
+            "label": "root",
+            "size": "rest",
+            "filesystem": "btrfs",
+            "partition_type": "linux",
+            "mountpoint": null,
+            "format": true,
+            "encrypt": true,
+            "luks_name": "cryptroot",
+            "luks_password": "keptpass",
+            "btrfs_subvolumes": [
+              {
+                "name": "@",
+                "mountpoint": "/",
+                "mount_options": []
+              },
+              {
+                "name": "@home",
+                "mountpoint": "/home",
+                "mount_options": []
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "device": "/dev/vdb",
+        "partition_table": "gpt",
+        "wipe_disk": false,
+        "partitions": [
+          {
+            "label": "Games",
+            "size": "rest",
+            "filesystem": "btrfs",
+            "partition_type": "linux",
+            "format": false,
+            "encrypt": true,
+            "luks_name": "games",
+            "luks_uuid": "5eed5eed-0000-4000-8000-00000000c0de",
+            "unlock_fido2": 2,
+            "luks_options": [
+              "token-timeout=10s",
+              "nofail"
+            ],
+            "mount_options": [
+              "compress-force=zstd:3"
+            ],
+            "btrfs_subvolumes": [
+              {
+                "name": "@",
+                "mountpoint": "/home/tester/Games",
+                "mount_options": []
+              },
+              {
+                "name": "@snapshots",
+                "mountpoint": "/home/tester/Games/.snapshots",
+                "mount_options": []
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "bootloader": "sd-boot",
+  "enable_microcode": false,
+  "initramfs": "dracut",
+  "hostname": "dasik-kept",
+  "kernel_cmdline": [
+    "console=ttyS0,115200"
+  ],
+  "timezone": {
+    "region": "Etc",
+    "city": "UTC"
+  },
+  "locales": {
+    "selected_locales": [
+      "en_US.UTF-8 UTF-8"
+    ],
+    "desired_locale": "en_US.UTF-8",
+    "desired_tty_layout": "us"
+  },
+  "network": {
+    "type": "systemd-networkd"
+  },
+  "users": [
+    {
+      "username": "tester",
+      "hashed_password": "$6$dasikvmtest$pfoSKqgh8yWKbmkwBpNuvQuJ4/kLeJmwCPCezBolW4pKbtJbtvMGQCM5f7W/hkbF/FmtCMZMYr/NLwDO4OJm7."
+    }
+  ],
+  "packages": [
+    "base",
+    "linux",
+    "linux-firmware",
+    "btrfs-progs",
+    "python",
+    "python-pydantic",
+    "python-colorama"
+  ],
+  "files": [
+    {
+      "path": "/etc/systemd/system/serial-getty@ttyS0.service.d/autologin.conf",
+      "content": "[Service]\nExecStart=\nExecStart=-/sbin/agetty --autologin root --noclear --keep-baud 115200,38400,9600 %I $TERM\n"
+    }
+  ]
+}

@@ -799,6 +799,27 @@ def expand_sdboot_update(config: Dict[str, Any]) -> Dict[str, Any]:
 
 
 # Order matters only for deterministic output; aggregation de-dups.
+def expand_luks_tokens(config: Dict[str, Any]) -> Dict[str, Any]:
+    """A FIDO2 / TPM2 LUKS unlock needs the library systemd-cryptsetup dlopens.
+
+    systemd lists libfido2 and tpm2-tss as OPTIONAL dependencies, so nothing
+    installs them: measured in a guest (config/vm-preserved-luks.json), the boot
+    logged ``Shared library 'libfido2.so.1' is not available`` and never tried
+    the token. dracut copies the library into the initramfs once it is there.
+    """
+    from ..models.disk_model import fido2_count
+    fido2 = tpm2 = False
+    disks = config.get("disks") or {}
+    for disk in (disks.get("disks", []) if isinstance(disks, dict) else []):
+        for part in disk.get("partitions", []):
+            if not part.get("encrypt"):
+                continue
+            fido2 = fido2 or bool(fido2_count(part))
+            tpm2 = tpm2 or bool(part.get("unlock_tpm2"))
+    pkgs = (["libfido2"] if fido2 else []) + (["tpm2-tss"] if tpm2 else [])
+    return {"packages": pkgs} if pkgs else {}
+
+
 TOGGLES = [
     expand_bluetooth, expand_cups, expand_trim, expand_kvm,
     expand_wireguard, expand_firewall, expand_hwaccel, expand_snapper,
@@ -806,5 +827,5 @@ TOGGLES = [
     expand_sdboot_update, expand_reflector, expand_plymouth,
     expand_apparmor, expand_pam, expand_config_saver, expand_containers,
     expand_tailscale,
-    expand_network,
+    expand_network, expand_luks_tokens,
 ]

@@ -41,6 +41,8 @@
 #   DASIK_VM_ISO (path to Arch ISO), DASIK_VM_TPM (1=swtpm), DASIK_VM_WORKDIR,
 #   DASIK_VM_NVME (1 = attach the primary disk as an emulated NVMe controller,
 #   so the guest sees /dev/nvme0n1 instead of /dev/vda),
+#   DASIK_VM_PRE (repo-relative script the install runs in the live ISO before
+#   dasik, e.g. to build a disk the install must keep),
 #   DASIK_VM_KEYDEV (raw image attached as a SECOND disk = the "pendrive" a LUKS
 #   keyfile unlock reads its key from; build it with make-keydev.sh).
 set -euo pipefail
@@ -369,7 +371,7 @@ cmd_install_driven() {
     fi
 
     # NOTE: no `script=`; the driver runs the installer after logging in.
-    local append="archisobasedir=arch archisolabel=$label cow_spacesize=2G copytoram=n console=ttyS0,115200 dasik_config=$config${DASIK_VM_VERBOSE:+ dasik_verbose=1}"
+    local append="archisobasedir=arch archisolabel=$label cow_spacesize=2G copytoram=n console=ttyS0,115200 dasik_config=$config${DASIK_VM_VERBOSE:+ dasik_verbose=1}${DASIK_VM_PRE:+ dasik_pre=$DASIK_VM_PRE}"
     local qargs="-enable-kvm -cpu host -m $DASIK_VM_RAM -smp $DASIK_VM_CPUS -display none -monitor none"
     qargs="$qargs $ovmf -kernel $kernel -initrd $initrd -append \"$append\""
     qargs="$qargs $(_primary_disk_args "$disk" qcow2) $(_keydev_args)"

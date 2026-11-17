@@ -37,7 +37,10 @@ jobs:
           # so it needs dasik's two runtime deps. From pacman, not pip: this
           # container is the same Arch the tool targets, and its python is
           # externally managed.
-          pacman -Sy --noconfirm --needed python python-pydantic python-colorama git
+          # -Syu, not -Sy: the container image lags the repos, and a partial
+          # upgrade broke on 2026-11-16 (openssl-3 split: libcrypto.so.3 owned
+          # by the image's openssl conflicts with the new openssl-3).
+          pacman -Syu --noconfirm --needed python python-pydantic python-colorama git
 
       - uses: actions/checkout@v4
 

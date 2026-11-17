@@ -55,6 +55,18 @@ if ! /root/venv/bin/pip install -e . ; then
     echo "DASIK-VM-DONE rc=92"; sleep 3; poweroff -f
 fi
 
+# 3b. Optional pre-install step (dasik_pre=<repo-relative script>): builds the
+# state a test needs on the guest's OTHER disks before dasik runs — e.g. the
+# encrypted data disk a reinstall must keep. Its failure is the run's failure.
+PRE="$(sed -n 's/.*dasik_pre=\([^ ]*\).*/\1/p' /proc/cmdline)"
+if [ -n "$PRE" ]; then
+    echo "DASIK-VM: pre-install step $PRE"
+    if ! bash "$PRE"; then
+        echo "DASIK-VM: FATAL pre-install step failed"
+        echo "DASIK-VM-DONE rc=93"; sleep 3; poweroff -f
+    fi
+fi
+
 # 4. The real test: converge the guest disk to the config.
 echo "DASIK-VM: plan"
 /root/venv/bin/dasik plan "$CONFIG" --target /mnt

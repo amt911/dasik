@@ -41,6 +41,7 @@ Two consequences shape the code below:
 """
 from __future__ import annotations
 
+import os
 import re
 import sys
 from typing import Any, Dict, List, Optional, Tuple
@@ -135,6 +136,43 @@ class LuksTokenAction(AbstractAction):
         for line in stdout.splitlines():
             if "device:" in line:
                 return line.split("device:")[1].strip()
+        return None
+
+    def _header_device(self, luks_name: str) -> Optional[str]:
+        """Where *luks_name*'s LUKS header can be read: the open mapping's
+        device, or — for a PRESERVED volume that is closed — its by-uuid path.
+
+        ``cryptsetup luksDump`` and ``systemd-cryptenroll`` both work on a closed
+        volume, so a data disk kept across a reinstall (closed on the live ISO)
+        is read where it lies instead of being reported as "may not be
+        enrolled". Preserved only: a partition about to be formatted can still
+        carry an OLD header under the same deterministic UUID, and counting its
+        tokens would skip the enrolment the new header needs.
+        """
+        device = self._luks_device(luks_name)
+        if device:
+            return device
+        uuid = self._preserved_uuid(luks_name)
+        if uuid:
+            path = f"/dev/disk/by-uuid/{uuid}"
+            if os.path.exists(path):
+                return path
+        return None
+
+    def _preserved_uuid(self, luks_name: str) -> Optional[str]:
+        """The explicit ``luks_uuid`` of a partition dasik keeps (no wipe, no
+        format) named *luks_name*, or None."""
+        disks = self._cfg.get("disks", {})
+        if not isinstance(disks, dict):
+            return None
+        for disk in disks.get("disks", []):
+            if disk.get("wipe_disk"):
+                continue
+            for part in disk.get("partitions", []):
+                if (part.get("encrypt") and part.get("format") is False
+                        and part.get("luks_uuid")
+                        and part.get("luks_name", "cryptroot") == luks_name):
+                    return part["luks_uuid"]
         return None
 
     def _dump(self, device: str) -> str:
@@ -249,7 +287,7 @@ class LuksTokenAction(AbstractAction):
         """
         out: set = set()
         for luks_name in self._encrypted_volumes():
-            device = self._luks_device(luks_name)
+            device = self._header_device(luks_name)
             if not device:
                 continue
             dump = self._dump(device)
@@ -266,7 +304,7 @@ class LuksTokenAction(AbstractAction):
         dumps: Dict[str, str] = {}
 
         for part, luks_name, kind, count in self._declared():
-            device = self._luks_device(luks_name)
+            device = self._header_device(luks_name)
             dump = None
             if device:
                 dump = dumps.setdefault(device, self._dump(device))
@@ -301,7 +339,7 @@ class LuksTokenAction(AbstractAction):
             kind = kind_part.split("#")[0]
             if kind not in {k for k, *_ in _KINDS}:
                 continue
-            device = self._luks_device(luks_name)
+            device = self._header_device(luks_name)
             if not device:
                 continue
             dump = dumps.setdefault(device, self._dump(device))
@@ -341,7 +379,7 @@ class LuksTokenAction(AbstractAction):
             luks_name, _, kind_part = change.item.partition(":")
             kind = kind_part.split("#")[0]
             index = int(kind_part.split("#")[1]) if "#" in kind_part else 1
-            device = self._luks_device(luks_name)
+            device = self._header_device(luks_name)
             if not device:
                 raise CommandExecutionError(
                     f"Cannot change the {kind} keyslot: no open LUKS mapping named "

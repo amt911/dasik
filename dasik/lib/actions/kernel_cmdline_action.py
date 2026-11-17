@@ -14,6 +14,7 @@ from .partition_utils import (
     keydev_spec,
     merge_mount_options_by_name,
     mounts_root,
+    opens_after_switch_root,
     normalize_compress_option,
     token_name,
 )
@@ -173,6 +174,10 @@ class KernelCmdlineAction(AbstractAction):
                 # encrypted /home) is left closed by the initramfs without its
                 # own rd.luks.name, and /etc/crypttab alone runs too late.
                 if part.get("encrypt"):
+                    if opens_after_switch_root(part):
+                        # Optional data volume: the initramfs would not wait
+                        # for it; /etc/crypttab carries its unlock instead.
+                        continue
                     from dasik.lib.actions.luks_uuid import luks_uuid
                     dm_name = part.get("luks_name", "cryptroot")
                     # Deterministic UUID (same value the disk was formatted with)

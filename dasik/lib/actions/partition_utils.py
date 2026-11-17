@@ -190,3 +190,22 @@ def mounts_root(part: Dict[str, Any]) -> bool:
         return True
     return any(s.get("mountpoint") == "/"
                for s in part.get("btrfs_subvolumes", []) or [])
+
+
+def opens_after_switch_root(part: Dict[str, Any]) -> bool:
+    """True for an encrypted DATA volume declared optional (``nofail`` in
+    ``luks_options``): not the root, not a swap, not unlocked by a keyfile.
+
+    The initramfs does not wait for a ``nofail`` volume, so ``rd.luks.name``
+    only started an unlock that ``switch-root`` cut short (measured on
+    torre-amd and in the vm-preserved-luks guest); the real system then
+    started it again from /etc/crypttab. Such a volume is therefore left off
+    the kernel command line, and its crypttab line carries the whole unlock.
+    Root, swap and keyfile unlocks keep the initramfs path unchanged.
+    """
+    return (bool(part.get("encrypt"))
+            and "nofail" in (part.get("luks_options") or [])
+            and not mounts_root(part)
+            and str(getattr(part.get("filesystem"), "value", part.get("filesystem"))) != "swap"
+            and not part.get("unlock_keyfile")
+            and not part.get("unlock_keydev"))

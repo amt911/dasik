@@ -1481,3 +1481,52 @@ def test_a_declared_block_is_echoed_back_by_a_declared_sync(tmp_path, monkeypatc
     captured = DiskPartitionAction(cfg["disks"], ctx).import_state(managed=[])
     part = captured["disks"]["disks"][0]["partitions"][1]
     assert "@var_lib_ollama" in [s["name"] for s in part["btrfs_subvolumes"]]
+
+
+# --- optional (nofail) encrypted data volume: options live in crypttab ------- #
+
+def _captured_from_crypttab(tmp_path, crypttab):
+    from dasik.lib.actions.disk_partition_action import DiskPartitionAction
+    (tmp_path / "etc").mkdir(exist_ok=True)
+    (tmp_path / "etc/crypttab").write_text(crypttab)
+
+    def fake(cmd, args=None, *_rest, **_kw):
+        if cmd == "cryptsetup" and args and args[0] == "status":
+            return MagicMock(stdout=b"  device:  /dev/vda2\n", returncode=0)
+        if cmd == "cryptsetup" and args and args[0] == "luksUUID":
+            return MagicMock(stdout=b"THEUUID\n", returncode=0)
+        return MagicMock(stdout=b"", returncode=0)
+
+    action = DiskPartitionAction(_DISKS_SEED, ActionContext(target=Target(root=str(tmp_path))))
+    with patch("dasik.lib.actions.disk_partition_action.Command.execute", side_effect=fake), \
+         patch.object(DiskPartitionAction, "_kernel_cmdline_text",
+                      return_value="root=/dev/mapper/cryptroot rw"):
+        frag = action.import_state(managed=[])
+    return frag["disks"]["disks"][0]["partitions"][1]
+
+
+def test_sync_captures_an_optional_volume_options_from_crypttab(tmp_path):
+    part = _captured_from_crypttab(
+        tmp_path, "cryptroot UUID=THEUUID none "
+                  "luks,fido2-device=auto,token-timeout=10s,nofail,headless=true\n")
+
+    assert part["luks_options"] == ["token-timeout=10s", "nofail", "headless=true"]
+
+
+def test_the_captured_optional_volume_replans_to_nothing(tmp_path):
+    """sync -> plan silent: with nofail captured, the volume re-derives NO
+    kernel parameter, so an entry without any for it is already converged."""
+    part = _captured_from_crypttab(
+        tmp_path, "cryptroot UUID=THEUUID none luks,token-timeout=10s,nofail\n")
+    part["mountpoint"] = "/data"                  # a DATA volume, not the root
+    captured = {"bootloader": "sd-boot", "initramfs": "dracut", "disks": {"disks": [
+        {"device": "/dev/vda", "partitions": [part]}]}}
+    JsonModel.model_validate(captured)
+
+    (tmp_path / "boot/loader/entries").mkdir(parents=True)
+    (tmp_path / "boot/loader/loader.conf").write_text("default arch\n")
+    (tmp_path / "boot/loader/entries/arch.conf").write_text("title Arch\noptions rw\n")
+    action = KernelCmdlineAction(expand_config(captured),
+                                 ActionContext(target=Target(root=str(tmp_path))))
+
+    assert action.plan(managed=[]) == []

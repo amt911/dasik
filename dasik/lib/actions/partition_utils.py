@@ -192,7 +192,7 @@ def mounts_root(part: Dict[str, Any]) -> bool:
                for s in part.get("btrfs_subvolumes", []) or [])
 
 
-def opens_after_switch_root(part: Dict[str, Any]) -> bool:
+def opens_after_switch_root(part: Dict[str, Any], config: Dict[str, Any]) -> bool:
     """True for an encrypted DATA volume declared optional (``nofail`` in
     ``luks_options``): not the root, not a swap, not unlocked by a keyfile.
 
@@ -202,8 +202,13 @@ def opens_after_switch_root(part: Dict[str, Any]) -> bool:
     started it again from /etc/crypttab. Such a volume is therefore left off
     the kernel command line, and its crypttab line carries the whole unlock.
     Root, swap and keyfile unlocks keep the initramfs path unchanged.
+
+    dracut only: DracutBackend is the one writer of /etc/crypttab. With
+    mkinitcpio (the default) nothing would carry the unlock, so the volume
+    keeps its cmdline parameters exactly as before.
     """
-    return (bool(part.get("encrypt"))
+    return (config.get("initramfs") == "dracut"
+            and bool(part.get("encrypt"))
             and "nofail" in (part.get("luks_options") or [])
             and not mounts_root(part)
             and str(getattr(part.get("filesystem"), "value", part.get("filesystem"))) != "swap"

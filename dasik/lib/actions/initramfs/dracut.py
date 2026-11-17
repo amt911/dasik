@@ -200,7 +200,7 @@ class DracutBackend(InitramfsBackend):
                     opts.extend(o for o in part.get("luks_options", []) or []
                                 if str(o).startswith("keyfile-timeout="))
                     declared = list(part.get("luks_options", []) or [])
-                    if opens_after_switch_root(part):
+                    if opens_after_switch_root(part, self.config):
                         # An optional data volume is NOT on the kernel cmdline
                         # (see opens_after_switch_root): this line is its whole
                         # unlock — the token, and every declared option (e.g.

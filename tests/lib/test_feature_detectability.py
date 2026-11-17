@@ -1632,3 +1632,45 @@ def test_btrfs_subvolume_owned_but_undeclared_is_removed(tmp_path, monkeypatch):
 def test_btrfs_subvolume_unowned_is_left_alone(tmp_path, monkeypatch):
     a = _btrfs_action(tmp_path, monkeypatch, [("@", "/")], _BASE)
     assert a.plan(managed=[]) == []
+
+
+# --- optional (nofail) encrypted data volume -------------------------------- #
+# Unlocked by the real system from crypttab, so the kernel cmdline must carry
+# nothing for it — and a machine coming from dasik <= 0.28, whose entry still
+# has its rd.luks.* parameters, must see them planned away (they made the
+# initramfs start an unlock it never waited for).
+
+_KEPT_UUID = "5eed5eed-0000-4000-8000-00000000c0de"
+_KEPT = {"initramfs": "dracut", "disks": {"disks": [{"device": "/dev/vda", "partitions": [
+    {"label": "root", "size": "rest", "filesystem": "ext4", "mountpoint": "/",
+     "encrypt": True, "luks_name": "cryptroot", "luks_password": "pw"},
+    {"label": "Games", "size": "rest", "filesystem": "btrfs", "format": False,
+     "encrypt": True, "luks_name": "games", "luks_uuid": _KEPT_UUID,
+     "unlock_fido2": 2, "luks_options": ["token-timeout=10s", "nofail", "headless=true"],
+     "btrfs_subvolumes": [{"name": "@", "mountpoint": "/home/u/Games"}]}]}]}}
+
+
+def test_an_optional_data_volume_plans_nothing_on_the_cmdline(tmp_path):
+    uuid = _luks_uuid()
+    entry = f"rd.luks.name={uuid}=cryptroot root=/dev/mapper/cryptroot rw"
+
+    assert _cmdline_plan(tmp_path, _KEPT, entry) == []
+
+
+def test_its_old_cmdline_parameters_are_planned_away(tmp_path):
+    uuid = _luks_uuid()
+    old = [f"rd.luks.name={_KEPT_UUID}=games",
+           f"rd.luks.options={_KEPT_UUID}=fido2-device=auto,token-timeout=10s,nofail"]
+    entry = f"rd.luks.name={uuid}=cryptroot root=/dev/mapper/cryptroot rw " + " ".join(old)
+
+    planned = _cmdline_plan(tmp_path, _KEPT, entry, managed=old)
+
+    assert sorted(planned) == sorted(("REMOVE", t) for t in old)
+
+
+def test_unowned_parameters_for_it_are_left_alone(tmp_path):
+    uuid = _luks_uuid()
+    entry = (f"rd.luks.name={uuid}=cryptroot root=/dev/mapper/cryptroot rw "
+             f"rd.luks.name={_KEPT_UUID}=games")
+
+    assert _cmdline_plan(tmp_path, _KEPT, entry) == []

@@ -174,7 +174,7 @@ class KernelCmdlineAction(AbstractAction):
                 # encrypted /home) is left closed by the initramfs without its
                 # own rd.luks.name, and /etc/crypttab alone runs too late.
                 if part.get("encrypt"):
-                    if opens_after_switch_root(part):
+                    if opens_after_switch_root(part, self._cfg):
                         # Optional data volume: the initramfs would not wait
                         # for it; /etc/crypttab carries its unlock instead.
                         continue
@@ -691,14 +691,37 @@ class KernelCmdlineAction(AbstractAction):
             name = self._token_key(token)
             derived_keys.add(token if name in self._REPEATABLE else name)
 
+        # An optional data volume is unlocked from crypttab now; a boot entry
+        # written by an older dasik still names it, and keeping those as
+        # hand-set parameters would put them back on the next apply.
+        moved = self._after_switch_root_uuids()
+
         kept: List[str] = []
         for token in live:
             name = self._token_key(token)
             key = token if name in self._REPEATABLE else name
             if key in derived_keys or token in kept:
                 continue
+            if name in self._REPEATABLE and token.split("=", 2)[1:2] and \
+                    token.split("=", 2)[1] in moved:
+                continue
             kept.append(token)
         return {self._DOMAIN: kept, "sysrq": _SYSRQ_PARAM in live}
+
+    def _after_switch_root_uuids(self) -> set:
+        """LUKS UUIDs of the volumes ``opens_after_switch_root`` keeps off the
+        kernel cmdline."""
+        from dasik.lib.actions.luks_uuid import luks_uuid
+        out: set = set()
+        disks = self._cfg.get("disks", {})
+        if not isinstance(disks, dict):
+            return out
+        for disk in disks.get("disks", []):
+            for part in disk.get("partitions", []):
+                if opens_after_switch_root(part, self._cfg):
+                    out.add(luks_uuid(part.get("luks_name", "cryptroot"),
+                                      part.get("luks_uuid")))
+        return out
 
     def _new_tokens(self, changes) -> List[str]:
         """The entry's new token list: removes applied, installs added.

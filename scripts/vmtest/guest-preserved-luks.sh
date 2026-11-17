@@ -18,6 +18,12 @@ export PYTHONPATH=/root/repo
 UUID=5eed5eed-0000-4000-8000-00000000c0de
 G=/home/tester/Games
 
+# The kept disk is unlocked by the REAL system (not the initramfs), so the
+# autologin shell can come up while that unlock still runs (token-timeout,
+# then the key derivation). Wait on the state, not on a clock.
+state=$(timeout 180 systemctl is-system-running --wait 2>/dev/null)
+echo "KEPT-BOOT-STATE=$state"
+
 echo "KEPT-A: the kept disk is open under the name the config gives it"
 cryptsetup status games | head -5
 [ "$(cryptsetup status games | awk '/device:/ {print $2}')" = /dev/vdb1 ] || \
@@ -43,8 +49,8 @@ grep -n games /etc/fstab
 
 echo "KEPT-D2: the kept disk is optional (nofail) in crypttab and fstab"
 grep -n games /etc/crypttab
-grep -q '^games UUID=5eed5eed-0000-4000-8000-00000000c0de none luks,nofail$' /etc/crypttab || \
-    { echo "KEPT-D2 FAILED: crypttab line lacks nofail"; rc=1; }
+grep -q '^games UUID=5eed5eed-0000-4000-8000-00000000c0de none luks,fido2-device=auto,token-timeout=10s,nofail,timeout=1s$' /etc/crypttab || \
+    { echo "KEPT-D2 FAILED: crypttab line lacks the unlock options (token, nofail, timeout)"; rc=1; }
 [ "$(grep -c "^/dev/mapper/games .*,nofail 0 0$" /etc/fstab)" -eq 2 ] || \
     { echo "KEPT-D2 FAILED: fstab lines lack nofail"; rc=1; }
 
@@ -55,6 +61,23 @@ lsinitrd /boot/initramfs-linux.img 2>/dev/null | grep -q 'libfido2\.so' || \
 journalctl -b --no-pager | grep -q "libfido2.so.1' is not available" && \
     { echo "KEPT-D3 FAILED: systemd-cryptsetup could not load libfido2"; rc=1; }
 systemctl status --no-pager systemd-cryptsetup@games.service | head -5
+
+echo "KEPT-D4: the kept disk is off the kernel cmdline, the root is not"
+cat /proc/cmdline
+grep -q "$UUID" /proc/cmdline && { echo "KEPT-D4 FAILED: the kept disk is on the kernel cmdline"; rc=1; }
+grep -q 'rd.luks.name=[^ ]*=cryptroot' /proc/cmdline || \
+    { echo "KEPT-D4 FAILED: the root lost its rd.luks.name"; rc=1; }
+
+echo "KEPT-D5: only the real system unlocks the kept disk, and it succeeds"
+journalctl -b -o short-monotonic --no-pager -u systemd-cryptsetup@games.service
+# The initramfs starts an unlock only for what the kernel cmdline (D4) or its
+# OWN crypttab names; neither may name the kept disk. The journal of the unit
+# is printed for the record, not counted (its wording is not ours).
+lsinitrd -f etc/crypttab /boot/initramfs-linux.img
+lsinitrd -f etc/crypttab /boot/initramfs-linux.img | grep -q '^games ' && \
+    { echo "KEPT-D5 FAILED: the initramfs crypttab names the kept disk"; rc=1; }
+res=$(systemctl show -p Result --value systemd-cryptsetup@games.service)
+[ "$res" = success ] || { echo "KEPT-D5 FAILED: games unlock result $res"; rc=1; }
 
 echo "KEPT-E: the header still carries its two tokens"
 tokens=$(cryptsetup luksDump --disable-external-tokens /dev/vdb1 | grep -c 'systemd-fido2')
@@ -91,6 +114,7 @@ parts = [p for d in cfg["disks"]["disks"] for p in d["partitions"]
 print("KEPT-CAPTURED=", json.dumps(parts))
 ok = (len(parts) == 1 and parts[0].get("format") is False
       and parts[0].get("unlock_fido2") == 2
+      and parts[0].get("luks_options") == ["token-timeout=10s", "nofail", "timeout=1s"]
       and sorted((s["name"], s["mountpoint"]) for s in parts[0].get("btrfs_subvolumes", []))
       == [("@", "/home/tester/Games"), ("@snapshots", "/home/tester/Games/.snapshots")])
 sys.exit(0 if ok else 1)

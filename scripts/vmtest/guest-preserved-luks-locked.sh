@@ -29,6 +29,10 @@ echo "LOCKED-UNIT=$unit"
 [ "$unit" = "failed,exit-code" ] || \
     { echo "LOCKED-B FAILED: the games unlock did not run and give up (got $unit)"; rc=1; }
 
+saw=$(cat /run/dm-saw-games 2>/dev/null)
+echo "LOCKED-DM-SAW=$saw"
+[ "$saw" = failed ] || { echo "LOCKED-B FAILED: the greeter started while games was '$saw'"; rc=1; }
+
 echo "LOCKED-C: the kept disk stayed closed and unmounted"
 cryptsetup status games >/dev/null 2>&1 && { echo "LOCKED-C FAILED: games is open"; rc=1; }
 findmnt /home/tester/Games && { echo "LOCKED-C FAILED: Games is mounted"; rc=1; }

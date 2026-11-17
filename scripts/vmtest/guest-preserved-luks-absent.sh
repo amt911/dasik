@@ -16,11 +16,15 @@ echo "ABSENT-A: the kept disk is really absent"
 [ -e /dev/vdb ] && { echo "ABSENT-A FAILED: /dev/vdb is attached"; rc=1; }
 
 echo "ABSENT-B: the boot reached a usable state"
-state=$(systemctl is-system-running --wait 2>/dev/null)
+state=$(timeout 180 systemctl is-system-running --wait 2>/dev/null)
 echo "ABSENT-STATE=$state"
 case "$state" in running|degraded) : ;; *) echo "ABSENT-B FAILED: state $state"; rc=1 ;; esac
 systemctl --failed --no-legend
 systemctl is-active local-fs.target || { echo "ABSENT-B FAILED: local-fs.target"; rc=1; }
+
+saw=$(cat /run/dm-saw-games 2>/dev/null)
+echo "ABSENT-DM-SAW=$saw"
+[ "$saw" != activating ] || { echo "ABSENT-B FAILED: the greeter started while games was still activating"; rc=1; }
 
 echo "ABSENT-C: Games is simply not mounted"
 findmnt /home/tester/Games && { echo "ABSENT-C FAILED: something is mounted there"; rc=1; }

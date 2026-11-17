@@ -38,6 +38,10 @@
                 "mountpoint": "/home",
                 "mount_options": []
               }
+            ],
+            "unlock_fido2": 1,
+            "luks_options": [
+              "token-timeout=5s"
             ]
           }
         ]
@@ -58,9 +62,10 @@
             "luks_uuid": "5eed5eed-0000-4000-8000-00000000c0de",
             "unlock_fido2": 2,
             "luks_options": [
-              "token-timeout=10s",
+              "token-timeout=3s",
               "nofail",
-              "timeout=1s"
+              "timeout=1s",
+              "x-systemd.device-timeout=5s"
             ],
             "mount_options": [
               "compress-force=zstd:3"
@@ -122,6 +127,25 @@
     {
       "path": "/etc/systemd/system/serial-getty@ttyS0.service.d/autologin.conf",
       "content": "[Service]\nExecStart=\nExecStart=-/sbin/agetty --autologin root --noclear --keep-baud 115200,38400,9600 %I $TERM\n"
+    },
+    {
+      "path": "/etc/systemd/system/systemd-cryptsetup@.service.d/10-console.conf",
+      "content": "[Service]\n# Show what an unlock is doing ON SCREEN, not only in the journal: \"Asking\n# FIDO2 token\", \"Please confirm presence on security token\", \"Security\n# token not present ... please plug it in\". Without it the console stays\n# black while the key is waited for or touched.\nEnvironment=SYSTEMD_LOG_TARGET=console\nStandardOutput=journal+console\nStandardError=journal+console\n"
+    },
+    {
+      "path": "/etc/dracut.conf.d/20-cryptsetup-console.conf",
+      "content": "# The console drop-in must reach the initramfs, where the root is unlocked.\ninstall_items+=\" /etc/systemd/system/systemd-cryptsetup@.service.d/10-console.conf \"\n"
+    },
+    {
+      "path": "/etc/systemd/system/display-manager.service.d/10-after-games.conf",
+      "content": "[Unit]\n# The login screen waits for the games unlock, so its messages are seen on\n# the console instead of hidden behind the greeter. nofail + short timeouts\n# keep that wait to seconds when the key or the disk is missing.\nAfter=systemd-cryptsetup@games.service\n"
+    },
+    {
+      "path": "/etc/systemd/system/fake-dm.service",
+      "content": "[Unit]\nDescription=Stand-in display manager: records the games unlock state when it starts\n\n[Service]\nType=oneshot\nRemainAfterExit=yes\nExecStart=/bin/sh -c 'systemctl show -p ActiveState --value systemd-cryptsetup@games.service > /run/dm-saw-games'\n\n[Install]\nWantedBy=multi-user.target\nAlias=display-manager.service\n"
     }
-  ]
+  ],
+  "luks_token_policy": {
+    "enroll_failure": "warn-and-continue"
+  }
 }

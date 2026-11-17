@@ -49,7 +49,7 @@ grep -n games /etc/fstab
 
 echo "KEPT-D2: the kept disk is optional (nofail) in crypttab and fstab"
 grep -n games /etc/crypttab
-grep -q '^games UUID=5eed5eed-0000-4000-8000-00000000c0de none luks,fido2-device=auto,token-timeout=10s,nofail,timeout=1s$' /etc/crypttab || \
+grep -q '^games UUID=5eed5eed-0000-4000-8000-00000000c0de none luks,fido2-device=auto,token-timeout=3s,nofail,timeout=1s,x-systemd.device-timeout=5s$' /etc/crypttab || \
     { echo "KEPT-D2 FAILED: crypttab line lacks the unlock options (token, nofail, timeout)"; rc=1; }
 [ "$(grep -c "^/dev/mapper/games .*,nofail 0 0$" /etc/fstab)" -eq 2 ] || \
     { echo "KEPT-D2 FAILED: fstab lines lack nofail"; rc=1; }
@@ -78,6 +78,16 @@ lsinitrd -f etc/crypttab /boot/initramfs-linux.img | grep -q '^games ' && \
     { echo "KEPT-D5 FAILED: the initramfs crypttab names the kept disk"; rc=1; }
 res=$(systemctl show -p Result --value systemd-cryptsetup@games.service)
 [ "$res" = success ] || { echo "KEPT-D5 FAILED: games unlock result $res"; rc=1; }
+
+echo "KEPT-H: unlock messages reach the console, and the greeter waits for games"
+lsinitrd -f etc/systemd/system/systemd-cryptsetup@.service.d/10-console.conf /boot/initramfs-linux.img \
+    | grep -q 'SYSTEMD_LOG_TARGET=console' || \
+    { echo "KEPT-H FAILED: the console drop-in is not in the initramfs"; rc=1; }
+systemctl show -p After --value fake-dm.service | tr ' ' '\n' | grep -qx 'systemd-cryptsetup@games.service' || \
+    { echo "KEPT-H FAILED: the display-manager.service.d drop-in did not reach the aliased unit"; rc=1; }
+saw=$(cat /run/dm-saw-games 2>/dev/null)
+echo "KEPT-DM-SAW=$saw"
+[ "$saw" = active ] || { echo "KEPT-H FAILED: the greeter started while games was '$saw'"; rc=1; }
 
 echo "KEPT-E: the header still carries its two tokens"
 tokens=$(cryptsetup luksDump --disable-external-tokens /dev/vdb1 | grep -c 'systemd-fido2')
@@ -114,7 +124,8 @@ parts = [p for d in cfg["disks"]["disks"] for p in d["partitions"]
 print("KEPT-CAPTURED=", json.dumps(parts))
 ok = (len(parts) == 1 and parts[0].get("format") is False
       and parts[0].get("unlock_fido2") == 2
-      and parts[0].get("luks_options") == ["token-timeout=10s", "nofail", "timeout=1s"]
+      and parts[0].get("luks_options") == ["token-timeout=3s", "nofail", "timeout=1s",
+                                           "x-systemd.device-timeout=5s"]
       and sorted((s["name"], s["mountpoint"]) for s in parts[0].get("btrfs_subvolumes", []))
       == [("@", "/home/tester/Games"), ("@snapshots", "/home/tester/Games/.snapshots")])
 sys.exit(0 if ok else 1)

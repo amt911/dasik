@@ -198,6 +198,11 @@ class DracutBackend(InitramfsBackend):
                         opts.append(_KEYFILE_TIMEOUT)
                     opts.extend(o for o in part.get("luks_options", []) or []
                                 if str(o).startswith("keyfile-timeout="))
+                    # A volume declared `nofail` (a data disk that may be
+                    # absent) must not make cryptsetup.target fail either; the
+                    # cmdline already carries it through rd.luks.options.
+                    if "nofail" in (part.get("luks_options", []) or []):
+                        opts.append("nofail")
                     derived[name] = f"{name} UUID={uuid} {key_field} {','.join(opts)}"
 
         # A random-key swap is plain dm-crypt, not LUKS, so it never appears in

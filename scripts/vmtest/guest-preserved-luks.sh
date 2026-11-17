@@ -41,6 +41,13 @@ grep -n games /etc/fstab
 [ "$(grep -c "^/dev/mapper/games $G/.snapshots " /etc/fstab)" -eq 1 ] || \
     { echo "KEPT-D FAILED: no single fstab line for $G/.snapshots"; rc=1; }
 
+echo "KEPT-D2: the kept disk is optional (nofail) in crypttab and fstab"
+grep -n games /etc/crypttab
+grep -q '^games UUID=5eed5eed-0000-4000-8000-00000000c0de none luks,nofail$' /etc/crypttab || \
+    { echo "KEPT-D2 FAILED: crypttab line lacks nofail"; rc=1; }
+[ "$(grep -c "^/dev/mapper/games .*,nofail 0 0$" /etc/fstab)" -eq 2 ] || \
+    { echo "KEPT-D2 FAILED: fstab lines lack nofail"; rc=1; }
+
 echo "KEPT-E: the header still carries its two tokens"
 tokens=$(cryptsetup luksDump --disable-external-tokens /dev/vdb1 | grep -c 'systemd-fido2')
 echo "KEPT-TOKENS=$tokens"

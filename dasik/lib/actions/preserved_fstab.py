@@ -47,6 +47,10 @@ def preserved_fstab_lines(config: Dict[str, Any], fstab: str) -> List[str]:
         fs = str(part.get("filesystem") or "")
         fstype = DiskPartitionAction._FSTYPE_ALIASES.get(fs, fs)
         base = list(part.get("mount_options") or [])
+        # `nofail` on the VOLUME (luks_options) makes it optional for the boot;
+        # its mounts must be optional too, or a missing disk still ends in the
+        # emergency shell.
+        tail = ["nofail"] if "nofail" in (part.get("luks_options") or []) else []
         subvols = part.get("btrfs_subvolumes") or []
         if fs == "btrfs" and subvols:
             for sv in subvols:
@@ -55,11 +59,13 @@ def preserved_fstab_lines(config: Dict[str, Any], fstab: str) -> List[str]:
                     continue
                 opts = merge_mount_options_by_name(base, list(sv.get("mount_options") or []))
                 opts.append(f"subvol={sv['name']}")
+                opts += [t for t in tail if t not in opts]
                 lines.append(f"{device} {mp} btrfs {','.join(opts)} 0 0")
             continue
         mp = part.get("mountpoint")
         if not mp or mp == "/" or mp in taken or fstype == "swap":
             continue
         passno = "0" if fs == "btrfs" else "2"
-        lines.append(f"{device} {mp} {fstype} {','.join(base) or 'defaults'} 0 {passno}")
+        opts = base + [t for t in tail if t not in base]
+        lines.append(f"{device} {mp} {fstype} {','.join(opts) or 'defaults'} 0 {passno}")
     return lines

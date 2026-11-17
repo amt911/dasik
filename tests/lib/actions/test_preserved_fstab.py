@@ -118,3 +118,31 @@ def test_btrfs_subvolume_action_passes_the_device_through(tmp_path):
     new = "UUID=fs /new btrfs subvol=@snapshots 0 0"
     action._fstab_set("/new", new, "@snapshots", "fs", "/dev/mapper/games")
     assert (tmp_path / "etc" / "fstab").read_text() == new + "\n"
+
+
+# --- nofail: a kept data disk that may be absent must not stop the boot --- #
+
+from dasik.lib.actions.initramfs.dracut import DracutBackend
+
+
+def test_nofail_in_luks_options_makes_the_kept_mounts_optional():
+    lines = preserved_fstab_lines(_cfg(_games(luks_options=["token-timeout=10s", "nofail"])), "")
+    assert lines == [
+        "/dev/mapper/games /home/andres/Games btrfs compress-force=zstd:3,subvol=@,nofail 0 0",
+        "/dev/mapper/games /home/andres/Games/.snapshots btrfs "
+        "compress-force=zstd:3,noatime,subvol=@snapshots,nofail 0 0",
+    ]
+
+
+def test_without_nofail_the_kept_mounts_stay_required():
+    assert all("nofail" not in ln for ln in preserved_fstab_lines(_cfg(_games()), ""))
+
+
+def test_nofail_reaches_the_crypttab_line():
+    line = DracutBackend(_cfg(_games(luks_options=["nofail"]))).crypttab().splitlines()[1]
+    assert line.split()[3].split(",") == ["luks", "nofail"]
+
+
+def test_crypttab_without_nofail_is_unchanged():
+    line = DracutBackend(_cfg(_games(luks_options=["token-timeout=10s"]))).crypttab().splitlines()[1]
+    assert line.split()[3] == "luks"

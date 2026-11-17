@@ -417,7 +417,34 @@ class DiskPartitionAction(AbstractAction):
             if tok.startswith(f"rd.luks.options={uuid}="):
                 opts = tok.split("=", 2)[2].split(",")
                 return [o for o in opts if o and o not in auto]
+        # Not on the cmdline: an optional data volume unlocked by the real
+        # system (opens_after_switch_root) keeps its options in crypttab, next
+        # to the ones dasik derives there. Only such a line — `nofail`, no
+        # keyfile — is read: a hand-written line for any other volume would
+        # otherwise become luks_options and land on the cmdline. `discard` is
+        # kept, as the cmdline path keeps it.
+        derived = auto | {"luks", "x-initrd.attach"}
+        for key_field, opts in self._crypttab_options(uuid):
+            if key_field == "none" and "nofail" in opts:
+                return [o for o in opts if o and o not in derived]
         return []
+
+    def _crypttab_options(self, uuid: str) -> "List[Tuple[str, List[str]]]":
+        """``(key field, options)`` of the target's crypttab lines for ``UUID=<uuid>``."""
+        target = self._target()
+        path = target.path("/etc/crypttab") if target is not None else "/mnt/etc/crypttab"
+        try:
+            with open(path, "r") as f:
+                content = f.read()
+        except OSError:
+            return []
+        found: "List[Tuple[str, List[str]]]" = []
+        for raw in content.splitlines():
+            fields = raw.split()
+            if (len(fields) >= 4 and not fields[0].startswith("#")
+                    and fields[1] == f"UUID={uuid}"):
+                found.append((fields[2], fields[3].split(",")))
+        return found
 
     def _read_luks_keyfile(self, uuid: str) -> "Tuple[Optional[str], Optional[str]]":
         """``(keyfile path, key device spec)`` for <uuid> from the live cmdline.

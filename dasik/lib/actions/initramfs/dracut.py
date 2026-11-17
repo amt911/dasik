@@ -8,7 +8,8 @@ from ...command_worker.command_worker import Command
 from ...expand.toggles import FALLBACK_DRACUT_FLAGS
 from ...exceptions.exceptions import CommandExecutionError
 from ..luks_uuid import luks_uuid
-from ..partition_utils import keydev_spec, mounts_root
+from ..partition_utils import keydev_spec, mounts_root, opens_after_switch_root
+from ...models.disk_model import fido2_count
 from ..swap_encryption import crypttab_line, random_swap_partitions, swap_names
 
 _CONF_D = "/etc/dracut.conf.d"
@@ -198,10 +199,21 @@ class DracutBackend(InitramfsBackend):
                         opts.append(_KEYFILE_TIMEOUT)
                     opts.extend(o for o in part.get("luks_options", []) or []
                                 if str(o).startswith("keyfile-timeout="))
-                    # A volume declared `nofail` (a data disk that may be
-                    # absent) must not make cryptsetup.target fail either; the
-                    # cmdline already carries it through rd.luks.options.
-                    if "nofail" in (part.get("luks_options", []) or []):
+                    declared = list(part.get("luks_options", []) or [])
+                    if opens_after_switch_root(part, self.config):
+                        # An optional data volume is NOT on the kernel cmdline
+                        # (see opens_after_switch_root): this line is its whole
+                        # unlock — the token, and every declared option (e.g.
+                        # headless=true so it never prompts after the desktop
+                        # is up).
+                        if part.get("unlock_tpm2"):
+                            opts.append("tpm2-device=auto")
+                        if fido2_count(part):
+                            opts.append("fido2-device=auto")
+                        opts.extend(o for o in declared if o not in opts)
+                    elif "nofail" in declared:
+                        # Unlocked in the initramfs; `nofail` keeps a missing
+                        # device from failing cryptsetup.target here too.
                         opts.append("nofail")
                     derived[name] = f"{name} UUID={uuid} {key_field} {','.join(opts)}"
 

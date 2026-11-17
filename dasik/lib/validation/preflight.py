@@ -111,7 +111,7 @@ _CRYPTTAB_FLAGS: Set[str] = {
     "readonly", "read-only", "verify", "bitlk", "fvault2", "tcrypt",
     "tcrypt-hidden", "tcrypt-system", "tcrypt-veracrypt", "same-cpu-crypt",
     "submit-from-crypt-cpus", "no-read-workqueue", "no-write-workqueue",
-    "_netdev", "netdev", "headless",
+    "_netdev", "netdev",
     # Bare flags dasik itself writes or crypttab(5) documents without a value.
     # `x-initrd.attach` lived in the key=value table below, so the line dasik's
     # own dracut backend writes ("luks,x-initrd.attach") was rejected by `check`
@@ -119,13 +119,22 @@ _CRYPTTAB_FLAGS: Set[str] = {
     "x-initrd.attach", "keyfile-erase",
 }
 # crypttab(5) documents these as `name[=bool]`: both forms are valid.
-_CRYPTTAB_FLAG_OR_KEY: Set[str] = {"try-empty-password"}
+# `headless=` is documented as a boolean too (systemd 249+); the bare form
+# stays accepted, and the valued one is what an optional data volume carries.
+_CRYPTTAB_FLAG_OR_KEY: Set[str] = {"try-empty-password", "headless"}
 _CRYPTTAB_KEYS: Set[str] = {
     "cipher", "hash", "header", "key-slot", "keyfile-offset", "keyfile-size",
     "offset", "sector-size", "size", "skip", "timeout",
     "tries", "token-timeout", "pkcs11-uri", "fido2-device", "fido2-cid",
     "fido2-rp", "tpm2-device", "tpm2-pcrs", "tpm2-signature", "tpm2-measure-pcr",
     "x-systemd.device-timeout", "veracrypt-pim",
+    # Documented by crypttab(5) as of systemd 262 and missing until the nofail
+    # data-volume journey tripped over them. `keyfile-timeout` is one dasik
+    # itself writes for a pendrive unlock.
+    "keyfile-timeout", "password-cache", "password-echo", "fido2-pin",
+    "fido2-up", "fido2-uv", "tpm2-pin", "tpm2-pcrlock", "tpm2-measure-bank",
+    "tpm2-measure-keyslot-nvpcr", "tcrypt-keyfile", "link-volume-key",
+    "fixate-volume-key",
 }
 
 

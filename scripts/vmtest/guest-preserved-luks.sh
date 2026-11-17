@@ -48,6 +48,14 @@ grep -q '^games UUID=5eed5eed-0000-4000-8000-00000000c0de none luks,nofail$' /et
 [ "$(grep -c "^/dev/mapper/games .*,nofail 0 0$" /etc/fstab)" -eq 2 ] || \
     { echo "KEPT-D2 FAILED: fstab lines lack nofail"; rc=1; }
 
+echo "KEPT-D3: the FIDO2 library systemd-cryptsetup dlopens is there, initramfs included"
+pacman -Q libfido2 || { echo "KEPT-D3 FAILED: libfido2 not installed"; rc=1; }
+lsinitrd /boot/initramfs-linux.img 2>/dev/null | grep -q 'libfido2\.so' || \
+    { echo "KEPT-D3 FAILED: libfido2 is not in the initramfs"; rc=1; }
+journalctl -b --no-pager | grep -q "libfido2.so.1' is not available" && \
+    { echo "KEPT-D3 FAILED: systemd-cryptsetup could not load libfido2"; rc=1; }
+systemctl status --no-pager systemd-cryptsetup@games.service | head -5
+
 echo "KEPT-E: the header still carries its two tokens"
 tokens=$(cryptsetup luksDump --disable-external-tokens /dev/vdb1 | grep -c 'systemd-fido2')
 echo "KEPT-TOKENS=$tokens"

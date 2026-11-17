@@ -15,11 +15,16 @@ def _names_subvol(options: str, name: str) -> bool:
 
 
 def without_btrfs_lines(text: str, mountpoint: str, name: Optional[str] = None,
-                        uuid: Optional[str] = None) -> List[str]:
+                        uuid: Optional[str] = None,
+                        device: Optional[str] = None) -> List[str]:
     """The fstab lines minus the btrfs ones for *mountpoint* and, when *name*
     and *uuid* are given, minus every btrfs line of that subvolume on that
     filesystem (so adopting it at a new mountpoint cannot leave it mounted
-    twice). Comments and any other line stay."""
+    twice). Comments and any other line stay.
+
+    *device* is the block device the filesystem is mounted from: a kept
+    encrypted volume's install-time line names ``/dev/mapper/<luks_name>``
+    instead of ``UUID=`` (see preserved_fstab), and is the same subvolume."""
     kept = []
     for ln in text.splitlines():
         cols = ln.split()
@@ -27,7 +32,9 @@ def without_btrfs_lines(text: str, mountpoint: str, name: Optional[str] = None,
             if cols[1] == mountpoint:
                 continue
             if (name is not None and uuid is not None and len(cols) >= 4
-                    and cols[0] == f"UUID={uuid}" and _names_subvol(cols[3], name)):
+                    and (cols[0] == f"UUID={uuid}"
+                         or (device is not None and cols[0] == device))
+                    and _names_subvol(cols[3], name)):
                 continue
         kept.append(ln)
     return kept

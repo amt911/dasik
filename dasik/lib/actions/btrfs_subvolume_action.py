@@ -388,10 +388,12 @@ class BtrfsSubvolumeAction(AbstractAction):
             return
         self._fstab_write("\n".join(kept) + ("\n" if kept else ""))
 
-    def _fstab_set(self, mountpoint: str, line: str, name: str, uuid: str) -> None:
+    def _fstab_set(self, mountpoint: str, line: str, name: str, uuid: str,
+                   device: Optional[str] = None) -> None:
         """Make *line* the one btrfs line for *mountpoint* — and for the
         subvolume *name* of filesystem *uuid*, wherever it was mounted before."""
-        kept = without_btrfs_lines(self._read_fstab(), mountpoint, name, uuid)
+        kept = without_btrfs_lines(self._read_fstab(), mountpoint, name, uuid,
+                                   device)
         self._fstab_write("\n".join(kept + [line]) + "\n")
 
     def _fstab_options(self, mountpoint: str, name: str) -> str:
@@ -498,7 +500,7 @@ class BtrfsSubvolumeAction(AbstractAction):
         name, mp = subvol.name, subvol.mountpoint
         line = self._fstab_line(uuid, part, subvol)
         if live.mounted.get(name) == mp:                       # fstab-only
-            self._fstab_set(mp, line, name, uuid)
+            self._fstab_set(mp, line, name, uuid, device)
             return
         host_mp = self._p(mp)
         old = live.mounted.get(name)
@@ -520,7 +522,7 @@ class BtrfsSubvolumeAction(AbstractAction):
             self._assert_idle(self._p(old), f"moving {name}")
             Command.execute("umount", [self._p(old)], check=True)
             self._fstab_drop(old)
-            self._fstab_set(mp, line, name, uuid)
+            self._fstab_set(mp, line, name, uuid, device)
             self._mount_new(device, part, subvol)
             return
         if os.path.ismount(host_mp):
@@ -541,7 +543,7 @@ class BtrfsSubvolumeAction(AbstractAction):
                 f"it as an adopt and refuses while both hold data. Move those files "
                 "away (see ls " + host_mp + ") and run dasik again.")
         self._mount_new(device, part, subvol)
-        self._fstab_set(mp, line, name, uuid)
+        self._fstab_set(mp, line, name, uuid, device)
 
     def _fill_subvolume(self, live: Live, src: str, dst: str, host_mp: str,
                         name: str) -> None:

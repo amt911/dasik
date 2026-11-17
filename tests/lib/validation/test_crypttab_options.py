@@ -68,3 +68,38 @@ def test_try_empty_password_takes_both_forms():
 
 def test_a_genuinely_unknown_option_is_still_an_error():
     assert "crypttab_bad_option" in _codes("luks,size512")
+
+
+# --- options crypttab(5) (systemd 262) documents that the table lacked -------
+# Found by the nofail data-volume journey: the crypttab line dasik composes
+# for an optional data volume carries the declared luks_options verbatim, and
+# `check` then refused `headless=true` — crypttab(5) documents `headless=` as a
+# boolean, so the valued form is the documented one.
+
+@pytest.mark.parametrize("opt", [
+    "headless=true", "headless=false", "keyfile-timeout=10s",
+    "password-cache=read-only", "password-echo=masked",
+    "fido2-pin=yes", "fido2-up=no", "fido2-uv=no", "tpm2-pin=yes",
+    "tpm2-pcrlock=/var/lib/systemd/pcrlock.json", "tpm2-measure-bank=sha256",
+    "tpm2-measure-keyslot-nvpcr=cryptsetup", "tcrypt-keyfile=/k",
+    "link-volume-key=@u::%user:cryptsetup:v", "fixate-volume-key=abc",
+])
+def test_documented_options_are_accepted(opt):
+    assert "crypttab_bad_option" not in _codes(f"luks,{opt}")
+
+
+def test_the_line_dasik_composes_for_an_optional_data_volume_passes_check():
+    cfg = {"initramfs": "dracut", "disks": {"disks": [
+        {"device": "/dev/vda", "partition_table": "gpt", "partitions": [
+            {"label": "ROOT", "size": "rest", "filesystem": "btrfs",
+             "partition_type": "linux", "mountpoint": "/", "encrypt": True,
+             "luks_name": "cryptroot"}]},
+        {"device": "/dev/vdb", "partition_table": "gpt", "wipe_disk": False, "partitions": [
+            {"label": "Games", "size": "rest", "filesystem": "btrfs", "format": False,
+             "partition_type": "linux", "encrypt": True, "luks_name": "games",
+             "luks_uuid": "5eed5eed-0000-4000-8000-00000000c0de", "unlock_fido2": 2,
+             "luks_options": ["token-timeout=10s", "nofail", "headless=true"],
+             "btrfs_subvolumes": [{"name": "@", "mountpoint": "/home/u/Games"}]}]}]}}
+    from dasik.lib.actions.initramfs.dracut import DracutBackend
+    cfg["files"] = [{"path": "/etc/crypttab", "content": DracutBackend(cfg).crypttab()}]
+    assert "crypttab_bad_option" not in {i.code for i in preflight(cfg, efi_boot=True)}

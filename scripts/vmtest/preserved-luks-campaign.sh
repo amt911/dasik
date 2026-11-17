@@ -47,6 +47,9 @@ for vol in cryptroot games; do
     line=$(console "Security token not present for unlocking volume .*($vol)[^,]*, please plug it in")
     if [ -n "$line" ]; then echo "CONSOLE-$vol=yes: $line"; else echo "CONSOLE-$vol=NO"; fail=1; fi
 done
+# ...and only notices: the per-attempt info line must not reach the screen.
+noise=$(console "Set cipher aes, mode")
+if [ -z "$noise" ]; then echo "CONSOLE-noise=none"; else echo "CONSOLE-noise=YES: $noise"; fail=1; fi
 step 0 guest-preserved-luks-absent.sh ABSENT-DONE
 step 1 guest-preserved-luks-rekey.sh REKEY-DONE
 step 1 guest-preserved-luks-locked.sh LOCKED-DONE

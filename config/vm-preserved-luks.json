@@ -130,7 +130,7 @@
     },
     {
       "path": "/etc/systemd/system/systemd-cryptsetup@.service.d/10-console.conf",
-      "content": "[Service]\n# Show what an unlock is doing ON SCREEN, not only in the journal: \"Asking\n# FIDO2 token\", \"Please confirm presence on security token\", \"Security\n# token not present ... please plug it in\". Without it the console stays\n# black while the key is waited for or touched.\nEnvironment=SYSTEMD_LOG_TARGET=console\nStandardOutput=journal+console\nStandardError=journal+console\n"
+      "content": "[Service]\n# Show what an unlock is doing ON SCREEN, not only in the journal: \"Asking\n# FIDO2 token\", \"Please confirm presence on security token\", \"Security\n# token not present ... please plug it in\". Without it the console stays\n# black while the key is waited for or touched.\nEnvironment=SYSTEMD_LOG_TARGET=console\nEnvironment=SYSTEMD_LOG_LEVEL=notice\nStandardOutput=journal+console\nStandardError=journal+console\n"
     },
     {
       "path": "/etc/dracut.conf.d/20-cryptsetup-console.conf",

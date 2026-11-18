@@ -14,7 +14,9 @@
 set -x
 cd /root/repo || { echo "LIFE-DONE rc=91"; poweroff -f; }
 
-D="python -m dasik"
+# --no-log: the 9p repo is read-only and the run log defaults to $PWD, so without
+# it every verb dies with "[Errno 30] Read-only file system" before doing anything.
+D="python -m dasik --no-log"
 MARKER=/etc/dasik-day2-marker.conf
 fails=0
 check() { # check <label> <condition-rc>

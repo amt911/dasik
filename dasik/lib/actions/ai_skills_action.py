@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import re
 import os
+from dataclasses import replace
 from functools import partial
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -36,7 +37,7 @@ from .ai_skills_state import (AGENT_SKILL_DIRS, CANONICAL_SKILL_DIR,
                               installed_agents, skill_folder_hash,
                               skills_state)
 from .config_access import field as _field
-from .opencode_config import (JSON_REL, JSONC_REL, OpencodeConfigError,
+from .opencode_config import (JSON_REL, JSONC_NOTE, JSONC_REL, OpencodeConfigError,
                               read_plugins, refusal)
 from .opencode_config import edit as opencode_edit
 from ..command_worker.command_worker import Command
@@ -412,7 +413,22 @@ class AiSkillsAction(AbstractAction):
                 modifies.append(Change(_DOMAIN, Op.MODIFY, item,
                                        reason="source drift"))
         self._warn_unreachable_codex_marketplaces(creates, desired)
+        deletes = [self._with_jsonc_note(c) for c in deletes]
         return creates + modifies + deletes
+
+    def _with_jsonc_note(self, change: Change) -> Change:
+        """An opencode plugin living in opencode.jsonc is removed by rewriting
+        that file, which drops its comments: the plan line says so."""
+        parts = change.item.split(":", 3)
+        if len(parts) != 4 or parts[1] != _OC_AGENT or parts[2] != "plugin":
+            return change
+        ids = self._passwd_entries().get(parts[0])
+        home = self._abs(ids[0] if ids else f"/home/{parts[0]}")
+        hit = read_plugins(home).get(parts[3])
+        if hit is None or hit.rel != JSONC_REL:
+            return change
+        return replace(change, reason=(f"{change.reason}; {JSONC_NOTE}"
+                                       if change.reason else JSONC_NOTE))
 
     # -- the prerequisite a plan cannot see ---------------------------------- #
 
@@ -938,6 +954,12 @@ class AiSkillsAction(AbstractAction):
                                         "not a plain plugin name")
                 continue
             if spec["kind"] == "plugin" and spec["agent"] == _OC_AGENT:
+                if not OPENCODE_SPEC_RE.fullmatch(spec.get("source") or ""):
+                    # Same as the antigravity name check above: a DELETE rebuilt
+                    # from the manifest is re-validated before anything runs.
+                    self._fail(change.item, f"ai_skills: {change.item} refused: "
+                                            "not a plain opencode plugin specifier")
+                    continue
                 self._apply_opencode_plugin(change, spec)
                 continue
             completed = True
@@ -981,6 +1003,10 @@ class AiSkillsAction(AbstractAction):
         if change.op is Op.DELETE:
             self._remove_opencode_plugin(spec, item)
             return
+        if not os.path.exists(self._abs("/usr/bin/opencode")):
+            self._fail(item, f"ai_skills: {item} failed: opencode is not "
+                             "installed in the target (no /usr/bin/opencode)")
+            return
         if ids is not None and not os.path.lexists(os.path.join(home, JSON_REL)):
             # With only a hand-written opencode.jsonc, `plugin add` writes into
             # it (FACT-OC), changing its checksum and, on removal, dropping its
@@ -997,8 +1023,9 @@ class AiSkillsAction(AbstractAction):
     def _remove_opencode_plugin(self, spec: Dict[str, Any], item: str) -> None:
         """Take one specifier out of every file opencode reads it from.
 
-        The CLI only edits opencode.json (and exits 0 having removed nothing),
-        so a spec living in opencode.jsonc is dropped by editing that file, and
+        The CLI only edits the `plugins` key of opencode.json (and exits 0
+        having removed nothing), so a spec living in opencode.jsonc or in the
+        legacy `plugin` key is dropped by editing the file, and
         the config is re-read after every step: only a spec that is really gone
         counts as removed.
         """
@@ -1019,11 +1046,13 @@ class AiSkillsAction(AbstractAction):
         try:
             # One pass per file opencode loads; the latest wins the read.
             ran_cli = False
-            for _ in range(2):
+            for _ in range(3):
                 found = read_plugins(home).get(source)
                 if found is None:
                     break
-                if found.rel == JSONC_REL:
+                if found.rel == JSONC_REL or not found.nested:
+                    # opencode.jsonc, or the legacy `plugin` key: nobody has
+                    # measured the CLI on those, so dasik edits the file.
                     opencode_edit(home, found.rel, drop, uid, gid)
                     continue
                 if ran_cli:

@@ -1192,8 +1192,11 @@ no `:` or `/`. Scoped packages (`@scope/pkg`), `file:`, `npm:` and `github:`
 specifiers are refused; `sync` reports them as not captured. Presence is read
 back from the `plugins` (and the legacy `plugin`) arrays of
 `~/.config/opencode/opencode.json` and `opencode.jsonc`. opencode loads both
-files; the CLI only edits `opencode.json`, so a specifier that lives in
-`opencode.jsonc` is dropped by dasik editing that file itself. That rewrite
+files. With only a hand-written `opencode.jsonc` present, `opencode plugin add`
+writes into that file; dasik avoids it by creating `opencode.json` first, so the
+CLI writes there. The CLI removal only reaches the `plugins` key of
+`opencode.json`, so a specifier that lives in `opencode.jsonc` (or in the
+legacy `plugin` key) is dropped by dasik editing that file itself. That rewrite
 parses the file as plain JSON and **drops its comments**; dasik touches
 `opencode.jsonc` only to remove or move something that lives there, and refuses a
 file it cannot parse.
@@ -1337,7 +1340,7 @@ hook state, and owning them as files would delete what the program keeps there.
 | `entries[].args` | list[string] | Arguments for `command`. |
 | `entries[].env` | object | Environment for `command`. **Captured verbatim by `sync`** — see below. |
 | `entries[].url` | string | http transport: the streamable HTTP endpoint. Mutually exclusive with `command`. |
-| `entries[].headers` | object | `url` + **claude-code / antigravity only** (`claude mcp add -H`, `agy mcp add -H`). An entry using it may not name `codex`. |
+| `entries[].headers` | object | `url` + **claude-code / antigravity / opencode only** (`claude mcp add -H`, `agy mcp add -H`; opencode's `remote` entry). An entry using it may not name `codex`. |
 | `entries[].bearer_token_env_var` | string | `url` + **codex only** (`codex mcp add --bearer-token-env-var`). An entry using it must declare `agents: ["codex"]` alone. |
 | `entries[].users` | list[string] | Narrows this entry to some of the block's users. |
 

@@ -28,11 +28,14 @@ def _entry(source, name=None):
             "source": source}
 
 
-def _root(tmp_path, files=None):
+def _root(tmp_path, files=None, binary=True):
     (tmp_path / "etc").mkdir(parents=True, exist_ok=True)
     (tmp_path / "etc/passwd").write_text(
         "root:x:0:0::/root:/bin/bash\n"
         f"andres:x:{os.getuid()}:{os.getgid()}::/home/andres:/bin/zsh\n")
+    if binary:
+        (tmp_path / "usr/bin").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "usr/bin/opencode").write_text("")
     home = tmp_path / "home/andres"
     home.mkdir(parents=True, exist_ok=True)
     for rel, text in (files or {}).items():
@@ -42,10 +45,10 @@ def _root(tmp_path, files=None):
     return tmp_path
 
 
-def _action(tmp_path, entries, files=None):
+def _action(tmp_path, entries, files=None, binary=True):
     cfg = {"users": [{"username": "andres"}], "ai_skills": {"entries": entries}}
     return AiSkillsAction(cfg, ActionContext(
-        target=Target(root=str(_root(tmp_path, files)))))
+        target=Target(root=str(_root(tmp_path, files, binary)))))
 
 
 def _plan(action, managed=()):
@@ -315,3 +318,58 @@ def test_a_failing_json_creation_fails_the_item_and_runs_no_cli(tmp_path):
                side_effect=OpencodeConfigError("nope")):
         assert _create(action) == []
     assert action.failed_items == [_item(PJ)]
+
+
+# -- review fixes ------------------------------------------------------------- #
+
+def test_plan_line_of_a_jsonc_delete_names_the_file(tmp_path):
+    action = _action(tmp_path, [], {JSONC_REL: _json(plugin=[PJ])})
+    (change,) = action.plan(managed=[_item(PJ)])
+    assert change.op is Op.DELETE
+    assert "in opencode.jsonc — rewritten, comments dropped" in change.render()
+
+
+def test_plan_line_of_a_json_delete_says_nothing_of_comments(tmp_path):
+    action = _action(tmp_path, [], {JSON_REL: _json(plugins=[PJ])})
+    (change,) = action.plan(managed=[_item(PJ)])
+    assert "comments" not in change.render()
+
+
+def test_create_without_the_opencode_binary_fails_and_creates_nothing(
+        tmp_path, capsys):
+    action = _action(tmp_path, [_entry(PJ)], {JSONC_REL: JSONC_TEXT},
+                     binary=False)
+    assert _create(action) == []
+    assert action.failed_items == [_item(PJ)]
+    assert not (tmp_path / "home/andres" / JSON_REL).exists()
+    assert "/usr/bin/opencode" in capsys.readouterr().out
+
+
+def test_delete_from_the_legacy_plugin_key_in_json_is_an_edit_not_the_cli(
+        tmp_path):
+    action = _action(tmp_path, [], {JSON_REL: _json(plugin=[PJ, "keep@1"])})
+    assert _calls(action, [Change("ai_skills", Op.DELETE, _item(PJ))]) == []
+    assert set(read_plugins(_home(tmp_path))) == {"keep@1"}
+    assert action.failed_items == []
+
+
+def test_delete_in_both_keys_of_json_clears_both(tmp_path):
+    action = _action(tmp_path, [], {JSON_REL: _json(plugin=[PJ], plugins=[PJ])})
+
+    def cli_removes_plugins(*_a, **_k):
+        data = json.loads((tmp_path / "home/andres" / JSON_REL).read_text())
+        data["plugins"] = []
+        (tmp_path / "home/andres" / JSON_REL).write_text(json.dumps(data))
+
+    _calls(action, [Change("ai_skills", Op.DELETE, _item(PJ))],
+           effect=cli_removes_plugins)
+    assert read_plugins(_home(tmp_path)) == {}
+    assert action.failed_items == []
+
+
+def test_a_delete_rebuilt_from_the_manifest_is_revalidated(tmp_path, capsys):
+    evil = "x@1.0.0; touch /pwned"
+    action = _action(tmp_path, [], {JSON_REL: _json(plugins=[evil])})
+    assert _calls(action, [Change("ai_skills", Op.DELETE, _item(evil))]) == []
+    assert action.failed_items == [_item(evil)]
+    assert "refused" in capsys.readouterr().out

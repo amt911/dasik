@@ -277,7 +277,7 @@ origin nothing records, since no other machine could reproduce it.
 ```
 
 Registered with each agent's own CLI (`claude mcp add -s user`, `codex mcp
-add`, `agy mcp add`), never by writing the files: `~/.claude.json`,
+add`, `agy mcp add`), never by writing the files — except opencode, whose servers dasik writes into `opencode.json`: `~/.claude.json`,
 `~/.codex/config.toml` and `~/.gemini/config/mcp_config.json` are the programs' own state — account material, per-project history, hook
 hashes — and owning them as files would delete it.
 
@@ -288,13 +288,12 @@ hashes — and owning them as files would delete it.
 | `entries[].agents` | list of strings | — | `claude-code`, `codex`, `antigravity`, `opencode` |
 | `entries[].command` + `args` + `env` | string, list, object | — | stdio transport |
 | `entries[].url` | string | — | http transport; excludes `command` |
-| `entries[].headers` | object | `{}` | `url` + claude-code / antigravity only |
+| `entries[].headers` | object | `{}` | `url` + claude-code / antigravity / opencode only |
 | `entries[].bearer_token_env_var` | string | — | `url` + codex only |
 
 `opencode` is written by dasik itself into `~/.config/opencode/opencode.json`
 (`mcp.servers.<name>`), so `opencode` must be installed. `opencode.jsonc` is only
 rewritten to remove or move something that lives there, which drops its comments.
-Example plugin entry: `{ "name": "pj", "method": "opencode-plugin", "source": "pj@1.0.0" }`.
 
 An option only one CLI understands must name that agent alone — otherwise the
 plan promises a registration that arrives without it. Only Claude Code's **user

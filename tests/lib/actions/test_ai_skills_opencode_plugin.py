@@ -15,6 +15,7 @@ from dasik.lib.actions.ai_skills_action import AiSkillsAction
 from dasik.lib.actions.opencode_config import (JSON_REL, JSONC_REL,
                                                    OpencodeConfigError,
                                                    read_plugins)
+from dasik.lib.models.ai_skills_model import AiSkillsModel
 from dasik.lib.state.change import Change, Op
 from dasik.lib.target.target import Target
 
@@ -224,3 +225,49 @@ def test_delete_fails_when_the_file_became_a_link_after_the_cli_ran(tmp_path):
     _calls(action, [Change("ai_skills", Op.DELETE, _item(PJ))],
            effect=cli_swaps_for_a_link)
     assert action.failed_items == [_item(PJ)]
+
+
+# -- sync ------------------------------------------------------------------- #
+
+def _synced(tmp_path, files):
+    return _action(tmp_path, [], files).import_state()["ai_skills"]
+
+
+def test_sync_captures_each_plugin_as_an_entry(tmp_path):
+    block = _synced(tmp_path, {JSON_REL: _json(plugins=[PJ]),
+                               JSONC_REL: _json(plugin=[GIT])})
+    assert block == {"users": ["andres"],
+                     "entries": [_entry(GIT, "foo"), _entry(PJ, "pj")]}
+
+
+def test_sync_skips_scoped_and_file_specs_with_a_warning(tmp_path, capsys):
+    block = _synced(tmp_path, {JSON_REL: _json(
+        plugins=["@scope/pkg", "file:../p", PJ])})
+    assert block["entries"] == [_entry(PJ)]
+    out = capsys.readouterr().out
+    assert "not captured" in out
+    assert "andres: opencode plugin @scope/pkg" in out
+    assert "andres: opencode plugin file:../p" in out
+
+
+def test_sync_captures_nothing_from_a_config_dasik_refuses(tmp_path, capsys):
+    root = _root(tmp_path, {JSON_REL: _json(plugins=[PJ])})
+    real = root / "home/andres" / JSON_REL
+    real.rename(real.with_name("real.json"))
+    real.symlink_to("real.json")
+    action = AiSkillsAction(
+        {"users": [{"username": "andres"}], "ai_skills": {"entries": []}},
+        ActionContext(target=Target(root=str(root))))
+    assert action.import_state()["ai_skills"] == {}
+    assert "not captured" in capsys.readouterr().out
+
+
+def test_captured_block_validates_and_replans_to_nothing(tmp_path):
+    files = {JSON_REL: _json(plugins=[PJ]), JSONC_REL: _json(plugin=[GIT])}
+    captured = _synced(tmp_path, files)
+    assert len(captured["entries"]) == 2
+    AiSkillsModel(**captured)
+    replay = AiSkillsAction({"users": [{"username": "andres"}],
+                             "ai_skills": captured},
+                            ActionContext(target=Target(root=str(tmp_path))))
+    assert replay.plan(managed=[]) == []

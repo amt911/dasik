@@ -43,7 +43,8 @@ from ..command_worker.su_argv import su_argv
 from ..exceptions.exceptions import CommandExecutionError
 from ..upgrade.fingerprint import tree_fingerprint
 from ..logging import run_logger
-from ..models.ai_skills_model import PLUGIN_NAME_RE, opencode_plugin_name
+from ..models.ai_skills_model import (OPENCODE_SPEC_RE, PLUGIN_NAME_RE,
+                                      opencode_plugin_name)
 from ..state.change import Change, Op
 from ..upgrade.steps import UpgradeStep
 
@@ -1190,6 +1191,19 @@ class AiSkillsAction(AbstractAction):
                 found.setdefault((_AGY_METHOD, agy_name, plugin, agy_source),
                                  set()).add(user)
 
+            reason = refusal(home)
+            if reason:
+                # An unreadable config looks like "no plugins"; capturing
+                # nothing is honest, and the reason says why.
+                skipped.append(f"{user}: opencode config ({reason})")
+            else:
+                for spec in sorted(read_plugins(home)):
+                    if not OPENCODE_SPEC_RE.fullmatch(spec):
+                        skipped.append(f"{user}: opencode plugin {spec}")
+                        continue
+                    found.setdefault((_OC_METHOD, opencode_plugin_name(spec),
+                                      spec), set()).add(user)
+
             canonical, per_agent, skill_sources = skills_state(home)
             present = installed_agents(home)
             declared = self._agents_of(user)
@@ -1241,6 +1255,8 @@ class AiSkillsAction(AbstractAction):
             if key[0] == "tool":
                 entry = {"name": key[1], "method": "tool", "command": key[3],
                          "agents": list(key[2])}
+            elif key[0] == _OC_METHOD:
+                entry = {"name": key[1], "method": _OC_METHOD, "source": key[2]}
             elif key[0] == "skills":
                 entry = {"name": key[1], "method": "skills", "source": key[3],
                          "agents": list(key[2])}

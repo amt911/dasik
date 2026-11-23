@@ -271,3 +271,47 @@ def test_captured_block_validates_and_replans_to_nothing(tmp_path):
                              "ai_skills": captured},
                             ActionContext(target=Target(root=str(tmp_path))))
     assert replay.plan(managed=[]) == []
+
+
+# -- CREATE must not let the CLI write into a hand-written opencode.jsonc ----- #
+
+JSONC_TEXT = '{\n  // mine\n  "model": "x",\n}\n'
+
+
+def test_create_makes_opencode_json_before_the_cli_runs(tmp_path):
+    action = _action(tmp_path, [_entry(PJ)], {JSONC_REL: JSONC_TEXT})
+    cfg = tmp_path / "home/andres" / JSON_REL
+    seen = []
+    _calls(action, [Change("ai_skills", Op.CREATE, _item(PJ))],
+           effect=lambda *_a, **_k: seen.append(
+               cfg.read_text() if cfg.exists() else None))
+    assert seen and json.loads(seen[0]) == {
+        "$schema": "https://opencode.ai/config.json"}
+    assert cfg.stat().st_uid == os.getuid()
+
+
+def test_create_leaves_an_existing_opencode_json_untouched(tmp_path):
+    action = _action(tmp_path, [_entry(PJ)],
+                     {JSON_REL: '{"plugins":  ["a@1"]}'})
+    cfg = tmp_path / "home/andres" / JSON_REL
+    os.utime(cfg, (1000, 1000))
+    before = (cfg.read_bytes(), cfg.stat().st_mtime_ns)
+    _calls(action, [Change("ai_skills", Op.CREATE, _item(PJ))])
+    assert (cfg.read_bytes(), cfg.stat().st_mtime_ns) == before
+
+
+def test_create_leaves_opencode_jsonc_byte_identical(tmp_path):
+    action = _action(tmp_path, [_entry(PJ)], {JSONC_REL: JSONC_TEXT})
+    cfg = tmp_path / "home/andres" / JSONC_REL
+    os.utime(cfg, (1000, 1000))
+    _calls(action, [Change("ai_skills", Op.CREATE, _item(PJ))])
+    assert cfg.read_text() == JSONC_TEXT
+    assert cfg.stat().st_mtime_ns == 1000 * 10**9
+
+
+def test_a_failing_json_creation_fails_the_item_and_runs_no_cli(tmp_path):
+    action = _action(tmp_path, [_entry(PJ)])
+    with patch("dasik.lib.actions.ai_skills_action.opencode_edit",
+               side_effect=OpencodeConfigError("nope")):
+        assert _create(action) == []
+    assert action.failed_items == [_item(PJ)]

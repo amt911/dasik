@@ -35,8 +35,8 @@ from .ai_skills_state import (AGENT_SKILL_DIRS, CANONICAL_SKILL_DIR,
                               installed_agents, skill_folder_hash,
                               skills_state)
 from .config_access import field as _field
-from .opencode_config import (JSONC_REL, OpencodeConfigError, read_plugins,
-                              refusal)
+from .opencode_config import (JSON_REL, JSONC_REL, OpencodeConfigError,
+                              read_plugins, refusal)
 from .opencode_config import edit as opencode_edit
 from ..command_worker.command_worker import Command
 from ..command_worker.su_argv import su_argv
@@ -984,15 +984,25 @@ class AiSkillsAction(AbstractAction):
                                spec: Dict[str, Any]) -> None:
         """One opencode plugin change, refused when the config is not safe."""
         item = change.item
-        home_rel = self._passwd_entries().get(spec["user"], (None,))[0]
-        if home_rel is not None:
-            why = refusal(self._abs(home_rel))
+        ids = self._passwd_entries().get(spec["user"])
+        if ids is not None:
+            home = self._abs(ids[0])
+            why = refusal(home)
             if why is not None:
                 self._fail(item, f"ai_skills: {item} refused: {why}")
                 return
         if change.op is Op.DELETE:
             self._remove_opencode_plugin(spec, item)
             return
+        if ids is not None and not os.path.lexists(os.path.join(home, JSON_REL)):
+            # With only a hand-written opencode.jsonc, `plugin add` writes into
+            # it (FACT-OC), changing its checksum and, on removal, dropping its
+            # comments. With opencode.json present the CLI writes there.
+            try:
+                opencode_edit(home, JSON_REL, lambda _data: None, ids[1], ids[2])
+            except (OpencodeConfigError, OSError) as exc:
+                self._fail(item, f"ai_skills: {item} failed: {exc}")
+                return
         for script, args in self._command_for(change, spec):
             if not self._run(spec["user"], script, args, item):
                 return

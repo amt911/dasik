@@ -306,3 +306,53 @@ def test_refusal_names_an_unparseable_file(tmp_path):
 def test_refusal_names_a_non_object_top_level(tmp_path):
     path = _put(tmp_path, JSON_REL, "[1]")
     assert str(path) in oc.refusal(str(tmp_path))
+
+
+def test_edit_refuses_a_hard_linked_file(tmp_path, chowns):
+    path = _put(tmp_path, JSON_REL, "{}")
+    os.link(path, tmp_path / "other-name")
+    with pytest.raises(OpencodeConfigError, match="hard link"):
+        edit(str(tmp_path), JSON_REL, lambda d: d.update(a=1), 1, 1)
+    assert path.read_text() == "{}"
+
+
+def test_edit_keeps_an_existing_files_owner_and_only_a_new_file_gets_the_users(
+        tmp_path, chowns):
+    path = _put(tmp_path, JSON_REL, "{}")
+    st = path.stat()
+    edit(str(tmp_path), JSON_REL, lambda d: d.update(a=1), 4242, 4343)
+    assert [(u, g) for p, u, g in chowns if p.endswith(".tmp")] == [
+        (st.st_uid, st.st_gid)]
+    chowns.clear()
+    edit(str(tmp_path), "n/x.json", lambda d: None, 4242, 4343)
+    assert [(u, g) for p, u, g in chowns if p.endswith(".tmp")] == [(4242, 4343)]
+
+
+def test_edit_fsyncs_the_temp_file_before_the_rename(tmp_path, chowns,
+                                                     monkeypatch):
+    _put(tmp_path, JSON_REL, "{}")
+    monkeypatch.setattr(oc.os, "fsync", lambda fd: chowns.events.append("fsync"))
+    edit(str(tmp_path), JSON_REL, lambda d: d.update(a=1), 1, 1)
+    assert chowns.events == ["fchown", "fsync", "replace"]
+
+
+def test_edit_closes_the_temp_fd_when_fchown_raises(tmp_path, monkeypatch):
+    _put(tmp_path, JSON_REL, "{}")
+    opened = []
+    real_open = os.open
+
+    def spy(path, *a, **k):
+        fd = real_open(path, *a, **k)
+        if str(path).endswith(".tmp"):
+            opened.append(fd)
+        return fd
+
+    def boom(fd, u, g):
+        raise PermissionError("no")
+
+    monkeypatch.setattr(oc.os, "open", spy)
+    monkeypatch.setattr(oc.os, "fchown", boom)
+    with pytest.raises(PermissionError):
+        edit(str(tmp_path), JSON_REL, lambda d: None, 1, 1)
+    with pytest.raises(OSError):
+        os.fstat(opened[0])

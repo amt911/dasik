@@ -284,3 +284,77 @@ def test_captured_block_validates_and_replans_to_nothing(tmp_path):
     McpServersModel(**block)
     again = _act(tmp_path, entries=block["entries"])
     assert again.plan([]) == []
+
+
+# --- review fixes ------------------------------------------------------------ #
+
+def _both(tmp_path):
+    _put(tmp_path, {"mcp": {"servers": {"inkscape_mcp": NESTED}}})
+    _put(tmp_path, {"mcp": {"inkscape_mcp": NESTED}}, "opencode.jsonc")
+
+
+def test_delete_of_a_name_in_both_files_clears_both(tmp_path):
+    _both(tmp_path)
+    action = _act(tmp_path, entries=[])
+    _apply(action, [Change("mcp_servers", Op.DELETE, ITEM)])
+    assert "mcp" not in _load(tmp_path)
+    assert "mcp" not in _load(tmp_path, "opencode.jsonc")
+    assert action._scan() == {}
+    assert action.plan([]) == []
+
+
+def test_delete_with_no_opencode_binary_still_removes_the_entry(tmp_path):
+    _put(tmp_path, {"mcp": {"servers": {"inkscape_mcp": NESTED}}})
+    action = _act(tmp_path, entries=[], binary=False)
+    _apply(action, [Change("mcp_servers", Op.DELETE, ITEM)])
+    assert "mcp" not in _load(tmp_path)
+    assert action.failed_items == []
+
+
+def test_plan_line_names_the_jsonc_for_a_delete(tmp_path):
+    _put(tmp_path, {"mcp": {"inkscape_mcp": NESTED}}, "opencode.jsonc")
+    (change,) = _act(tmp_path, entries=[]).plan([ITEM])
+    assert "in opencode.jsonc — rewritten, comments dropped" in change.render()
+
+
+def test_plan_line_names_the_jsonc_for_a_modify(tmp_path):
+    _put(tmp_path, {"mcp": {"inkscape_mcp": {"type": "local",
+                                             "command": ["old"]}}},
+         "opencode.jsonc")
+    (change,) = _act(tmp_path).plan([])
+    assert change.op is Op.MODIFY
+    assert "in opencode.jsonc — rewritten, comments dropped" in change.render()
+
+
+def test_plan_line_of_a_json_only_delete_does_not_mention_comments(tmp_path):
+    _put(tmp_path, {"mcp": {"servers": {"inkscape_mcp": NESTED}}})
+    (change,) = _act(tmp_path, entries=[]).plan([ITEM])
+    assert "comments" not in change.render()
+
+
+def test_modify_keeps_the_users_other_keys(tmp_path):
+    _put(tmp_path, {"mcp": {"servers": {"inkscape_mcp": {
+        "type": "local", "command": ["old"], "enabled": False, "timeout": 5000,
+        "environment": {"GONE": "1"}}}}})
+    _apply(_act(tmp_path), [Change("mcp_servers", Op.MODIFY, ITEM)])
+    assert _load(tmp_path)["mcp"]["servers"]["inkscape_mcp"] == {
+        **NESTED, "enabled": False, "timeout": 5000}
+
+
+def test_modify_drops_headers_the_declaration_no_longer_has(tmp_path):
+    _put(tmp_path, {"mcp": {"servers": {"r": {
+        "type": "remote", "url": "https://old/mcp", "headers": {"A": "b"},
+        "enabled": False}}}})
+    entry = {"name": "r", "url": "https://new/mcp", "agents": ["opencode"]}
+    _apply(_act(tmp_path, [entry]),
+           [Change("mcp_servers", Op.MODIFY, "andres:opencode:r")])
+    assert _load(tmp_path)["mcp"]["servers"]["r"] == {
+        "type": "remote", "url": "https://new/mcp", "enabled": False}
+
+
+def test_sync_says_why_an_opencode_config_is_not_captured(tmp_path, capsys):
+    (_cfgdir(tmp_path) / "opencode.json").write_text("{ not json")
+    action = _act(tmp_path, entries=[])
+    assert action.import_state()["mcp_servers"] == {}
+    out = capsys.readouterr().out
+    assert "andres" in out and "opencode.json" in out and "not captured" in out

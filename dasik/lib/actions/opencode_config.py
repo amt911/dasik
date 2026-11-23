@@ -20,6 +20,9 @@ SCHEMA_URL = "https://opencode.ai/config.json"
 
 _READ_ORDER = (JSON_REL, JSONC_REL)  # later wins, as in opencode
 
+# What a plan line says about a change that must rewrite opencode.jsonc.
+JSONC_NOTE = "in opencode.jsonc — rewritten, comments dropped"
+
 
 class OpencodeConfigError(Exception):
     """opencode's config cannot be safely read or written."""
@@ -206,7 +209,13 @@ def refusal(home: str) -> Optional[str]:
 
 
 def read_mcp(home: str) -> Dict[str, Found]:
-    found: Dict[str, Found] = {}
+    """Each server once, from the file opencode reads last (jsonc wins)."""
+    return {name: hits[-1] for name, hits in mcp_locations(home).items()}
+
+
+def mcp_locations(home: str) -> Dict[str, List[Found]]:
+    """Every copy of each server, in read order (one name can live in both files)."""
+    found: Dict[str, List[Found]] = {}
     for rel in _READ_ORDER:
         data = _load(home, rel)
         mcp = data.get("mcp") if isinstance(data, dict) else None
@@ -215,11 +224,11 @@ def read_mcp(home: str) -> Dict[str, Found]:
         for name, entry in mcp.items():
             if name == "servers" and isinstance(entry, dict):
                 continue
-            found[name] = Found(rel, False, entry)
+            found.setdefault(name, []).append(Found(rel, False, entry))
         servers = mcp.get("servers")
         if isinstance(servers, dict):
             for name, entry in servers.items():
-                found[name] = Found(rel, True, entry)
+                found.setdefault(name, []).append(Found(rel, True, entry))
     return found
 
 
@@ -256,6 +265,7 @@ def edit(
     dfd = _open_chain(home, rel, uid, gid, create=True)
     try:
         mode = 0o644
+        owner = (uid, gid)  # a NEW file belongs to the user; an old one keeps its owner
         data: Any
         try:
             # O_NONBLOCK: a FIFO at this name must not hang root's open.
@@ -277,7 +287,13 @@ def edit(
                         raise OpencodeConfigError(
                             f"cannot edit {rel}: {path} is not a regular file."
                         )
+                    if st.st_nlink > 1:
+                        raise OpencodeConfigError(
+                            f"cannot edit {rel}: {path} is a hard link "
+                            f"({st.st_nlink} names); a rewrite would break "
+                            "the link, so dasik refuses it.")
                     mode = st.st_mode & 0o7777
+                    owner = (st.st_uid, st.st_gid)
                     text = f.read()
                 data = parse_jsonc(text) if text.strip() else {}
             except (OSError, ValueError) as exc:
@@ -295,11 +311,18 @@ def edit(
             dir_fd=dfd,
         )
         try:
-            os.fchmod(tfd, mode)
-            os.fchown(tfd, uid, gid)
-            with os.fdopen(tfd, "w", encoding="utf-8") as f:
+            try:
+                os.fchmod(tfd, mode)
+                os.fchown(tfd, *owner)
+                f = os.fdopen(tfd, "w", encoding="utf-8")
+            except BaseException:
+                os.close(tfd)
+                raise
+            with f:
                 json.dump(data, f, indent=2)
                 f.write("\n")
+                f.flush()
+                os.fsync(f.fileno())
             os.replace(tmp, base, src_dir_fd=dfd, dst_dir_fd=dfd)
         except BaseException:
             try:

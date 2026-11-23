@@ -24,6 +24,7 @@ import os
 from typing import Any, Dict, List, Optional, Tuple
 
 from .abstract_action import AbstractAction
+from .passwd import passwd_entries
 from .config_access import field as _field
 from .mcp_servers_state import (antigravity_mcp, claude_mcp, codex_mcp,
                                 opencode_mcp)
@@ -129,21 +130,7 @@ class McpServersAction(AbstractAction):
 
     def _passwd_entries(self) -> Dict[str, Tuple[str, int, int]]:
         """``{username: (home, uid, gid)}`` from the TARGET's /etc/passwd."""
-        entries: Dict[str, Tuple[str, int, int]] = {}
-        try:
-            with open(self._abs("/etc/passwd"), "r", encoding="utf-8") as handle:
-                lines = handle.readlines()
-        except OSError:
-            return entries
-        for line in lines:
-            parts = line.rstrip("\n").split(":")
-            if len(parts) < 6:
-                continue
-            try:
-                entries[parts[0]] = (parts[5], int(parts[2]), int(parts[3]))
-            except ValueError:
-                continue
-        return entries
+        return passwd_entries(self._abs("/etc/passwd"))
 
     def _passwd(self) -> Dict[str, str]:
         return {user: home for user, (home, _uid, _gid) in self._passwd_entries().items()}

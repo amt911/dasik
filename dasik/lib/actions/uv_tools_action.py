@@ -24,6 +24,7 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from .abstract_action import AbstractAction
+from .passwd import passwd_entries
 from .config_access import field as _field
 from ..command_worker.command_worker import Command
 from ..command_worker.su_argv import su_argv
@@ -132,21 +133,8 @@ class UvToolsAction(AbstractAction):
         return target.path(canonical) if target is not None else "/mnt" + canonical
 
     def _passwd_entries(self) -> Dict[str, Tuple[str, int]]:
-        entries: Dict[str, Tuple[str, int]] = {}
-        try:
-            with open(self._abs("/etc/passwd"), "r", encoding="utf-8") as handle:
-                lines = handle.readlines()
-        except OSError:
-            return entries
-        for line in lines:
-            parts = line.rstrip("\n").split(":")
-            if len(parts) < 6:
-                continue
-            try:
-                entries[parts[0]] = (parts[5], int(parts[2]))
-            except ValueError:
-                continue
-        return entries
+        return {user: (home, uid) for user, (home, uid, _gid)
+                in passwd_entries(self._abs("/etc/passwd")).items()}
 
     def _home_of(self, user: str) -> str:
         entry = self._passwd_entries().get(user)

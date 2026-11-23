@@ -27,6 +27,7 @@ from functools import partial
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .abstract_action import AbstractAction
+from .passwd import passwd_entries
 from .ai_skills_state import (AGENT_SKILL_DIRS, CANONICAL_SKILL_DIR,
                               antigravity_plugins,
                               carries_skill, claude_plugin_commit,
@@ -171,21 +172,7 @@ class AiSkillsAction(AbstractAction):
 
     def _passwd_entries(self) -> Dict[str, Tuple[str, int, int]]:
         """``{username: (home, uid, gid)}`` from the TARGET's /etc/passwd."""
-        entries: Dict[str, Tuple[str, int, int]] = {}
-        try:
-            with open(self._abs("/etc/passwd"), "r", encoding="utf-8") as handle:
-                lines = handle.readlines()
-        except OSError:
-            return entries
-        for line in lines:
-            parts = line.rstrip("\n").split(":")
-            if len(parts) < 6:
-                continue
-            try:
-                entries[parts[0]] = (parts[5], int(parts[2]), int(parts[3]))
-            except ValueError:
-                continue
-        return entries
+        return passwd_entries(self._abs("/etc/passwd"))
 
     def _home_of(self, user: str, homes: Dict[str, str]) -> str:
         """Where the machine says *user* lives, or where useradd would put them.

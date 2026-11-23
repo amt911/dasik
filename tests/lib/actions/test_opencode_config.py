@@ -83,8 +83,28 @@ def test_read_plugins_takes_both_keys_and_skips_non_strings(tmp_path):
 
 @pytest.fixture
 def chowns(monkeypatch):
-    calls = []
-    monkeypatch.setattr(oc.os, "chown", lambda p, u, g: calls.append((str(p), u, g)))
+    """Record (what, uid, gid, events-so-far); chown by path must never run."""
+    class Calls(list):
+        events: list = []
+
+    calls = Calls()
+    events = calls.events = []
+
+    def fchown(fd, u, g):
+        calls.append((os.readlink(f"/proc/self/fd/{fd}"), u, g))
+        events.append("fchown")
+
+    def replace(*a, **k):
+        events.append("replace")
+        return real_replace(*a, **k)
+
+    def chown(*a, **k):
+        raise AssertionError(f"chown by path: {a}")
+
+    real_replace = os.replace
+    monkeypatch.setattr(oc.os, "fchown", fchown)
+    monkeypatch.setattr(oc.os, "chown", chown)
+    monkeypatch.setattr(oc.os, "replace", replace)
     return calls
 
 
@@ -92,14 +112,18 @@ def test_edit_creates_json_with_schema_owned_by_user(tmp_path, chowns):
     edit(str(tmp_path), JSON_REL, lambda d: d.setdefault("mcp", {}), 1000, 1001)
     data = json.loads((tmp_path / JSON_REL).read_text())
     assert data == {"$schema": SCHEMA_URL, "mcp": {}}
-    paths = {p for p, _, _ in chowns}
-    assert paths == {
-        str(tmp_path / ".config"),
-        str(tmp_path / ".config/opencode"),
-        str(tmp_path / JSON_REL),
-    }
+    paths = [p for p, _, _ in chowns]
+    assert str(tmp_path / ".config") in paths
+    assert str(tmp_path / ".config/opencode") in paths
+    assert len(paths) == 3  # two directories and the temp file
     assert all((u, g) == (1000, 1001) for _, u, g in chowns)
     assert stat.S_IMODE((tmp_path / JSON_REL).stat().st_mode) == 0o644
+
+
+def test_edit_chowns_the_file_before_the_rename_never_after(tmp_path, chowns):
+    _put(tmp_path, JSON_REL, "{}")
+    edit(str(tmp_path), JSON_REL, lambda d: d.update(a=1), 5, 6)
+    assert chowns.events == ["fchown", "replace"]
 
 
 def test_edit_preserves_mode_and_other_keys(tmp_path, chowns):
@@ -164,3 +188,50 @@ def test_edit_refuses_a_non_dict_top_level(tmp_path, chowns):
     with pytest.raises(OpencodeConfigError):
         edit(str(tmp_path), JSON_REL, lambda d: None, 1, 1)
     assert path.read_text() == "[1]"
+
+
+def test_edit_treats_a_blank_file_as_empty_without_schema(tmp_path, chowns):
+    path = _put(tmp_path, JSON_REL, "  \n")
+    edit(str(tmp_path), JSON_REL, lambda d: d.update(a=1), 1, 1)
+    assert json.loads(path.read_text()) == {"a": 1}
+
+
+def test_readers_ignore_a_symlinked_file(tmp_path):
+    outside = tmp_path / "outside.json"
+    outside.write_text(json.dumps({"mcp": {"x": {}}, "plugin": ["p@1"]}))
+    home = tmp_path / "home"
+    (home / ".config/opencode").mkdir(parents=True)
+    (home / JSON_REL).symlink_to(outside)
+    assert read_mcp(str(home)) == {}
+    assert read_plugins(str(home)) == {}
+
+
+def test_readers_ignore_a_symlinked_parent(tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "opencode.json").write_text(json.dumps({"mcp": {"x": {}}, "plugin": ["p@1"]}))
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / ".config").symlink_to(outside.parent / "outside")
+    (outside / "opencode").mkdir()
+    (outside / "opencode/opencode.json").write_text(json.dumps({"mcp": {"x": {}}}))
+    assert read_mcp(str(home)) == {}
+
+
+def test_edit_does_not_follow_a_parent_swapped_after_the_check(tmp_path, chowns, monkeypatch):
+    """The chain is held by fd: a swap after it is opened cannot redirect us."""
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    real_open_chain = oc._open_chain
+
+    def swap_after(*a, **k):
+        fd = real_open_chain(*a, **k)
+        d = tmp_path / ".config/opencode"
+        d.rename(tmp_path / ".config/moved")
+        d.symlink_to(elsewhere)
+        return fd
+
+    monkeypatch.setattr(oc, "_open_chain", swap_after)
+    edit(str(tmp_path), JSON_REL, lambda d: d.update(a=1), 1, 1)
+    assert list(elsewhere.iterdir()) == []
+    assert (tmp_path / ".config/moved/opencode.json").exists()

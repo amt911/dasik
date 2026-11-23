@@ -7,9 +7,10 @@ the new ``plugins`` one. This module is the single reader/writer of that
 config; it is pure file IO, with no subprocess.
 """
 
+import errno
 import json
 import os
-import tempfile
+import stat
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List
 
@@ -98,13 +99,76 @@ def parse_jsonc(text: str) -> Any:
     return json.loads(_strip_trailing_commas(_strip_comments(text)))
 
 
-def _load(home: str, rel: str) -> Any:
-    """The parsed file, or None when missing or unparseable."""
+def _open_dir(parent_fd: int, name: str, rel: str) -> int:
+    """Open a subdirectory refusing a link; OpencodeConfigError otherwise."""
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
     try:
-        with open(os.path.join(home, rel), encoding="utf-8") as f:
-            return parse_jsonc(f.read())
+        return os.open(name, flags, dir_fd=parent_fd)
+    except OSError as exc:
+        try:
+            is_link = stat.S_ISLNK(
+                os.stat(name, dir_fd=parent_fd, follow_symlinks=False).st_mode
+            )
+        except OSError:
+            is_link = False
+        if is_link:
+            raise OpencodeConfigError(
+                f"cannot use {rel}: {name} is a symlink, and dasik will not "
+                "follow a directory somebody redirected."
+            ) from exc
+        if exc.errno == errno.ENOTDIR:
+            raise OpencodeConfigError(
+                f"cannot use {rel}: {name} exists and is not a directory."
+            ) from exc
+        raise
+
+
+def _open_chain(home: str, rel: str, uid: int = -1, gid: int = -1,
+                create: bool = False) -> int:
+    """fd of the directory holding ``rel``, walked without following links.
+
+    Every later stat/read/write goes through this fd, so swapping a component
+    for a link after the check cannot redirect us. With ``create``, missing
+    directories are made and chowned through their own fd (never by path).
+    """
+    fd = os.open(home, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        for name in rel.split("/")[:-1]:
+            try:
+                nxt = _open_dir(fd, name, rel)
+            except FileNotFoundError:
+                if not create:
+                    raise
+                os.mkdir(name, 0o755, dir_fd=fd)
+                nxt = _open_dir(fd, name, rel)
+                os.fchown(nxt, uid, gid)
+            os.close(fd)
+            fd = nxt
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _read_file(dir_fd: int, base: str) -> str:
+    """Read ``base`` in dir_fd, refusing a symlink (OSError ELOOP)."""
+    fd = os.open(base, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=dir_fd)
+    with os.fdopen(fd, encoding="utf-8") as f:
+        return f.read()
+
+
+def _load(home: str, rel: str) -> Any:
+    """The parsed file, or None when missing, linked, or unparseable."""
+    try:
+        dfd = _open_chain(home, rel)
+    except (OSError, OpencodeConfigError):
+        return None
+    try:
+        return parse_jsonc(_read_file(dfd, os.path.basename(rel)))
     except (OSError, ValueError):
         return None
+    finally:
+        os.close(dfd)
 
 
 def read_mcp(home: str) -> Dict[str, Found]:
@@ -141,37 +205,6 @@ def read_plugins(home: str) -> Dict[str, Found]:
     return found
 
 
-def _components(home: str, rel: str) -> List[str]:
-    """Every path from the first directory under home down to the file."""
-    parts = rel.split("/")
-    return [os.path.join(home, *parts[: i + 1]) for i in range(len(parts))]
-
-
-def _check_chain(home: str, rel: str) -> List[str]:
-    """Refuse links and non-directories on the way; return missing dirs."""
-    chain = _components(home, rel)
-    missing: List[str] = []
-    for path in chain[:-1]:
-        if os.path.islink(path):
-            raise OpencodeConfigError(
-                f"cannot edit {rel}: {path} is a symlink, and dasik will not "
-                "write into a directory somebody redirected."
-            )
-        if os.path.exists(path):
-            if not os.path.isdir(path):
-                raise OpencodeConfigError(
-                    f"cannot edit {rel}: {path} exists and is not a directory."
-                )
-        else:
-            missing.append(path)
-    if os.path.islink(chain[-1]):
-        raise OpencodeConfigError(
-            f"cannot edit {rel}: it is a symlink, and dasik will not write "
-            "through it."
-        )
-    return missing
-
-
 def edit(
     home: str, rel: str, mutate: Callable[[dict], None], uid: int, gid: int
 ) -> None:
@@ -179,41 +212,58 @@ def edit(
 
     Missing directories and a new file are created owned by (uid, gid); a new
     file starts as ``{"$schema": ...}`` at 0644, an existing one keeps its mode.
+    Runs as root inside a directory the user owns, so nothing is resolved by
+    path twice: the directory chain is opened with O_NOFOLLOW, the file is read
+    and the temp file created relative to that directory fd, and ownership is
+    set on the temp file's fd BEFORE the rename (never chown by path).
     """
+    base = os.path.basename(rel)
     path = os.path.join(home, rel)
-    missing = _check_chain(home, rel)
-
-    mode = 0o644
-    data: Any
-    if os.path.exists(path):
-        mode = os.stat(path).st_mode & 0o7777
-        try:
-            with open(path, encoding="utf-8") as f:
-                text = f.read()
-            data = parse_jsonc(text) if text.strip() else {}
-        except (OSError, ValueError) as exc:
-            raise OpencodeConfigError(f"cannot parse {path}: {exc}") from exc
-        if not isinstance(data, dict):
-            raise OpencodeConfigError(f"{path}: top level is not an object")
-    else:
-        data = {"$schema": SCHEMA_URL}
-
-    mutate(data)
-
-    directory = os.path.dirname(path)
-    os.makedirs(directory, exist_ok=True)
-    for created in missing:
-        os.chown(created, uid, gid)
-
-    fd, tmp = tempfile.mkstemp(dir=directory, prefix=".opencode-", suffix=".tmp")
+    dfd = _open_chain(home, rel, uid, gid, create=True)
     try:
-        os.fchmod(fd, mode)
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
-            f.write("\n")
-        os.replace(tmp, path)
-    except BaseException:
-        if os.path.exists(tmp):
-            os.remove(tmp)
-        raise
-    os.chown(path, uid, gid)
+        mode = 0o644
+        data: Any
+        try:
+            rfd = os.open(base, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=dfd)
+        except FileNotFoundError:
+            data = {"$schema": SCHEMA_URL}
+        except OSError as exc:
+            raise OpencodeConfigError(
+                f"cannot edit {rel}: {base} is a symlink (or unreadable), and "
+                f"dasik will not write through it: {exc}"
+            ) from exc
+        else:
+            with os.fdopen(rfd, encoding="utf-8") as f:
+                mode = os.fstat(f.fileno()).st_mode & 0o7777
+                text = f.read()
+            try:
+                data = parse_jsonc(text) if text.strip() else {}
+            except ValueError as exc:
+                raise OpencodeConfigError(f"cannot parse {path}: {exc}") from exc
+            if not isinstance(data, dict):
+                raise OpencodeConfigError(f"{path}: top level is not an object")
+
+        mutate(data)
+
+        tmp = f".opencode-{os.urandom(6).hex()}.tmp"
+        tfd = os.open(
+            tmp,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            0o600,
+            dir_fd=dfd,
+        )
+        try:
+            os.fchmod(tfd, mode)
+            os.fchown(tfd, uid, gid)
+            with os.fdopen(tfd, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+                f.write("\n")
+            os.replace(tmp, base, src_dir_fd=dfd, dst_dir_fd=dfd)
+        except BaseException:
+            try:
+                os.remove(tmp, dir_fd=dfd)
+            except OSError:
+                pass
+            raise
+    finally:
+        os.close(dfd)

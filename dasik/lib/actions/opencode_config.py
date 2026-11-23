@@ -12,7 +12,7 @@ import json
 import os
 import stat
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List
+from typing import Any, Callable, Dict, List, Optional
 
 JSON_REL = ".config/opencode/opencode.json"
 JSONC_REL = ".config/opencode/opencode.jsonc"
@@ -171,6 +171,38 @@ def _load(home: str, rel: str) -> Any:
         return None
     finally:
         os.close(dfd)
+
+
+def refusal(home: str) -> Optional[str]:
+    """Why dasik cannot trust opencode's config under ``home``, or None.
+
+    The readers treat a link or an unparseable file as absent, which would make
+    a plugin look uninstalled for ever. None means each config file is absent
+    or a readable regular file, reached without a link, holding an object.
+    """
+    for rel in _READ_ORDER:
+        path = os.path.join(home, rel)
+        try:
+            dfd = _open_chain(home, rel)
+        except FileNotFoundError:
+            continue
+        except OpencodeConfigError as exc:
+            return str(exc)
+        except OSError as exc:
+            return f"cannot read {path}: {exc}"
+        try:
+            text = _read_file(dfd, os.path.basename(rel))
+            data = parse_jsonc(text) if text.strip() else {}
+        except FileNotFoundError:
+            continue
+        except (OSError, ValueError) as exc:
+            return (f"cannot read {path} (a symlink, not a regular file, or "
+                    f"not valid JSON): {exc}")
+        finally:
+            os.close(dfd)
+        if not isinstance(data, dict):
+            return f"{path}: top level is not an object"
+    return None
 
 
 def read_mcp(home: str) -> Dict[str, Found]:

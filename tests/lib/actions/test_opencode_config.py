@@ -267,3 +267,42 @@ def test_readers_ignore_a_fifo_and_a_directory(tmp_path):
     (tmp_path / JSONC_REL).mkdir()
     assert read_mcp(str(tmp_path)) == {}
     assert read_plugins(str(tmp_path)) == {}
+
+
+def test_refusal_is_none_for_absent_and_for_readable_objects(tmp_path):
+    assert oc.refusal(str(tmp_path)) is None
+    _put(tmp_path, JSON_REL, '{"plugins": []}')
+    _put(tmp_path, JSONC_REL, '{\n // c\n "plugin": ["a",],\n}')
+    assert oc.refusal(str(tmp_path)) is None
+
+
+def test_refusal_names_a_symlinked_file(tmp_path):
+    real = _put(tmp_path, "real.json", "{}")
+    link = tmp_path / JSON_REL
+    link.parent.mkdir(parents=True)
+    link.symlink_to(real)
+    assert str(link) in oc.refusal(str(tmp_path))
+
+
+def test_refusal_names_a_symlinked_parent(tmp_path):
+    (tmp_path / "elsewhere").mkdir()
+    (tmp_path / ".config").mkdir()
+    (tmp_path / ".config/opencode").symlink_to(tmp_path / "elsewhere")
+    assert ".config/opencode" in oc.refusal(str(tmp_path))
+
+
+def test_refusal_names_a_non_regular_file(tmp_path):
+    path = tmp_path / JSONC_REL
+    path.parent.mkdir(parents=True)
+    path.mkdir()
+    assert str(path) in oc.refusal(str(tmp_path))
+
+
+def test_refusal_names_an_unparseable_file(tmp_path):
+    path = _put(tmp_path, JSONC_REL, "{nope")
+    assert str(path) in oc.refusal(str(tmp_path))
+
+
+def test_refusal_names_a_non_object_top_level(tmp_path):
+    path = _put(tmp_path, JSON_REL, "[1]")
+    assert str(path) in oc.refusal(str(tmp_path))

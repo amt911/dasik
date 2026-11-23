@@ -35,7 +35,8 @@ from .ai_skills_state import (AGENT_SKILL_DIRS, CANONICAL_SKILL_DIR,
                               installed_agents, skill_folder_hash,
                               skills_state)
 from .config_access import field as _field
-from .opencode_config import JSONC_REL, OpencodeConfigError, read_plugins
+from .opencode_config import (JSONC_REL, OpencodeConfigError, read_plugins,
+                              refusal)
 from .opencode_config import edit as opencode_edit
 from ..command_worker.command_worker import Command
 from ..command_worker.su_argv import su_argv
@@ -754,6 +755,12 @@ class AiSkillsAction(AbstractAction):
                             skip="catalog managed by codex" if present
                             else "not installed — run dasik apply"))
                         continue
+            if (present and spec["kind"] == "plugin"
+                    and spec["agent"] == _OC_AGENT):
+                steps.append(UpgradeStep(
+                    _DOMAIN, item, user,
+                    skip="opencode has no update step in dasik yet"))
+                continue
             if not present:
                 steps.append(UpgradeStep(_DOMAIN, item, user,
                                          skip="not installed — run dasik apply"))
@@ -943,9 +950,8 @@ class AiSkillsAction(AbstractAction):
                                         "not a plain plugin name")
                 continue
             if spec["kind"] == "plugin" and spec["agent"] == _OC_AGENT:
-                if change.op is Op.DELETE:
-                    self._remove_opencode_plugin(spec, change.item)
-                    continue
+                self._apply_opencode_plugin(change, spec)
+                continue
             completed = True
             for script, args in self._command_for(change, spec):
                 if not self._run(spec["user"], script, args, change.item):
@@ -972,6 +978,23 @@ class AiSkillsAction(AbstractAction):
         else:
             spec.update(name=value, source=None)
         return spec
+
+    def _apply_opencode_plugin(self, change: Change,
+                               spec: Dict[str, Any]) -> None:
+        """One opencode plugin change, refused when the config is not safe."""
+        item = change.item
+        home_rel = self._passwd_entries().get(spec["user"], (None,))[0]
+        if home_rel is not None:
+            why = refusal(self._abs(home_rel))
+            if why is not None:
+                self._fail(item, f"ai_skills: {item} refused: {why}")
+                return
+        if change.op is Op.DELETE:
+            self._remove_opencode_plugin(spec, item)
+            return
+        for script, args in self._command_for(change, spec):
+            if not self._run(spec["user"], script, args, item):
+                return
 
     def _remove_opencode_plugin(self, spec: Dict[str, Any], item: str) -> None:
         """Take one specifier out of every file opencode reads it from.
@@ -1001,7 +1024,7 @@ class AiSkillsAction(AbstractAction):
             for _ in range(2):
                 found = read_plugins(home).get(source)
                 if found is None:
-                    return
+                    break
                 if found.rel == JSONC_REL:
                     opencode_edit(home, found.rel, drop, uid, gid)
                     continue
@@ -1012,7 +1035,10 @@ class AiSkillsAction(AbstractAction):
                     Change(_DOMAIN, Op.DELETE, item), spec)[0]
                 if not self._run(user, script, args, item):
                     return
-            if source in read_plugins(home):
+            why = refusal(home)
+            if why is not None:
+                self._fail(item, f"ai_skills: {item} refused: {why}")
+            elif source in read_plugins(home):
                 self._fail(item, f"ai_skills: {item} is still in opencode's "
                                  "config after the removal; dasik did not "
                                  "remove it, so it stays owned")

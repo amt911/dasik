@@ -170,3 +170,57 @@ def test_the_item_survives_a_source_with_colons():
     spec = AiSkillsAction._spec_from_item(_item(GIT))
     assert spec["agent"] == "opencode" and spec["source"] == GIT
     assert spec["name"] == "foo" and spec["method"] == "opencode-plugin"
+
+
+# -- upgrade ---------------------------------------------------------------- #
+
+def test_upgrade_skips_an_installed_opencode_plugin_instead_of_refreshing(tmp_path):
+    action = _action(tmp_path, [_entry(PJ)], {JSON_REL: _json(plugins=[PJ])})
+    (step,) = action.upgrade_steps()
+    assert step.skip == "opencode has no update step in dasik yet"
+    assert not step.commands
+
+
+def test_upgrade_of_a_missing_opencode_plugin_says_not_installed(tmp_path):
+    (step,) = _action(tmp_path, [_entry(PJ)]).upgrade_steps()
+    assert step.skip.startswith("not installed")
+
+
+# -- a config dasik cannot trust ---------------------------------------------- #
+
+def _create(action):
+    return _calls(action, [Change("ai_skills", Op.CREATE, _item(PJ))])
+
+
+def test_create_is_refused_when_opencode_json_is_a_symlink(tmp_path, capsys):
+    action = _action(tmp_path, [_entry(PJ)])
+    target = tmp_path / "real.json"
+    target.write_text(_json(plugins=[PJ]))
+    cfg = tmp_path / "home/andres" / JSON_REL
+    cfg.parent.mkdir(parents=True)
+    cfg.symlink_to(target)
+    assert _create(action) == []
+    assert action.failed_items == [_item(PJ)]
+    assert str(cfg) in capsys.readouterr().out
+
+
+def test_create_is_refused_when_opencode_json_does_not_parse(tmp_path, capsys):
+    action = _action(tmp_path, [_entry(PJ)], {JSON_REL: "{nope"})
+    assert _create(action) == []
+    assert action.failed_items == [_item(PJ)]
+    assert JSON_REL in capsys.readouterr().out
+
+
+def test_delete_fails_when_the_file_became_a_link_after_the_cli_ran(tmp_path):
+    action = _action(tmp_path, [], {JSON_REL: _json(plugins=[PJ])})
+    cfg = tmp_path / "home/andres" / JSON_REL
+
+    def cli_swaps_for_a_link(*_a, **_k):
+        real = tmp_path / "real.json"
+        real.write_text(_json(plugins=[PJ]))
+        cfg.unlink()
+        cfg.symlink_to(real)
+
+    _calls(action, [Change("ai_skills", Op.DELETE, _item(PJ))],
+           effect=cli_swaps_for_a_link)
+    assert action.failed_items == [_item(PJ)]

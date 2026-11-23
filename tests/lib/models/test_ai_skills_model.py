@@ -203,3 +203,80 @@ def test_the_other_methods_reject_a_command():
         _model(entries=[{"name": "impeccable", "method": "skills",
                          "source": "pbakaus/impeccable", "agents": ["codex"],
                          "command": "impeccable"}])
+
+
+# --- opencode-plugin ---------------------------------------------------------
+
+def _oc(**over):
+    entry = {"name": "pj", "method": "opencode-plugin", "source": "pj"}
+    entry.update(over)
+    return AiSkillsModel(entries=[entry]).entries[0]
+
+
+def test_opencode_plugin_needs_source():
+    with pytest.raises(ValidationError, match="requires `source`"):
+        AiSkillsModel(entries=[{"name": "pj", "method": "opencode-plugin"}])
+
+
+@pytest.mark.parametrize("spec", ["pj", "pj@1.0.0"])
+def test_opencode_plugin_accepts_npm_specs(spec):
+    assert _oc(source=spec).source == spec
+
+
+def test_opencode_plugin_accepts_the_real_git_spec():
+    entry = _oc(name="superpowers",
+                source="superpowers@git+https://github.com/obra/superpowers.git")
+    assert entry.plugin == "superpowers"
+
+
+@pytest.mark.parametrize("spec", ["-x", "@scope/pkg", "file:../p", "pj@1\n",
+                                  "../p", "pj@", "pj@a b"])
+def test_opencode_plugin_rejects_bad_specs(spec):
+    with pytest.raises(ValidationError):
+        _oc(source=spec)
+
+
+def test_opencode_plugin_name_must_match_source():
+    with pytest.raises(ValidationError, match="name"):
+        _oc(name="other", source="pj@1")
+
+
+def test_opencode_plugin_name_helper():
+    from dasik.lib.models.ai_skills_model import opencode_plugin_name
+    assert opencode_plugin_name("pj") == "pj"
+    assert opencode_plugin_name("pj@1.0@x") == "pj"
+
+
+def test_opencode_plugin_takes_no_marketplace_or_agents():
+    with pytest.raises(ValidationError, match="marketplace"):
+        _oc(marketplace={"name": "m"})
+    with pytest.raises(ValidationError, match="agents"):
+        _oc(agents=["opencode"])
+
+
+def test_agent_ids_of_opencode_plugin():
+    assert _oc().agent_ids == ["opencode"]
+
+
+@pytest.mark.parametrize("spec", ["pj@file:x", "pj@npm:x", "pj@github:o/r",
+                                  "pj@git+ssh://h/x"])
+def test_opencode_plugin_rejects_resolver_prefixes(spec):
+    with pytest.raises(ValidationError):
+        _oc(source=spec)
+
+
+@pytest.mark.parametrize("spec", ["pj", "pj@1.0.0", "pj@^1.2.3", "pj@latest",
+                                  "superpowers@git+https://github.com/obra/"
+                                  "superpowers.git"])
+def test_opencode_plugin_regex_accepts(spec):
+    from dasik.lib.models.ai_skills_model import (OPENCODE_SPEC_RE,
+                                                  opencode_plugin_name)
+    assert OPENCODE_SPEC_RE.fullmatch(spec)
+    assert _oc(name=opencode_plugin_name(spec), source=spec)
+
+
+@pytest.mark.parametrize("spec", ["-x", "@scope/pkg", "file:../p", "pj@file:x",
+                                  "pj@git+ssh://h/x", "pj@1\n"])
+def test_opencode_spec_regex_alone_rejects(spec):
+    from dasik.lib.models.ai_skills_model import OPENCODE_SPEC_RE
+    assert OPENCODE_SPEC_RE.fullmatch(spec) is None

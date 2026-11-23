@@ -246,16 +246,16 @@ so the two never fight over alternating applies.
 Each entry names the artefact **and the official installer for that pair**,
 because there is no single one: `claude-plugin` and `codex-plugin` drive each
 agent's plugin CLI, `antigravity-plugin` clones a repository and runs `agy plugin
-install` on it, `skills` drives the cross-agent `npx skills`, and `tool` is for a
+install` on it, `opencode-plugin` runs `opencode plugin add`, `skills` drives the cross-agent `npx skills`, and `tool` is for a
 skill a program ships itself (`graphify install --platform claude`).
 
 | Key | Type | Default | Notes |
 | --- | --- | --- | --- |
 | `users` | list of strings | every declared user except root | these live in `$HOME` |
 | `failure_policy` | `warn-and-continue` \| `abort` | `warn-and-continue` | a skill that will not download must not abort an install |
-| `entries[].method` | one of the five | — | which installer to drive |
+| `entries[].method` | one of the six | — | which installer to drive |
 | `entries[].marketplace` | `{name, source?}` | — | plugin methods; `name` is the one the marketplace's manifest declares (`obra/superpowers` registers as `superpowers-dev`) |
-| `entries[].source` | string | — | `skills`: what `npx skills add` installs from; `antigravity-plugin`: `owner/repo` or `https://` URL dasik clones (needs `antigravity-cli` and `git`) |
+| `entries[].source` | string | — | `skills`: what `npx skills add` installs from; `antigravity-plugin`: `owner/repo` or `https://` URL dasik clones (needs `antigravity-cli` and `git`); `opencode-plugin`: npm name with optional version (`pj@1.0.0`) or `name@git+https://…` (no scoped, `file:`, `npm:`, `github:`) |
 | `entries[].command` | string | — | `tool`: the program, run as `<command> install --platform <agent>` |
 | `entries[].agents` | list of strings | — | `skills`/`tool`: `claude-code`, `codex`, `opencode`, `cursor`, `antigravity`, `antigravity-cli` |
 
@@ -277,7 +277,7 @@ origin nothing records, since no other machine could reproduce it.
 ```
 
 Registered with each agent's own CLI (`claude mcp add -s user`, `codex mcp
-add`, `agy mcp add`), never by writing the files: `~/.claude.json`,
+add`, `agy mcp add`), never by writing the files — except opencode, whose servers dasik writes into `opencode.json`: `~/.claude.json`,
 `~/.codex/config.toml` and `~/.gemini/config/mcp_config.json` are the programs' own state — account material, per-project history, hook
 hashes — and owning them as files would delete it.
 
@@ -285,11 +285,15 @@ hashes — and owning them as files would delete it.
 | --- | --- | --- | --- |
 | `users` | list of strings | every declared user except root | the registration lives in `$HOME` |
 | `failure_policy` | `warn-and-continue` \| `abort` | `warn-and-continue` | an agent that is not installed must not abort an install |
-| `entries[].agents` | list of strings | — | `claude-code`, `codex`, `antigravity` |
+| `entries[].agents` | list of strings | — | `claude-code`, `codex`, `antigravity`, `opencode` |
 | `entries[].command` + `args` + `env` | string, list, object | — | stdio transport |
 | `entries[].url` | string | — | http transport; excludes `command` |
-| `entries[].headers` | object | `{}` | `url` + claude-code / antigravity only |
+| `entries[].headers` | object | `{}` | `url` + claude-code / antigravity / opencode only |
 | `entries[].bearer_token_env_var` | string | — | `url` + codex only |
+
+`opencode` is written by dasik itself into `~/.config/opencode/opencode.json`
+(`mcp.servers.<name>`), so `opencode` must be installed. `opencode.jsonc` is only
+rewritten to remove or move something that lives there, which drops its comments.
 
 An option only one CLI understands must name that agent alone — otherwise the
 plan promises a registration that arrives without it. Only Claude Code's **user

@@ -36,6 +36,7 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from .abstract_action import AbstractAction
+from .passwd import passwd_entries
 from ..command_worker.command_worker import Command
 from ..exceptions.exceptions import CommandExecutionError
 from ..logging import run_logger
@@ -90,21 +91,7 @@ class ConfigSaverAction(AbstractAction):
         return t.path(canonical) if t is not None else "/mnt" + canonical
 
     def _passwd(self) -> Dict[str, Tuple[str, int, int]]:
-        out: Dict[str, Tuple[str, int, int]] = {}
-        try:
-            with open(self._p("/etc/passwd"), "r", encoding="utf-8") as f:
-                lines = f.readlines()
-        except OSError:
-            return out
-        for line in lines:
-            parts = line.rstrip("\n").split(":")
-            if len(parts) < 6:
-                continue
-            try:
-                out[parts[0]] = (parts[5], int(parts[2]), int(parts[3]))
-            except ValueError:
-                continue
-        return out
+        return passwd_entries(self._p("/etc/passwd"))
 
     # -- restore state -------------------------------------------------------- #
 

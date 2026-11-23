@@ -1,0 +1,358 @@
+"""opencode's global config: read both files, write one, never through a link."""
+
+import json
+import os
+import stat
+
+import pytest
+
+from dasik.lib.actions import opencode_config as oc
+from dasik.lib.actions.opencode_config import (
+    JSON_REL,
+    JSONC_REL,
+    SCHEMA_URL,
+    OpencodeConfigError,
+    edit,
+    parse_jsonc,
+    read_mcp,
+    read_plugins,
+)
+
+
+def _put(home, rel, text):
+    path = home / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+    return path
+
+
+def test_parse_jsonc_strips_comments_but_not_inside_strings():
+    text = '{\n // c\n "u": "http://x//y", /* b */ "a": [1,2,],\n}'
+    assert parse_jsonc(text) == {"u": "http://x//y", "a": [1, 2]}
+
+
+def test_parse_jsonc_keeps_escaped_quote_and_comment_lookalikes():
+    text = r'{"a": "q\" // not /* a comment */", "b": "x,]"}'
+    assert parse_jsonc(text) == {"a": 'q" // not /* a comment */', "b": "x,]"}
+
+
+def test_parse_jsonc_rejects_garbage():
+    with pytest.raises(ValueError):
+        parse_jsonc("{nope")
+
+
+def test_read_mcp_unions_both_files_and_both_shapes(tmp_path):
+    home = tmp_path
+    _put(home, JSON_REL, json.dumps({"mcp": {"a": {"type": "local"}, "servers": {"b": {"x": 1}}}}))
+    _put(home, JSONC_REL, '{\n // note\n "mcp": {"c": {"type": "remote"}}\n}')
+    found = read_mcp(str(home))
+    assert set(found) == {"a", "b", "c"}
+    assert found["b"].nested and found["b"].rel == JSON_REL
+    assert not found["a"].nested and found["a"].rel == JSON_REL
+    assert found["c"].rel == JSONC_REL
+    assert found["b"].entry == {"x": 1}
+
+
+def test_jsonc_wins_a_name_clash(tmp_path):
+    _put(tmp_path, JSON_REL, json.dumps({"mcp": {"a": {"v": 1}}}))
+    _put(tmp_path, JSONC_REL, json.dumps({"mcp": {"servers": {"a": {"v": 2}}}}))
+    found = read_mcp(str(tmp_path))
+    assert found["a"].rel == JSONC_REL and found["a"].entry == {"v": 2}
+
+
+def test_missing_or_broken_files_read_as_nothing(tmp_path):
+    empty = tmp_path / "e"
+    empty.mkdir()
+    broken = tmp_path / "b"
+    _put(broken, JSON_REL, "{nope")
+    _put(broken, JSONC_REL, "[1]")
+    assert read_mcp(str(empty)) == {}
+    assert read_plugins(str(broken)) == {}
+    assert read_mcp(str(broken)) == {}
+
+
+def test_read_plugins_takes_both_keys_and_skips_non_strings(tmp_path):
+    spec = "superpowers@git+https://github.com/obra/superpowers.git"
+    _put(tmp_path, JSONC_REL, json.dumps({"plugin": [spec, ["x", {}]]}))
+    _put(tmp_path, JSON_REL, json.dumps({"plugins": ["pj@1.0.0"]}))
+    found = read_plugins(str(tmp_path))
+    assert set(found) == {spec, "pj@1.0.0"}
+    assert found["pj@1.0.0"].nested and found["pj@1.0.0"].rel == JSON_REL
+    assert not found[spec].nested and found[spec].rel == JSONC_REL
+
+
+@pytest.fixture
+def chowns(monkeypatch):
+    """Record (what, uid, gid, events-so-far); chown by path must never run."""
+    class Calls(list):
+        events: list = []
+
+    calls = Calls()
+    events = calls.events = []
+
+    def fchown(fd, u, g):
+        calls.append((os.readlink(f"/proc/self/fd/{fd}"), u, g))
+        events.append("fchown")
+
+    def replace(*a, **k):
+        events.append("replace")
+        return real_replace(*a, **k)
+
+    def chown(*a, **k):
+        raise AssertionError(f"chown by path: {a}")
+
+    real_replace = os.replace
+    monkeypatch.setattr(oc.os, "fchown", fchown)
+    monkeypatch.setattr(oc.os, "chown", chown)
+    monkeypatch.setattr(oc.os, "replace", replace)
+    return calls
+
+
+def test_edit_creates_json_with_schema_owned_by_user(tmp_path, chowns):
+    edit(str(tmp_path), JSON_REL, lambda d: d.setdefault("mcp", {}), 1000, 1001)
+    data = json.loads((tmp_path / JSON_REL).read_text())
+    assert data == {"$schema": SCHEMA_URL, "mcp": {}}
+    paths = [p for p, _, _ in chowns]
+    assert str(tmp_path / ".config") in paths
+    assert str(tmp_path / ".config/opencode") in paths
+    assert len(paths) == 3  # two directories and the temp file
+    assert all((u, g) == (1000, 1001) for _, u, g in chowns)
+    assert stat.S_IMODE((tmp_path / JSON_REL).stat().st_mode) == 0o644
+
+
+def test_edit_chowns_the_file_before_the_rename_never_after(tmp_path, chowns):
+    _put(tmp_path, JSON_REL, "{}")
+    edit(str(tmp_path), JSON_REL, lambda d: d.update(a=1), 5, 6)
+    assert chowns.events == ["fchown", "replace"]
+
+
+def test_edit_preserves_mode_and_other_keys(tmp_path, chowns):
+    path = _put(tmp_path, JSON_REL, json.dumps({"provider": {"p": 1}}))
+    path.chmod(0o600)
+    edit(str(tmp_path), JSON_REL, lambda d: d.update(mcp={}), 1, 1)
+    assert json.loads(path.read_text()) == {"provider": {"p": 1}, "mcp": {}}
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+
+def test_edit_reads_jsonc_input(tmp_path, chowns):
+    _put(tmp_path, JSONC_REL, '{\n // keep\n "a": 1,\n}')
+    edit(str(tmp_path), JSONC_REL, lambda d: d.update(b=2), 1, 1)
+    assert json.loads((tmp_path / JSONC_REL).read_text()) == {"a": 1, "b": 2}
+
+
+def test_edit_refuses_a_symlinked_file(tmp_path, chowns):
+    target = tmp_path / "victim.json"
+    target.write_text('{"keep": 1}')
+    (tmp_path / ".config/opencode").mkdir(parents=True)
+    (tmp_path / JSON_REL).symlink_to(target)
+    with pytest.raises(OpencodeConfigError):
+        edit(str(tmp_path), JSON_REL, lambda d: d.update(x=1), 1, 1)
+    assert target.read_text() == '{"keep": 1}'
+    assert os.path.islink(tmp_path / JSON_REL)
+
+
+def test_edit_refuses_a_symlinked_parent(tmp_path, chowns):
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (tmp_path / ".config").mkdir()
+    (tmp_path / ".config/opencode").symlink_to(elsewhere)
+    with pytest.raises(OpencodeConfigError):
+        edit(str(tmp_path), JSON_REL, lambda d: d.update(x=1), 1, 1)
+    assert list(elsewhere.iterdir()) == []
+
+
+def test_edit_refuses_a_symlinked_grandparent(tmp_path, chowns):
+    elsewhere = tmp_path / "elsewhere"
+    (elsewhere / "opencode").mkdir(parents=True)
+    (tmp_path / ".config").symlink_to(elsewhere)
+    with pytest.raises(OpencodeConfigError):
+        edit(str(tmp_path), JSON_REL, lambda d: d.update(x=1), 1, 1)
+    assert list((elsewhere / "opencode").iterdir()) == []
+
+
+def test_edit_refuses_a_non_directory_parent(tmp_path, chowns):
+    (tmp_path / ".config").write_text("file")
+    with pytest.raises(OpencodeConfigError):
+        edit(str(tmp_path), JSON_REL, lambda d: None, 1, 1)
+
+
+def test_edit_refuses_an_unparseable_file_and_leaves_it(tmp_path, chowns):
+    path = _put(tmp_path, JSON_REL, "{nope")
+    with pytest.raises(OpencodeConfigError):
+        edit(str(tmp_path), JSON_REL, lambda d: None, 1, 1)
+    assert path.read_text() == "{nope"
+
+
+def test_edit_refuses_a_non_dict_top_level(tmp_path, chowns):
+    path = _put(tmp_path, JSON_REL, "[1]")
+    with pytest.raises(OpencodeConfigError):
+        edit(str(tmp_path), JSON_REL, lambda d: None, 1, 1)
+    assert path.read_text() == "[1]"
+
+
+def test_edit_treats_a_blank_file_as_empty_without_schema(tmp_path, chowns):
+    path = _put(tmp_path, JSON_REL, "  \n")
+    edit(str(tmp_path), JSON_REL, lambda d: d.update(a=1), 1, 1)
+    assert json.loads(path.read_text()) == {"a": 1}
+
+
+def test_readers_ignore_a_symlinked_file(tmp_path):
+    outside = tmp_path / "outside.json"
+    outside.write_text(json.dumps({"mcp": {"x": {}}, "plugin": ["p@1"]}))
+    home = tmp_path / "home"
+    (home / ".config/opencode").mkdir(parents=True)
+    (home / JSON_REL).symlink_to(outside)
+    assert read_mcp(str(home)) == {}
+    assert read_plugins(str(home)) == {}
+
+
+def test_readers_ignore_a_symlinked_parent(tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "opencode.json").write_text(json.dumps({"mcp": {"x": {}}, "plugin": ["p@1"]}))
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / ".config").symlink_to(outside.parent / "outside")
+    (outside / "opencode").mkdir()
+    (outside / "opencode/opencode.json").write_text(json.dumps({"mcp": {"x": {}}}))
+    assert read_mcp(str(home)) == {}
+
+
+def test_edit_does_not_follow_a_parent_swapped_after_the_check(tmp_path, chowns, monkeypatch):
+    """The chain is held by fd: a swap after it is opened cannot redirect us."""
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    real_open_chain = oc._open_chain
+
+    def swap_after(*a, **k):
+        fd = real_open_chain(*a, **k)
+        d = tmp_path / ".config/opencode"
+        d.rename(tmp_path / ".config/moved")
+        d.symlink_to(elsewhere)
+        return fd
+
+    monkeypatch.setattr(oc, "_open_chain", swap_after)
+    edit(str(tmp_path), JSON_REL, lambda d: d.update(a=1), 1, 1)
+    assert list(elsewhere.iterdir()) == []
+    assert (tmp_path / ".config/moved/opencode.json").exists()
+
+
+def test_edit_refuses_invalid_utf8_as_config_error(tmp_path, chowns):
+    path = tmp_path / JSON_REL
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b"\xff\xfe{")
+    with pytest.raises(OpencodeConfigError):
+        edit(str(tmp_path), JSON_REL, lambda d: None, 1, 1)
+    assert path.read_bytes() == b"\xff\xfe{"
+
+
+def test_edit_refuses_a_directory_at_the_file_name(tmp_path, chowns):
+    (tmp_path / JSON_REL).mkdir(parents=True)
+    with pytest.raises(OpencodeConfigError):
+        edit(str(tmp_path), JSON_REL, lambda d: None, 1, 1)
+
+
+def test_edit_refuses_a_fifo_without_hanging(tmp_path, chowns):
+    path = tmp_path / JSON_REL
+    path.parent.mkdir(parents=True)
+    os.mkfifo(path)
+    with pytest.raises(OpencodeConfigError):
+        edit(str(tmp_path), JSON_REL, lambda d: None, 1, 1)
+    assert stat.S_ISFIFO(path.lstat().st_mode)
+
+
+def test_readers_ignore_a_fifo_and_a_directory(tmp_path):
+    (tmp_path / ".config/opencode").mkdir(parents=True)
+    os.mkfifo(tmp_path / JSON_REL)
+    (tmp_path / JSONC_REL).mkdir()
+    assert read_mcp(str(tmp_path)) == {}
+    assert read_plugins(str(tmp_path)) == {}
+
+
+def test_refusal_is_none_for_absent_and_for_readable_objects(tmp_path):
+    assert oc.refusal(str(tmp_path)) is None
+    _put(tmp_path, JSON_REL, '{"plugins": []}')
+    _put(tmp_path, JSONC_REL, '{\n // c\n "plugin": ["a",],\n}')
+    assert oc.refusal(str(tmp_path)) is None
+
+
+def test_refusal_names_a_symlinked_file(tmp_path):
+    real = _put(tmp_path, "real.json", "{}")
+    link = tmp_path / JSON_REL
+    link.parent.mkdir(parents=True)
+    link.symlink_to(real)
+    assert str(link) in oc.refusal(str(tmp_path))
+
+
+def test_refusal_names_a_symlinked_parent(tmp_path):
+    (tmp_path / "elsewhere").mkdir()
+    (tmp_path / ".config").mkdir()
+    (tmp_path / ".config/opencode").symlink_to(tmp_path / "elsewhere")
+    assert ".config/opencode" in oc.refusal(str(tmp_path))
+
+
+def test_refusal_names_a_non_regular_file(tmp_path):
+    path = tmp_path / JSONC_REL
+    path.parent.mkdir(parents=True)
+    path.mkdir()
+    assert str(path) in oc.refusal(str(tmp_path))
+
+
+def test_refusal_names_an_unparseable_file(tmp_path):
+    path = _put(tmp_path, JSONC_REL, "{nope")
+    assert str(path) in oc.refusal(str(tmp_path))
+
+
+def test_refusal_names_a_non_object_top_level(tmp_path):
+    path = _put(tmp_path, JSON_REL, "[1]")
+    assert str(path) in oc.refusal(str(tmp_path))
+
+
+def test_edit_refuses_a_hard_linked_file(tmp_path, chowns):
+    path = _put(tmp_path, JSON_REL, "{}")
+    os.link(path, tmp_path / "other-name")
+    with pytest.raises(OpencodeConfigError, match="hard link"):
+        edit(str(tmp_path), JSON_REL, lambda d: d.update(a=1), 1, 1)
+    assert path.read_text() == "{}"
+
+
+def test_edit_keeps_an_existing_files_owner_and_only_a_new_file_gets_the_users(
+        tmp_path, chowns):
+    path = _put(tmp_path, JSON_REL, "{}")
+    st = path.stat()
+    edit(str(tmp_path), JSON_REL, lambda d: d.update(a=1), 4242, 4343)
+    assert [(u, g) for p, u, g in chowns if p.endswith(".tmp")] == [
+        (st.st_uid, st.st_gid)]
+    chowns.clear()
+    edit(str(tmp_path), "n/x.json", lambda d: None, 4242, 4343)
+    assert [(u, g) for p, u, g in chowns if p.endswith(".tmp")] == [(4242, 4343)]
+
+
+def test_edit_fsyncs_the_temp_file_before_the_rename(tmp_path, chowns,
+                                                     monkeypatch):
+    _put(tmp_path, JSON_REL, "{}")
+    monkeypatch.setattr(oc.os, "fsync", lambda fd: chowns.events.append("fsync"))
+    edit(str(tmp_path), JSON_REL, lambda d: d.update(a=1), 1, 1)
+    assert chowns.events == ["fchown", "fsync", "replace"]
+
+
+def test_edit_closes_the_temp_fd_when_fchown_raises(tmp_path, monkeypatch):
+    _put(tmp_path, JSON_REL, "{}")
+    opened = []
+    real_open = os.open
+
+    def spy(path, *a, **k):
+        fd = real_open(path, *a, **k)
+        if str(path).endswith(".tmp"):
+            opened.append(fd)
+        return fd
+
+    def boom(fd, u, g):
+        raise PermissionError("no")
+
+    monkeypatch.setattr(oc.os, "open", spy)
+    monkeypatch.setattr(oc.os, "fchown", boom)
+    with pytest.raises(PermissionError):
+        edit(str(tmp_path), JSON_REL, lambda d: None, 1, 1)
+    with pytest.raises(OSError):
+        os.fstat(opened[0])

@@ -23,10 +23,12 @@ from __future__ import annotations
 
 import re
 import os
+from dataclasses import replace
 from functools import partial
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .abstract_action import AbstractAction
+from .passwd import passwd_entries
 from .ai_skills_state import (AGENT_SKILL_DIRS, CANONICAL_SKILL_DIR,
                               antigravity_plugins,
                               carries_skill, claude_plugin_commit,
@@ -35,12 +37,16 @@ from .ai_skills_state import (AGENT_SKILL_DIRS, CANONICAL_SKILL_DIR,
                               installed_agents, skill_folder_hash,
                               skills_state)
 from .config_access import field as _field
+from .opencode_config import (JSON_REL, JSONC_NOTE, JSONC_REL, OpencodeConfigError,
+                              read_plugins, refusal)
+from .opencode_config import edit as opencode_edit
 from ..command_worker.command_worker import Command
 from ..command_worker.su_argv import su_argv
 from ..exceptions.exceptions import CommandExecutionError
 from ..upgrade.fingerprint import tree_fingerprint
 from ..logging import run_logger
-from ..models.ai_skills_model import PLUGIN_NAME_RE
+from ..models.ai_skills_model import (OPENCODE_SPEC_RE, PLUGIN_NAME_RE,
+                                      opencode_plugin_name)
 from ..state.change import Change, Op
 from ..upgrade.steps import UpgradeStep
 
@@ -51,6 +57,9 @@ _METHOD_AGENT = {"claude-plugin": "claude-code", "codex-plugin": "codex"}
 
 _AGY_METHOD = "antigravity-plugin"
 _AGY_AGENT = "antigravity"
+
+_OC_METHOD = "opencode-plugin"
+_OC_AGENT = "opencode"
 
 # `agy plugin install` takes a directory and nothing else (FACT-AGY-5), so the
 # repository is cloned into a throwaway directory first. `--` stops git reading
@@ -160,25 +169,11 @@ class AiSkillsAction(AbstractAction):
 
     def _passwd(self) -> Dict[str, str]:
         """``{username: home}`` from the TARGET's /etc/passwd."""
-        return {user: home for user, (home, _uid) in self._passwd_entries().items()}
+        return {user: home for user, (home, _uid, _gid) in self._passwd_entries().items()}
 
-    def _passwd_entries(self) -> Dict[str, Tuple[str, int]]:
-        """``{username: (home, uid)}`` from the TARGET's /etc/passwd."""
-        entries: Dict[str, Tuple[str, int]] = {}
-        try:
-            with open(self._abs("/etc/passwd"), "r", encoding="utf-8") as handle:
-                lines = handle.readlines()
-        except OSError:
-            return entries
-        for line in lines:
-            parts = line.rstrip("\n").split(":")
-            if len(parts) < 6:
-                continue
-            try:
-                entries[parts[0]] = (parts[5], int(parts[2]))
-            except ValueError:
-                continue
-        return entries
+    def _passwd_entries(self) -> Dict[str, Tuple[str, int, int]]:
+        """``{username: (home, uid, gid)}`` from the TARGET's /etc/passwd."""
+        return passwd_entries(self._abs("/etc/passwd"))
 
     def _home_of(self, user: str, homes: Dict[str, str]) -> str:
         """Where the machine says *user* lives, or where useradd would put them.
@@ -215,6 +210,12 @@ class AiSkillsAction(AbstractAction):
                         "kind": "plugin", "user": user, "agent": _AGY_AGENT,
                         "method": method, "plugin": plugin, "name": name,
                         "source": _field(entry, "source"),
+                    }
+                elif method == _OC_METHOD:
+                    source = _field(entry, "source")
+                    desired[self._item(user, _OC_AGENT, "plugin", source)] = {
+                        "kind": "plugin", "user": user, "agent": _OC_AGENT,
+                        "method": method, "name": name, "source": source,
                     }
                 elif method in _METHOD_AGENT:
                     agent = _METHOD_AGENT[method]
@@ -294,6 +295,9 @@ class AiSkillsAction(AbstractAction):
 
             for plugin in antigravity_plugins(home):
                 items.add(self._item(user, _AGY_AGENT, "plugin", plugin))
+
+            for source in read_plugins(home):
+                items.add(self._item(user, _OC_AGENT, "plugin", source))
 
             canonical, per_agent, _sources = skills_state(home)
             # Only the agents this user's entries name: a universal agent reads
@@ -409,7 +413,22 @@ class AiSkillsAction(AbstractAction):
                 modifies.append(Change(_DOMAIN, Op.MODIFY, item,
                                        reason="source drift"))
         self._warn_unreachable_codex_marketplaces(creates, desired)
+        deletes = [self._with_jsonc_note(c) for c in deletes]
         return creates + modifies + deletes
+
+    def _with_jsonc_note(self, change: Change) -> Change:
+        """An opencode plugin living in opencode.jsonc is removed by rewriting
+        that file, which drops its comments: the plan line says so."""
+        parts = change.item.split(":", 3)
+        if len(parts) != 4 or parts[1] != _OC_AGENT or parts[2] != "plugin":
+            return change
+        ids = self._passwd_entries().get(parts[0])
+        home = self._abs(ids[0] if ids else f"/home/{parts[0]}")
+        hit = read_plugins(home).get(parts[3])
+        if hit is None or hit.rel != JSONC_REL:
+            return change
+        return replace(change, reason=(f"{change.reason}; {JSONC_NOTE}"
+                                       if change.reason else JSONC_NOTE))
 
     # -- the prerequisite a plan cannot see ---------------------------------- #
 
@@ -641,6 +660,9 @@ class AiSkillsAction(AbstractAction):
                 return (('claude plugin marketplace update "$1"',
                          (spec["name"],)),)
             return (('codex plugin marketplace upgrade "$1"', (spec["name"],)),)
+        if kind == "plugin" and agent == _OC_AGENT:
+            # `opencode plugin add` of an installed spec is not known to refresh.
+            return ()
         if kind == "plugin" and agent == _AGY_AGENT:
             return ((_AGY_INSTALL, (self._clone_url(spec["source"]),)),)
         if kind == "plugin":
@@ -737,6 +759,12 @@ class AiSkillsAction(AbstractAction):
                             skip="catalog managed by codex" if present
                             else "not installed — run dasik apply"))
                         continue
+            if (present and spec["kind"] == "plugin"
+                    and spec["agent"] == _OC_AGENT):
+                steps.append(UpgradeStep(
+                    _DOMAIN, item, user,
+                    skip="opencode has no update step in dasik yet"))
+                continue
             if not present:
                 steps.append(UpgradeStep(_DOMAIN, item, user,
                                          skip="not installed — run dasik apply"))
@@ -772,6 +800,9 @@ class AiSkillsAction(AbstractAction):
             if change.op is Op.DELETE:
                 return [('agy plugin uninstall "$1"', (spec["plugin"],))]
             return [(_AGY_INSTALL, (self._clone_url(spec["source"]),))]
+        if kind == "plugin" and agent == _OC_AGENT:
+            verb = "remove" if change.op is Op.DELETE else "add"
+            return [(f'opencode plugin {verb} "$1"', (spec["source"],))]
         if kind == "plugin":
             plugin_id = f"{spec['plugin']}@{spec['marketplace']}"
             if agent == "claude-code":
@@ -922,6 +953,15 @@ class AiSkillsAction(AbstractAction):
                 self._fail(change.item, f"ai_skills: {change.item} refused: "
                                         "not a plain plugin name")
                 continue
+            if spec["kind"] == "plugin" and spec["agent"] == _OC_AGENT:
+                if not OPENCODE_SPEC_RE.fullmatch(spec.get("source") or ""):
+                    # Same as the antigravity name check above: a DELETE rebuilt
+                    # from the manifest is re-validated before anything runs.
+                    self._fail(change.item, f"ai_skills: {change.item} refused: "
+                                            "not a plain opencode plugin specifier")
+                    continue
+                self._apply_opencode_plugin(change, spec)
+                continue
             completed = True
             for script, args in self._command_for(change, spec):
                 if not self._run(spec["user"], script, args, change.item):
@@ -938,12 +978,99 @@ class AiSkillsAction(AbstractAction):
             return None
         user, agent, kind, value = parts
         spec: Dict[str, Any] = {"kind": kind, "user": user, "agent": agent}
-        if kind == "plugin":
+        if agent == _OC_AGENT and kind == "plugin":
+            # The value is the exact specifier, and it may itself hold colons.
+            spec.update(method=_OC_METHOD, name=opencode_plugin_name(value),
+                        source=value)
+        elif kind == "plugin":
             plugin, _, marketplace = value.partition("@")
             spec.update(plugin=plugin, marketplace=marketplace)
         else:
             spec.update(name=value, source=None)
         return spec
+
+    def _apply_opencode_plugin(self, change: Change,
+                               spec: Dict[str, Any]) -> None:
+        """One opencode plugin change, refused when the config is not safe."""
+        item = change.item
+        ids = self._passwd_entries().get(spec["user"])
+        if ids is not None:
+            home = self._abs(ids[0])
+            why = refusal(home)
+            if why is not None:
+                self._fail(item, f"ai_skills: {item} refused: {why}")
+                return
+        if change.op is Op.DELETE:
+            self._remove_opencode_plugin(spec, item)
+            return
+        if not os.path.exists(self._abs("/usr/bin/opencode")):
+            self._fail(item, f"ai_skills: {item} failed: opencode is not "
+                             "installed in the target (no /usr/bin/opencode)")
+            return
+        if ids is not None and not os.path.lexists(os.path.join(home, JSON_REL)):
+            # With only a hand-written opencode.jsonc, `plugin add` writes into
+            # it (FACT-OC), changing its checksum and, on removal, dropping its
+            # comments. With opencode.json present the CLI writes there.
+            try:
+                opencode_edit(home, JSON_REL, lambda _data: None, ids[1], ids[2])
+            except (OpencodeConfigError, OSError) as exc:
+                self._fail(item, f"ai_skills: {item} failed: {exc}")
+                return
+        for script, args in self._command_for(change, spec):
+            if not self._run(spec["user"], script, args, item):
+                return
+
+    def _remove_opencode_plugin(self, spec: Dict[str, Any], item: str) -> None:
+        """Take one specifier out of every file opencode reads it from.
+
+        The CLI only edits the `plugins` key of opencode.json (and exits 0
+        having removed nothing), so a spec living in opencode.jsonc or in the
+        legacy `plugin` key is dropped by editing the file, and
+        the config is re-read after every step: only a spec that is really gone
+        counts as removed.
+        """
+        user, source = spec["user"], spec["source"]
+        ids = self._passwd_entries().get(user)
+        if ids is None:
+            self._fail(item, f"ai_skills: {item} failed: {user} is not in the "
+                             "target's /etc/passwd")
+            return
+        home_rel, uid, gid = ids
+        home = self._abs(home_rel)
+
+        def drop(data: dict) -> None:
+            for key in ("plugin", "plugins"):
+                if isinstance(data.get(key), list):
+                    data[key] = [p for p in data[key] if p != source]
+
+        try:
+            # One pass per file opencode loads; the latest wins the read.
+            ran_cli = False
+            for _ in range(3):
+                found = read_plugins(home).get(source)
+                if found is None:
+                    break
+                if found.rel == JSONC_REL or not found.nested:
+                    # opencode.jsonc, or the legacy `plugin` key: nobody has
+                    # measured the CLI on those, so dasik edits the file.
+                    opencode_edit(home, found.rel, drop, uid, gid)
+                    continue
+                if ran_cli:
+                    break
+                ran_cli = True
+                script, args = self._command_for(
+                    Change(_DOMAIN, Op.DELETE, item), spec)[0]
+                if not self._run(user, script, args, item):
+                    return
+            why = refusal(home)
+            if why is not None:
+                self._fail(item, f"ai_skills: {item} refused: {why}")
+            elif source in read_plugins(home):
+                self._fail(item, f"ai_skills: {item} is still in opencode's "
+                                 "config after the removal; dasik did not "
+                                 "remove it, so it stays owned")
+        except (OpencodeConfigError, OSError) as exc:
+            self._fail(item, f"ai_skills: {item} failed: {exc}")
 
     def _check_agy_install(self, spec: Dict[str, Any], item: str) -> None:
         """agy names a plugin after its own marketplace.json, not after the
@@ -1048,7 +1175,7 @@ class AiSkillsAction(AbstractAction):
         declared = self._users()
         if declared:
             return declared
-        return sorted(user for user, (_home, uid) in self._passwd_entries().items()
+        return sorted(user for user, (_home, uid, _gid) in self._passwd_entries().items()
                       if 1000 <= uid < 65534)
 
     def import_state(self, managed=None) -> Dict[str, Any]:
@@ -1089,6 +1216,19 @@ class AiSkillsAction(AbstractAction):
                 agy_name, agy_source = declared_agy[plugin]
                 found.setdefault((_AGY_METHOD, agy_name, plugin, agy_source),
                                  set()).add(user)
+
+            reason = refusal(home)
+            if reason:
+                # An unreadable config looks like "no plugins"; capturing
+                # nothing is honest, and the reason says why.
+                skipped.append(f"{user}: opencode config ({reason})")
+            else:
+                for spec in sorted(read_plugins(home)):
+                    if not OPENCODE_SPEC_RE.fullmatch(spec):
+                        skipped.append(f"{user}: opencode plugin {spec}")
+                        continue
+                    found.setdefault((_OC_METHOD, opencode_plugin_name(spec),
+                                      spec), set()).add(user)
 
             canonical, per_agent, skill_sources = skills_state(home)
             present = installed_agents(home)
@@ -1141,6 +1281,8 @@ class AiSkillsAction(AbstractAction):
             if key[0] == "tool":
                 entry = {"name": key[1], "method": "tool", "command": key[3],
                          "agents": list(key[2])}
+            elif key[0] == _OC_METHOD:
+                entry = {"name": key[1], "method": _OC_METHOD, "source": key[2]}
             elif key[0] == "skills":
                 entry = {"name": key[1], "method": "skills", "source": key[3],
                          "agents": list(key[2])}

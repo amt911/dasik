@@ -256,3 +256,27 @@ def test_opencode_plugin_takes_no_marketplace_or_agents():
 
 def test_agent_ids_of_opencode_plugin():
     assert _oc().agent_ids == ["opencode"]
+
+
+@pytest.mark.parametrize("spec", ["pj@file:x", "pj@npm:x", "pj@github:o/r",
+                                  "pj@git+ssh://h/x"])
+def test_opencode_plugin_rejects_resolver_prefixes(spec):
+    with pytest.raises(ValidationError):
+        _oc(source=spec)
+
+
+@pytest.mark.parametrize("spec", ["pj", "pj@1.0.0", "pj@^1.2.3", "pj@latest",
+                                  "superpowers@git+https://github.com/obra/"
+                                  "superpowers.git"])
+def test_opencode_plugin_regex_accepts(spec):
+    from dasik.lib.models.ai_skills_model import (OPENCODE_SPEC_RE,
+                                                  opencode_plugin_name)
+    assert OPENCODE_SPEC_RE.fullmatch(spec)
+    assert _oc(name=opencode_plugin_name(spec), source=spec)
+
+
+@pytest.mark.parametrize("spec", ["-x", "@scope/pkg", "file:../p", "pj@file:x",
+                                  "pj@git+ssh://h/x", "pj@1\n"])
+def test_opencode_spec_regex_alone_rejects(spec):
+    from dasik.lib.models.ai_skills_model import OPENCODE_SPEC_RE
+    assert OPENCODE_SPEC_RE.fullmatch(spec) is None

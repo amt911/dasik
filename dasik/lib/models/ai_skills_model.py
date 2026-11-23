@@ -47,15 +47,19 @@ METHOD_AGENT = {"claude-plugin": "claude-code", "codex-plugin": "codex",
 
 # What opencode is handed as a plugin specifier: an npm name with an optional
 # version (`pj`, `pj@1.0.0`) or `name@git+https://...`. It starts with a letter
-# or digit, so neither an option nor a scope nor a path. Matched with
-# `fullmatch`: `$` would let `pj@1\n` through.
+# or digit, so neither an option nor a scope nor a path. A version holds no
+# ':' or '/', so `pj@file:x` or `pj@github:o/r` (resolver prefixes, local
+# paths) never match; the only git form is https. Matched with `fullmatch`:
+# `$` would let `pj@1\n` through.
 OPENCODE_SPEC_RE = re.compile(
-    r"[a-z0-9][a-z0-9._-]*(@[^\s@]+|@git\+https://\S+)?")
+    r"[a-z0-9][a-z0-9._-]*"
+    r"(@[\^~]?[A-Za-z0-9][A-Za-z0-9._^~*+-]*|@git\+https://[^\s@]+)?")
 
 
 def opencode_plugin_name(spec: str) -> str:
     """The plugin name of an opencode specifier: what precedes the first `@`."""
     return spec.split("@", 1)[0]
+
 
 # What `git clone` is handed for an `antigravity-plugin`: GitHub shorthand or an
 # https URL. Never a local path (it would name the machine running dasik, not the

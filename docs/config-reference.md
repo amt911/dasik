@@ -1176,13 +1176,27 @@ presence; `dasik upgrade` is the verb that runs those updaters (not undone by
 | `users` | list[string] | Whose `$HOME` receives them. Empty = every declared user except root. These artefacts live in a home directory, so "system-wide" means "every human on the machine". |
 | `failure_policy` | `warn-and-continue` \| `abort` | What `apply` does when an installer fails (no network, no `npx`, marketplace down). Default warns, keeps going, and leaves the item unowned so the next `plan` asks again. |
 | `entries[].name` | string | The artefact as its installer knows it. |
-| `entries[].method` | `claude-plugin` \| `codex-plugin` \| `antigravity-plugin` \| `skills` \| `tool` | Which official installer to drive. |
+| `entries[].method` | `claude-plugin` \| `codex-plugin` \| `antigravity-plugin` \| `opencode-plugin` \| `skills` \| `tool` | Which official installer to drive. |
 | `entries[].marketplace` | `{name, source?}` | Plugin methods only. `source` (owner/repo, git URL) is what `... plugin marketplace add` registers. **`name` is the name the marketplace's own manifest declares**, which is often not the repository name — `obra/superpowers` registers as `superpowers-dev`; the CLI prints it when adding. Omit `source` only for a marketplace the agent already has: Codex's `openai-curated` is one, and it is **not** a repository you can register instead — `codex plugin marketplace upgrade` answers *"No configured Git marketplaces to upgrade"*, and the local copy is a git repo with no remote. Codex fetches it from its own API, so it exists only once codex has been **signed in**. Until then `codex plugin marketplace list` says *"No plugin marketplaces in scope"* and the install fails with ``plugin `X` was not found in marketplace `openai-curated` ``. `plan` warns when that is the case, naming the entry and the remedy (`codex login`), and keeps proposing the entry — dasik never claims an item it could not install. |
 | `entries[].plugin` | string | Plugin name inside the marketplace, when it differs from `name`. |
-| `entries[].source` | string | `skills`: what `npx skills add` installs from. `antigravity-plugin`: the plugin repository, as `owner/repo` or an `https://` URL — see below. |
+| `entries[].source` | string | `skills`: what `npx skills add` installs from. `antigravity-plugin`: the plugin repository, as `owner/repo` or an `https://` URL — see below. `opencode-plugin`: the plugin specifier — see below. |
 | `entries[].agents` | list[string] | `skills` and `tool`: agent ids — `claude-code`, `codex`, `opencode`, `cursor`, `antigravity`, `antigravity-cli`. |
 | `entries[].command` | string | `tool` only: the program that ships the skill. dasik runs `<command> install --platform <agent>`. A bare program name — it is executed. |
 | `entries[].users` | list[string] | Narrows this entry to some of the block's users. Only needed when people on one machine carry different sets. |
+
+**`opencode-plugin`** installs an opencode plugin with `opencode plugin add` (needs
+`opencode` on the target) and removes it with `opencode plugin remove`. `source` is
+the exact specifier: an npm package name with an optional version
+(`pj`, `pj@1.0.0`) or `name@git+https://…` for a git repository. A version holds
+no `:` or `/`. Scoped packages (`@scope/pkg`), `file:`, `npm:` and `github:`
+specifiers are refused; `sync` reports them as not captured. Presence is read
+back from the `plugins` (and the legacy `plugin`) arrays of
+`~/.config/opencode/opencode.json` and `opencode.jsonc`. opencode loads both
+files; the CLI only edits `opencode.json`, so a specifier that lives in
+`opencode.jsonc` is dropped by dasik editing that file itself. That rewrite
+parses the file as plain JSON and **drops its comments**; dasik touches
+`opencode.jsonc` only to remove or move something that lives there, and refuses a
+file it cannot parse.
 
 **`antigravity-plugin`** installs an Antigravity plugin with `agy plugin install`
 (package `antigravity-cli`). `agy` only installs from a **directory**, so `apply`
@@ -1318,7 +1332,7 @@ hook state, and owning them as files would delete what the program keeps there.
 | `users` | list[string] | Whose agents get them. Empty = every declared user except root — the registration lives in a home directory, so "system-wide" means "every human on the machine". |
 | `failure_policy` | `warn-and-continue` \| `abort` | What `apply` does when the agent's CLI fails (not installed, not logged in). Default warns, keeps going and leaves the item unowned, so the next `plan` asks again. |
 | `entries[].name` | string | The server name as the agent registers it. |
-| `entries[].agents` | list[string] | `claude-code`, `codex`, `antigravity`. Another id is refused: there is no MCP CLI to drive. |
+| `entries[].agents` | list[string] | `claude-code`, `codex`, `antigravity`, `opencode`. Another id is refused. |
 | `entries[].command` | string | stdio transport: the program that serves MCP on stdio (`uvx`, `npx`, an absolute path). Mutually exclusive with `url`. |
 | `entries[].args` | list[string] | Arguments for `command`. |
 | `entries[].env` | object | Environment for `command`. **Captured verbatim by `sync`** — see below. |
@@ -1346,6 +1360,15 @@ A server already registered with a different command, arguments, environment,
 transport, headers or bearer variable is a MODIFY, applied as remove-then-add: `mcp add` on a name that
 already exists does not rewrite it. Antigravity is the exception: `agy mcp add`
 replaces an existing name, so its MODIFY is a single re-add.
+
+**`opencode`** has no MCP CLI that dasik drives: dasik writes the server into
+`~/.config/opencode/opencode.json` under `mcp.servers.<name>` (`local` with a
+`command` list and `environment`, or `remote` with `url` and `headers`), and needs
+`opencode` installed on the target or the item fails. opencode also loads
+`opencode.jsonc`; dasik reads both, writes only `opencode.json`, and rewrites
+`opencode.jsonc` solely to remove or move a server that lives there — which drops
+that file's comments. `headers` work for opencode; `bearer_token_env_var` stays
+codex-only.
 
 **`antigravity`** registrations live in `~/.gemini/config/mcp_config.json`, the
 user-level file the Antigravity IDE and its CLI (`agy`, package

@@ -77,7 +77,8 @@
         ],
         "agents": [
           "claude-code",
-          "codex"
+          "codex",
+          "opencode"
         ]
       }
     ]

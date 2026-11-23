@@ -20,11 +20,16 @@ Item grammar::
 """
 from __future__ import annotations
 
+import os
 from typing import Any, Dict, List, Optional, Tuple
 
 from .abstract_action import AbstractAction
 from .config_access import field as _field
-from .mcp_servers_state import antigravity_mcp, claude_mcp, codex_mcp
+from .mcp_servers_state import (antigravity_mcp, claude_mcp, codex_mcp,
+                                opencode_mcp)
+from .opencode_config import JSON_REL, OpencodeConfigError
+from .opencode_config import edit as _opencode_edit
+from .opencode_config import read_mcp as _opencode_read
 from ..command_worker.command_worker import Command
 from ..command_worker.su_argv import su_argv
 from ..exceptions.exceptions import CommandExecutionError
@@ -33,7 +38,7 @@ from ..state.change import Change, Op
 _DOMAIN = "mcp_servers"
 
 _READERS = {"claude-code": claude_mcp, "codex": codex_mcp,
-            "antigravity": antigravity_mcp}
+            "antigravity": antigravity_mcp, "opencode": opencode_mcp}
 
 _ROOT = "root"
 
@@ -122,9 +127,9 @@ class McpServersAction(AbstractAction):
         target = self._target()
         return target.path(canonical) if target is not None else "/mnt" + canonical
 
-    def _passwd_entries(self) -> Dict[str, Tuple[str, int]]:
-        """``{username: (home, uid)}`` from the TARGET's /etc/passwd."""
-        entries: Dict[str, Tuple[str, int]] = {}
+    def _passwd_entries(self) -> Dict[str, Tuple[str, int, int]]:
+        """``{username: (home, uid, gid)}`` from the TARGET's /etc/passwd."""
+        entries: Dict[str, Tuple[str, int, int]] = {}
         try:
             with open(self._abs("/etc/passwd"), "r", encoding="utf-8") as handle:
                 lines = handle.readlines()
@@ -135,13 +140,13 @@ class McpServersAction(AbstractAction):
             if len(parts) < 6:
                 continue
             try:
-                entries[parts[0]] = (parts[5], int(parts[2]))
+                entries[parts[0]] = (parts[5], int(parts[2]), int(parts[3]))
             except ValueError:
                 continue
         return entries
 
     def _passwd(self) -> Dict[str, str]:
-        return {user: home for user, (home, _uid) in self._passwd_entries().items()}
+        return {user: home for user, (home, _uid, _gid) in self._passwd_entries().items()}
 
     def _home_of(self, user: str, homes: Dict[str, str]) -> str:
         """Where the machine says *user* lives, or where useradd would put them.
@@ -382,6 +387,9 @@ class McpServersAction(AbstractAction):
             spec = desired.get(change.item) or self._spec_from_item(change.item)
             if spec is None:
                 continue
+            if spec.get("agent") == "opencode":
+                self._apply_opencode(change, spec)
+                continue
             for script, args in self._command_for(change, spec):
                 if not self._run(spec["user"], script, args, change.item,
                                  declared=self._login_follows_add(spec, script)):
@@ -433,9 +441,13 @@ class McpServersAction(AbstractAction):
                   f"as {user}: codex mcp login {declared['name']}")
             return True
         detail = (getattr(result, "stderr", "") or "").strip()
-        message = (f"mcp_servers: {item} failed. Command: su - {user} -c "
-                   f"{script!r} -- sh {' '.join(args)}"
-                   + (f"\n{detail}" if detail else ""))
+        return self._fail(
+            item, f"mcp_servers: {item} failed. Command: su - {user} -c "
+                  f"{script!r} -- sh {' '.join(args)}"
+                  + (f"\n{detail}" if detail else ""))
+
+    def _fail(self, item: str, message: str) -> bool:
+        """The failure_policy path every agent shares. Always False."""
         if self.failure_policy == "abort":
             raise CommandExecutionError(message)
         # warn-and-continue: the rest of the apply is worth more than one
@@ -444,6 +456,82 @@ class McpServersAction(AbstractAction):
         if item not in self.failed_items:
             self.failed_items.append(item)
         return False
+
+    # -- opencode: written directly, no CLI ---------------------------------- #
+
+    @staticmethod
+    def _opencode_entry(spec: Dict[str, Any]) -> Dict[str, Any]:
+        if spec["transport"] == "http":
+            entry: Dict[str, Any] = {"type": "remote", "url": spec["url"]}
+            if spec.get("headers"):
+                entry["headers"] = dict(spec["headers"])
+            return entry
+        entry = {"type": "local",
+                 "command": [spec["command"], *(spec.get("args") or [])]}
+        if spec.get("env"):
+            entry["environment"] = dict(spec["env"])
+        return entry
+
+    @staticmethod
+    def _drop_server(name: str):
+        """A mutator removing *name* from flat and nested, pruning empties."""
+        def mutate(data: dict) -> None:
+            mcp = data.get("mcp")
+            if not isinstance(mcp, dict):
+                return
+            servers = mcp.get("servers")
+            if isinstance(servers, dict):
+                servers.pop(name, None)
+                if not servers:
+                    del mcp["servers"]
+            if name != "servers":
+                mcp.pop(name, None)
+            if not mcp:
+                del data["mcp"]
+        return mutate
+
+    def _apply_opencode(self, change: Change, spec: Dict[str, Any]) -> None:
+        """Converge one opencode server by editing ``opencode.json``.
+
+        The file is written directly (never through opencode's CLI) by
+        ``opencode_config.edit``, which refuses symlinks and unparseable files.
+        A server found elsewhere (flat, or in opencode.jsonc) is dropped from
+        there, so one name lives in exactly one place.
+        """
+        item = change.item
+        user = spec["user"]
+        ids = self._passwd_entries().get(user)
+        if ids is None:
+            self._fail(item, f"mcp_servers: {item} failed: {user} is not in "
+                             "the target's /etc/passwd")
+            return
+        home_rel, uid, gid = ids
+        home = self._abs(home_rel)
+        name = spec["name"]
+        writing = change.op is not Op.DELETE
+        if writing and not os.path.exists(self._abs("/usr/bin/opencode")):
+            self._fail(item, f"mcp_servers: {item} failed: opencode is not "
+                             "installed in the target (no /usr/bin/opencode)")
+            return
+        try:
+            found = _opencode_read(home).get(name)
+            if writing:
+                entry = self._opencode_entry(spec)
+                drop = self._drop_server(name)
+
+                def put(data: dict) -> None:
+                    drop(data)
+                    mcp = data.setdefault("mcp", {})
+                    mcp.setdefault("servers", {})[name] = entry
+
+                _opencode_edit(home, JSON_REL, put, uid, gid)
+            if found is not None and not (writing and found.rel == JSON_REL):
+                _opencode_edit(home, found.rel, self._drop_server(name),
+                               uid, gid)
+        except OpencodeConfigError as exc:
+            self._fail(item, f"mcp_servers: {item} failed: {exc}")
+        except OSError as exc:
+            self._fail(item, f"mcp_servers: {item} failed: {exc}")
 
     # -- sync ---------------------------------------------------------------- #
 
@@ -459,7 +547,7 @@ class McpServersAction(AbstractAction):
         declared = self._users()
         if declared:
             return declared
-        return sorted(user for user, (_home, uid) in self._passwd_entries().items()
+        return sorted(user for user, (_home, uid, _gid) in self._passwd_entries().items()
                       if 1000 <= uid < 65534)
 
     def import_state(self, managed=None) -> Dict[str, Any]:

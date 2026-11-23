@@ -28,11 +28,11 @@ from ._url_validation import reject_control_chars
 # The agents dasik knows how to drive. Another id is not a limitation to work
 # around: there is no MCP CLI to run, so a declaration naming one would be a
 # promise nothing keeps.
-AGENTS = ("claude-code", "codex", "antigravity")
+AGENTS = ("claude-code", "codex", "antigravity", "opencode")
 
 # Which agent can be told what, measured from `claude mcp add --help`,
 # `codex mcp add --help` and `agy mcp add --help`.
-_HEADERS_AGENTS = ("claude-code", "antigravity")
+_HEADERS_AGENTS = ("claude-code", "antigravity", "opencode")
 _BEARER_AGENT = "codex"
 
 
@@ -45,7 +45,7 @@ class McpServerEntry(BaseModel):
                       description="Server name as the agent registers it "
                                   "(e.g. 'inkscape_mcp')")
     agents: List[str] = Field(
-        ..., description="Agent ids: claude-code, codex, antigravity.")
+        ..., description="Agent ids: claude-code, codex, antigravity, opencode.")
     command: Optional[str] = Field(
         None, min_length=1,
         description="stdio transport: the program that serves MCP on stdio "
@@ -91,7 +91,7 @@ class McpServerEntry(BaseModel):
         return v
     headers: Dict[str, str] = Field(
         default_factory=dict,
-        description="`url` + claude-code/antigravity only: extra HTTP headers.")
+        description="`url` + claude-code/antigravity/opencode only: extra HTTP headers.")
     bearer_token_env_var: Optional[str] = Field(
         None, min_length=1,
         description="`url` + codex only: the variable codex reads the bearer "
@@ -142,7 +142,7 @@ class McpServerEntry(BaseModel):
                                  "to `command`")
         if self.headers and not set(self.agents) <= set(_HEADERS_AGENTS):
             raise ValueError(
-                "`headers` is a claude-code/antigravity option (`claude mcp add "
+                "`headers` is a claude-code/antigravity/opencode option (`claude mcp add "
                 "-H`, `agy mcp add -H`); an entry using it may only declare "
                 f"agents among {list(_HEADERS_AGENTS)}. Split the server into "
                 "one entry per agent.")

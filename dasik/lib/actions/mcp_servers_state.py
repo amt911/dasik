@@ -34,6 +34,7 @@ import json
 import os
 from typing import Any, Dict, Optional
 
+from .opencode_config import read_mcp
 from .toml_reader import load_toml
 
 _CLAUDE_REL = ".claude.json"
@@ -142,4 +143,29 @@ def antigravity_mcp(home: str) -> Dict[str, Dict[str, Any]]:
         found[str(name)] = _spec(entry.get("command"), entry.get("args"),
                                  entry.get("env"), entry.get("serverUrl"),
                                  headers=entry.get("headers"))
+    return found
+
+
+def opencode_mcp(home: str) -> Dict[str, Dict[str, Any]]:
+    """``{name: spec}`` for opencode under *home*.
+
+    opencode stores a stdio server as ``type: local`` with ``command`` as ONE
+    list (program first) and ``environment``, an http one as ``type: remote``
+    with ``url``/``headers``. ``enabled: false`` still counts as registered:
+    the registration exists and a re-add is not needed. An entry with neither
+    a list ``command`` nor a ``url`` is not a server and is skipped.
+    """
+    found: Dict[str, Dict[str, Any]] = {}
+    for name, hit in read_mcp(home).items():
+        entry = hit.entry
+        if not isinstance(entry, dict):
+            continue
+        command = entry.get("command")
+        url = entry.get("url")
+        if isinstance(command, list) and command:
+            found[name] = _spec(command[0], command[1:],
+                                entry.get("environment"), None)
+        elif isinstance(url, str) and url:
+            found[name] = _spec(None, [], None, url,
+                                headers=entry.get("headers"))
     return found

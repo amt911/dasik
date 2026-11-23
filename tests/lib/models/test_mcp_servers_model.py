@@ -78,7 +78,7 @@ def test_headers_for_claude_alone_are_accepted():
 def test_an_unknown_agent_is_rejected():
     with pytest.raises(ValidationError, match="claude-code"):
         McpServersModel(entries=[{"name": "x", "command": "uvx",
-                                  "agents": ["opencode"]}])
+                                  "agents": ["gemini"]}])
 
 
 def test_agents_cannot_be_empty_or_duplicated():

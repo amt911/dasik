@@ -22,6 +22,9 @@
 # see the verdict line OC-CHROOT-VERDICT and docs/FACTS.md. The dasik cycle itself
 # is post-install either way: the install cannot converge it.
 #
+# NOTE: the OC-*PLANSYNC / OC-*QUIET checks look at the [mcp_servers] and [ai_skills]
+# domains only (domain-scoped), not at the whole plan.
+#
 # CONVENTION: every OC-<step>-RC=0 line is a PASS; rc() counts failures so the
 # final OC-DONE rc=N is the verdict. The measurements (OC-M1/M2/M3) print their
 # data and are not counted.
@@ -199,7 +202,8 @@ absent /tmp/plan3.txt '\[mcp_servers\]'; rc OC-PLANSYNC-QUIET-MCP
 absent /tmp/plan3.txt '\[ai_skills\]'; rc OC-PLANSYNC-QUIET-PLUGIN
 
 echo "OC-H: the manifest records the domains; generations, rollback, re-plan"
-$D generations --target / $L | tail -20; rc OC-GEN
+$D generations --target / $L > /tmp/generations.txt 2>&1; rc OC-GEN
+tail -20 /tmp/generations.txt
 present /var/lib/dasik/state.json 'mcp_servers'; rc OC-MANIFEST-MCP
 present /var/lib/dasik/state.json 'ai_skills'; rc OC-MANIFEST-PLUGIN
 $D rollback --target / --yes $L > /tmp/rollback.txt 2>&1; rc OC-ROLLBACK
@@ -210,11 +214,11 @@ $D plan "$F" --target / $L > /tmp/plan4.txt 2>&1; rc OC-PLAN-ROLLED
 grep -E '\[(mcp_servers|ai_skills)\]' /tmp/plan4.txt
 present /tmp/plan4.txt "create test:opencode:$SERVER"; rc OC-ROLLED-MCP-REMOVED
 present /tmp/plan4.txt "create test:opencode:plugin:$P1"; rc OC-ROLLED-PLUGIN-REMOVED
-absent $J "\"$SERVER\""; rc OC-ROLLED-MCP-GONE-FROM-FILE
+test -f $J && absent $J "\"$SERVER\""; rc OC-ROLLED-MCP-GONE-FROM-FILE
 present $JC 'superpowers'; rc OC-ROLLED-USER-PLUGIN-ALIVE
 present $JC '// hand-written by the user'; rc OC-ROLLED-JSONC-COMMENT-KEPT
 $D apply "$F" --target / --yes $L > /tmp/apply-re.txt 2>&1; rc OC-REAPPLY
-$D plan "$F" --target / $L > /tmp/plan4b.txt 2>&1
+$D plan "$F" --target / $L > /tmp/plan4b.txt 2>&1; rc OC-REAPPLY-PLAN
 absent /tmp/plan4b.txt '\[mcp_servers\]'; rc OC-REAPPLY-QUIET-MCP
 absent /tmp/plan4b.txt '\[ai_skills\]'; rc OC-REAPPLY-QUIET-PLUGIN
 
@@ -263,7 +267,7 @@ p = d.get("plugins") or []
 sys.exit(0 if p == ["opencode-helicone-session@1.0.1"] else 1)
 PY
 rc OC-VERSION-SWAPPED
-$D plan /tmp/oc-mod.json --target / $L > /tmp/plan7.txt 2>&1
+$D plan /tmp/oc-mod.json --target / $L > /tmp/plan7.txt 2>&1; rc OC-MOD-REPLAN-PLAN
 absent /tmp/plan7.txt '\[mcp_servers\]'; rc OC-MOD-REPLAN-QUIET-MCP
 absent /tmp/plan7.txt '\[ai_skills\]'; rc OC-MOD-REPLAN-QUIET-PLUGIN
 present $JC '// hand-written by the user'; rc OC-MOD-JSONC-COMMENT-KEPT
@@ -282,11 +286,11 @@ present /tmp/plan8.txt "delete test:opencode:plugin:$P2"; rc OC-DROPPED-PLAN-PLU
 absent /tmp/plan8.txt 'superpowers'; rc OC-DROPPED-KEEPS-USER-PLUGIN
 $D apply /tmp/oc-noblock.json --target / --yes $L > /tmp/apply3.txt 2>&1; rc OC-DROPPED-APPLY
 cat /tmp/apply3.txt; cat $J
-absent $J "\"$SERVER\""; rc OC-DROPPED-GONE-MCP
-absent $J 'opencode-helicone-session'; rc OC-DROPPED-GONE-PLUGIN
+test -f $J && absent $J "\"$SERVER\""; rc OC-DROPPED-GONE-MCP
+test -f $J && absent $J 'opencode-helicone-session'; rc OC-DROPPED-GONE-PLUGIN
 present $JC '// hand-written by the user'; rc OC-DROPPED-JSONC-COMMENT-KEPT
 present $JC 'superpowers'; rc OC-DROPPED-USER-PLUGIN-ALIVE
-$D plan /tmp/oc-noblock.json --target / $L > /tmp/plan9.txt 2>&1
+$D plan /tmp/oc-noblock.json --target / $L > /tmp/plan9.txt 2>&1; rc OC-DROPPED-REPLAN-PLAN
 absent /tmp/plan9.txt '\[mcp_servers\]'; rc OC-DROPPED-REPLAN-QUIET-MCP
 absent /tmp/plan9.txt '\[ai_skills\]'; rc OC-DROPPED-REPLAN-QUIET-PLUGIN
 

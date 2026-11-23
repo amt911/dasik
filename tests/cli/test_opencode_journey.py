@@ -31,8 +31,8 @@ def _prepare(tmp_path):
     (tmp_path / "boot/grub/grub.cfg").write_text("")
 
 
-def _cfg(tmp_path, **blocks):
-    p = tmp_path / "config.json"
+def _cfg(tmp_path, name="config.json", **blocks):
+    p = tmp_path / name
     p.write_text(json.dumps({"users": USERS, **blocks}))
     return p
 
@@ -80,6 +80,14 @@ def _plan_lines(tmp_path, capsys, p):
     return capsys.readouterr().out
 
 
+def _assert_silent(out):
+    assert "opencode" not in out
+    for line in out.splitlines():
+        assert not line.lstrip().startswith(
+            ("+ [mcp_servers]", "- [mcp_servers]", "~ [mcp_servers]",
+             "+ [ai_skills]", "- [ai_skills]", "~ [ai_skills]")), line
+
+
 def test_opencode_journey(tmp_path, capsys):
     _prepare(tmp_path)
     p = _cfg(tmp_path, **BLOCKS)
@@ -92,7 +100,7 @@ def test_opencode_journey(tmp_path, capsys):
     oc = json.loads(_oc_json(tmp_path).read_text())
     assert oc["mcp"]["servers"]["inkscape_mcp"]["command"][0] == "uvx"
     assert oc["plugins"] == [PLUGIN]
-    assert "opencode" not in _plan_lines(tmp_path, capsys, p)
+    _assert_silent(_plan_lines(tmp_path, capsys, p))
 
     # generations lists the apply
     capsys.readouterr()
@@ -110,10 +118,10 @@ def test_opencode_journey(tmp_path, capsys):
     captured["users"] = USERS
     q.write_text(json.dumps(captured))
     assert _run(tmp_path, ["check", str(q)]) == 0
-    assert "opencode" not in _plan_lines(tmp_path, capsys, q)
+    _assert_silent(_plan_lines(tmp_path, capsys, q))
 
     # the block removed: plan shows both DELETEs, apply clears them
-    r = _cfg(tmp_path)
+    r = _cfg(tmp_path, "removed.json")
     out = _plan_lines(tmp_path, capsys, r)
     assert "- [mcp_servers] delete andres:opencode:inkscape_mcp" in out
     assert f"- [ai_skills] delete andres:opencode:plugin:{PLUGIN}" in out
@@ -121,10 +129,14 @@ def test_opencode_journey(tmp_path, capsys):
     oc = json.loads(_oc_json(tmp_path).read_text())
     assert "inkscape_mcp" not in json.dumps(oc.get("mcp", {}))
     assert oc["plugins"] == []
-    assert "opencode" not in _plan_lines(tmp_path, capsys, r)
+    _assert_silent(_plan_lines(tmp_path, capsys, r))
 
     # rollback restores the previous generation (the one holding the blocks)
     capsys.readouterr()
     assert _run(tmp_path, ["generations"]) == 0
     assert "Generation 2" in capsys.readouterr().out
     assert _run(tmp_path, ["rollback", "1", "--yes"]) == 0
+    oc = json.loads(_oc_json(tmp_path).read_text())
+    assert oc["mcp"]["servers"]["inkscape_mcp"]["command"][0] == "uvx"
+    assert oc["plugins"] == [PLUGIN]
+    _assert_silent(_plan_lines(tmp_path, capsys, p))

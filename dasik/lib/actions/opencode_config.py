@@ -152,8 +152,10 @@ def _open_chain(home: str, rel: str, uid: int = -1, gid: int = -1,
 
 def _read_file(dir_fd: int, base: str) -> str:
     """Read ``base`` in dir_fd, refusing a symlink (OSError ELOOP)."""
-    fd = os.open(base, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=dir_fd)
+    fd = os.open(base, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dir_fd)
     with os.fdopen(fd, encoding="utf-8") as f:
+        if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
+            raise OSError(f"{base} is not a regular file")
         return f.read()
 
 
@@ -224,7 +226,10 @@ def edit(
         mode = 0o644
         data: Any
         try:
-            rfd = os.open(base, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=dfd)
+            # O_NONBLOCK: a FIFO at this name must not hang root's open.
+            rfd = os.open(
+                base, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dfd
+            )
         except FileNotFoundError:
             data = {"$schema": SCHEMA_URL}
         except OSError as exc:
@@ -233,12 +238,17 @@ def edit(
                 f"dasik will not write through it: {exc}"
             ) from exc
         else:
-            with os.fdopen(rfd, encoding="utf-8") as f:
-                mode = os.fstat(f.fileno()).st_mode & 0o7777
-                text = f.read()
             try:
+                with os.fdopen(rfd, encoding="utf-8") as f:
+                    st = os.fstat(f.fileno())
+                    if not stat.S_ISREG(st.st_mode):
+                        raise OpencodeConfigError(
+                            f"cannot edit {rel}: {path} is not a regular file."
+                        )
+                    mode = st.st_mode & 0o7777
+                    text = f.read()
                 data = parse_jsonc(text) if text.strip() else {}
-            except ValueError as exc:
+            except (OSError, ValueError) as exc:
                 raise OpencodeConfigError(f"cannot parse {path}: {exc}") from exc
             if not isinstance(data, dict):
                 raise OpencodeConfigError(f"{path}: top level is not an object")

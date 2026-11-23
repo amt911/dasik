@@ -235,3 +235,35 @@ def test_edit_does_not_follow_a_parent_swapped_after_the_check(tmp_path, chowns,
     edit(str(tmp_path), JSON_REL, lambda d: d.update(a=1), 1, 1)
     assert list(elsewhere.iterdir()) == []
     assert (tmp_path / ".config/moved/opencode.json").exists()
+
+
+def test_edit_refuses_invalid_utf8_as_config_error(tmp_path, chowns):
+    path = tmp_path / JSON_REL
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b"\xff\xfe{")
+    with pytest.raises(OpencodeConfigError):
+        edit(str(tmp_path), JSON_REL, lambda d: None, 1, 1)
+    assert path.read_bytes() == b"\xff\xfe{"
+
+
+def test_edit_refuses_a_directory_at_the_file_name(tmp_path, chowns):
+    (tmp_path / JSON_REL).mkdir(parents=True)
+    with pytest.raises(OpencodeConfigError):
+        edit(str(tmp_path), JSON_REL, lambda d: None, 1, 1)
+
+
+def test_edit_refuses_a_fifo_without_hanging(tmp_path, chowns):
+    path = tmp_path / JSON_REL
+    path.parent.mkdir(parents=True)
+    os.mkfifo(path)
+    with pytest.raises(OpencodeConfigError):
+        edit(str(tmp_path), JSON_REL, lambda d: None, 1, 1)
+    assert stat.S_ISFIFO(path.lstat().st_mode)
+
+
+def test_readers_ignore_a_fifo_and_a_directory(tmp_path):
+    (tmp_path / ".config/opencode").mkdir(parents=True)
+    os.mkfifo(tmp_path / JSON_REL)
+    (tmp_path / JSONC_REL).mkdir()
+    assert read_mcp(str(tmp_path)) == {}
+    assert read_plugins(str(tmp_path)) == {}

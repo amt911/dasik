@@ -30,15 +30,32 @@ from ._url_validation import reject_control_chars
 # `antigravity-plugin` is `agy plugin install <directory>` (FACT-AGY-5): agy
 # accepts no repository and no marketplace reference, so dasik clones `source`
 # into a temporary directory, installs from it and throws the clone away.
-Method = Literal["claude-plugin", "codex-plugin", "antigravity-plugin", "skills",
-                 "tool"]
+#
+# `opencode-plugin` is `opencode plugin add <spec>`: `source` is the npm or
+# `name@git+https://...` specifier opencode records in its config, and `name` is
+# the part before the first `@`.
+Method = Literal["claude-plugin", "codex-plugin", "antigravity-plugin",
+                 "opencode-plugin", "skills", "tool"]
 
 # A `tool` command is executed, so it is a bare program name and nothing else.
 _COMMAND_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]*$")
 
 # Which agent a plugin method installs for. `skills` carries its own list.
 METHOD_AGENT = {"claude-plugin": "claude-code", "codex-plugin": "codex",
-                "antigravity-plugin": "antigravity"}
+                "antigravity-plugin": "antigravity",
+                "opencode-plugin": "opencode"}
+
+# What opencode is handed as a plugin specifier: an npm name with an optional
+# version (`pj`, `pj@1.0.0`) or `name@git+https://...`. It starts with a letter
+# or digit, so neither an option nor a scope nor a path. Matched with
+# `fullmatch`: `$` would let `pj@1\n` through.
+OPENCODE_SPEC_RE = re.compile(
+    r"[a-z0-9][a-z0-9._-]*(@[^\s@]+|@git\+https://\S+)?")
+
+
+def opencode_plugin_name(spec: str) -> str:
+    """The plugin name of an opencode specifier: what precedes the first `@`."""
+    return spec.split("@", 1)[0]
 
 # What `git clone` is handed for an `antigravity-plugin`: GitHub shorthand or an
 # https URL. Never a local path (it would name the machine running dasik, not the
@@ -77,7 +94,7 @@ class AiSkillEntry(BaseModel):
     name: str = Field(..., min_length=1,
                       description="Skill or plugin name as the installer knows it")
     method: Method = Field(..., description="claude-plugin | codex-plugin | "
-                                            "antigravity-plugin | skills | tool")
+                                            "antigravity-plugin | opencode-plugin | skills | tool")
     plugin: Optional[str] = Field(
         None, description="Plugin name inside the marketplace, when it differs "
                           "from `name`. Defaults to `name`.")
@@ -88,7 +105,9 @@ class AiSkillEntry(BaseModel):
                           "`skills` CLI installs from. Required by "
                           "`antigravity-plugin`: owner/repo or https URL of the "
                           "plugin repository dasik clones for `agy plugin "
-                          "install`.")
+                          "install`. Required by `opencode-plugin`: the "
+                          "specifier for `opencode plugin add` (`pkg`, "
+                          "`pkg@1.2.3` or `name@git+https://...`).")
     agents: List[str] = Field(
         default_factory=list,
         description="`skills` and `tool` only: agent ids "
@@ -171,6 +190,28 @@ class AiSkillEntry(BaseModel):
             if self.agents:
                 raise ValueError("method 'antigravity-plugin' takes no "
                                  "`agents`: it installs for antigravity")
+        elif self.method == "opencode-plugin":
+            if not self.source:
+                raise ValueError("method 'opencode-plugin' requires `source` "
+                                 "(the specifier for `opencode plugin add`)")
+            reject_control_chars(self.source, "opencode-plugin source")
+            if not OPENCODE_SPEC_RE.fullmatch(self.source):
+                raise ValueError(
+                    "method 'opencode-plugin' needs `source` as an npm "
+                    "specifier (`pkg` or `pkg@version`) or `name@git+https://"
+                    f"...`, got {self.source!r}")
+            if self.name != opencode_plugin_name(self.source):
+                raise ValueError(
+                    "method 'opencode-plugin' needs `name` to be the part of "
+                    f"`source` before the first '@' "
+                    f"({opencode_plugin_name(self.source)!r}), got "
+                    f"{self.name!r}")
+            if self.marketplace is not None:
+                raise ValueError("method 'opencode-plugin' takes no "
+                                 "`marketplace`: opencode installs a specifier")
+            if self.agents:
+                raise ValueError("method 'opencode-plugin' takes no "
+                                 "`agents`: it installs for opencode")
         elif self.method == "skills":
             if not self.source:
                 raise ValueError("method 'skills' requires `source` "

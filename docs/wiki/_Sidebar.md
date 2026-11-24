@@ -26,6 +26,11 @@
 - [VPN (WireGuard)](VPN)
 - [Tailscale](Tailscale)
 
+**config-saver sync**
+- [Between machines](Config-saver-sync)
+- [How it works](Config-saver-sync-internals)
+- [Troubleshooting](Config-saver-sync-troubleshooting)
+
 **How it works**
 - [Workflows and state](Workflows)
 - [Sync](Sync)

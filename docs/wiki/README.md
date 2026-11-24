@@ -53,6 +53,7 @@ Two smaller entry points, if that is genuinely what you want:
 | Know what each feature block actually installs | **[Feature blocks](Features.md)** |
 | Understand plan/apply/ownership/generations/rollback | **[Workflows and state](Workflows.md)** |
 | Know exactly what `sync` can and cannot capture | **[Sync](Sync.md)** |
+| Keep `$HOME` files identical across machines (config-saver `--sync` over Google Drive, Proton Drive, SFTP…) | **[config-saver sync](Config-saver-sync.md)** |
 | Understand a preflight error before it aborts an install | **[Validation](Validation.md)** |
 | Copy a working config and adapt it | **[Recipes](Recipes.md)** |
 | Declare a tailnet node: preferences, exit nodes, the auth key | **[Tailscale](Tailscale.md)** |
